@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+.astro/
+*.tsbuildinfo
+
+# Test artefacts
+coverage/
+coverage.out
+*.test
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# Environment and secrets — commit only *.example files
+.env
+.env.*
+!.env.example
+deploy/compose/secrets/*
+!deploy/compose/secrets/.gitkeep
+
+# Logs
+*.log
+
+# Editor and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Claude Code local settings
+.claude/settings.local.json
