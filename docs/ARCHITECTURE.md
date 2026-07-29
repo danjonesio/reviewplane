@@ -1,0 +1,540 @@
+# Architecture
+
+## 1. Scope
+
+This document defines the target architecture for the initial product and its planned scaling path. It prioritises a reliable single-host Docker Compose deployment while preserving clean boundaries for dedicated browser workers and later orchestration.
+
+## 2. Architectural summary
+
+- The control plane is authoritative for projects, reviews, policies, sessions and events.
+- Chromium runs in separate browser-worker containers.
+- Development applications remain in development environments.
+- A native connector establishes outbound authenticated tunnels.
+- Agents use MCP to operate browsers and retrieve reviews.
+- Humans use the web UI and WebSockets for live supervision and control.
+- PostgreSQL stores authoritative metadata.
+- S3-compatible object storage stores large artefacts.
+- Docker Compose is the first-class deployment.
+
+## 3. System context
+
+```mermaid
+flowchart TB
+    Human[Human browser] -->|HTTPS/WSS| Gateway
+    Agent[CLI coding agent] -->|MCP through local bridge or HTTPS| Gateway
+    Connector[Development connector] -->|Outbound mTLS/WSS| Gateway
+    Gateway --> Control[Control-plane server]
+    Gateway --> MCP[MCP server]
+    Gateway --> Tunnel[Tunnel gateway]
+    Control --> Postgres[(PostgreSQL)]
+    Control --> Objects[(S3-compatible storage)]
+    MCP --> Control
+    Control --> Worker[Background worker]
+    Control --> Browser[Browser worker]
+    Browser -->|Scoped private route| Tunnel
+    Tunnel --> Connector
+    Connector --> DevServer[Local development server]
+    Browser --> Objects
+```
+
+## 4. Deployment units
+
+### 4.1 Gateway
+
+Responsibilities:
+
+- TLS termination or integration with an external reverse proxy
+- Host and path routing
+- WebSocket upgrades
+- Request-size and connection limits
+- Security headers
+
+A bundled Caddy configuration is the preferred default. Bring-your-own reverse proxy remains supported.
+
+### 4.2 Server
+
+One codebase may initially run multiple process roles:
+
+- `api`: HTTP API, authentication and domain logic
+- `jobs`: durable background work
+- `realtime`: session event fan-out if separated later
+
+Responsibilities:
+
+- Projects, reviews, findings and policies
+- Browser orchestration
+- Authorisation
+- Control leases
+- Artefact metadata
+- Audit and domain event creation
+- Human UI backend
+
+### 4.3 Web application
+
+Preferred initial stack:
+
+- Astro
+- React islands for live and interactive surfaces
+- Tailwind CSS
+- TypeScript
+
+High-interactivity areas such as the live session room and annotation canvas may be client-rendered React applications mounted inside the broader Astro application.
+
+### 4.4 MCP server
+
+Responsibilities:
+
+- Expose agent tools and resources
+- Authenticate agent sessions
+- Scope calls to project and capability
+- Translate MCP operations into domain commands
+- Return structured, bounded context
+- Label browser-derived content as untrusted
+
+It may share packages and deployment image with the server but should be a separate process and route.
+
+### 4.5 Browser worker
+
+Responsibilities:
+
+- Run Chromium and Playwright
+- Create isolated browser contexts
+- Navigate and interact
+- Produce accessibility and DOM snapshots
+- Capture screenshots, traces, console and network evidence
+- Stream ephemeral live frames
+- Apply redaction before persistence
+- Enforce session limits
+
+Browser workers are semi-trusted execution components because they process untrusted application content.
+
+### 4.6 Tunnel gateway
+
+Responsibilities:
+
+- Terminate connector data channels
+- Authenticate connector identity
+- Register published local services
+- Route browser requests using session-scoped capabilities
+- Apply destination restrictions and expiry
+- Record bytes, errors and route lifecycle
+
+It must not become an unrestricted SOCKS or general network proxy.
+
+### 4.7 Connector
+
+Preferred implementation: Go static binary.
+
+Responsibilities:
+
+- Enrol and maintain device identity
+- Detect configured workspaces and Git state
+- Publish explicitly authorised local ports
+- Establish outbound tunnels
+- Associate agent sessions where supported
+- Report health and capabilities
+- Display local notifications
+
+The connector must not upload repository contents by default.
+
+### 4.8 Background worker
+
+Responsibilities:
+
+- Thumbnail generation
+- Retention enforcement
+- Export generation
+- Artefact integrity checks
+- Staleness analysis
+- Notification fan-out
+- Cleanup of abandoned sessions and routes
+
+Initial durable jobs may use PostgreSQL row locking. A separate message broker is deferred until measured load requires it.
+
+## 5. Data architecture
+
+### 5.1 PostgreSQL
+
+Authoritative data:
+
+- Organisations and users
+- Projects and environments
+- Connectors and workspaces
+- Agent and browser sessions
+- Reviews, findings, comments and verification
+- Control leases
+- Policies and approval records
+- Artefact metadata
+- Domain and audit events
+- Durable jobs
+
+Use transactions to maintain domain invariants. Multi-step commands must produce state and event records atomically where practical.
+
+### 5.2 Object storage
+
+Stores:
+
+- Original screenshots
+- Derived thumbnails
+- Traces
+- HAR and logs
+- DOM and accessibility snapshots when too large for PostgreSQL
+- Video when enabled
+- Review exports
+
+Object keys must not expose user-entered names. Signed URLs must be short-lived and scoped.
+
+### 5.3 Ephemeral data
+
+- Live browser frames
+- Browser process temporary directories
+- Short-lived command acknowledgements
+- In-flight tunnel buffers
+
+Ephemeral data must not be persisted unless a configured recording policy converts it into an artefact.
+
+## 6. Browser topology
+
+### 6.1 Central workers
+
+The initial architecture uses centrally managed browser workers rather than Chromium installed in each development VM.
+
+Benefits:
+
+- Consistent browser and Playwright versions
+- Central live viewing
+- Easier isolation and resource management
+- Simpler updates
+- Agent-independent access
+- Central evidence capture
+
+### 6.2 Worker isolation
+
+Initial isolation:
+
+- Dedicated non-root container user
+- Read-only base filesystem where practical
+- Per-session temporary directory
+- Playwright browser context isolation
+- Resource limits
+- No host Docker socket
+- No access to control-plane secrets
+- Explicit network routes only
+
+Higher-assurance deployments may allocate one container or microVM per browser session later.
+
+### 6.3 Live viewing
+
+Use CDP screencast frames or equivalent browser-worker capture:
+
+- Fleet thumbnails: approximately 2 to 5 frames per second
+- Open session room: adaptive 10 to 20 frames per second
+- Human takeover: increased rate as resources allow
+- Frame quality and dimensions adapt to bandwidth
+- Frames are dropped rather than queued when viewers fall behind
+
+Live frames are ephemeral and delivered over authenticated WebSockets.
+
+### 6.4 Human input
+
+Human keyboard and pointer input is sent through the control plane to the worker. Every command includes:
+
+- Browser session ID
+- Controller identity
+- Control epoch
+- Sequence number
+- Timestamp
+
+Stale epochs are rejected.
+
+## 7. Development-service routing
+
+### 7.1 Problem
+
+A central browser cannot reach `localhost` on a remote development VM directly.
+
+### 7.2 Solution
+
+The connector publishes a local service through an outbound tunnel.
+
+```mermaid
+flowchart LR
+    Browser[Browser context] -->|HTTP request with route capability| TG[Tunnel gateway]
+    TG -->|Multiplexed encrypted stream| C[Connector]
+    C -->|Loopback TCP| App[127.0.0.1:4321]
+```
+
+### 7.3 Route properties
+
+- Project scoped
+- Browser-session scoped
+- Short-lived
+- Host and port restricted
+- Protocol declared
+- Audited
+- Revocable immediately
+
+The browser should receive an internal origin such as:
+
+```text
+https://route-id.internal.invalid/
+```
+
+The gateway maps this origin to the connector route. The implementation must preserve Host and origin behaviour predictably and support WebSockets for modern dev servers.
+
+### 7.4 Application compatibility
+
+The tunnel must support:
+
+- HTTP/1.1
+- WebSockets
+- HTTP streaming
+- Server-sent events
+- Development hot reload
+- Configurable upstream TLS
+
+HTTP/2 and additional protocols may be added later.
+
+## 8. Agent integration
+
+### 8.1 MCP
+
+MCP is the initial agent-facing interface.
+
+Supported connection forms:
+
+- Local stdio bridge installed with the connector
+- Remote authenticated HTTP endpoint
+
+The local bridge is preferred where the CLI client handles local MCP configuration more reliably. It authenticates to the control plane using scoped device or session credentials.
+
+### 8.2 Agent knowledge
+
+Agents learn when to use the product through:
+
+1. Repository instructions in `AGENTS.md` and client-specific files
+2. MCP tool descriptions
+3. Project policies and completion gates
+4. Inbox checks at safe workflow boundaries
+
+Tool descriptions assist selection. Policy and completion gates enforce required evidence.
+
+### 8.3 Capability negotiation
+
+Agent sessions advertise capabilities such as:
+
+```json
+{
+  "mcp_tools": true,
+  "mcp_resources": true,
+  "image_resources": true,
+  "managed_messages": false,
+  "session_resume": true
+}
+```
+
+The control plane must degrade clearly when a client cannot consume image resources or managed notifications.
+
+## 9. Review architecture
+
+The review service owns:
+
+- Review lifecycle
+- Finding lifecycle
+- Annotation storage
+- Assignment
+- Staleness calculation
+- Verification submission
+- Human acceptance
+
+Review commands are idempotent where network retries are likely. Human and agent actions produce immutable events.
+
+## 10. Event architecture
+
+The system uses an append-only event table for:
+
+- Audit
+- Session timeline
+- Integration delivery
+- Operational diagnosis
+
+Current state remains in normalised tables. Events do not require full event sourcing of all aggregates.
+
+Real-time updates:
+
+1. Command commits state and event in PostgreSQL
+2. A notifier publishes committed event IDs
+3. Realtime process fetches and broadcasts authorised payloads
+4. Clients resume using last seen sequence
+
+A PostgreSQL notification mechanism is acceptable initially. Later brokers must preserve event ordering semantics.
+
+## 11. Authentication and authorisation
+
+### Human
+
+Initial:
+
+- Local accounts
+- Secure session cookies
+- Optional bootstrap administrator token
+
+Later:
+
+- OIDC
+- SAML through enterprise integration
+- MFA policy through identity provider
+
+### Connector
+
+- One-time enrolment token
+- Device key pair generated locally
+- Issued client certificate or equivalent signed identity
+- mTLS or cryptographically bound channel
+- Revocation support
+
+### Agent
+
+- Agent session token bound to connector, project and capabilities
+- Short lifetime
+- Not reusable as a human token
+
+### Browser worker
+
+- Worker identity and mutual authentication
+- Commands signed or sent over mutually authenticated internal channels
+- Worker restricted to assigned projects and sessions
+
+## 12. Technology baseline
+
+Initial preferred technologies:
+
+| Area | Choice |
+|---|---|
+| Monorepo | pnpm workspaces with task runner as needed |
+| Web | Astro, React, Tailwind CSS, TypeScript |
+| Server | TypeScript on current pinned LTS Node runtime |
+| HTTP | Fastify or equivalent schema-first framework |
+| Browser | Playwright with Chromium |
+| Connector | Go |
+| Database | PostgreSQL |
+| Object storage | S3 API, MinIO bundled |
+| Realtime | WebSockets |
+| Deployment | OCI containers and Docker Compose |
+| Schemas | JSON Schema or equivalent generated TypeScript/Go models |
+
+Specific libraries require ADR when they shape public interfaces or operational dependencies.
+
+## 13. Scaling path
+
+### Stage 1
+
+Single host:
+
+- One server deployment
+- One MCP process
+- One job worker
+- One browser worker
+- Bundled PostgreSQL and MinIO
+
+### Stage 2
+
+Production Compose:
+
+- External PostgreSQL and object storage optional
+- Multiple browser-worker processes on one host
+- Separate realtime and job processes
+
+### Stage 3
+
+Remote worker nodes:
+
+- Browser workers register outbound
+- Control plane schedules based on capacity and labels
+- Workers use short-lived session credentials
+
+### Stage 4
+
+Kubernetes:
+
+- Stateless API, MCP and workers as Deployments
+- Browser workers scheduled with dedicated resource limits
+- External or operator-managed PostgreSQL and object storage
+- Helm chart
+
+Kubernetes is not an MVP requirement.
+
+## 14. Failure handling
+
+### Connector disconnect
+
+- Mark routes unavailable
+- Pause affected browser actions
+- Retain review and session metadata
+- Attempt bounded reconnect
+- Do not redirect traffic to a different environment silently
+
+### Browser worker crash
+
+- Mark session degraded or failed
+- Preserve uploaded evidence
+- Revoke control lease
+- Offer fresh session allocation
+- Restore storage state only when explicitly configured
+
+### Control-plane restart
+
+- Recover durable jobs
+- Expire stale leases
+- Resume event delivery from sequence
+- Reconcile workers and connectors
+
+### Artefact upload failure
+
+- Keep finding verification incomplete
+- Retry with content hash and idempotency key
+- Never record an artefact as available before integrity verification
+
+### Database unavailable
+
+- Reject state-changing actions safely
+- Browser workers may terminate or pause after a bounded grace period
+- Do not continue unaudited destructive operations
+
+## 15. Observability
+
+Every service emits:
+
+- Structured logs
+- Metrics
+- Trace correlation identifiers
+- Version and capability information
+- Health and readiness endpoints
+
+Sensitive values must not appear in logs.
+
+Core correlation IDs:
+
+- Request ID
+- Event ID
+- Project ID
+- Agent session ID
+- Browser session ID
+- Review ID
+- Finding ID
+- Connector ID
+
+## 16. Deferred architecture
+
+Not in the initial architecture:
+
+- Full desktop VNC streaming
+- Multi-browser support
+- Generic internet proxying
+- Direct terminal prompt injection
+- Built-in LLM hosting
+- General multi-agent scheduler
+- Full event-sourced state reconstruction
+- Service mesh
+- Mandatory distributed broker
+- Kubernetes-only deployment
