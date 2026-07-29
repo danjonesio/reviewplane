@@ -76,6 +76,7 @@ When documents conflict, precedence is: newest accepted ADR â†’ `SECURITY.md` â†
 - Prefer a complete vertical slice over disconnected scaffolding; inspect existing documents before proposing a new abstraction.
 - Do not silently weaken privacy, isolation, approval or audit requirements.
 - When behaviour changes, update the matching document in the same change; a code-only architectural change is incomplete.
+- Issues are tracked in Linear under the **ReviewPlane** team (prefix `RVP`). Any issue you raise must be self-contained per AGENTS.md "Issue tracking": problem statement, affected components/docs, reproduction, evidence, security impact, acceptance criteria.
 
 ## Review workflow (only when a control-plane MCP connection is available)
 

@@ -89,6 +89,22 @@ When documents conflict, use this order:
 
 Report the conflict and repair the documents in the same change.
 
+## Issue tracking
+
+Issues are tracked in Linear under the **ReviewPlane** team; issue identifiers use the `RVP` prefix.
+
+Every issue raised must be self-contained and thorough. Include:
+
+- Problem statement: the user-visible behaviour or requirement gap, not only the symptom
+- Affected area: components, documents and domain objects, with links to the relevant normative docs and ADRs
+- Reproduction for defects: exact steps, environment, branch and commit, and viewport where UI-relevant
+- Evidence where applicable: screenshots, traces, logs or API examples
+- Security, privacy or trust-boundary impact, or an explicit statement of none
+- Acceptance criteria: verifiable conditions under which the issue can be closed
+- Known dependencies or blocking relationships to other RVP issues
+
+Do not raise an issue whose reader must reconstruct context from chat history. The issue alone must contain all information required to act on it.
+
 ## Implementation workflow
 
 For each task:
