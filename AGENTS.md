@@ -105,6 +105,23 @@ Every issue raised must be self-contained and thorough. Include:
 
 Do not raise an issue whose reader must reconstruct context from chat history. The issue alone must contain all information required to act on it.
 
+## Change delivery
+
+Every change lands through a pull request. Direct commits to `main` are not permitted, including documentation-only changes.
+
+- Branch from an up-to-date `main`. Use a short prefixed name: `feat/`, `fix/`, `docs/`, `chore/` or `adr/`.
+- Reference the Linear issue the work belongs to (`RVP-nn`) in the branch name, the pull-request title or the description.
+- Keep one pull request to one reviewable change. A protocol change and its consumers belong together; unrelated work does not.
+- Pull-request descriptions follow `CONTRIBUTING.md`: user problem, behaviour change, security and privacy impact, protocol or migration impact, test evidence, documentation changes.
+- Attach browser evidence for user-visible changes, per "Browser-facing work" above.
+- `main` is protected. Force pushes and branch deletion are blocked, and required status checks must pass once continuous integration exists.
+
+While the repository has a single human maintainer, required approvals are set to zero and code-owner review is disabled. This is not a relaxation: GitHub does not allow a pull request to be approved by its own author, so a non-zero approval requirement or an enabled code-owner rule would make every pull request unmergeable. The sole maintainer is the merge gate by construction.
+
+When a second human gains write access, raise required approvals to one, add a `CODEOWNERS` file and enable code-owner review together. Add required status checks as soon as continuous integration reports them.
+
+An agent may open, update and respond to review on a pull request. **An agent does not merge its own pull request.** A human merges. This mirrors the product invariant that an agent submits verification and a human accepts: the same authority boundary applies to this repository's own changes.
+
 ## Implementation workflow
 
 For each task:
