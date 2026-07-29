@@ -77,6 +77,7 @@ When documents conflict, precedence is: newest accepted ADR â†’ `SECURITY.md` â†
 - Do not silently weaken privacy, isolation, approval or audit requirements.
 - When behaviour changes, update the matching document in the same change; a code-only architectural change is incomplete.
 - Issues are tracked in Linear under the **ReviewPlane** team (prefix `RVP`). Any issue you raise must be self-contained per AGENTS.md "Issue tracking": problem statement, affected components/docs, reproduction, evidence, security impact, acceptance criteria.
+- **Never commit directly to `main`.** Branch (`feat/`, `fix/`, `docs/`, `chore/`, `adr/`), push, and open a pull request per AGENTS.md "Change delivery". You may open and update a PR; a human merges it.
 
 ## Review workflow (only when a control-plane MCP connection is available)
 

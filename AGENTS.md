@@ -105,6 +105,19 @@ Every issue raised must be self-contained and thorough. Include:
 
 Do not raise an issue whose reader must reconstruct context from chat history. The issue alone must contain all information required to act on it.
 
+## Change delivery
+
+Every change lands through a pull request. Direct commits to `main` are not permitted, including documentation-only changes.
+
+- Branch from an up-to-date `main`. Use a short prefixed name: `feat/`, `fix/`, `docs/`, `chore/` or `adr/`.
+- Reference the Linear issue the work belongs to (`RVP-nn`) in the branch name, the pull-request title or the description.
+- Keep one pull request to one reviewable change. A protocol change and its consumers belong together; unrelated work does not.
+- Pull-request descriptions follow `CONTRIBUTING.md`: user problem, behaviour change, security and privacy impact, protocol or migration impact, test evidence, documentation changes.
+- Attach browser evidence for user-visible changes, per "Browser-facing work" above.
+- `main` is protected. Force pushes and branch deletion are blocked, and required status checks must pass once continuous integration exists.
+
+An agent may open, update and respond to review on a pull request. **An agent does not merge its own pull request.** A human merges. This mirrors the product invariant that an agent submits verification and a human accepts: the same authority boundary applies to this repository's own changes.
+
 ## Implementation workflow
 
 For each task:
