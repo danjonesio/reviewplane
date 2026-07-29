@@ -117,7 +117,7 @@ Development connectors and remote workers should initiate authenticated outbound
 - The control plane stores policy and authoritative metadata
 - Browser workers execute untrusted application content
 - Connectors bridge development environments
-- Object storage contains large artefacts
+- The artefact store contains large artefacts
 
 Compromise of one component should not automatically provide unrestricted control over the others.
 

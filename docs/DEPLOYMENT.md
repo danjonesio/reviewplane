@@ -61,10 +61,9 @@ services:
 
   postgres:
     image: postgres:<supported-pinned-version>
-
-  minio:
-    image: minio/minio:<supported-pinned-version>
 ```
+
+Artefacts default to the filesystem driver on the `artefact_data` volume; no object-storage service is bundled (ADR-0012).
 
 Production files must pin exact supported versions or immutable digests. Examples may use placeholders until release automation exists.
 
@@ -75,20 +74,20 @@ Recommended:
 ```text
 edge     gateway, api, mcp
 auth     gateway, api, mcp
-data     api, jobs, postgres, minio
+data     api, jobs, postgres
 control  api, mcp, jobs, tunnel-gateway, browser-worker
 browser  browser-worker, tunnel-gateway
 ```
 
 Only the gateway publishes host ports by default.
 
-PostgreSQL, MinIO administrative ports, browser debugging ports and tunnel internals remain private.
+PostgreSQL, browser debugging ports and tunnel internals remain private.
 
 ## 5. Volumes
 
 ```text
 postgres_data
-object_data
+artefact_data
 gateway_data
 ```
 
@@ -202,9 +201,9 @@ Requirements:
 
 The application must expose a migration command and readiness must fail when required migrations are missing.
 
-## 12. External object storage
+## 12. External object storage (`s3` artefact driver)
 
-Requirements:
+The default installation stores artefacts on a local volume through the `filesystem` driver. Operators may configure the `s3` driver instead. Requirements:
 
 - S3-compatible API
 - Private bucket
@@ -326,7 +325,7 @@ When implemented:
 - API, MCP and job processes as Deployments
 - Browser workers with dedicated resources and isolation
 - External or operator-managed PostgreSQL
-- S3-compatible object storage
+- S3-compatible artefact storage via the `s3` driver
 - NetworkPolicies
 - Pod security controls
 - Explicit upgrade and backup documentation
@@ -338,6 +337,6 @@ Kubernetes must not become the only supported deployment.
 - Exposing browser CDP ports publicly
 - Mounting Docker socket into the API service
 - Sharing one unrestricted browser profile across projects
-- Publishing PostgreSQL or MinIO publicly without explicit operator configuration
+- Publishing PostgreSQL or artefact storage publicly without explicit operator configuration
 - Running Chromium with sandbox disabled by default
 - Using the connector as a general VPN

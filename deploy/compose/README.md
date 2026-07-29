@@ -29,6 +29,6 @@ The initial implementation must preserve these rules:
 - Only the gateway publishes host ports by default.
 - Chromium runs in `browser-worker`, not the API container.
 - The API container does not mount the Docker socket.
-- PostgreSQL and object storage are private services.
+- PostgreSQL is a private service; artefacts live on a private local volume by default (ADR-0012).
 - Secrets are mounted as files where possible.
 - Images are pinned to release versions or digests.

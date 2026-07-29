@@ -31,12 +31,12 @@ The exact structure may be refined before code is created, but separation betwee
 
 - TypeScript with strict mode
 - pnpm workspaces
-- Astro and React for web
+- Vite React SPA with TanStack Router and Query for web
 - Tailwind CSS
 - Playwright
 - Go for connector and tunnel-heavy service
 - PostgreSQL
-- S3-compatible storage
+- Pluggable artefact store: filesystem driver default, S3-compatible driver optional
 - Docker Compose
 
 Pin tool versions in repository-managed files. Avoid relying on globally installed tooling beyond Docker and the chosen package managers.
@@ -57,7 +57,7 @@ Generate or validate Go and TypeScript models from one versioned source. Do not 
 
 ### Full Compose
 
-Runs PostgreSQL, MinIO, gateway, server, MCP, browser worker and tunnel gateway.
+Runs PostgreSQL, gateway, server, MCP, browser worker and tunnel gateway. Artefacts use the filesystem driver on a local volume; add an S3-compatible service only when exercising the `s3` artefact driver.
 
 ### Hybrid
 

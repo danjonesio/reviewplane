@@ -1,6 +1,6 @@
 # ADR-0005: Use PostgreSQL and S3-compatible object storage
 
-- Status: Accepted
+- Status: Accepted; object-storage portion superseded by [ADR-0012](0012-pluggable-artefact-store.md)
 - Date: 2026-07-28
 
 ## Context

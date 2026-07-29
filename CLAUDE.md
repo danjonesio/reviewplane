@@ -26,12 +26,12 @@ accepts or reopens
 TypeScript monorepo (pnpm workspaces) plus Go services. Full detail in `docs/ARCHITECTURE.md`; decisions locked in `docs/PROJECT.md` §4 and `docs/adr/`.
 
 - **Control-plane server** (TypeScript/Node, schema-first HTTP + WebSockets): authoritative for projects, reviews, findings, policies, sessions, control leases, events. Never gets Docker-socket access.
-- **Web app** (Astro + React islands + Tailwind): live supervision, annotation canvas, review UI.
+- **Web app** (Vite React SPA + TanStack Router/Query + Tailwind, per ADR-0011): live supervision, annotation canvas, review UI. Static assets served by the gateway; no SSR process.
 - **MCP server**: the agent-facing interface. Separate process/route from the API; translates MCP tools into domain commands; labels browser-derived content untrusted.
 - **Browser worker** (Playwright + Chromium in separate containers): semi-trusted; captures screenshots, traces, snapshots; streams ephemeral live frames.
 - **Connector** (Go static binary on the development VM): outbound-only authenticated tunnels; publishes explicitly authorised loopback ports. Never uploads repository contents by default.
 - **Tunnel gateway** (Go): maps session-scoped route capabilities (e.g. `https://route-id.internal.invalid/`) to connector routes. Must not become a general proxy.
-- **Data**: PostgreSQL is authoritative metadata plus an append-only event/audit table; S3-compatible storage (MinIO bundled) holds large artefacts; live frames are ephemeral by default.
+- **Data**: PostgreSQL is authoritative metadata plus an append-only event/audit table; large artefacts go through a pluggable artefact store (filesystem driver by default, S3-compatible driver optional, per ADR-0012); live frames are ephemeral by default.
 - **Shared schemas**: `packages/protocol` will be the single versioned source for API, MCP, event and connector-protocol types, generating both TypeScript and Go models. Never hand-maintain equivalent types in separate services.
 - **Deployment**: Docker Compose is first-class; only the gateway publishes host ports. Kubernetes is deferred.
 

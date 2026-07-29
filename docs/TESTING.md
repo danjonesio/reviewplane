@@ -35,7 +35,7 @@ Tests must prove the primary workflow, distributed protocol behaviour, security 
 
 ### Integration
 
-- API, PostgreSQL and object storage
+- API, PostgreSQL and both artefact-store drivers
 - Browser worker and tunnel gateway
 - Connector and loopback dev server
 - MCP client and review retrieval
@@ -199,7 +199,7 @@ Verify persisted artefacts and logs are redacted according to policy.
 | Worker crash after screenshot upload | Uploaded evidence remains, session marked failed |
 | API restart during live view | Client reconnects and refreshes state |
 | Database unavailable | State changes denied; no unaudited continuation |
-| Object storage unavailable | Verification remains incomplete |
+| Artefact store unavailable | Verification remains incomplete |
 | Human takeover during agent click | Ordered lease transition, no concurrent input |
 | Duplicate verification request | One verification record through idempotency |
 | Retention deletion partial failure | Retry, metadata not falsely tombstoned |
@@ -233,7 +233,7 @@ For each supported upgrade path:
 ## 14. Backup and restore tests
 
 - Full backup and restore
-- Database-only plus existing object storage
+- Database-only plus existing external artefact storage
 - Missing key failure
 - Corrupt archive detection
 - Restore to new hostname

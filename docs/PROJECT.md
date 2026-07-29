@@ -38,7 +38,7 @@ Changes that remove any part of this loop from the product centre require an ADR
 - Reviews are durable domain objects and the system of record.
 - Human-authored findings require human acceptance.
 - PostgreSQL stores authoritative metadata.
-- S3-compatible storage contains large artefacts.
+- Large artefacts live in a pluggable artefact store: filesystem driver by default, S3-compatible driver optional.
 - Live frames are ephemeral by default.
 - Original screenshots and annotations are stored separately.
 - Browser input uses a single-controller lease and control epoch.
@@ -53,12 +53,12 @@ See the ADR index for rationale.
 | Component | Direction |
 |---|---|
 | Monorepo | TypeScript workspace plus Go services |
-| Web | Astro, React islands, Tailwind CSS |
+| Web | Vite React SPA, TanStack Router/Query, Tailwind CSS |
 | API/MCP/jobs | TypeScript on pinned LTS Node runtime |
 | Browser | Playwright and Chromium |
 | Connector/tunnel host code | Go |
 | Database | PostgreSQL |
-| Artefacts | S3-compatible storage, MinIO bundled |
+| Artefacts | Pluggable artefact store: filesystem default, S3-compatible optional |
 | Realtime | WebSockets |
 | Packaging | OCI images and Docker Compose |
 | Schemas | Versioned shared schemas with generated TypeScript and Go types |

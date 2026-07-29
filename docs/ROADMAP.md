@@ -100,7 +100,7 @@ Make the product dependable for daily use across several VMs and projects.
 - Storage usage reporting
 - Signed connector and image releases
 - Structured operational diagnostics
-- Optional external PostgreSQL and S3
+- Optional external PostgreSQL and S3-compatible artefact storage
 - OIDC authentication
 
 ### Exit criteria

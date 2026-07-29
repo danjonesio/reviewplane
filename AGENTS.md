@@ -38,7 +38,7 @@ Do not implement features that bypass this loop without an explicit ADR.
 - Do not send source code, screenshots, traces, prompts or browser data to third parties unless explicitly configured by the administrator.
 - Browser workers must remain separate from the main control-plane process.
 - Development VM connectors must use outbound-initiated authenticated connections.
-- Do not expose Chromium debugging ports, PostgreSQL, object storage or tunnel internals publicly.
+- Do not expose Chromium debugging ports, PostgreSQL, artefact storage or tunnel internals publicly.
 - Do not grant the control-plane application direct access to the Docker socket.
 - Store original screenshots separately from annotation overlays.
 - Use normalised annotation coordinates.
@@ -117,11 +117,11 @@ For UI, browser control, annotation, tunnel or review changes:
 Until an ADR changes them:
 
 - TypeScript monorepo for web, server, MCP server and browser worker.
-- Astro with React islands and Tailwind CSS for the web application.
+- Vite-built React single-page application with Tailwind CSS for the web, served as static assets by the gateway.
 - Playwright for browser automation.
 - Go for the connector and tunnel-heavy host components.
 - PostgreSQL for authoritative metadata and event records.
-- S3-compatible object storage for large artefacts.
+- Pluggable artefact store for large artefacts: filesystem driver by default, S3-compatible driver optional.
 - Docker Compose as the first-class deployment.
 - HTTP APIs and WebSockets for user-facing and live-session communication.
 - Versioned schemas shared from `packages/protocol`.

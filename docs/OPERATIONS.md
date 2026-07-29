@@ -48,7 +48,7 @@ Output should include:
 
 - Version
 - Database connectivity and schema
-- Object storage connectivity
+- Artefact store availability
 - Active connectors
 - Browser worker capacity
 - Active sessions
@@ -139,7 +139,7 @@ Trace data must avoid page body and secret values.
 Initial recommended alerts:
 
 - Database unavailable
-- Object storage unavailable
+- Artefact store unavailable
 - No browser capacity
 - Browser crash rate above threshold
 - Connector fleet disconnected unexpectedly
@@ -197,7 +197,7 @@ Failures retry and surface operationally. Metadata must not claim deletion befor
 ## 11. Backup operations
 
 - Daily database backup recommended
-- Object storage protected by versioning or backup according to operator risk
+- Filesystem artefact volume included in bundled backup tooling; external S3 artefact storage protected by versioning or backup according to operator risk
 - Backup status visible in UI or status command
 - Restore test scheduled regularly
 - Backup encryption documented
@@ -272,7 +272,7 @@ Commands support `--json` for automation.
 
 - DNS and TLS
 - Database
-- Object storage
+- Artefact store read and write
 - Browser launch
 - WebSocket upgrade
 - Connector handshake

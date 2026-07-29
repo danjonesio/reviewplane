@@ -35,7 +35,7 @@ flowchart TB
       CP[Server]
       MCP[MCP server]
       DB[(PostgreSQL)]
-      OS[(Object storage)]
+      OS[(Artefact store)]
     end
     subgraph BrowserZone[Browser execution zone]
       BW[Browser worker]
@@ -312,7 +312,7 @@ Administrators can shorten or extend policy. Legal hold and enterprise policy ar
 
 - HTTPS/WSS externally
 - mTLS or equivalent for connectors and workers
-- TLS to external PostgreSQL and object storage when supported
+- TLS to external PostgreSQL and S3-compatible artefact storage when supported
 
 ### At rest
 

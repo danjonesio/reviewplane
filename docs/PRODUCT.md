@@ -214,7 +214,7 @@ The first usable release supports:
 - Human accept and reopen
 - Docker Compose deployment
 - Local authentication
-- PostgreSQL and S3-compatible storage
+- PostgreSQL and pluggable artefact storage
 
 ## 11. Explicit non-goals
 

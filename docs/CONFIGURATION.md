@@ -23,11 +23,15 @@ authentication:
 database:
   url_file: /run/secrets/database_url
 
-object_storage:
-  endpoint: http://minio:9000
-  bucket: reviewplane
-  access_key_file: /run/secrets/s3_access_key
-  secret_key_file: /run/secrets/s3_secret_key
+artefact_store:
+  driver: filesystem
+  filesystem:
+    path: /var/lib/reviewplane/artefacts
+  # s3:
+  #   endpoint: https://s3.example.internal
+  #   bucket: reviewplane
+  #   access_key_file: /run/secrets/s3_access_key
+  #   secret_key_file: /run/secrets/s3_secret_key
 
 retention:
   action_screenshots: 30d
@@ -124,8 +128,8 @@ Preferred:
 ```text
 /run/secrets/database_url
 /run/secrets/session_signing_key
-/run/secrets/s3_access_key
-/run/secrets/s3_secret_key
+/run/secrets/s3_access_key    # s3 artefact driver only
+/run/secrets/s3_secret_key    # s3 artefact driver only
 ```
 
 Services should support `*_FILE` settings for secret material.

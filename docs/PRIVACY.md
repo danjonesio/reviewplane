@@ -13,7 +13,7 @@ This promise must be reflected in architecture and defaults, not only marketing 
 | Source code | Development environment |
 | Git working tree | Development environment |
 | Project and review metadata | Customer PostgreSQL |
-| Screenshots and traces | Customer S3-compatible storage |
+| Screenshots and traces | Customer artefact store: local volume or customer S3-compatible storage |
 | Browser execution | Customer browser-worker container |
 | Connector identity | Customer development environment and control plane |
 | Agent/model conversation | Agent client's configured provider path |
@@ -105,6 +105,6 @@ The architecture must support operation with:
 - Local container registry
 - Internal Git
 - Local or approved model
-- Internal object storage
+- Internal artefact storage
 - Internal identity provider
 - No external runtime assets

@@ -13,7 +13,7 @@ This document defines the target architecture for the initial product and its pl
 - Agents use MCP to operate browsers and retrieve reviews.
 - Humans use the web UI and WebSockets for live supervision and control.
 - PostgreSQL stores authoritative metadata.
-- S3-compatible object storage stores large artefacts.
+- A pluggable artefact store holds large artefacts: filesystem driver by default, S3-compatible driver optional.
 - Docker Compose is the first-class deployment.
 
 ## 3. System context
@@ -27,14 +27,14 @@ flowchart TB
     Gateway --> MCP[MCP server]
     Gateway --> Tunnel[Tunnel gateway]
     Control --> Postgres[(PostgreSQL)]
-    Control --> Objects[(S3-compatible storage)]
+    Control --> Objects[(Artefact store)]
     MCP --> Control
     Control --> Worker[Background worker]
     Control --> Browser[Browser worker]
     Browser -->|Scoped private route| Tunnel
     Tunnel --> Connector
     Connector --> DevServer[Local development server]
-    Browser --> Objects
+    Browser -->|Artefact upload| Control
 ```
 
 ## 4. Deployment units
@@ -48,6 +48,7 @@ Responsibilities:
 - WebSocket upgrades
 - Request-size and connection limits
 - Security headers
+- Web-application static asset serving
 
 A bundled Caddy configuration is the preferred default. Bring-your-own reverse proxy remains supported.
 
@@ -71,14 +72,15 @@ Responsibilities:
 
 ### 4.3 Web application
 
-Preferred initial stack:
+Preferred initial stack (ADR-0011):
 
-- Astro
-- React islands for live and interactive surfaces
+- Vite-built React single-page application
+- TanStack Router for type-safe routing
+- TanStack Query for server state
 - Tailwind CSS
 - TypeScript
 
-High-interactivity areas such as the live session room and annotation canvas may be client-rendered React applications mounted inside the broader Astro application.
+The build output is static assets served by the gateway; the web application has no server-side rendering process. All surfaces, including the live session room and annotation canvas, are client-rendered React using the HTTP API and WebSocket channels.
 
 ### 4.4 MCP server
 
@@ -170,7 +172,9 @@ Authoritative data:
 
 Use transactions to maintain domain invariants. Multi-step commands must produce state and event records atomically where practical.
 
-### 5.2 Object storage
+### 5.2 Artefact store
+
+Artefact storage is accessed only through an internal storage-driver interface (ADR-0012). The `filesystem` driver is the default and writes to a single data-directory volume; the `s3` driver targets any S3-compatible endpoint for customer-owned or external storage. Browser workers upload artefacts through the control-plane artefact API and hold no storage credentials.
 
 Stores:
 
@@ -182,7 +186,7 @@ Stores:
 - Video when enabled
 - Review exports
 
-Object keys must not expose user-entered names. Signed URLs must be short-lived and scoped.
+Artefact keys are content-addressed and must not expose user-entered names. Where the `s3` driver issues presigned URLs, they must be short-lived and scoped; the `filesystem` driver serves artefacts through the server with equivalent short-lived, scoped access tokens.
 
 ### 5.3 Ephemeral data
 
@@ -412,13 +416,13 @@ Initial preferred technologies:
 | Area | Choice |
 |---|---|
 | Monorepo | pnpm workspaces with task runner as needed |
-| Web | Astro, React, Tailwind CSS, TypeScript |
+| Web | Vite React SPA, TanStack Router/Query, Tailwind CSS, TypeScript |
 | Server | TypeScript on current pinned LTS Node runtime |
 | HTTP | Fastify or equivalent schema-first framework |
 | Browser | Playwright with Chromium |
 | Connector | Go |
 | Database | PostgreSQL |
-| Object storage | S3 API, MinIO bundled |
+| Artefact store | Filesystem driver default; S3-compatible driver optional |
 | Realtime | WebSockets |
 | Deployment | OCI containers and Docker Compose |
 | Schemas | JSON Schema or equivalent generated TypeScript/Go models |
@@ -435,13 +439,13 @@ Single host:
 - One MCP process
 - One job worker
 - One browser worker
-- Bundled PostgreSQL and MinIO
+- Bundled PostgreSQL and filesystem artefact storage
 
 ### Stage 2
 
 Production Compose:
 
-- External PostgreSQL and object storage optional
+- External PostgreSQL and S3-compatible artefact storage optional
 - Multiple browser-worker processes on one host
 - Separate realtime and job processes
 
@@ -459,7 +463,7 @@ Kubernetes:
 
 - Stateless API, MCP and workers as Deployments
 - Browser workers scheduled with dedicated resource limits
-- External or operator-managed PostgreSQL and object storage
+- External or operator-managed PostgreSQL and S3-compatible artefact storage
 - Helm chart
 
 Kubernetes is not an MVP requirement.
