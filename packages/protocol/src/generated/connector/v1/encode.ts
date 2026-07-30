@@ -196,6 +196,9 @@ export function encodeDataStreamHeader(value: DataStreamHeader): string {
   fields.push(`"stream_id":${jsonString(value.stream_id)}`);
   fields.push(`"destination_protocol":${jsonString(value.destination_protocol)}`);
   fields.push(`"deadline":${jsonString(value.deadline)}`);
+  if (value.stream_mode !== undefined) {
+    fields.push(`"stream_mode":${jsonString(value.stream_mode)}`);
+  }
   return `{${fields.join(",")}}`;
 }
 

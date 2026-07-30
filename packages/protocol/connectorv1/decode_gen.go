@@ -162,6 +162,10 @@ func DecodeDataStreamHeader(value any) DataStreamHeader {
 	out.StreamID = decodeString(source["stream_id"])
 	out.DestinationProtocol = DestinationProtocol(decodeString(source["destination_protocol"]))
 	out.Deadline = decodeString(source["deadline"])
+	if field, present := source["stream_mode"]; present {
+		decoded := StreamMode(decodeString(field))
+		out.StreamMode = &decoded
+	}
 	return out
 }
 

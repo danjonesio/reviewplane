@@ -103,17 +103,20 @@ func (c *Channels) CloseAll(cause error) {
 	}
 }
 
-// EnforceDeadlines runs stream deadline enforcement across every channel.
-func (c *Channels) EnforceDeadlines(now time.Time) int {
+// EnforceDeadlines runs stream deadline enforcement across every channel, and
+// reports what it closed by reason.
+func (c *Channels) EnforceDeadlines(now time.Time) datachannel.SweepResult {
 	c.mu.RLock()
 	sessions := make([]*datachannel.Session, 0, len(c.sessions))
 	for _, existing := range c.sessions {
 		sessions = append(sessions, existing.session)
 	}
 	c.mu.RUnlock()
-	closed := 0
+	var total datachannel.SweepResult
 	for _, session := range sessions {
-		closed += session.EnforceDeadlines(now)
+		result := session.EnforceDeadlines(now)
+		total.Deadline += result.Deadline
+		total.Idle += result.Idle
 	}
-	return closed
+	return total
 }

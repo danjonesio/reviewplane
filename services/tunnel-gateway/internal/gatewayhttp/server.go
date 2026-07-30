@@ -217,12 +217,18 @@ func TLSConfig(serverCertificate tls.Certificate, clientAuthority *x509.CertPool
 func (g *Gateway) Sweep(now time.Time) (routesExpired int, streamsClosed int) {
 	expired := g.routes.ExpireDue()
 	closed := g.channels.EnforceDeadlines(now)
-	if closed > 0 {
-		g.metrics.Add(metrics.Streams, float64(closed), "outcome", "deadline_exceeded")
+	if closed.Deadline > 0 {
+		g.metrics.Add(metrics.Streams, float64(closed.Deadline), "outcome", "deadline_exceeded")
+	}
+	if closed.Idle > 0 {
+		// Idle is counted apart from deadline because the two say different
+		// things to an operator: a deadline means the route ran out, and idle
+		// means nothing moved for the window that stream's mode allows.
+		g.metrics.Add(metrics.Streams, float64(closed.Idle), "outcome", "idle_timeout")
 	}
 	g.routes.ForgetRevocations(now.Add(-24 * time.Hour))
 	g.metrics.SetGauge(metrics.RoutesActive, float64(len(g.routes.Routes())))
-	return len(expired), closed
+	return len(expired), closed.Total()
 }
 
 // Run sweeps until the context-like stop channel is closed.

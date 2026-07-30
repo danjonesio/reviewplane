@@ -9,8 +9,17 @@
 #   5. Start a browser session.
 #   6. Navigate and capture evidence.
 #
-# Steps 7 to 15 need reviews, findings and verification, which are later
-# issues; this script stops where the current surface stops and says so.
+# Steps 7 to 15 of that section need reviews, findings and verification, which
+# are later issues; this script stops where the current surface stops and says
+# so.
+#
+# It then proves the tunnel capabilities `docs/ARCHITECTURE.md` section 7.4
+# makes mandatory, which the numbered scenario above does not reach:
+#
+#   7. A WebSocket echo and server-sent events through the route.
+#   8. Vite hot module replacement: a source edit on the development machine
+#      applied in central Chromium without a full page reload.
+#   9. The performance baseline of `docs/TESTING.md` section 12.
 #
 # It is release-blocking for the Stage 0 exit criterion "a dev server bound to
 # loopback on a remote VM is usable by central Chromium", so it fails loudly
@@ -25,7 +34,28 @@ set -euo pipefail
 COMPOSE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 E2E_DIR="${COMPOSE_DIR}/e2e"
 EVIDENCE="${E2E_DIR}/evidence"
-COMPOSE=(docker compose --project-directory "${COMPOSE_DIR}" -f "${COMPOSE_DIR}/compose.yaml" --profile e2e)
+
+# The Compose project name is unique per run unless the caller fixes it.
+#
+# `compose.yaml` names the project `reviewplane`, which is right for a
+# deployment and wrong for a test: two runs on one machine would share
+# containers, networks and volumes, and the second would tear down the first's
+# stack mid-flight. A per-run name gives each run its own everything, including
+# its own database volume — which also removes the reason the old script had to
+# tear down a previous stack before starting, since step 0 regenerates the
+# database password and a fresh volume never holds the old one.
+#
+# COMPOSE_PROJECT_NAME is honoured when it is set, so a caller who wants a
+# predictable name for debugging can have one.
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-reviewplane-e2e-$$-$(date +%s)}"
+export COMPOSE_PROJECT_NAME
+COMPOSE=(
+  docker compose
+  --project-name "${COMPOSE_PROJECT_NAME}"
+  --project-directory "${COMPOSE_DIR}"
+  -f "${COMPOSE_DIR}/compose.yaml"
+  --profile e2e
+)
 KEEP_UP="${REVIEWPLANE_E2E_KEEP_UP:-0}"
 
 PROJECT_ID="prj_fixture"
@@ -49,9 +79,12 @@ cleanup() {
     "${COMPOSE[@]}" logs --tail 60 browser-worker >&2 2>/dev/null || true
   fi
   if [[ "${KEEP_UP}" != "1" ]]; then
+    # Teardown names this run's project explicitly. Without the name it would
+    # target whatever project the compose file declares, which is another run's.
     "${COMPOSE[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   else
-    info "stack left running (REVIEWPLANE_E2E_KEEP_UP=1); tear down with: docker compose --project-directory ${COMPOSE_DIR} --profile e2e down -v"
+    info "stack left running (REVIEWPLANE_E2E_KEEP_UP=1); tear down with:"
+    info "  docker compose --project-name ${COMPOSE_PROJECT_NAME} --project-directory ${COMPOSE_DIR} --profile e2e down -v"
   fi
   exit "${status}"
 }
@@ -152,11 +185,14 @@ print(" ".join(offenders))
 # ---------------------------------------------------------------------------
 step "1. Start the Compose stack (docs/TESTING.md section 3 step 1)"
 # ---------------------------------------------------------------------------
-# A stack left running by REVIEWPLANE_E2E_KEEP_UP=1, or by an interrupted run,
-# would poison this one: step 0 regenerates the database password while the old
-# volume still holds the old one. Tearing down first makes the scenario
-# repeatable rather than dependent on how the last run ended.
+# A stack left under *this* project name — by REVIEWPLANE_E2E_KEEP_UP=1 with a
+# fixed COMPOSE_PROJECT_NAME, or by an interrupted run of the same name — would
+# poison this one: step 0 regenerates the database password while the old volume
+# still holds the old one. Tearing down first makes the scenario repeatable
+# rather than dependent on how the last run ended. With the default per-run
+# name this is a no-op, which is the point: concurrent runs do not collide.
 "${COMPOSE[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
+info "compose project: ${COMPOSE_PROJECT_NAME}"
 
 "${COMPOSE[@]}" build --quiet server browser-worker tunnel-gateway dev-fixture
 
@@ -347,10 +383,99 @@ info "session ${SESSION_ID} is READY, bound to ${BOUND_ORIGIN}"
 # ---------------------------------------------------------------------------
 step "6. Navigate, render and capture evidence (step 6)"
 # ---------------------------------------------------------------------------
+session_command() {
+  local session="$1" epoch="$2" payload="$3"
+  api POST "/api/v1/browser-sessions/${session}/commands" \
+    "{\"control_epoch\":${epoch},\"command\":${payload}}"
+}
+
 command() {
   local epoch="$1" payload="$2"
-  api POST "/api/v1/browser-sessions/${SESSION_ID}/commands" \
-    "{\"control_epoch\":${epoch},\"command\":${payload}}"
+  session_command "${SESSION_ID}" "${epoch}" "${payload}"
+}
+
+# Waits for literal text to become visible in a session's page, failing with the
+# text it was waiting for rather than with a bare timeout.
+#
+# Every RVP-14 assertion is expressed this way. The worker has no
+# JavaScript-evaluation command by design, so what a page can tell the scenario
+# is what it renders; each fixture page therefore renders its own result as one
+# literal string, and this waits for it.
+wait_for_text() {
+  local session="$1" text="$2" timeout="${3:-30000}" what="${4:-${2}}"
+  local response ok
+  response="$(session_command "${session}" 1 \
+    "{\"command\":\"wait\",\"timeout_ms\":${timeout},\"wait\":{\"condition\":\"text_visible\",\"text\":$(json_string "${text}")}}")"
+  ok="$(field "${response}" 'data["ok"]')" || fail "${what}: the wait command itself failed"
+  [[ "${ok}" == "True" ]] || fail "${what}: never became visible within ${timeout}ms (${response})"
+}
+
+# Renders a shell string as a JSON string, so a value with a quote or a
+# backslash cannot break out of the command envelope.
+json_string() {
+  RP_VALUE="$1" python3 -c 'import json, os, sys; sys.stdout.write(json.dumps(os.environ["RP_VALUE"]))'
+}
+
+# The current time in whole milliseconds.
+#
+# `date +%s%3N` is not portable: the field width is honoured by GNU coreutils
+# and ignored elsewhere, and a `date` that ignores it appends nine digits of
+# nanoseconds instead of three, which turns a subtraction into nonsense rather
+# than into an error. python3 is already a hard requirement of this script.
+now_ms() {
+  python3 -c 'import time; print(int(time.time() * 1000))'
+}
+
+# Extracts the accessibility snapshot text from a command response.
+snapshot_text() {
+  field "$1" 'data.get("snapshot", {}).get("text", "")'
+}
+
+# Clicks the element with a given role and accessible name.
+#
+# A click names a snapshot and a reference from it, never a selector: the
+# worker refuses a stale reference rather than clicking whatever now occupies
+# that position (`docs/MCP_SPEC.md` §7.4). The click then invalidates the
+# snapshot, so this takes a fresh one every time rather than reusing a handle.
+click_by_name() {
+  local session="$1" role="$2" name="$3" snapshot snapshot_id reference
+  snapshot="$(session_command "${session}" 1 '{"command":"snapshot","timeout_ms":30000}')"
+  snapshot_id="$(field "${snapshot}" 'data["snapshot"]["snapshot_id"]')" \
+    || fail "could not snapshot before clicking ${role} \"${name}\""
+  reference="$(RP_SNAPSHOT="$(snapshot_text "${snapshot}")" RP_ROLE="${role}" RP_NAME="${name}" python3 -c '
+import os, re, sys
+
+pattern = re.compile(r"- %s \"%s\" \[ref=([A-Za-z0-9_-]+)\]" % (
+    re.escape(os.environ["RP_ROLE"]), re.escape(os.environ["RP_NAME"])))
+match = pattern.search(os.environ["RP_SNAPSHOT"])
+if match is None:
+    sys.stderr.write("no %s named %r in the snapshot\n" % (
+        os.environ["RP_ROLE"], os.environ["RP_NAME"]))
+    sys.exit(1)
+sys.stdout.write(match.group(1))
+')" || fail "the snapshot carries no ${role} named \"${name}\""
+  session_command "${session}" 1 \
+    "{\"command\":\"click\",\"timeout_ms\":15000,\"click\":{\"snapshot_id\":\"${snapshot_id}\",\"ref\":\"${reference}\"}}" \
+    >/dev/null || fail "could not click the ${role} named \"${name}\""
+}
+
+# Takes a screenshot in a session and writes the artefact bytes to
+# evidence/<name>.png, failing if the result is too small to be a rendered page.
+capture_screenshot() {
+  local session="$1" name="$2" response artefact size
+  response="$(session_command "${session}" 1 \
+    '{"command":"take_screenshot","timeout_ms":30000,"take_screenshot":{"full_page":false,"persist":true,"purpose":"verification"}}')"
+  artefact="$(field "${response}" 'data.get("screenshot", {}).get("artefact_id")')" || return 1
+  "${COMPOSE[@]}" exec -T -e RP_ID="${artefact}" -e RP_TOKEN="${BOOTSTRAP_TOKEN}" server node -e '
+      const response = await fetch(`http://127.0.0.1:8080/api/v1/artefacts/${process.env.RP_ID}/content`, {
+        headers: { authorization: `Bearer ${process.env.RP_TOKEN}` },
+      });
+      if (!response.ok) { process.stderr.write(`artefact ${process.env.RP_ID}: ${response.status}\n`); process.exit(1); }
+      process.stdout.write(Buffer.from(await response.arrayBuffer()).toString("base64"));
+    ' | base64 -d > "${EVIDENCE}/${name}.png" || return 1
+  size="$(stat -c%s "${EVIDENCE}/${name}.png")"
+  [[ "${size}" -gt 1000 ]] || fail "${name}.png is ${size} bytes, which is not a rendered page"
+  info "captured ${name}.png (${size} bytes, artefact ${artefact})"
 }
 
 NAV_RESPONSE="$(command 1 '{"command":"navigate","timeout_ms":30000,"navigate":{"url":"/","wait_until":"load"}}')"
@@ -419,19 +544,8 @@ for viewport in "1440 900 1 desktop" "390 844 2 mobile"; do
   read -r width height scale label <<< "${viewport}"
   command 1 "{\"command\":\"resize\",\"timeout_ms\":15000,\"resize\":{\"viewport\":{\"width\":${width},\"height\":${height},\"device_scale_factor\":${scale}}}}" >/dev/null \
     || fail "could not resize to ${width}x${height}"
-  SHOT_RESPONSE="$(command 1 '{"command":"take_screenshot","timeout_ms":30000,"take_screenshot":{"full_page":false,"persist":true,"purpose":"verification"}}')"
-  ARTEFACT_ID="$(field "${SHOT_RESPONSE}" 'data.get("screenshot", {}).get("artefact_id")')" \
+  capture_screenshot "${SESSION_ID}" "screenshot-${label}-${width}x${height}" \
     || fail "screenshot at ${width}x${height} failed"
-  "${COMPOSE[@]}" exec -T -e RP_ID="${ARTEFACT_ID}" -e RP_TOKEN="${BOOTSTRAP_TOKEN}" server node -e '
-      const response = await fetch(`http://127.0.0.1:8080/api/v1/artefacts/${process.env.RP_ID}/content`, {
-        headers: { authorization: `Bearer ${process.env.RP_TOKEN}` },
-      });
-      if (!response.ok) { process.stderr.write(`artefact ${process.env.RP_ID}: ${response.status}\n`); process.exit(1); }
-      process.stdout.write(Buffer.from(await response.arrayBuffer()).toString("base64"));
-    ' | base64 -d > "${EVIDENCE}/screenshot-${label}-${width}x${height}.png"
-  SIZE="$(stat -c%s "${EVIDENCE}/screenshot-${label}-${width}x${height}.png")"
-  [[ "${SIZE}" -gt 1000 ]] || fail "the ${label} screenshot is ${SIZE} bytes"
-  info "captured screenshot-${label}-${width}x${height}.png (${SIZE} bytes, artefact ${ARTEFACT_ID})"
 done
 
 # The event sequence the issue requires.
@@ -516,6 +630,11 @@ info "the home page and all three sub-resources loaded through the route"
 # The browser-worker suite covers script execution directly against a local
 # fixture; what this scenario adds is that the bytes arrived through the tunnel.
 
+# The gateway log is collected before anything reads it. Grepping a file that
+# had not been written yet printed a "No such file or directory" warning in the
+# middle of a passing run and reported zero refusals whatever had happened.
+"${COMPOSE[@]}" logs --no-log-prefix tunnel-gateway 2>/dev/null > "${EVIDENCE}/tunnel-gateway.log" || true
+
 # The gateway refused nothing during the successful load except the two
 # refusals this scenario asked for on purpose.
 REFUSALS="$(grep -c "tunnel request refused" "${EVIDENCE}/tunnel-gateway.log" || true)"
@@ -599,11 +718,195 @@ print("topology the development service has no use for.")
   || fail "could not summarise header behaviour"
 info "wrote the observed header behaviour"
 
+# ---------------------------------------------------------------------------
+step "7. WebSocket, server-sent events and streaming through the route (RVP-14)"
+# ---------------------------------------------------------------------------
+# `docs/ARCHITECTURE.md` section 7.4 lists these as mandatory tunnel
+# capabilities. Each fixture page performs its own exchange in the browser and
+# renders the outcome as one literal string in a heading, because the worker has
+# no JavaScript-evaluation command and a heading is what the accessibility
+# snapshot carries into the evidence.
+
+# Back to the desktop viewport the screenshot loop left as mobile. These pages
+# are read for their text rather than photographed, but a responsive layout may
+# hide content at 390 wide and a hidden result is not a visible one.
+command 1 '{"command":"resize","timeout_ms":15000,"resize":{"viewport":{"width":1440,"height":900,"device_scale_factor":1}}}' >/dev/null \
+  || fail "could not restore the desktop viewport"
+
+# A WebSocket: three request/response exchanges and a clean close, in both
+# directions, through the gateway, the data channel and the connector.
+command 1 '{"command":"navigate","timeout_ms":30000,"navigate":{"url":"/websocket","wait_until":"load"}}' >/dev/null \
+  || fail "could not open the WebSocket fixture page"
+wait_for_text "${SESSION_ID}" "ws: echoed=3 code=1000 clean=true" 30000 "the WebSocket echo result"
+WS_SNAPSHOT="$(command 1 '{"command":"snapshot","timeout_ms":30000}')"
+snapshot_text "${WS_SNAPSHOT}" > "${EVIDENCE}/websocket-echo.txt" \
+  || fail "could not capture the WebSocket page snapshot"
+info "a WebSocket carried frames both ways and closed cleanly (code 1000)"
+
+# Server-sent events. The page measures its own arrival gaps: a hop that
+# buffered would deliver every event at once at close, and the page would say
+# `sse: buffered` instead. Timing is the assertion, not the final content.
+command 1 '{"command":"navigate","timeout_ms":30000,"navigate":{"url":"/sse","wait_until":"load"}}' >/dev/null \
+  || fail "could not open the server-sent-events fixture page"
+wait_for_text "${SESSION_ID}" "sse: incremental" 60000 "the incremental server-sent-events result"
+SSE_SNAPSHOT="$(command 1 '{"command":"snapshot","timeout_ms":30000}')"
+SSE_TEXT="$(snapshot_text "${SSE_SNAPSHOT}")" || fail "could not capture the SSE page snapshot"
+grep -q "sse: buffered" <<< "${SSE_TEXT}" \
+  && fail "the event stream arrived as a burst at close; a hop is buffering it"
+printf '%s\n' "${SSE_TEXT}" > "${EVIDENCE}/sse-timing.txt"
+info "server-sent events arrived incrementally: $(grep -o 'sse gaps ms: [0-9, ]*' <<< "${SSE_TEXT}" | head -1)"
+
+# ---------------------------------------------------------------------------
+step "8. Publish the Vite development server and prove hot module replacement"
+# ---------------------------------------------------------------------------
+# The claim this step defends: if the update socket fails, the page in central
+# Chromium stops updating while still looking live, so a human annotates a stale
+# render and an agent verifies against one. A route that carries HTTP but not
+# hot reload is worse than one that fails outright, because it fails silently.
+VITE_SESSION_RESPONSE="$(api POST "/api/v1/projects/${PROJECT_ID}/browser-sessions" "${RESERVE_BODY}")"
+VITE_SESSION_ID="$(field "${VITE_SESSION_RESPONSE}" 'data["id"]')" \
+  || fail "could not reserve a browser session for the Vite fixture"
+
+VITE_PUBLISH_BODY="$(printf '{"connector_id":"%s","workspace_id":"wsp_fixture","local_host":"127.0.0.1","local_port":5173,"protocol":"http","ttl_seconds":3600,"allowed_browser_session_ids":["%s"]}' "${CONNECTOR_ID}" "${VITE_SESSION_ID}")"
+VITE_PUBLISH_RESPONSE="$(api POST "/api/v1/projects/${PROJECT_ID}/published-services" "${VITE_PUBLISH_BODY}")"
+VITE_SERVICE_ID="$(field "${VITE_PUBLISH_RESPONSE}" 'data["id"]')" || fail "publishing the Vite server failed"
+VITE_OBSERVED="$(field "${VITE_PUBLISH_RESPONSE}" 'data["observed_destination"]')"
+VITE_ORIGIN="$(field "${VITE_PUBLISH_RESPONSE}" 'data["internal_origin"]')"
+[[ "${VITE_OBSERVED}" == "127.0.0.1:5173" ]] || fail "observed_destination is ${VITE_OBSERVED}"
+info "published ${VITE_SERVICE_ID} -> ${VITE_OBSERVED}, origin ${VITE_ORIGIN}"
+echo "${VITE_PUBLISH_RESPONSE}" > "${EVIDENCE}/published-service-vite.json"
+
+VITE_ALLOCATE="$(api POST "/api/v1/browser-sessions/${VITE_SESSION_ID}/allocate" "{\"published_service_id\":\"${VITE_SERVICE_ID}\"}")"
+VITE_STATUS="$(field "${VITE_ALLOCATE}" 'data["status"]')" || fail "allocating the Vite session failed"
+[[ "${VITE_STATUS}" == "READY" ]] || fail "the Vite session is ${VITE_STATUS}, not READY"
+
+session_command "${VITE_SESSION_ID}" 1 \
+  '{"command":"resize","timeout_ms":15000,"resize":{"viewport":{"width":1440,"height":900,"device_scale_factor":1}}}' >/dev/null \
+  || fail "could not size the Vite session"
+VITE_NAV="$(session_command "${VITE_SESSION_ID}" 1 '{"command":"navigate","timeout_ms":60000,"navigate":{"url":"/","wait_until":"load"}}')"
+VITE_NAV_STATUS="$(field "${VITE_NAV}" 'data.get("navigation", {}).get("http_status")')" \
+  || fail "the Vite application did not load through the route"
+[[ "${VITE_NAV_STATUS}" == "200" ]] || fail "the Vite application answered ${VITE_NAV_STATUS} through the route"
+wait_for_text "${VITE_SESSION_ID}" "HMR marker: ALPHA" 60000 "the Vite marker before the edit"
+info "central Chromium loaded the Vite development server through the route"
+
+# Client-side state that a full page reload would destroy. This is the control
+# for the whole proof: after the edit, the marker must have changed *and* this
+# must have survived. Either alone proves nothing — a full reload also changes
+# the marker.
+for _ in 1 2 3; do
+  click_by_name "${VITE_SESSION_ID}" button count
+done
+wait_for_text "${VITE_SESSION_ID}" "clicks: 3" 30000 "the click counter before the edit"
+
+HMR_BEFORE_SNAPSHOT="$(session_command "${VITE_SESSION_ID}" 1 '{"command":"snapshot","timeout_ms":30000}')"
+snapshot_text "${HMR_BEFORE_SNAPSHOT}" > "${EVIDENCE}/hmr-before.txt" \
+  || fail "could not capture the pre-edit snapshot"
+capture_screenshot "${VITE_SESSION_ID}" "hmr-before" || fail "could not capture the pre-edit screenshot"
+
+# The edit, made on the development machine while the page is open. `sed -i`
+# writes through the one writable path in that container, which is the fixture's
+# own source directory.
+HMR_STARTED_MS="$(now_ms)"
+"${COMPOSE[@]}" exec -T dev-fixture sed -i 's/ALPHA/BRAVO/' /app/vite-app/src/Marker.tsx \
+  || fail "could not edit the Vite fixture source inside the development environment"
+wait_for_text "${VITE_SESSION_ID}" "HMR marker: BRAVO" 60000 "the edited Vite marker"
+HMR_APPLIED_MS="$(now_ms)"
+HMR_LATENCY_MS=$(( HMR_APPLIED_MS - HMR_STARTED_MS ))
+
+# The other half: the update was applied, not reloaded. A full page reload would
+# have reset the counter to zero, so this wait is short on purpose — it is
+# asserting a value that is either already there or gone for good.
+wait_for_text "${VITE_SESSION_ID}" "clicks: 3" 5000 "the click counter after the edit (a full reload would have reset it)"
+
+HMR_AFTER_SNAPSHOT="$(session_command "${VITE_SESSION_ID}" 1 '{"command":"snapshot","timeout_ms":30000}')"
+snapshot_text "${HMR_AFTER_SNAPSHOT}" > "${EVIDENCE}/hmr-after.txt" \
+  || fail "could not capture the post-edit snapshot"
+capture_screenshot "${VITE_SESSION_ID}" "hmr-after" || fail "could not capture the post-edit screenshot"
+info "hot module replacement applied the edit in ${HMR_LATENCY_MS}ms with client state intact"
+
+# The source is restored, so a repeated run starts from ALPHA whatever happened
+# to the volume. It is a fixture, and a scenario that only passed the first time
+# would be worse than no scenario.
+"${COMPOSE[@]}" exec -T dev-fixture sed -i 's/BRAVO/ALPHA/' /app/vite-app/src/Marker.tsx || true
+
+# ---------------------------------------------------------------------------
+step "9. Record the performance baseline (docs/TESTING.md section 12)"
+# ---------------------------------------------------------------------------
+# A baseline is a recorded number, not a threshold. `docs/ROADMAP.md` defers
+# tuning, so this measures, prints and stores; it does not fail on a figure.
+command 1 '{"command":"navigate","timeout_ms":60000,"navigate":{"url":"/throughput","wait_until":"load"}}' >/dev/null \
+  || fail "could not open the throughput fixture page"
+wait_for_text "${SESSION_ID}" "bulk: done" 60000 "the throughput measurement"
+THROUGHPUT_SNAPSHOT="$(command 1 '{"command":"snapshot","timeout_ms":30000}')"
+THROUGHPUT_LINE="$(grep -o 'bulk: done[^"]*' <<< "$(snapshot_text "${THROUGHPUT_SNAPSHOT}")" | head -1)"
+[[ -n "${THROUGHPUT_LINE}" ]] || fail "the throughput page produced no result"
+info "${THROUGHPUT_LINE}"
+
+# The gateway's own counters, which are the other side of the same story: how
+# many upgrades it carried and how many bytes went each way.
+TUNNEL_TOKEN="$(cat "${COMPOSE_DIR}/secrets/tunnel_control_token")"
+"${COMPOSE[@]}" exec -T -e RP_TOKEN="${TUNNEL_TOKEN}" server node -e '
+    const response = await fetch("http://tunnel-gateway:8445/metrics", {
+      headers: { authorization: `Bearer ${process.env.RP_TOKEN}` },
+    });
+    if (!response.ok) { process.stderr.write(`metrics: ${response.status}\n`); process.exit(1); }
+    process.stdout.write(await response.text());
+  ' > "${EVIDENCE}/gateway-metrics.txt" || fail "could not read the gateway metrics"
+
+UPGRADES_SWITCHED="$(grep -o 'reviewplane_tunnel_upgrades_total{outcome="switched"} [0-9.]*' \
+  "${EVIDENCE}/gateway-metrics.txt" | awk '{print $2}' | head -1)"
+[[ -n "${UPGRADES_SWITCHED}" && "${UPGRADES_SWITCHED}" != "0" ]] \
+  || fail "the gateway recorded no switched upgrades, so nothing was carried as a WebSocket"
+info "gateway upgrades switched during the run: ${UPGRADES_SWITCHED}"
+
+{
+  printf 'Tunnel performance baseline (docs/TESTING.md section 12)\n'
+  printf '========================================================\n\n'
+  printf 'Recorded by deploy/compose/e2e/run.sh on %s\n\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  printf 'Measurements\n'
+  printf -- '------------\n'
+  printf '  Tunnel throughput, browser fetch through the route: %s\n' "${THROUGHPUT_LINE}"
+  printf '  Hot reload, source save to applied update visible:  %sms\n\n' "${HMR_LATENCY_MS}"
+  printf 'What the hot-reload figure includes\n'
+  printf -- '-----------------------------------\n'
+  printf '  It is wall-clock from the edit landing on the development machine to the\n'
+  printf '  updated text being visible in central Chromium, which is what a user\n'
+  printf '  experiences. It therefore includes the file watcher (polling every 200ms),\n'
+  printf '  the bundler, the update WebSocket through the tunnel, the browser applying\n'
+  printf '  the module, and the control-plane round trip that observes it. It is not a\n'
+  printf '  measurement of the tunnel alone, and it MUST NOT be read as one.\n\n'
+  printf 'Configuration under test\n'
+  printf -- '------------------------\n'
+  printf '  Gateway stream_idle_timeout        60s (default)\n'
+  printf '  Gateway upgrade_idle_timeout       15m (default)\n'
+  printf '  Gateway stream_max_lifetime        8h  (default, clipped to route expiry)\n'
+  printf '  Gateway relay_buffer_bytes         32768 (default, per direction)\n'
+  printf '  Flow-control window                262144 bytes per direction (protocol constant)\n'
+  printf '  Route TTL requested                3600s\n'
+  printf '  Host header mode                   upstream (default)\n'
+  printf '  Forwarded header mode              standard (default)\n\n'
+  printf 'Machine\n'
+  printf -- '-------\n'
+  printf '  %s\n' "$(uname -srmo 2>/dev/null || uname -srm)"
+  printf '  CPUs: %s\n' "$(nproc 2>/dev/null || echo unknown)"
+  printf '  Memory: %s\n' "$(awk '/MemTotal/ {printf "%.1f GiB", $2/1048576}' /proc/meminfo 2>/dev/null || echo unknown)"
+  printf '  Docker: %s\n\n' "$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo unknown)"
+  printf 'Gateway counters at the end of the run\n'
+  printf -- '--------------------------------------\n'
+  grep -E '^reviewplane_tunnel_(upgrades|streams|bytes|requests|denied)' "${EVIDENCE}/gateway-metrics.txt" \
+    | sed 's/^/  /'
+} > "${EVIDENCE}/performance-baseline.txt"
+info "wrote the performance baseline"
+
+# The gateway log is collected before anything reads it. Grepping a file that
+# had not been written yet printed a "No such file or directory" warning in the
+# middle of a passing run and reported zero refusals whatever had happened.
 "${COMPOSE[@]}" logs --no-log-prefix tunnel-gateway 2>/dev/null > "${EVIDENCE}/tunnel-gateway.log" || true
 
 # ---------------------------------------------------------------------------
-step "End-to-end scenario steps 1 to 6 passed"
+step "End-to-end scenario steps 1 to 6 passed, with the RVP-14 tunnel capabilities"
 # ---------------------------------------------------------------------------
 info "evidence: ${EVIDENCE}"
 ls -1 "${EVIDENCE}" | sed 's/^/     /'
-info "steps 7 to 15 (reviews, findings, verification, export) belong to later issues"
+info "steps 7 to 15 of docs/TESTING.md section 3 (reviews, findings, verification, export) belong to later issues"

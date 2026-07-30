@@ -50,6 +50,8 @@ reaches it only through a connector route, never over the network.</p>
 <ul class="links">
 <li><a href="products" data-testid="relative-products-link">Products (relative link)</a></li>
 <li><a href="/checkout" data-testid="root-relative-checkout-link">Checkout (root-relative link)</a></li>
+<li><a href="/websocket" data-testid="websocket-nav-link">WebSocket</a></li>
+<li><a href="/sse" data-testid="sse-nav-link">Server-sent events</a></li>
 </ul>`,
 });
 
@@ -135,6 +137,239 @@ before its first byte. Used to check that a bounded timeout in the browser
 worker or the gateway fires as a clear failure rather than as a hang.</p>`,
   });
 }
+
+/**
+ * Opens `/ws-echo`, drives a fixed three-message exchange and closes
+ * client-initiated. The literal result string is asserted verbatim by a
+ * browser test, so its shape here and the counting logic in the inline
+ * script are both load-bearing. The result is an `<h2>` rather than a
+ * paragraph because the end-to-end scenario's `snapshot` evidence only sees
+ * accessibility roles — headings among them — and a `<p>` has none
+ * (`apps/browser-worker/src/session/snapshot.ts`).
+ */
+export const WEBSOCKET = layout({
+  title: "WebSocket",
+  main: `<h1 id="page-title" data-testid="websocket-heading">WebSocket echo</h1>
+<p>Opens a WebSocket to <code>/ws-echo</code>, exchanges three echoed messages
+and then closes cleanly. Proves a route preserves the HTTP upgrade,
+bidirectional frames and closure semantics in both directions
+(<code>docs/CONNECTOR_PROTOCOL.md</code> §13.3).</p>
+<p data-testid="ws-state" data-state="connecting">connecting</p>
+<h2 data-testid="ws-result">ws: pending</h2>
+<ul class="links">
+<li><a href="/" data-testid="websocket-home-link">Back to home</a></li>
+</ul>
+<script>
+(function () {
+  "use strict";
+  var stateEl = document.querySelector('[data-testid="ws-state"]');
+  var resultEl = document.querySelector('[data-testid="ws-result"]');
+  var messages = ["hello-1", "hello-2", "hello-3"];
+  var sent = 0;
+  var echoed = 0;
+
+  function setState(state) {
+    if (stateEl) {
+      stateEl.textContent = state;
+      stateEl.dataset.state = state;
+    }
+  }
+
+  setState("connecting");
+
+  var protocol = location.protocol === "https:" ? "wss://" : "ws://";
+  var socket = new WebSocket(protocol + location.host + "/ws-echo");
+
+  socket.addEventListener("open", function () {
+    setState("open");
+    sent = 1;
+    socket.send(messages[0]);
+  });
+
+  socket.addEventListener("message", function (event) {
+    var expected = "echo:" + messages[sent - 1];
+    if (event.data === expected) {
+      echoed += 1;
+    }
+    if (sent < messages.length) {
+      var next = messages[sent];
+      sent += 1;
+      socket.send(next);
+    } else {
+      socket.close(1000, "bye");
+    }
+  });
+
+  socket.addEventListener("close", function (event) {
+    setState("closed");
+    if (resultEl) {
+      resultEl.textContent =
+        "ws: echoed=" + echoed + " code=" + event.code + " clean=" + event.wasClean;
+    }
+  });
+
+  socket.addEventListener("error", function () {
+    setState("failed");
+    if (resultEl) {
+      resultEl.textContent = "ws: failed";
+    }
+  });
+})();
+</script>`,
+});
+
+/**
+ * Opens `/events`, times each `tick` arrival against the previous one and
+ * reports whether the minimum gap looks like a streamed delivery or a
+ * buffering hop that released every event at once when the stream closed.
+ *
+ * The result and the gap trace are both headings (`<h2>`/`<h3>`), not a
+ * paragraph or a `<pre>`, for the same reason as `/websocket`: the end-to-end
+ * scenario's `snapshot` evidence only sees accessibility roles, and headings
+ * are the ones this fixture has available
+ * (`apps/browser-worker/src/session/snapshot.ts`). The `<pre>` stays
+ * alongside the `<h3>` so a human looking at a screenshot still gets the
+ * timings laid out one per line.
+ */
+export const SSE = layout({
+  title: "Server-sent events",
+  main: `<h1 id="page-title" data-testid="sse-heading">Server-sent events</h1>
+<p>Opens an <code>EventSource</code> against <code>/events</code> and measures
+the gap between arrivals. A hop that buffers the whole response delivers
+every event at once when the stream closes; a hop that preserves streaming
+delivers them incrementally.</p>
+<h2 data-testid="sse-result">sse: pending</h2>
+<h3 data-testid="sse-gaps">sse gaps ms: pending</h3>
+<pre data-testid="sse-timings"></pre>
+<ul class="links">
+<li><a href="/" data-testid="sse-home-link">Back to home</a></li>
+</ul>
+<script>
+(function () {
+  "use strict";
+  var resultEl = document.querySelector('[data-testid="sse-result"]');
+  var gapsEl = document.querySelector('[data-testid="sse-gaps"]');
+  var timingsEl = document.querySelector('[data-testid="sse-timings"]');
+  var arrivals = [];
+  var done = false;
+
+  var source = new EventSource("/events?count=6&interval_ms=400");
+
+  source.addEventListener("tick", function () {
+    arrivals.push(performance.now());
+  });
+
+  source.addEventListener("done", function () {
+    done = true;
+    var gaps = [];
+    for (var i = 1; i < arrivals.length; i += 1) {
+      gaps.push(Math.round(arrivals[i] - arrivals[i - 1]));
+    }
+    var minGap = gaps.length > 0 ? Math.min.apply(null, gaps) : 0;
+    var label = minGap >= 200 ? "incremental" : "buffered";
+    if (resultEl) {
+      resultEl.textContent =
+        "sse: " + label + " events=" + arrivals.length + " min-gap=" + minGap + "ms";
+    }
+    if (gapsEl) {
+      gapsEl.textContent = "sse gaps ms: " + gaps.join(", ");
+    }
+    if (timingsEl) {
+      timingsEl.textContent = gaps.join("\\n");
+    }
+    source.close();
+  });
+
+  source.addEventListener("error", function () {
+    if (!done) {
+      if (resultEl) {
+        resultEl.textContent = "sse: failed";
+      }
+      if (gapsEl) {
+        gapsEl.textContent = "sse gaps ms: failed";
+      }
+    }
+  });
+})();
+</script>`,
+});
+
+/**
+ * Fetches `/bulk` three times and reports the best (highest-throughput) run,
+ * so a single scheduling hiccup in this process does not become the
+ * published RVP-14 baseline (`docs/TESTING.md` §12). The result is written
+ * into an `<h2>` rather than a paragraph because the end-to-end scenario
+ * reads it from the browser worker's accessibility snapshot
+ * (`apps/browser-worker/src/session/snapshot.ts`), which carries heading and
+ * other landmark/interactive roles but not plain text — a `<p>` would be
+ * invisible to it.
+ */
+export const THROUGHPUT = layout({
+  title: "Throughput",
+  main: `<h1 id="page-title" data-testid="throughput-heading">Bulk throughput</h1>
+<p>Fetches <code>/bulk</code> three times in a row and reports the best of
+the three runs as bytes transferred, elapsed time and megabits per second.</p>
+<p data-testid="throughput-state">fetching</p>
+<h2 data-testid="throughput-result">bulk: pending</h2>
+<ul class="links">
+<li><a href="/" data-testid="throughput-home-link">Back to home</a></li>
+</ul>
+<script>
+(function () {
+  "use strict";
+  var stateEl = document.querySelector('[data-testid="throughput-state"]');
+  var resultEl = document.querySelector('[data-testid="throughput-result"]');
+  var params = new URLSearchParams(location.search);
+  var bytes = Number(params.get("bytes"));
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    bytes = 4194304;
+  }
+
+  function setState(state) {
+    if (stateEl) {
+      stateEl.textContent = state;
+    }
+  }
+
+  async function runOnce() {
+    var startedAt = performance.now();
+    var response = await fetch("/bulk?bytes=" + bytes);
+    var body = await response.arrayBuffer();
+    var elapsedMs = performance.now() - startedAt;
+    var mbps = (body.byteLength * 8) / (elapsedMs * 1000);
+    return { byteLength: body.byteLength, elapsedMs: elapsedMs, mbps: mbps };
+  }
+
+  (async function () {
+    setState("fetching");
+    try {
+      // Three consecutive fetches; only the best (highest-throughput) run is
+      // reported, so one scheduling hiccup does not skew the baseline.
+      var best = null;
+      for (var i = 0; i < 3; i += 1) {
+        var run = await runOnce();
+        if (best === null || run.mbps > best.mbps) {
+          best = run;
+        }
+      }
+      setState("done");
+      if (resultEl && best) {
+        resultEl.textContent =
+          "bulk: done bytes=" + best.byteLength +
+          " ms=" + Math.round(best.elapsedMs) +
+          " mbps=" + best.mbps.toFixed(1);
+      }
+    } catch (error) {
+      setState("failed");
+      if (resultEl) {
+        resultEl.textContent =
+          "bulk: failed " + (error && error.message ? error.message : String(error));
+      }
+    }
+  })();
+})();
+</script>`,
+});
 
 export const NOT_FOUND = layout({
   title: "Not found",

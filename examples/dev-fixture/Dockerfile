@@ -14,10 +14,14 @@
 # outbound ones. That is Stage 0 exit criterion 5, and `ss -ltnp` run inside a
 # running container is the evidence for it.
 #
-# Only the static application is here. The Vite application in this directory
-# has npm dependencies, and installing them would put a package tree in the
-# image that the end-to-end scenario never exercises; the scenario publishes the
-# static application.
+# Both applications are here. `static-app` has no dependencies and no build
+# step; `vite-app` is a real development server with an npm dependency tree,
+# installed from its committed lockfile (`examples/dev-fixture/vite-app/
+# package-lock.json`) in the `vite-app-builder` stage below so the image build
+# is reproducible. RVP-14 proves hot module replacement end to end through the
+# tunnel, and that proof needs a real dev server with a live file watcher, not
+# a static file tree, so the Vite application's dependencies belong in this
+# image now.
 #
 # The build context is the repository root, because the connector is built from
 # source in the same workspace the rest of the repository uses. Building with
@@ -48,6 +52,22 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" \
     -o /out/reviewplane-connector ./services/connector/cmd/reviewplane-connector
 
 # ---------------------------------------------------------------------------
+# vite-app-builder
+#
+# `package.json` and the lockfile are copied first, and the rest of the
+# sources after `npm ci`, so an edit to `src/` does not invalidate the
+# dependency-install layer. Node 24 matches the runtime stage below: a
+# dependency tree installed under one major Node version is not guaranteed to
+# behave identically under another.
+# ---------------------------------------------------------------------------
+FROM node:24-bookworm-slim AS vite-app-builder
+
+WORKDIR /app/vite-app
+COPY examples/dev-fixture/vite-app/package.json examples/dev-fixture/vite-app/package-lock.json ./
+RUN npm ci
+COPY examples/dev-fixture/vite-app .
+
+# ---------------------------------------------------------------------------
 # runtime
 #
 # Node 24 matches apps/server and apps/browser-worker and the root package.json
@@ -74,6 +94,12 @@ RUN groupadd --system --gid 10001 reviewplane \
 
 COPY --from=connector-builder /out/reviewplane-connector /usr/local/bin/reviewplane-connector
 COPY examples/dev-fixture/static-app /app/static-app
+# --chown, not a later chown layer: the Vite dev server writes to
+# node_modules/.vite (its dependency-optimisation cache) and the end-to-end
+# scenario edits src/Marker.tsx with `sed` from inside the running container,
+# so the whole tree — not just the top level — has to be owned by the service
+# user rather than merely readable by it.
+COPY --from=vite-app-builder --chown=reviewplane:reviewplane /app/vite-app /app/vite-app
 COPY --chmod=0755 examples/dev-fixture/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 # The identity data directory of docs/CONNECTOR_PROTOCOL.md section 20, created
@@ -98,17 +124,26 @@ USER reviewplane:reviewplane
 # and a port declaration would suggest otherwise to anyone reading the image.
 
 # `docker compose up --wait` blocks on this, so it has to mean "the development
-# environment is fully up", not "a process is running". Both halves are checked:
-# the application answering /healthz, and the connector having written its
-# device identity. Either one alone would report ready while the scenario's next
-# step — publishing a route — still could not succeed.
+# environment is fully up", not "a process is running". Three things are
+# checked: the static application answering /healthz, the Vite dev server
+# answering its document (a plain 200, since adding a health endpoint to Vite
+# is not something a real user's dev server would have either), and the
+# connector having written its device identity. Any one alone would report
+# ready while the scenario's next step — publishing a route — still could not
+# succeed. The Vite check is skipped when REVIEWPLANE_FIXTURE_VITE=0, matching
+# entrypoint.sh: a run that never starts Vite must not wait on it forever.
 #
 # In Compose the data directory is a tmpfs, so identity.json appears once per
 # container start, which is correct: each run enrols with a fresh single-use
-# token. The start period covers the control plane coming up and the enrolment
-# round trip; the retries then cover a slow one without waiting on a dead one.
+# token. The start period covers the control plane coming up, the enrolment
+# round trip and a cold Vite start (its dependency pre-bundling step on first
+# request); the retries then cover a slow one without waiting on a dead one.
+# The script has to be one Dockerfile line: HEALTHCHECK's CMD, unlike RUN,
+# does not support a heredoc, and Dockerfile line continuation is unaware of
+# quoting, so an embedded newline here would be parsed as the next
+# instruction rather than as part of the string.
 HEALTHCHECK --interval=5s --timeout=10s --start-period=90s --retries=6 \
     CMD test -f /var/lib/reviewplane-connector/identity.json \
-        && node -e 'const port = process.env.PORT || 4321; fetch("http://127.0.0.1:" + port + "/healthz").then((response) => process.exit(response.ok ? 0 : 1), () => process.exit(1));'
+        && node -e 'const staticPort = process.env.PORT || 4321; const checks = [fetch("http://127.0.0.1:" + staticPort + "/healthz").then((response) => response.ok)]; if (process.env.REVIEWPLANE_FIXTURE_VITE !== "0") { checks.push(fetch("http://127.0.0.1:5173/").then((response) => response.ok)); } Promise.all(checks).then((results) => process.exit(results.every(Boolean) ? 0 : 1), () => process.exit(1));'
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

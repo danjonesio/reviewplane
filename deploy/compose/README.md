@@ -93,15 +93,39 @@ browser session against the route, and navigate. It is release-blocking for the
 Stage 0 exit criterion "a dev server bound to loopback on a remote VM is usable
 by central Chromium".
 
+It then proves the tunnel capabilities `docs/ARCHITECTURE.md` §7.4 makes
+mandatory, which those six steps do not reach: a WebSocket echo and server-sent
+events through the route, Vite hot module replacement applying a source edit
+made on the development machine to the page in central Chromium without a full
+reload, and the performance baseline of `docs/TESTING.md` §12.
+
 ```bash
-pnpm test:e2e                            # about three minutes, needs Docker
+pnpm test:e2e                            # about five minutes, needs Docker
 REVIEWPLANE_E2E_KEEP_UP=1 pnpm test:e2e  # leave the stack running to inspect
 ```
 
+Each run uses its own Compose project name — `reviewplane-e2e-<pid>-<epoch>` —
+so two runs on one machine do not share containers, networks or volumes and
+cannot tear each other down mid-flight. Set `COMPOSE_PROJECT_NAME` to fix it
+when a predictable name is wanted for debugging; teardown always names the
+project it created, and the name is printed at the start of a run and again if
+the stack is left up.
+
 Evidence lands in `e2e/evidence/`: screenshots at both required viewports, the
-network summary the development service recorded, `ss -ltnp` taken inside the
-development environment during the load, the event sequence, the observed
-header behaviour and the absolute-URL finding. None of it is committed.
+before-and-after pair for the hot-reload proof, the network summary the
+development service recorded, `ss -ltnp` taken inside the development
+environment during the load, the event sequence, the observed header behaviour,
+the absolute-URL finding, the WebSocket and server-sent-event results with
+their arrival gaps, the gateway's metrics and the performance baseline. None of
+it is committed.
+
+The `dev-fixture` service runs both fixture applications: the static one on
+`127.0.0.1:4321` and a real Vite development server on `127.0.0.1:5173`. Set
+`REVIEWPLANE_FIXTURE_VITE=0` on that service to skip the Vite half. It keeps a
+read-only root filesystem; exactly one path is writable, the named volume at
+`/app/vite-app/src`, because the hot-reload proof has to edit a source file
+while the stack is running. Vite's dependency cache is redirected onto the
+container's tmpfs by `VITE_CACHE_DIR`.
 
 `e2e/generate-secrets.sh` writes the development credentials and the tunnel CA.
 It is idempotent, because regenerating the capability signing key would

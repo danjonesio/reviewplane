@@ -120,16 +120,71 @@ func TestUpstreamCannotForgeGatewayHeaders(t *testing.T) {
 	}
 }
 
-func TestUpgradeRequestsAreRefusedRatherThanHalfSupported(t *testing.T) {
-	// WebSocket, server-sent events and hot reload belong to a later issue.
-	// Answering an upgrade as an ordinary request would half-work.
+func TestOnlyAWebSocketUpgradeIsCarried(t *testing.T) {
+	// docs/CONNECTOR_PROTOCOL.md section 13.3 carries one upgrade token.
+	// Everything else is refused rather than relayed: HTTP/2 is deferred by
+	// docs/ARCHITECTURE.md section 7.4, and relaying a framing the gateway has
+	// never seen would make it the raw forwarder docs/SECURITY.md section 9
+	// excludes permanently.
 	h := newHarness(t, harnessOptions{})
 	h.publish(RegisterRequest{})
-	response := h.browse(browserRequest{
-		capability: h.defaultCapability(),
-		headers:    http.Header{"Upgrade": []string{"websocket"}},
-	})
-	assertCode(t, response, http.StatusNotImplemented, CodeUnsupportedCapability)
+
+	cases := []struct {
+		name    string
+		method  string
+		body    string
+		headers http.Header
+		status  int
+	}{
+		{
+			name:    "h2c",
+			headers: http.Header{"Upgrade": []string{"h2c"}, "Connection": []string{"Upgrade"}},
+			status:  http.StatusNotImplemented,
+		},
+		{
+			name:    "upgrade without a connection token",
+			headers: http.Header{"Upgrade": []string{"websocket"}},
+			status:  http.StatusBadRequest,
+		},
+		{
+			name:    "connection token without an upgrade",
+			headers: http.Header{"Connection": []string{"Upgrade"}},
+			status:  http.StatusBadRequest,
+		},
+		{
+			name: "a list of alternatives",
+			headers: http.Header{
+				"Upgrade":    []string{"websocket, h2c"},
+				"Connection": []string{"Upgrade"},
+			},
+			status: http.StatusBadRequest,
+		},
+		{
+			name:    "a method that is not GET",
+			method:  http.MethodPost,
+			headers: http.Header{"Upgrade": []string{"websocket"}, "Connection": []string{"Upgrade"}},
+			status:  http.StatusMethodNotAllowed,
+		},
+		{
+			// A GET with a body, so that the body check is what fires rather
+			// than the method check.
+			name:    "a handshake carrying a body",
+			body:    "smuggled",
+			headers: http.Header{"Upgrade": []string{"websocket"}, "Connection": []string{"Upgrade"}},
+			status:  http.StatusBadRequest,
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			response := h.browse(browserRequest{
+				method:     testCase.method,
+				body:       testCase.body,
+				capability: h.defaultCapability(),
+				headers:    testCase.headers,
+			})
+			assertCode(t, response, testCase.status, CodeUnsupportedCapability)
+		})
+	}
 }
 
 func TestMetricsRecordBytesStreamsAndRouteLifecycle(t *testing.T) {
@@ -209,9 +264,9 @@ func TestHostNormalisationIsDeterministic(t *testing.T) {
 
 func TestExpiryAndDeadlineArithmeticBoundsTheStream(t *testing.T) {
 	// A stream may not outlive its route: the deadline in the data-stream
-	// header is the earlier of the configured stream lifetime and the route's
-	// expiry.
-	h := newHarness(t, harnessOptions{proxyCfg: ProxyConfig{StreamTTL: time.Hour}})
+	// header is the earlier of the configured maximum stream lifetime and the
+	// route's expiry.
+	h := newHarness(t, harnessOptions{proxyCfg: ProxyConfig{StreamMaxLifetime: time.Hour}})
 	registration := h.defaultRegistration()
 	registration.ExpiresAt = h.clock.Now().Add(90 * time.Second).Format(time.RFC3339)
 	h.publish(registration)

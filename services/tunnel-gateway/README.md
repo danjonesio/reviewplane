@@ -67,12 +67,13 @@ metadata.
 
 ## Authorisation order
 
-Every browser request runs these in order. Nothing about a route is read before
-the origin resolves to one, and nothing in a capability is trusted before it is
-authenticated.
+Every browser request runs these in order, an upgrade handshake exactly as any
+other request. Nothing about a route is read before the origin resolves to one,
+and nothing in a capability is trusted before it is authenticated.
 
 | # | Check | Refusal |
 |---|---|---|
+| 0 | Route-confusion headers removed, before anything resolves a route | — |
 | 1 | Not `CONNECT`; origin-form target | `UNSUPPORTED_CAPABILITY` |
 | 2 | Exactly one `Host`, resolving to one alias | `PUBLISHED_SERVICE_UNAVAILABLE` |
 | 3 | Exactly one capability header | `AUTHENTICATION_REQUIRED` |
@@ -81,9 +82,13 @@ authenticated.
 | 6 | Route registered and not past its expiry | `PUBLISHED_SERVICE_UNAVAILABLE` |
 | 7 | Capability route, project and browser session match the route | `AUTHORISATION_DENIED` |
 | 8 | Capability not individually revoked | `ROUTE_EXPIRED` |
-| 9 | Not an HTTP upgrade (a later issue owns those) | `UNSUPPORTED_CAPABILITY` |
+| 9 | An upgrade, if any, is a well-formed `websocket` `GET` with no body | `UNSUPPORTED_CAPABILITY` |
 | 10 | Connector has a live data channel | `CONNECTOR_OFFLINE` |
 | 11 | Route and connector stream limits | `STREAM_LIMIT_EXCEEDED` |
+
+Step 0 is ordering, not tidying: `docs/SECURITY.md` §9 names header-based route
+confusion as an SSRF vector, and a header removed after a route had already been
+chosen would have been removed from the wrong thing.
 
 The code a caller receives is coarser than the reason recorded in the audit
 trail: an unknown route, a route in another project and a capability naming
@@ -150,9 +155,49 @@ a queue. A receiver that is sent more than its window refuses the frame and ends
 the session: honouring it would be the unbounded buffering the window exists to
 prevent.
 
-Every stream carries an absolute deadline, the earlier of the configured stream
-lifetime and the route's expiry. A stream past its deadline, or idle beyond the
-idle timeout, is reset and counted.
+Every stream carries an absolute deadline, the earlier of the configured maximum
+stream lifetime and the route's expiry. A stream past its deadline, or idle
+beyond its idle timeout, is reset and counted. The absolute lifetime is a
+backstop whose default equals `ROUTE_TTL_MAX`, so what normally bounds a stream
+is its route; the idle timeout is what closes a stalled or abandoned one.
+
+The stream header declares a mode. `request_response` is one bounded HTTP
+exchange; `upgrade` is a connection this gateway has switched to another
+framing, and it takes the longer idle window of `docs/CONNECTOR_PROTOCOL.md`
+§13.3. The connector relays bytes without parsing them, so it cannot see that a
+connection was switched — the mode is declared rather than inferred, and it
+selects the idle window and nothing else.
+
+Both ends sweep. The gateway enforces deadlines on the streams it opened and the
+connector on the streams it accepted, so a data channel that dies mid-stream
+does not leave the development machine holding sockets nothing will close.
+
+## Upgrades and streaming
+
+`websocket` is the one upgrade token carried. `h2c` is refused because HTTP/2 is
+deferred, and any other token is refused because relaying a framing the gateway
+has never seen would be the raw forwarding `docs/SECURITY.md` §9 excludes. An
+upgrade must present both an `Upgrade` header and a `Connection` header
+nominating it, must be a `GET`, and must carry no body; anything else is
+`UNSUPPORTED_CAPABILITY`.
+
+The handshake runs the authorisation order below unchanged — an upgrade is not a
+bypass — and is re-serialised with the same header rules as any other request.
+`Sec-WebSocket-Key` reaches the development service untouched, so the browser
+validates `Sec-WebSocket-Accept` against the development service rather than
+against the gateway; the gateway computes nothing. A development service that
+answers anything but `101` has refused the upgrade, and its own response is
+delivered unchanged.
+
+After `101` the gateway hijacks the browser connection and relays bytes both
+ways with one bounded buffer per direction. Closure propagates each way, route
+expiry and revocation close the connection, and the connection's deadline is the
+route's expiry: a persistent WebSocket is not a way to hold access open.
+
+Streamed responses — `text/event-stream`, chunked, or anything else produced
+incrementally — are flushed to the browser as they arrive. No hop accumulates a
+response, and a `Content-Length` is emitted only when the development service
+declared one.
 
 ## Configuration
 
@@ -177,8 +222,10 @@ Every setting is `REVIEWPLANE_TUNNEL_`-prefixed and validated at startup
 | `MAX_STREAMS_PER_CONNECTOR` | `256` | |
 | `MAX_STREAMS_PER_ROUTE` | `64` | |
 | `MAX_STREAM_BYTES` | `67108864` | |
-| `STREAM_TTL` | `60s` | |
-| `STREAM_IDLE_TIMEOUT` | `60s` | |
+| `STREAM_MAX_LIFETIME` | `8h` | Absolute bound; always clipped to the route's expiry |
+| `STREAM_IDLE_TIMEOUT` | `60s` | No progress on a request/response stream |
+| `UPGRADE_IDLE_TIMEOUT` | `15m` | No progress on an upgraded connection |
+| `RELAY_BUFFER_BYTES` | `32768` | Per direction of an upgraded connection |
 | `MAX_REQUEST_BODY_BYTES` | `8388608` | |
 | `MAX_DATA_CHANNEL_MESSAGE_BYTES` | `65536` | |
 | `SWEEP_INTERVAL` | `5s` | Expiry and deadline enforcement |
@@ -229,6 +276,8 @@ reviewplane_tunnel_route_lifecycle_total{transition}
 reviewplane_tunnel_routes_active
 reviewplane_tunnel_streams_total{outcome}
 reviewplane_tunnel_streams_active
+reviewplane_tunnel_upgrades_total{outcome}
+reviewplane_tunnel_upgrades_open
 reviewplane_tunnel_bytes_total{direction}
 reviewplane_tunnel_requests_total{code}
 reviewplane_tunnel_denied_total{reason}

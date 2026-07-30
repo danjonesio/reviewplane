@@ -21,8 +21,8 @@ import (
 	"github.com/danjonesio/reviewplane/services/tunnel-gateway/datachannel"
 	"github.com/danjonesio/reviewplane/services/tunnel-gateway/internal/registry"
 	"github.com/danjonesio/reviewplane/services/tunnel-gateway/internal/testca"
-	"github.com/danjonesio/reviewplane/services/tunnel-gateway/wsx"
 	"github.com/danjonesio/reviewplane/services/tunnel-gateway/policy"
+	"github.com/danjonesio/reviewplane/services/tunnel-gateway/wsx"
 )
 
 func registryConfigForTest(destinations policy.Policy, maxRoutes int) registry.Config {
@@ -88,10 +88,11 @@ type harness struct {
 	devPort     int
 	lastRequest chan recordedRequest
 
-	routes   *datachannel.RouteTable
-	session  *datachannel.Session
-	wrapConn func(datachannel.MessageConn) datachannel.MessageConn
-	requests *requestTracker
+	routes     *datachannel.RouteTable
+	session    *datachannel.Session
+	sessionCfg datachannel.SessionConfig
+	wrapConn   func(datachannel.MessageConn) datachannel.MessageConn
+	requests   *requestTracker
 
 	signingKey []byte
 }
@@ -241,6 +242,14 @@ func newHarness(t *testing.T, options harnessOptions) *harness {
 	t.Cleanup(h.connector.Close)
 
 	h.wrapConn = options.wrapConn
+	// The connector end of the channel is configured exactly as the gateway
+	// end is. Both ends must agree on the initial flow-control window in
+	// particular: docs/CONNECTOR_PROTOCOL.md section 12.2 makes it a constant
+	// of the protocol rather than of a deployment, and a harness that gave the
+	// two ends different windows would produce a protocol violation rather than
+	// the backpressure the test is asking about.
+	h.sessionCfg = options.sessionCfg
+	h.sessionCfg.Now = h.clock.Now
 	if !options.skipConnect {
 		h.connect(testConnectorID, h.authority.ConnectorCertificate(t, testConnectorID), "")
 	}
@@ -263,7 +272,7 @@ func (h *harness) connect(connectorID string, certificate tls.Certificate, claim
 	if h.wrapConn != nil {
 		transport = h.wrapConn(transport)
 	}
-	session := datachannel.NewSession(transport, datachannel.RoleConnector, datachannel.SessionConfig{Now: h.clock.Now})
+	session := datachannel.NewSession(transport, datachannel.RoleConnector, h.sessionCfg)
 	go func() {
 		_ = datachannel.ServeConnector(session, datachannel.ConnectorConfig{Routes: h.routes, Now: h.clock.Now})
 	}()
@@ -530,4 +539,22 @@ func mustHosts(t *testing.T, text string) []netip.Addr {
 		t.Fatalf("parse hosts: %v", err)
 	}
 	return hosts
+}
+
+// waitFor polls a condition until it holds or the bound expires.
+//
+// It exists for the properties that a handler records after the client has
+// already seen its answer: an upgraded connection is established before its
+// gauge is set, so asserting on the gauge without waiting would be a race. The
+// bound fails the test rather than hanging it.
+func waitFor(t *testing.T, what string, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
 }

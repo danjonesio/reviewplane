@@ -77,7 +77,9 @@ Automated scenario:
 14. Export review.
 15. Verify event sequence and artefact hashes.
 
-Steps 1 to 6 run automatically as `pnpm test:e2e` (`deploy/compose/e2e/run.sh`). It starts the Compose stack, enrols the connector fixture, starts the fixture application on connector loopback, publishes it, reserves and allocates a browser session against the route, and navigates central Chromium to the internal origin. Every step asserts its own outcome and a step that cannot be verified aborts the run; evidence lands in `deploy/compose/e2e/evidence/`.
+Steps 1 to 6 run automatically as `pnpm test:e2e` (`deploy/compose/e2e/run.sh`). It starts the Compose stack, enrols the connector fixture, starts the fixture applications on connector loopback, publishes them, reserves and allocates browser sessions against the routes, and navigates central Chromium to the internal origins. Every step asserts its own outcome and a step that cannot be verified aborts the run; evidence lands in `deploy/compose/e2e/evidence/`.
+
+The same script then proves the tunnel capabilities `ARCHITECTURE.md` §7.4 makes mandatory, which those six steps do not reach: a WebSocket echo, server-sent events asserted on arrival timing, and Vite hot module replacement applying a source edit made on the development machine without a full page reload. It ends by recording the §12 baseline. These are numbered separately in the script because they are not steps of the scenario above; they are the capabilities the route has to have for that scenario to mean anything.
 
 Steps 7 to 15 need reviews, findings, verification and export, and arrive with the issues that introduce them.
 
@@ -111,19 +113,28 @@ Required transition tests:
 - Loopback HTTP route
 - WebSocket hot reload route
 - Server-sent events
+- Chunked and otherwise streamed responses
+- Upgrade denied without a capability, with another project's capability, or on header-based route confusion
+- Upgrade to a protocol other than `websocket` refused
+- Closure propagated in both directions, browser-initiated and service-initiated
+- Long editing pause: an idle upgraded connection survives its configured window
 - Connector reconnect
 - Route expiry
-- Revocation during active stream
+- Revocation during active stream, including an already-upgraded connection
 - Destination host substitution rejected
 - Cross-project capability rejected
 - Link-local and metadata destination rejected
 - Stream and memory limits
-- Malformed frames
+- Malformed frames, in the data channel and on an upgraded connection
 - Slow consumer and backpressure
 
 Connector reconnect is the Stage 0 exit criterion "Protocol round trip survives connector reconnect", and it is a three-part assertion rather than a single one: a request issued before the interruption succeeds, a request issued during it fails with `CONNECTOR_OFFLINE` or `PUBLISHED_SERVICE_UNAVAILABLE` and does not hang, and an equivalent request issued afterwards succeeds over the same `route_id` against the same destination with no operator action. A test making it MUST also show that no request was served by a different environment, which needs a second environment to be wrong about.
 
 Running today: `services/connector/internal/protocolsim` (the Protocol simulation mode of `DEVELOPMENT.md` §4 — the three-part round trip, the six-field reconnect payload, routes closed on reconciliation, the desired-state timeout, flapping reconnects, the terminal upgrade classification, and the measured reconnect-time distribution over ten forced disconnects), `apps/server/test/connector-reconnect.test.ts` (a real connector process killed and restarted, a control-plane restart, claims on another connector's route, an expired route, a revoked identity, and browser sessions degraded and resumed) and `apps/server/test/reconciliation.test.ts` (the decision table).
+
+A streaming test MUST assert on **arrival timing**, not only on the final body. Server-sent events fail in a specific and recognisable way when any hop buffers — every event arrives at once at stream close — and a test that compared only the assembled result would pass against exactly the implementation the capability exists to exclude.
+
+Both ends of the data channel MUST be given the same session configuration in a test harness. The initial flow-control window is a constant of the protocol rather than of a deployment (`CONNECTOR_PROTOCOL.md` §12.2), so a harness that gave the two ends different windows would produce a protocol violation instead of the backpressure the test was asking about.
 
 ## 7. Browser tests
 
@@ -225,6 +236,11 @@ Verify persisted artefacts and logs are redacted according to policy.
 | Human takeover during agent click | Ordered lease transition, no concurrent input |
 | Duplicate verification request | One verification record through idempotency |
 | Retention deletion partial failure | Retry, metadata not falsely tombstoned |
+| Development service closes a WebSocket | Closure reaches the browser with the service's close code and reason |
+| Connector disconnect during an open WebSocket | Connection closed, route answers `CONNECTOR_OFFLINE` |
+| Route revoked during an open WebSocket | Connection closed promptly, not at the next request |
+| Exceeding the stream limit with upgraded connections | `STREAM_LIMIT_EXCEEDED` |
+| Long editing pause with no traffic | Connection survives the configured idle window and closes past it |
 
 ## 12. Performance tests
 
@@ -240,6 +256,8 @@ Measure:
 - Object upload throughput
 
 Publish tested hardware and configuration.
+
+Tunnel throughput and hot-reload responsiveness are measured by the Compose scenario (`deploy/compose/e2e/run.sh`) and written to `evidence/performance-baseline.txt` on every run, alongside the configuration and the machine the figures came from. Hot-reload responsiveness is measured as the wall-clock time from the source edit landing on the development machine to the updated text being visible in central Chromium, which is the figure a user experiences; it therefore includes the file watcher, the bundler and the browser, not the tunnel alone. A baseline is a recorded number, not a threshold: `docs/ROADMAP.md` defers tuning, so the scenario records the figure and does not fail on it.
 
 ## 13. Upgrade tests
 

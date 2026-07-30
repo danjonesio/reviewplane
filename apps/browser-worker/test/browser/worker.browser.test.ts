@@ -614,6 +614,63 @@ test("the route capability is attached to every request to the session origin", 
 // none. It is attached inside the branch that has already established the
 // request is for this session's own origin, which is why a refused request can
 // never carry it either.
+// A WebSocket handshake never reaches Playwright's request routing, so the
+// capability the route handler attaches to every other request is not attached
+// to this one. Without the context-wide header the worker also sets, a
+// hot-reload socket arrives at the gateway unauthenticated and is refused —
+// and the page then looks live while it has stopped updating, which is the
+// failure `docs/ARCHITECTURE.md` section 7.4 lists hot reload to prevent.
+test("a WebSocket handshake for the session origin carries the route capability", async () => {
+  const id = newId("brs_");
+  await manager.allocate(
+    id,
+    allocationFor({
+      service_capability: new SensitiveString("rp1.test-capability-value-0123456789"),
+    }),
+  );
+  const before = fixture.socketHandshakes.length;
+  await run(id, navigate("/websocket", "load"));
+
+  // The assertion is on the handshake the fixture received, not on what the
+  // page went on to display. What is under test is whether the credential
+  // reaches the far end of an upgrade at all; the whole exchange over a real
+  // gateway is proven by the end-to-end scenario, which drives the same page
+  // through a real route.
+  const deadline = Date.now() + 10000;
+  while (fixture.socketHandshakes.length === before && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+
+  const handshakes = fixture.socketHandshakes.slice(before);
+  assert.equal(handshakes.length, 1, "the page opened no WebSocket");
+  const handshake = handshakes[0];
+  assert.ok(handshake !== undefined);
+  assert.equal(
+    handshake["x-reviewplane-capability"],
+    "rp1.test-capability-value-0123456789",
+    "the WebSocket handshake reached the origin without the capability",
+  );
+});
+
+// The egress policy is not suspended for sockets. A WebSocket is opened by the
+// network stack rather than by a route handler, so it needs its own rule.
+test("a WebSocket for another origin is closed by the session egress policy", async () => {
+  const id = newId("brs_");
+  await manager.allocate(id, allocationFor());
+  const before = fixture.socketHandshakes.length;
+  await run(id, navigate("/websocket-offsite", "load"));
+  await run(id, {
+    command: "wait",
+    timeout_ms: 15000,
+    wait: { condition: "text_visible", text: "ws-blocked" },
+  });
+  assert.equal(
+    fixture.socketHandshakes.length,
+    before,
+    "a socket for another origin reached a server",
+  );
+});
+
 test("a session with no capability sends no capability header", async () => {
   const id = newId("brs_");
   await manager.allocate(id, allocationFor());

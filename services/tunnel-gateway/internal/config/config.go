@@ -39,8 +39,9 @@ type Config struct {
 	InternalSuffix      string
 	HostHeaderMode      string
 	ForwardedHeaderMode string
-	StreamTTL           time.Duration
+	StreamMaxLifetime   time.Duration
 	MaxRequestBodyBytes int64
+	RelayBufferBytes    int
 
 	RouteTTLMax             time.Duration
 	MaxRoutesPerConnector   int
@@ -48,6 +49,7 @@ type Config struct {
 	MaxStreamsPerRoute      int
 	MaxStreamBytes          int64
 	StreamIdleTimeout       time.Duration
+	UpgradeIdleTimeout      time.Duration
 	SweepInterval           time.Duration
 	MaxDataChannelMessage   int
 	DestinationPolicy       policy.Policy
@@ -86,8 +88,9 @@ func LoadFrom(lookup func(string) (string, bool)) (Config, error) {
 		InternalSuffix:      l.text("INTERNAL_SUFFIX", "internal.invalid"),
 		HostHeaderMode:      l.enum("HOST_HEADER_MODE", "upstream", "upstream", "original"),
 		ForwardedHeaderMode: l.enum("FORWARDED_HEADER_MODE", "standard", "standard", "none"),
-		StreamTTL:           l.duration("STREAM_TTL", 60*time.Second),
+		StreamMaxLifetime:   l.duration("STREAM_MAX_LIFETIME", 8*time.Hour),
 		MaxRequestBodyBytes: l.bytes("MAX_REQUEST_BODY_BYTES", 8<<20),
+		RelayBufferBytes:    l.number("RELAY_BUFFER_BYTES", 32<<10),
 
 		RouteTTLMax:            l.duration("ROUTE_TTL_MAX", 8*time.Hour),
 		MaxRoutesPerConnector:  l.number("MAX_ROUTES_PER_CONNECTOR", 10),
@@ -95,6 +98,7 @@ func LoadFrom(lookup func(string) (string, bool)) (Config, error) {
 		MaxStreamsPerRoute:     l.number("MAX_STREAMS_PER_ROUTE", 64),
 		MaxStreamBytes:         l.bytes("MAX_STREAM_BYTES", 64<<20),
 		StreamIdleTimeout:      l.duration("STREAM_IDLE_TIMEOUT", 60*time.Second),
+		UpgradeIdleTimeout:     l.duration("UPGRADE_IDLE_TIMEOUT", 15*time.Minute),
 		SweepInterval:          l.duration("SWEEP_INTERVAL", 5*time.Second),
 		MaxDataChannelMessage:  l.number("MAX_DATA_CHANNEL_MESSAGE_BYTES", 64<<10),
 

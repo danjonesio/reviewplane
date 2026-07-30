@@ -93,6 +93,52 @@ a:focus-visible {
   font-weight: 600;
 }
 
+.hmr-demo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0 0 1rem;
+  padding: 0.9rem 1rem;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+/*
+ * The two proof elements are headings so that they reach the accessibility
+ * snapshot the end-to-end scenario keeps as evidence. They are sized as body
+ * text here because they are readouts inside a demonstration panel rather than
+ * section titles, and a page whose visual hierarchy contradicted its structure
+ * would be a worse fixture than one that did not carry the proof at all.
+ */
+.hmr-demo p,
+.hmr-demo h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.hmr-demo button {
+  padding: 0.45rem 0.9rem;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent);
+  color: #ffffff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.hmr-demo button:hover {
+  filter: brightness(1.08);
+}
+
+.hmr-demo button:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
 code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.9em;

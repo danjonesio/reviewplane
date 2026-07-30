@@ -241,6 +241,40 @@ export class BrowserSession {
       }
       void route.abort("blockedbyclient");
     });
+
+    // WebSocket handshakes never reach the handler above.
+    //
+    // Playwright's request routing intercepts HTTP requests only; a WebSocket
+    // upgrade is opened by the network stack and is not offered to a route
+    // handler at all. Without the two rules below a hot-reload socket would
+    // arrive at the gateway with no capability and be refused with
+    // AUTHENTICATION_REQUIRED, so the page in this session would stop updating
+    // while still looking live — which is the exact failure
+    // `docs/ARCHITECTURE.md` section 7.4 lists hot reload to prevent.
+    if (allowed !== undefined) {
+      // The egress policy, applied to WebSockets. A handshake for any other
+      // origin is closed here rather than connected, so the rule the route
+      // handler enforces for sub-resources holds for sockets too.
+      await context.routeWebSocket(
+        (url) => !isSocketWithinOrigin(url.toString(), allowed),
+        (socket) => {
+          void socket.close({ code: 1008, reason: "blocked by the session egress policy" });
+        },
+      );
+    }
+    if (capability !== undefined) {
+      // The credential, attached by the network stack rather than by a route
+      // handler, because that is the only layer a WebSocket handshake passes
+      // through. It is context-wide, which is wider than the header the route
+      // handler adds, and the width is bounded on three sides: an HTTP request
+      // for another origin is aborted above before it is ever sent, a WebSocket
+      // for another origin is closed above before it is opened, and the browser
+      // container can resolve and reach exactly one address — the gateway,
+      // which verifies that the capability names this route, this project and
+      // this session before it reads anything else (ADR-0015,
+      // `docs/SECURITY.md` section 9).
+      await context.setExtraHTTPHeaders({ [CAPABILITY_HEADER]: capability });
+    }
   }
 
   #armDurationLimit(environment: SessionEnvironment): void {
@@ -409,4 +443,32 @@ export function isWithinOrigin(target: string, origin: string): boolean {
     return false;
   }
   return targetUrl.origin === originUrl.origin;
+}
+
+/**
+ * Reports whether a WebSocket URL is the session's own origin.
+ *
+ * A page served from `https://alias.internal.invalid/` opens
+ * `wss://alias.internal.invalid/`, and those two URLs never compare equal by
+ * origin: the WHATWG definition keeps the `wss` scheme, so `wss://host` and
+ * `https://host` are different origins even though the browser treats the
+ * socket as same-origin and sends the page's cookies to it.
+ *
+ * The pairing applied here is the browser's own — `ws` with `http`, `wss` with
+ * `https` — and nothing else is accepted. Comparing host and port while
+ * ignoring the scheme would let a `ws://` socket count as within an `https://`
+ * origin, which is a downgrade rather than a match.
+ */
+export function isSocketWithinOrigin(target: string, origin: string): boolean {
+  let targetUrl: URL;
+  try {
+    targetUrl = new URL(target);
+  } catch {
+    return false;
+  }
+  const equivalent: Record<string, string> = { "ws:": "http:", "wss:": "https:" };
+  const scheme = equivalent[targetUrl.protocol];
+  if (scheme === undefined) return false;
+  targetUrl.protocol = scheme;
+  return isWithinOrigin(targetUrl.toString(), origin);
 }

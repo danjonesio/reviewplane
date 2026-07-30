@@ -152,3 +152,54 @@ func TestMissingRequiredSecretsAreReported(t *testing.T) {
 		}
 	}
 }
+
+func TestStreamLifetimeDefaultsMatchTheDocumentedValues(t *testing.T) {
+	// docs/CONNECTOR_PROTOCOL.md section 13.3 records these values, and an
+	// operator reading them there must find them here. The two idle windows in
+	// particular are the difference between a hot-reload WebSocket surviving an
+	// editing pause and the page going quietly stale.
+	config, err := LoadFrom(env(minimal()))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if config.StreamIdleTimeout != 60*time.Second {
+		t.Fatalf("the request/response idle window defaults to %v, want 60s", config.StreamIdleTimeout)
+	}
+	if config.UpgradeIdleTimeout != 15*time.Minute {
+		t.Fatalf("the upgrade idle window defaults to %v, want 15m", config.UpgradeIdleTimeout)
+	}
+	if config.StreamMaxLifetime != 8*time.Hour {
+		t.Fatalf("the maximum stream lifetime defaults to %v, want 8h", config.StreamMaxLifetime)
+	}
+	if config.StreamMaxLifetime != config.RouteTTLMax {
+		t.Fatal("the maximum stream lifetime and the maximum route lifetime have drifted apart; " +
+			"a stream is bounded by its route, so a shorter default here would cut a working stream")
+	}
+	if config.RelayBufferBytes != 32<<10 {
+		t.Fatalf("the relay buffer defaults to %d bytes, want 32768", config.RelayBufferBytes)
+	}
+}
+
+func TestStreamLifetimeSettingsAreConfigurableAndValidated(t *testing.T) {
+	settings := minimal()
+	settings[Prefix+"STREAM_IDLE_TIMEOUT"] = "90s"
+	settings[Prefix+"UPGRADE_IDLE_TIMEOUT"] = "30m"
+	settings[Prefix+"STREAM_MAX_LIFETIME"] = "2h"
+	settings[Prefix+"RELAY_BUFFER_BYTES"] = "65536"
+	config, err := LoadFrom(env(settings))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if config.StreamIdleTimeout != 90*time.Second ||
+		config.UpgradeIdleTimeout != 30*time.Minute ||
+		config.StreamMaxLifetime != 2*time.Hour ||
+		config.RelayBufferBytes != 65536 {
+		t.Fatalf("configured stream lifetimes were not read back: %+v", config)
+	}
+
+	settings[Prefix+"UPGRADE_IDLE_TIMEOUT"] = "never"
+	if _, err := LoadFrom(env(settings)); err == nil ||
+		!strings.Contains(err.Error(), "UPGRADE_IDLE_TIMEOUT") {
+		t.Fatalf("an invalid upgrade idle window was accepted: %v", err)
+	}
+}

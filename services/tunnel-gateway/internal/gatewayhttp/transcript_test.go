@@ -291,11 +291,52 @@ func TestSSRFRejectionMatrix(t *testing.T) {
 			http.StatusNotFound, CodePublishedServiceUnavailable,
 		},
 		{
-			"upgrade request",
+			"upgrade without a capability",
+			func() *http.Response {
+				return h.browse(browserRequest{headers: http.Header{
+					"Upgrade":    []string{"websocket"},
+					"Connection": []string{"Upgrade"},
+				}})
+			},
+			http.StatusUnauthorized, CodeAuthenticationRequired,
+		},
+		{
+			"upgrade with another project's capability",
+			func() *http.Response {
+				return h.browse(browserRequest{
+					capability: h.mint(testRouteID, "prj_other", testSessionID, time.Minute),
+					headers: http.Header{
+						"Upgrade":    []string{"websocket"},
+						"Connection": []string{"Upgrade"},
+					},
+				})
+			},
+			http.StatusForbidden, CodeAuthorisationDenied,
+		},
+		{
+			"upgrade with header-based route confusion",
+			func() *http.Response {
+				return h.browse(browserRequest{
+					host:       "svc-never-published." + testSuffix,
+					capability: h.defaultCapability(),
+					headers: http.Header{
+						"Upgrade":          []string{"websocket"},
+						"Connection":       []string{"Upgrade"},
+						"X-Forwarded-Host": []string{testAlias + "." + testSuffix},
+					},
+				})
+			},
+			http.StatusNotFound, CodePublishedServiceUnavailable,
+		},
+		{
+			"upgrade to a protocol the gateway does not carry",
 			func() *http.Response {
 				return h.browse(browserRequest{
 					capability: h.defaultCapability(),
-					headers:    http.Header{"Upgrade": []string{"websocket"}},
+					headers: http.Header{
+						"Upgrade":    []string{"h2c"},
+						"Connection": []string{"Upgrade"},
+					},
 				})
 			},
 			http.StatusNotImplemented, CodeUnsupportedCapability,

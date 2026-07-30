@@ -246,11 +246,12 @@ func TestADeadlineClosesAStreamThatMakesNoProgress(t *testing.T) {
 	}
 	stream.SetDeadline(now.Add(time.Minute))
 
-	if closed := gateway.EnforceDeadlines(now); closed != 0 {
-		t.Fatalf("%d streams were closed before their deadline", closed)
+	if closed := gateway.EnforceDeadlines(now); closed.Total() != 0 {
+		t.Fatalf("%d streams were closed before their deadline", closed.Total())
 	}
-	if closed := gateway.EnforceDeadlines(now.Add(2 * time.Minute)); closed != 1 {
-		t.Fatalf("%d streams were closed at their deadline, want 1", closed)
+	closed := gateway.EnforceDeadlines(now.Add(2 * time.Minute))
+	if closed.Deadline != 1 || closed.Idle != 0 {
+		t.Fatalf("the sweep closed %+v at the deadline, want one deadline closure", closed)
 	}
 	if _, err := stream.Write([]byte("x")); err == nil {
 		t.Fatal("a stream past its deadline still accepted a write")
@@ -271,8 +272,9 @@ func TestAnIdleStreamIsClosedAndRecorded(t *testing.T) {
 		t.Fatalf("accept: %v", err)
 	}
 	current = now.Add(time.Minute)
-	if closed := gateway.EnforceDeadlines(current); closed != 1 {
-		t.Fatalf("%d idle streams were closed, want 1", closed)
+	closed := gateway.EnforceDeadlines(current)
+	if closed.Idle != 1 || closed.Deadline != 0 {
+		t.Fatalf("the sweep closed %+v, want one idle closure", closed)
 	}
 }
 

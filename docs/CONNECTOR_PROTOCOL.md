@@ -364,6 +364,7 @@ Each tunnelled connection is opened by a bounded header carrying exactly:
 - Stream ID
 - Destination protocol
 - Deadline
+- Stream mode, optional; absent means `request_response` (§13.3)
 
 The connector opens only the pre-authorised local destination. It does not accept a host or port supplied by the browser request. The header schema has no host or port field and rejects unknown properties, so a destination cannot be smuggled into it. The connector MUST NOT parse a destination out of the relayed request bytes either: the gateway never forwards a client-supplied destination and the connector independently ignores one, so neither side relies on the other.
 
@@ -400,9 +401,13 @@ Both ends use the same initial window, because a sender may spend it before any 
 
 ### 12.3 Deadlines and limits
 
-Every stream carries an absolute deadline. A stream past its deadline, or one that has made no progress for the configured idle timeout, MUST be closed and recorded rather than left open. A stream MUST NOT outlive the route it belongs to: its deadline is the earlier of the configured stream lifetime and the route's expiry.
+Every stream carries an absolute deadline. A stream past its deadline, or one that has made no progress for its idle timeout, MUST be closed and recorded rather than left open. A stream MUST NOT outlive the route it belongs to: its deadline is the earlier of the configured maximum stream lifetime and the route's expiry.
 
-Concurrent streams per channel, bytes per stream and the size of one data-channel message are all bounded. Exceeding a stream bound resets that stream with `STREAM_LIMIT_EXCEEDED`. Exceeding the message bound ends the channel, because the bound is applied to the declared length before anything is allocated.
+The absolute lifetime is a backstop, not the working control. `stream_max_lifetime` defaults to `route_ttl_max`, so what normally bounds a stream is its route's expiry; what ends an ordinary stream is the exchange finishing, and what ends a stalled or silent one is the idle timeout. The idle timeout is not one number: §13.3 gives a request/response stream and an upgraded stream different windows, because the two mean different things by silence. A short absolute lifetime would cut a server-sent-event stream or a hot-reload WebSocket in the middle of working correctly, and MUST NOT be used in place of an idle timeout.
+
+Both ends enforce this. The tunnel gateway sweeps the streams it opened and the connector sweeps the streams it accepted, each on its own timer, because a data channel that dies mid-stream would otherwise leave the development machine holding sockets nothing is going to close. A stream that terminates for any reason closes its local socket immediately rather than waiting for the absolute deadline.
+
+Concurrent streams per channel, bytes per stream and the size of one data-channel message are all bounded. Exceeding a stream bound resets that stream with `STREAM_LIMIT_EXCEEDED`. Exceeding the message bound ends the channel, because the bound is applied to the declared length before anything is allocated. An upgraded connection occupies a stream for as long as it lives, so the per-route stream bound is also the bound on concurrent long-lived connections for that route.
 
 Route expiry and revocation both terminate streams that are already in flight, and both report `ROUTE_EXPIRED`. §21 is a closed vocabulary, so which of the two occurred is recorded in the audit trail and the metrics rather than on the wire.
 
@@ -456,6 +461,8 @@ The end-to-end scenario (`deploy/compose/e2e/run.sh`) records what the developme
 
 Zero requests answered `>= 400`. The development service is told it is itself, which is what satisfies its own host check; the internal origin reaches it only through `X-Forwarded-Host`.
 
+Those twenty are the plain request/response portion of the scenario, captured before it goes on to open a WebSocket and a stream. An upgrade handshake is normalised by the same rules and is proven separately (§13.3): the gateway's own forwarded headers reach the development service, the caller's do not, and the capability never does.
+
 ### 13.2 Absolute URLs emitted by the development service
 
 An absolute URL in a response body that names `localhost`, `127.0.0.1` or the development port is an expected failure mode and MUST NOT be repaired by rewriting response bodies. The browser resolves it against nothing the route can reach, so the sub-resource fails; body rewriting would mean parsing untrusted content in the request path and would break any application that emits an absolute URL for a legitimate reason.
@@ -466,15 +473,56 @@ Observed: the end-to-end scenario navigates to that page and records the outcome
 
 ### 13.3 Upgrades and streaming
 
-The route layer must preserve:
+The route layer preserves:
 
 - HTTP upgrade
 - Bidirectional frames
-- Connection closure semantics
+- Connection closure semantics in both directions
 - Idle timeout suitable for hot reload
 - Origin and forwarded headers according to the modes above
 
-The Stage 0 gateway refuses an HTTP upgrade with `UNSUPPORTED_CAPABILITY`; WebSockets, server-sent events, HTTP streaming and hot reload arrive with the issue that owns them.
+The decision behind this section is ADR-0017.
+
+**Which upgrades are carried.** `websocket` and nothing else. `h2c` is refused because HTTP/2 is deferred (§5, `ARCHITECTURE.md` §7.4), and any other token is refused because relaying a framing the gateway has never seen is indistinguishable from being the raw forwarder `SECURITY.md` §9 excludes permanently. A refusal answers `UNSUPPORTED_CAPABILITY`.
+
+An upgrade MUST present both halves of RFC 9110 §7.8: an `Upgrade` header and a `Connection` header nominating it. One without the other is refused rather than guessed at, so a caller cannot change how a request is framed by adding a single header. A handshake MUST be a `GET` and MUST carry no body.
+
+**Authorisation is unchanged.** The upgrade path runs the same checks in the same order as §13.1's ordinary path: headers are normalised before the origin is resolved, the capability is verified before any claim in it is read, and route, project and browser session are all checked. An upgrade is never an authorisation bypass, and each denial returns its documented stable code — `AUTHENTICATION_REQUIRED`, `AUTHORISATION_DENIED`, `PUBLISHED_SERVICE_UNAVAILABLE`, `ROUTE_EXPIRED`, `CONNECTOR_OFFLINE` or `STREAM_LIMIT_EXCEEDED`.
+
+**What the gateway does with the handshake.** It re-serialises the request as it does any other, replacing `Host` per the configured mode, adding the forwarded headers per the configured mode, removing the route-confusion set and the whole `X-ReviewPlane-` namespace, and writing `Connection: Upgrade` and `Upgrade: websocket` from the upgrade it validated rather than from what the caller framed. No `Content-Length` is emitted. `Sec-WebSocket-Key` and any offered sub-protocol or extension reach the development service unchanged, so `Sec-WebSocket-Accept` is computed by the development service and validated by the browser against it; the gateway computes nothing.
+
+A development service that answers anything other than `101` has refused the upgrade, and its own response is delivered to the browser unchanged. A gateway that replaced it with an error of its own would hide which end said no.
+
+After `101` the gateway stops being an HTTP server on that connection and relays bytes in both directions. Frames on an upgraded connection are browser-adjacent untrusted content (ADR-0010) and MUST NOT influence routing or destination selection. The connector never learns that a connection was switched by looking at what flows through it — §12 forbids parsing relayed bytes — so the mode is declared in the stream header instead.
+
+**Closure propagates both ways.** A browser-side close half-closes the stream, which the connector turns into a close of its local socket; a development-service close ends the stream, which closes the browser's connection. A close frame is application data and is relayed like any other byte, so its code and reason arrive intact.
+
+**Stream mode.** `data_stream_header.stream_mode` is `request_response` or `upgrade`; absent means `request_response`. It selects the stream's idle window and nothing else. It does not change which destination is opened — that is fixed at publication and the header carries no host or port — and it relaxes no check.
+
+**Timeout and buffer values.** These are the implemented Stage 0 defaults, each configurable through the settings of `CONFIGURATION.md` §4:
+
+| Value | Default | Setting | What it governs |
+|---|---|---|---|
+| Request/response idle timeout | `60s` | `stream_idle_timeout` | no progress on an ordinary exchange |
+| Upgrade idle timeout | `15m` | `upgrade_idle_timeout` | no progress on an upgraded connection |
+| Maximum stream lifetime | `8h` | `stream_max_lifetime` | absolute bound, clipped to the route's expiry |
+| Sweep interval | `5s` | `sweep_interval` | how often the two above are enforced |
+| Per-direction flow-control window | `256 KiB` | fixed by the protocol (§12.2) | bytes in flight before credit must return |
+| Relay buffer, per direction | `32 KiB` | `relay_buffer_bytes` | the only per-connection allocation the relay makes |
+| Bytes per stream, per direction | `64 MiB` | `max_stream_bytes` | exceeded resets the stream `STREAM_LIMIT_EXCEEDED` |
+| Concurrent streams per route | `64` | `max_streams_per_route` | also the bound on concurrent upgraded connections |
+
+Fifteen minutes is chosen against the failure it prevents. A developer reading code sends nothing over a hot-reload socket, and neither Chromium nor the development servers this fixture targets close an idle one; a window shorter than a plausible reading pause would make the tunnel the thing that broke hot reload. Sixty seconds remains right for a request/response stream, where silence means a stalled exchange.
+
+In Stage 0 only the gateway's windows are configurable. The connector applies the same defaults from the shared data-channel implementation both ends import, and where the two differ the shorter window applies. Making the connector's windows configurable is follow-up work recorded in ADR-0017.
+
+**Route expiry and revocation close upgraded connections.** A route that expires or is revoked resets its in-flight streams, including upgraded ones, and the browser sees the connection close. `ARCHITECTURE.md` §7.3 requires a route to be revocable immediately, and a persistent WebSocket that survived its route would make that only a revocation of future requests. A long-lived connection MUST NOT extend the lifetime of the access that authorised it: an upgraded stream's absolute deadline is clipped to the route's expiry, and the gateway sets the same deadline on the browser-facing socket.
+
+**Streaming responses.** A `text/event-stream` response, a chunked response and any other response the development service produces incrementally are forwarded incrementally: each part is written and flushed to the browser as it arrives, and no hop accumulates the response. A `Content-Length` is emitted only when the development service declared one.
+
+**Backpressure.** An upgraded or streaming connection is relayed with one bounded copy buffer per direction. Everything beyond that is the per-stream credit window of §12.2, returned only as bytes are consumed. A browser that stops reading stops the development service rather than filling a queue in the tunnel, and a development service that floods stops itself. Frames are never queued without bound at either end.
+
+**Accounting.** The gateway counts upgrade requests by outcome — `requested`, `switched`, `declined_by_destination`, `refused`, `failed`, `closed`, `reset` — and reports the number of upgraded connections open now as a gauge. Bytes carried after the switch are recorded against the route in both directions, like any other stream's.
 
 ## 14. Local MCP bridge
 

@@ -296,6 +296,10 @@ func encodeDataStreamHeaderInto(w *canonicalWriter, value DataStreamHeader) {
 	w.string(string(value.DestinationProtocol))
 	w.key("deadline")
 	w.string(value.Deadline)
+	if value.StreamMode != nil {
+		w.key("stream_mode")
+		w.string(string((*value.StreamMode)))
+	}
 	w.endObject()
 }
 

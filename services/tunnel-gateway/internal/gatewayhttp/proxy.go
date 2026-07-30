@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/danjonesio/reviewplane/packages/protocol/connectorv1"
@@ -87,9 +88,18 @@ type ProxyConfig struct {
 	HostHeader HostHeaderMode
 	// Forwarded fixes which forwarded headers are added.
 	Forwarded ForwardedHeaderMode
-	// StreamTTL bounds one stream's life, and is the deadline carried in the
-	// data-stream header. A route expiring sooner shortens it.
-	StreamTTL time.Duration
+	// StreamMaxLifetime bounds one stream's absolute life, and is the deadline
+	// carried in the data-stream header. A route expiring sooner shortens it,
+	// and it never lengthens one: a stream MUST NOT outlive its route.
+	//
+	// It is a backstop rather than the working control. What ends an ordinary
+	// stream is the exchange finishing, and what ends a stalled or silent one
+	// is the idle timeout of docs/CONNECTOR_PROTOCOL.md section 13.3. A short
+	// absolute lifetime here would cut a server-sent-event stream or a
+	// hot-reload WebSocket in the middle of working correctly, so the default
+	// is the maximum route lifetime and the route's own expiry is what
+	// normally applies.
+	StreamMaxLifetime time.Duration
 	// MaxRequestBodyBytes bounds a request body the gateway must buffer, which
 	// it does only when the client sent no Content-Length.
 	MaxRequestBodyBytes int64
@@ -97,6 +107,11 @@ type ProxyConfig struct {
 	MaxResponseHeaderBytes int
 	// MaxStreamsPerRoute bounds concurrent streams on one route.
 	MaxStreamsPerRoute int
+	// RelayBufferBytes bounds the copy buffer each direction of an upgraded
+	// connection holds. It is the only per-connection allocation the relay
+	// makes; everything else it moves is bounded by the stream's flow-control
+	// window (docs/CONNECTOR_PROTOCOL.md section 12.2).
+	RelayBufferBytes int
 	// Now supplies the clock.
 	Now func() time.Time
 }
@@ -111,8 +126,11 @@ func (c ProxyConfig) withDefaults() ProxyConfig {
 	if c.Forwarded == "" {
 		c.Forwarded = ForwardedStandard
 	}
-	if c.StreamTTL <= 0 {
-		c.StreamTTL = 60 * time.Second
+	if c.StreamMaxLifetime <= 0 {
+		c.StreamMaxLifetime = 8 * time.Hour
+	}
+	if c.RelayBufferBytes <= 0 {
+		c.RelayBufferBytes = 32 << 10
 	}
 	if c.MaxRequestBodyBytes <= 0 {
 		c.MaxRequestBodyBytes = 8 << 20
@@ -151,6 +169,12 @@ type Proxy struct {
 	metrics   *metrics.Registry
 	logger    *slog.Logger
 	auditSink Auditor
+
+	// upgradesOpen counts upgraded connections the gateway is carrying now. It
+	// is a gauge rather than a derived figure because an upgraded connection
+	// lives for a review session, so "how many are open" is a different
+	// question from "how many were opened".
+	upgradesOpen atomic.Int64
 }
 
 // NewProxy builds the browser-facing handler.
@@ -186,9 +210,21 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	requestID := newRequestID()
 	started := p.config.Now()
 
-	route, claims, failure := p.authorise(r)
+	// Normalisation runs before anything reads the request, and therefore
+	// before the origin is resolved to a route. docs/SECURITY.md section 9
+	// names header-based route confusion as an SSRF vector, and the defence is
+	// ordering: a header that could name a different origin is gone by the
+	// time a route is looked up, on the upgrade path exactly as on the
+	// ordinary one.
+	p.normaliseHeaders(r)
+
+	route, claims, upgrade, failure := p.authorise(r)
 	if failure != nil {
 		p.refuse(w, r, requestID, failure)
+		return
+	}
+	if upgrade != nil {
+		p.forwardUpgrade(w, r, requestID, route, claims, *upgrade, started)
 		return
 	}
 
@@ -245,90 +281,123 @@ func (p *Proxy) refuse(w http.ResponseWriter, r *http.Request, requestID string,
 // resolved to one, and nothing in the capability is trusted before it has been
 // authenticated, so neither an unauthorised route identifier nor a forged
 // capability reaches a decision.
-func (p *Proxy) authorise(r *http.Request) (*registry.Route, connectorv1.CapabilityClaims, *denial) {
+func (p *Proxy) authorise(r *http.Request) (*registry.Route, connectorv1.CapabilityClaims, *upgradeRequest, *denial) {
 	var noClaims connectorv1.CapabilityClaims
 
 	// 1. The gateway is not a forward proxy. CONNECT and an absolute-form
 	//    request target are the two ways to ask it to be one, and both are
 	//    refused before anything else is considered.
 	if r.Method == http.MethodConnect {
-		return nil, noClaims, &denial{http.StatusMethodNotAllowed, CodeUnsupportedCapability, "connect_method"}
+		return nil, noClaims, nil, &denial{http.StatusMethodNotAllowed, CodeUnsupportedCapability, "connect_method"}
 	}
 	if r.URL != nil && (r.URL.IsAbs() || r.URL.Host != "") {
-		return nil, noClaims, &denial{http.StatusBadRequest, CodeUnsupportedCapability, "absolute_request_target"}
+		return nil, noClaims, nil, &denial{http.StatusBadRequest, CodeUnsupportedCapability, "absolute_request_target"}
 	}
 	if r.RequestURI == "*" {
-		return nil, noClaims, &denial{http.StatusBadRequest, CodeUnsupportedCapability, "asterisk_request_target"}
+		return nil, noClaims, nil, &denial{http.StatusBadRequest, CodeUnsupportedCapability, "asterisk_request_target"}
 	}
 
 	// 2. Exactly one Host. net/http rejects an HTTP/1.1 request with more than
 	//    one Host header before this point, and the check is repeated here
 	//    because the route is derived from it.
 	if len(r.Header.Values("Host")) > 1 {
-		return nil, noClaims, &denial{http.StatusBadRequest, CodeUnsupportedCapability, "ambiguous_host_header"}
+		return nil, noClaims, nil, &denial{http.StatusBadRequest, CodeUnsupportedCapability, "ambiguous_host_header"}
 	}
 	alias, ok := p.aliasFromHost(r.Host)
 	if !ok {
-		return nil, noClaims, &denial{http.StatusNotFound, CodePublishedServiceUnavailable, "origin_not_an_internal_route"}
+		return nil, noClaims, nil, &denial{http.StatusNotFound, CodePublishedServiceUnavailable, "origin_not_an_internal_route"}
 	}
 
 	// 3. Exactly one capability, presented in exactly one place.
 	presented := r.Header.Values(CapabilityHeader)
 	if len(presented) == 0 || strings.TrimSpace(presented[0]) == "" {
-		return nil, noClaims, &denial{http.StatusUnauthorized, CodeAuthenticationRequired, "capability_absent"}
+		return nil, noClaims, nil, &denial{http.StatusUnauthorized, CodeAuthenticationRequired, "capability_absent"}
 	}
 	if len(presented) > 1 {
-		return nil, noClaims, &denial{http.StatusUnauthorized, CodeAuthenticationRequired, "capability_ambiguous"}
+		return nil, noClaims, nil, &denial{http.StatusUnauthorized, CodeAuthenticationRequired, "capability_ambiguous"}
 	}
 
 	claims, capabilityErr := p.verifier.Verify(strings.TrimSpace(presented[0]), p.config.Now().Unix())
 	if capabilityErr != nil {
 		reason := "capability_" + string(capabilityErr.Rejection)
 		if capabilityErr.Rejection == connectorv1.CapabilityRejectionExpired {
-			return nil, noClaims, &denial{http.StatusForbidden, CodeRouteExpired, reason}
+			return nil, noClaims, nil, &denial{http.StatusForbidden, CodeRouteExpired, reason}
 		}
-		return nil, noClaims, &denial{http.StatusForbidden, CodeAuthorisationDenied, reason}
+		return nil, noClaims, nil, &denial{http.StatusForbidden, CodeAuthorisationDenied, reason}
 	}
 
 	// 4. The route the origin names must exist and must still be live.
 	route, found := p.routes.LookupAlias(alias)
 	if !found {
-		return nil, noClaims, &denial{http.StatusNotFound, CodePublishedServiceUnavailable, "route_not_registered"}
+		return nil, noClaims, nil, &denial{http.StatusNotFound, CodePublishedServiceUnavailable, "route_not_registered"}
 	}
 
 	// 5. The capability must be for this route, this project and a browser
 	//    session the route authorises. Each is a separate rejection in the
 	//    audit trail and the same answer on the wire.
 	if claims.RouteID != route.RouteID {
-		return nil, noClaims, &denial{http.StatusForbidden, CodeAuthorisationDenied, "capability_for_another_route"}
+		return nil, noClaims, nil, &denial{http.StatusForbidden, CodeAuthorisationDenied, "capability_for_another_route"}
 	}
 	if claims.ProjectID != route.ProjectID {
-		return nil, noClaims, &denial{http.StatusForbidden, CodeAuthorisationDenied, "capability_for_another_project"}
+		return nil, noClaims, nil, &denial{http.StatusForbidden, CodeAuthorisationDenied, "capability_for_another_project"}
 	}
 	if !route.AuthorisesSession(claims.BrowserSessionID) {
-		return nil, noClaims, &denial{http.StatusForbidden, CodeAuthorisationDenied, "browser_session_not_authorised"}
+		return nil, noClaims, nil, &denial{http.StatusForbidden, CodeAuthorisationDenied, "browser_session_not_authorised"}
 	}
 	if p.routes.CapabilityRevoked(claims.CapabilityID) {
-		return nil, noClaims, &denial{http.StatusForbidden, CodeRouteExpired, "capability_revoked"}
+		return nil, noClaims, nil, &denial{http.StatusForbidden, CodeRouteExpired, "capability_revoked"}
 	}
 
-	// 6. An HTTP upgrade is a different transport with different framing.
-	//    Answering it as an ordinary request would half-work, which is worse
-	//    than refusing it until the issue that owns it lands.
-	if r.Header.Get("Upgrade") != "" {
-		return nil, noClaims, &denial{http.StatusNotImplemented, CodeUnsupportedCapability, "upgrade_not_supported"}
+	// 6. An HTTP upgrade is a different transport with different framing, and
+	//    is carried only in the one form this gateway understands. It is
+	//    classified here, after every authorisation check above and before any
+	//    of the availability checks below, so that the upgrade path is subject
+	//    to exactly the checks the ordinary path is: an upgrade is never an
+	//    authorisation bypass.
+	upgrade, upgradeDenial := classifyUpgrade(r)
+	if upgradeDenial != nil {
+		return nil, noClaims, nil, upgradeDenial
 	}
 
 	// 7. The connector must have a live data channel.
 	if _, live := p.channels.Get(route.ConnectorID); !live {
-		return nil, noClaims, &denial{http.StatusServiceUnavailable, CodeConnectorOffline, "connector_offline"}
+		return nil, noClaims, nil, &denial{http.StatusServiceUnavailable, CodeConnectorOffline, "connector_offline"}
 	}
 
-	// 8. Per-route stream bound.
+	// 8. Per-route stream bound. An upgraded connection holds its stream for
+	//    the length of a review session rather than for one exchange, so this
+	//    is also the bound on how many long-lived connections one route can
+	//    hold open.
 	if _, _, _, active := route.Counters(); active >= int64(p.config.MaxStreamsPerRoute) {
-		return nil, noClaims, &denial{http.StatusTooManyRequests, CodeStreamLimitExceeded, "route_stream_limit"}
+		return nil, noClaims, nil, &denial{http.StatusTooManyRequests, CodeStreamLimitExceeded, "route_stream_limit"}
 	}
-	return route, claims, nil
+	return route, claims, upgrade, nil
+}
+
+// normaliseHeaders removes, before anything resolves a route, every header a
+// caller might use to claim the request was for a different origin.
+//
+// It is a separate step from the drop list applied when the request is
+// re-serialised. That list protects the development service; this one protects
+// the gateway's own routing decision, and the difference is ordering:
+// docs/SECURITY.md section 9 requires header-based route confusion to be
+// rejected, and a check that ran after the route had been chosen would be
+// checking the wrong thing.
+func (p *Proxy) normaliseHeaders(r *http.Request) {
+	for _, name := range routeConfusionHeaders {
+		r.Header.Del(name)
+	}
+	// A header value carrying CR, LF or NUL is dropped rather than escaped, in
+	// both directions and on both paths. Deleting it here means the upgrade
+	// path cannot carry one either.
+	for name, values := range r.Header {
+		for _, value := range values {
+			if !isSafeHeaderValue(value) {
+				r.Header.Del(name)
+				break
+			}
+		}
+	}
 }
 
 // aliasFromHost maps an internal origin to a route alias.
@@ -373,26 +442,8 @@ func (p *Proxy) forward(
 		return 0, 0, 0, nil
 	}
 
-	deadline := p.config.Now().Add(p.config.StreamTTL)
-	if route.ExpiresAt.Before(deadline) {
-		// A stream may not outlive the route it belongs to.
-		deadline = route.ExpiresAt
-	}
-
-	// The header is built from the route and the authenticated capability. It
-	// carries no host and no port, and the schema has no field for one, so a
-	// destination cannot be smuggled through it (docs/CONNECTOR_PROTOCOL.md
-	// section 12).
-	header := connectorv1.DataStreamHeader{
-		RouteID:             route.RouteID,
-		BrowserSessionID:    claims.BrowserSessionID,
-		SessionCapability:   connectorv1.SensitiveString(r.Header.Get(CapabilityHeader)),
-		StreamID:            requestID,
-		DestinationProtocol: route.Protocol,
-		Deadline:            deadline.UTC().Format("2006-01-02T15:04:05Z"),
-	}
-
-	stream, err := session.Open(header)
+	deadline := p.streamDeadline(route)
+	stream, err := session.Open(p.streamHeader(r, requestID, route, claims, deadline, false))
 	if err != nil {
 		code := CodeInternalError
 		reason := "stream_open_failed"
@@ -420,7 +471,7 @@ func (p *Proxy) forward(
 		_ = stream.Close()
 	}()
 
-	sent, err := p.writeRequest(stream, r, route)
+	sent, err := p.writeRequest(stream, r, route, nil)
 	if err != nil {
 		p.finishStream(w, r, requestID, route, stream, err, sent, 0)
 		return 0, sent, 0, err
@@ -496,16 +547,79 @@ func (p *Proxy) finishStream(
 	p.refuse(w, r, requestID, failure)
 }
 
+// streamDeadline is the absolute instant a stream must be closed by.
+//
+// It is the earlier of the configured maximum stream lifetime and the route's
+// expiry, which is docs/CONNECTOR_PROTOCOL.md section 12.3's "a stream MUST NOT
+// outlive the route it belongs to" stated as arithmetic. The same rule governs
+// an upgraded connection: a persistent WebSocket is not a way to hold access
+// open past the route that authorised it.
+func (p *Proxy) streamDeadline(route *registry.Route) time.Time {
+	deadline := p.config.Now().Add(p.config.StreamMaxLifetime)
+	if route.ExpiresAt.Before(deadline) {
+		return route.ExpiresAt
+	}
+	return deadline
+}
+
+// streamHeader builds the data-stream header from the route and the
+// authenticated capability. It carries no host and no port, and the schema has
+// no field for one, so a destination cannot be smuggled through it
+// (docs/CONNECTOR_PROTOCOL.md section 12).
+func (p *Proxy) streamHeader(
+	r *http.Request,
+	requestID string,
+	route *registry.Route,
+	claims connectorv1.CapabilityClaims,
+	deadline time.Time,
+	upgraded bool,
+) connectorv1.DataStreamHeader {
+	header := connectorv1.DataStreamHeader{
+		RouteID:             route.RouteID,
+		BrowserSessionID:    claims.BrowserSessionID,
+		SessionCapability:   connectorv1.SensitiveString(r.Header.Get(CapabilityHeader)),
+		StreamID:            requestID,
+		DestinationProtocol: route.Protocol,
+		Deadline:            deadline.UTC().Format("2006-01-02T15:04:05Z"),
+	}
+	if upgraded {
+		// The connector relays bytes without parsing them, so it cannot see
+		// that this connection was switched to another framing. The mode is
+		// declared rather than inferred, which is what lets the connector give
+		// the stream the longer idle window of section 13.3 without ever
+		// looking at what is flowing through it.
+		mode := connectorv1.StreamModeUpgrade
+		header.StreamMode = &mode
+	}
+	return header
+}
+
 // writeRequest re-serialises the request onto the stream.
 //
 // It is re-serialised rather than relayed byte for byte so that the request the
 // development service sees is one this gateway constructed: origin-form target,
 // one Host, no hop-by-hop headers, no forwarded headers the caller supplied and
 // no capability. A relayed request would carry whatever the caller framed.
-func (p *Proxy) writeRequest(stream io.Writer, r *http.Request, route *registry.Route) (int64, error) {
-	body, contentLength, err := p.readRequestBody(r)
-	if err != nil {
-		return 0, err
+//
+// upgrade is non-nil when the request is the handshake of an HTTP upgrade. The
+// difference is narrow and deliberate: the connection tokens are rewritten from
+// the upgrade the gateway validated rather than dropped as hop-by-hop, and no
+// Content-Length is emitted, because a handshake carries no body and one is
+// refused before this is reached.
+func (p *Proxy) writeRequest(
+	stream io.Writer,
+	r *http.Request,
+	route *registry.Route,
+	upgrade *upgradeRequest,
+) (int64, error) {
+	var body []byte
+	var contentLength int64
+	if upgrade == nil {
+		var err error
+		body, contentLength, err = p.readRequestBody(r)
+		if err != nil {
+			return 0, err
+		}
 	}
 
 	target := r.URL.RequestURI()
@@ -520,11 +634,19 @@ func (p *Proxy) writeRequest(stream io.Writer, r *http.Request, route *registry.
 		hostHeader = route.PublicAlias + "." + p.config.InternalSuffix
 	}
 	head.WriteString("Host: " + hostHeader + "\r\n")
-	// One stream carries one exchange, so the upstream connection is closed
-	// after it. That keeps response framing unambiguous and means a stream
-	// cannot be reused for a request the gateway never authorised.
-	head.WriteString("Connection: close\r\n")
-	head.WriteString("Content-Length: " + strconv.FormatInt(contentLength, 10) + "\r\n")
+	if upgrade != nil {
+		// The two connection tokens are written from the upgrade the gateway
+		// classified, not copied from the caller: the development service is
+		// asked for exactly the protocol the gateway is prepared to relay.
+		head.WriteString("Connection: Upgrade\r\n")
+		head.WriteString("Upgrade: " + upgrade.Protocol + "\r\n")
+	} else {
+		// One stream carries one exchange, so the upstream connection is closed
+		// after it. That keeps response framing unambiguous and means a stream
+		// cannot be reused for a request the gateway never authorised.
+		head.WriteString("Connection: close\r\n")
+		head.WriteString("Content-Length: " + strconv.FormatInt(contentLength, 10) + "\r\n")
+	}
 
 	forwarded := http.Header{}
 	if p.config.Forwarded == ForwardedStandard {

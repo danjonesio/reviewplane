@@ -99,6 +99,17 @@ func validateDestinationProtocol(value any, path string, out *[]SchemaViolation)
 	checkString(value, path, out, stringOpts{values: []string{"http", "https"}})
 }
 
+// validateStreamMode checks framing the stream carries after its header
+// (docs/CONNECTOR_PROTOCOL.md section 13.3). request_response is one bounded HTTP
+// exchange; upgrade is a connection the gateway has switched to another framing, such
+// as WebSocket, and which therefore lives as long as its route allows rather than as
+// long as one exchange takes. The connector reads it to choose a stream's idle window;
+// it never influences which destination is opened, because the destination is fixed at
+// publication and this header carries no host or port. Absent means request_response.
+func validateStreamMode(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"request_response", "upgrade"}})
+}
+
 // validateMessageType checks version 1 message type. Unknown types are rejected, never
 // ignored. This enumeration MUST equal the keys of x-protocol.messages.
 func validateMessageType(value any, path string, out *[]SchemaViolation) {
@@ -507,7 +518,7 @@ func validateRoutePublishAck(value any, path string, out *[]SchemaViolation) {
 
 // validateDataStreamHeader checks a DataStreamHeader value.
 func validateDataStreamHeader(value any, path string, out *[]SchemaViolation) {
-	source, ok := checkObject(value, path, out, []string{"route_id", "browser_session_id", "session_capability", "stream_id", "destination_protocol", "deadline"}, []string{"route_id", "browser_session_id", "session_capability", "stream_id", "destination_protocol", "deadline"})
+	source, ok := checkObject(value, path, out, []string{"route_id", "browser_session_id", "session_capability", "stream_id", "destination_protocol", "deadline", "stream_mode"}, []string{"route_id", "browser_session_id", "session_capability", "stream_id", "destination_protocol", "deadline"})
 	if !ok {
 		return
 	}
@@ -528,6 +539,9 @@ func validateDataStreamHeader(value any, path string, out *[]SchemaViolation) {
 	}
 	if field, present := source["deadline"]; present {
 		validateTimestamp(field, path+".deadline", out)
+	}
+	if field, present := source["stream_mode"]; present {
+		validateStreamMode(field, path+".stream_mode", out)
 	}
 }
 

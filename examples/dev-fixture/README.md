@@ -101,11 +101,56 @@ pnpm install
 pnpm dev                         # 127.0.0.1:5173
 ```
 
-Hot module replacement is disabled (`server.hmr: false`). HMR needs a WebSocket
-upgrade, which the gateway currently refuses with `UNSUPPORTED_CAPABILITY`, and
-it belongs to the tunnel-compatibility issue rather than to this one. Disabling
-it keeps a green run here evidence about plain HTTP/1.1 page and sub-resource
-loading and about nothing else, instead of console noise on every page.
+Hot module replacement is **on**, at Vite's default settings, and proving it
+works through a connector route is the point of this application. The client
+derives its update-socket URL from the document it was loaded from, so a page
+served through a route reaches for `wss://<alias>.internal.invalid/` — the
+gateway's internal origin, not the development machine — and the gateway turns
+that upgrade into a connection to this dev server
+(`docs/CONNECTOR_PROTOCOL.md` §13.3, ADR-0017).
+
+The proof itself is two facts that only hold together:
+
+| Element | Before | After |
+|---|---|---|
+| `[data-testid="hmr-marker"]` | `HMR marker: ALPHA` | `HMR marker: BRAVO` |
+| `[data-testid="hmr-clicks"]` | `clicks: 3` | `clicks: 3` |
+
+The marker text lives in `src/Marker.tsx` and the click counter is React state
+in `src/App.tsx`. Editing `Marker.tsx` alone means React Fast Refresh re-renders
+that component and leaves the parent's state alone — so the marker changing
+proves the edit arrived, and the counter surviving proves the page was *not*
+fully reloaded. Either one on its own proves nothing: a full reload also changes
+the marker, and it also resets the counter to zero.
+
+That is exactly what the end-to-end scenario asserts, editing the file inside
+the running development environment:
+
+```bash
+docker compose exec dev-fixture sed -i 's/ALPHA/BRAVO/' /app/vite-app/src/Marker.tsx
+```
+
+Both proof elements are `<h2>` headings rather than paragraphs. The scenario
+keeps a before-and-after pair of accessibility snapshots as evidence, and
+`apps/browser-worker/src/session/snapshot.ts` gives a role only to elements
+whose tag maps to one — `h1`–`h6` become `heading`, named by their content,
+while a paragraph is invisible to it.
+
+Two settings exist for the containerised run and MUST NOT be read as
+recommendations for a real project:
+
+- `server.watch.usePolling` with a 200 ms interval. Inotify across a container
+  volume boundary is unreliable, and a change that went unnoticed would turn a
+  real product bug into a flaky fixture.
+- `cacheDir` taken from `VITE_CACHE_DIR`, and `--configLoader native` on the
+  command line. The `dev-fixture` container runs with a read-only root
+  filesystem, so both of Vite's write paths have to leave it: the
+  dependency-optimisation cache is redirected onto a tmpfs, and the default
+  config loader — which bundles `vite.config.ts` into
+  `node_modules/.vite-temp/` — is replaced by a plain `import()` of the
+  config. That loader is labelled experimental by Vite's own `--help`; it is
+  used here because removing a write path is better than mounting another
+  writable one into a container whose read-only root is a security control.
 
 ## Proving no inbound port is open
 
@@ -170,6 +215,13 @@ a screenshot taken after a change shows the change rather than a cached page.
 | `GET /slow?ms=N` | 200 HTML | Holds the response for `N` ms before the first byte, bounded at 120000. For the fault-injection case "dev server returning a slow response → bounded timeout with a stable error". The bound exists so that fault injection cannot turn into a hung suite. |
 | `GET /truncated` | 200 text | Announces a `Content-Length` four times the bytes it writes, then destroys the socket. For the truncated-response case. A client that trusts `Content-Length` sees a short read: `curl` reports `end of response with 162 bytes missing`. |
 | `GET /healthz` | 200 JSON | `{"status":"ok"}`. Readiness for the bounded startup grace of `docs/CONNECTOR_PROTOCOL.md` §11 — publish before this answers and the connector MUST end the grace with `PORT_NOT_LISTENING`, never an indefinite wait. |
+| `GET /ws-echo` | 101 | A real RFC 6455 endpoint, framing implemented by hand so the fixture stays dependency-free. It answers a text frame with `echo:<text>`, a ping with a pong, a close frame with the same code and reason, and `close-me` by closing first. A malformed or unmasked frame closes with `1002` and MUST NOT take the process down. |
+| `GET /websocket` | 200 HTML | Drives `/ws-echo` from the page: three exchanges then `close(1000, "bye")`. Renders `ws: echoed=3 code=1000 clean=true` in an `<h2 data-testid="ws-result">`. This is the acceptance criterion "bidirectional frames and closure propagated in both directions", stated as text a browser test can wait for. |
+| `GET /events` | 200 SSE | `text/event-stream`, `count` events at `interval_ms`, each written and flushed as it is produced. A hop that buffers turns this into one burst at close, which is the whole failure mode the capability exists to exclude. |
+| `GET /sse` | 200 HTML | Consumes `/events` with `EventSource` and **measures its own arrival gaps**. Renders `sse: incremental events=6 min-gap=<n>ms` — or `sse: buffered …` when the gaps collapse — in an `<h2 data-testid="sse-result">`, with the per-event gaps in `<h3 data-testid="sse-gaps">`. Timing is the assertion; final content would pass against a buffering tunnel. |
+| `GET /chunked` | 200 text | A chunked response with no `content-length`, written incrementally. |
+| `GET /bulk?bytes=N` | 200 octets | A deterministic payload for throughput measurement, default 4 MiB, clamped at 32 MiB, written in 64 KiB tiles honouring backpressure. Not compressible-looking, and no `content-encoding`: the figure must measure the tunnel rather than gzip. |
+| `GET /throughput` | 200 HTML | Fetches `/bulk` three times and renders the best result as `bulk: done bytes=<n> ms=<n> mbps=<n.n>` in an `<h2 data-testid="throughput-result">`. This is the tunnel-throughput half of the `docs/TESTING.md` §12 baseline. |
 | anything else | 404 HTML | A small page, so a wrong path is visibly a 404 rather than a blank screen. |
 
 Key elements carry a `data-testid`, and each page's heading carries

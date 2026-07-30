@@ -119,9 +119,10 @@ Responsibilities:
 - Register published local services
 - Route browser requests using session-scoped capabilities
 - Apply destination restrictions and expiry
-- Record bytes, errors and route lifecycle
+- Carry HTTP upgrades and streamed responses (§7.4)
+- Record bytes, errors, upgraded connections and route lifecycle
 
-It must not become an unrestricted SOCKS or general network proxy. It therefore exposes no CONNECT method, refuses an absolute-form request target, and has no code path that takes an upstream destination from a request: the destination comes from the route registry alone.
+It must not become an unrestricted SOCKS or general network proxy. It therefore exposes no CONNECT method, refuses an absolute-form request target, and has no code path that takes an upstream destination from a request: the destination comes from the route registry alone. Carrying an HTTP upgrade does not weaken that: only the `websocket` token is carried, the handshake runs the same authorisation checks as any request, and after the switch the gateway relays bytes without letting them influence routing.
 
 It serves three listeners, and the separation is a control rather than a convenience: the browser-facing listener is the only one a deployment publishes, the connector listener terminates mutually authenticated data channels, and the control listener carrying the route-registration API and metrics binds to loopback by default.
 
@@ -300,6 +301,8 @@ The leftmost label is the published service's `public_alias` (`DOMAIN_MODEL.md` 
 
 The gateway resolves an origin by dropping any port, dropping a trailing dot and lowercasing; what remains MUST be exactly one label followed by the configured suffix. Anything else resolves to no route. Host and origin handling MUST be deterministic and documented; the forwarding rules are in `CONNECTOR_PROTOCOL.md` §13.
 
+"Revocable immediately" includes connections that are already open. A route that expires or is revoked closes every stream it is carrying, including an HTTP connection that has been upgraded to a WebSocket, and no stream's deadline may exceed its route's expiry. A long-lived connection is not a way to hold access open past the route that authorised it (ADR-0017, `CONNECTOR_PROTOCOL.md` §13.3).
+
 ### 7.5 What the publication path does today
 
 The publication half of §7.2 is implemented and is exercised end to end against the real connector binary by `apps/server/test/route-publication.test.ts`:
@@ -317,16 +320,22 @@ The browser worker receives its session's capability in the allocation message a
 
 ### 7.4 Application compatibility
 
-The tunnel must support:
+The tunnel must support HTTP/1.1, WebSockets, HTTP streaming, server-sent events and development hot reload. Every one of them is implemented and has a passing integration test; nothing in this list is aspirational.
 
-- HTTP/1.1
-- WebSockets
-- HTTP streaming
-- Server-sent events
-- Development hot reload
-- Configurable upstream TLS
+| Capability | State | Proven by |
+|---|---|---|
+| HTTP/1.1 | Implemented | `services/tunnel-gateway/internal/gatewayhttp/proxy_test.go`, and the Compose scenario `deploy/compose/e2e/run.sh` |
+| WebSockets | Implemented | `services/tunnel-gateway/internal/gatewayhttp/websocket_test.go`; a browser-driven echo in the Compose scenario |
+| HTTP streaming | Implemented | `services/tunnel-gateway/internal/gatewayhttp/streaming_test.go`, chunked delivery asserted on arrival timing |
+| Server-sent events | Implemented | the same file, asserted on arrival timing rather than final content |
+| Development hot reload | Implemented | the Compose scenario applies a source edit on the development machine to a page in central Chromium without a full reload |
+| Configurable upstream TLS | Not implemented | Stage 0 targets plain loopback HTTP. The destination policy accepts `https` and the connector opens a TCP socket either way, but nothing negotiates TLS to the development service. |
 
-HTTP/2 and additional protocols may be added later.
+The hot-reload case is the one that matters most and is the easiest to get quietly wrong: if the update socket fails, the page in Chromium stops updating while still looking live, so a human annotates a stale render and an agent verifies against one.
+
+An HTTP upgrade is carried as `websocket` and nothing else. HTTP/2 and QUIC are deferred; an `h2c` upgrade is refused with `UNSUPPORTED_CAPABILITY` rather than partially supported. gRPC, WebTransport and raw TCP forwarding are excluded — the last permanently, by `SECURITY.md` §9.
+
+`CONNECTOR_PROTOCOL.md` §13.3 records the header modes, the timeout and buffer values and the closure semantics; ADR-0017 records why the lifetime model is an idle window bounded by the route rather than a flat lifetime.
 
 ## 8. Agent integration
 

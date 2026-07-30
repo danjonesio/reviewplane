@@ -36,6 +36,7 @@ import type {
   SessionReconciliationDecision,
   SessionReconciliationReason,
   SignedIdentity,
+  StreamMode,
   UpgradeClassification,
   WorkspaceHead,
 } from "./types.ts";
@@ -196,6 +197,7 @@ export function decodeDataStreamHeader(value: unknown): DataStreamHeader {
     stream_id: source["stream_id"] as string,
     destination_protocol: source["destination_protocol"] as DestinationProtocol,
     deadline: source["deadline"] as string,
+    ...(source["stream_mode"] === undefined ? {} : { stream_mode: source["stream_mode"] as StreamMode }),
   };
 }
 
