@@ -21,6 +21,9 @@
 #   REVIEWPLANE_ENROLMENT_TOKEN_FILE    a mounted secret, or
 #   REVIEWPLANE_ENROLMENT_TOKEN         the token itself
 #   PORT, HOST                          where the static application binds
+#   REVIEWPLANE_FIXTURE_VITE            optional, default "1"; "0" skips
+#                                        starting the Vite dev server, for a
+#                                        run that only needs the static app
 
 set -eu
 
@@ -35,6 +38,13 @@ FIXTURE_HOST=${HOST:-127.0.0.1}
 FIXTURE_PORT=${PORT:-4321}
 FIXTURE_ORIGIN="http://${FIXTURE_HOST}:${FIXTURE_PORT}"
 READY_TIMEOUT_MS=${FIXTURE_READY_TIMEOUT_MS:-30000}
+# The Vite dev server's own address is not configurable the way the static
+# application's is: it is hard-coded in vite.config.ts (`strictPort: true` on
+# 5173), and this script has to agree with that file rather than parameterise
+# around it.
+FIXTURE_VITE_ENABLED=${REVIEWPLANE_FIXTURE_VITE:-1}
+FIXTURE_VITE_ORIGIN="http://127.0.0.1:5173"
+VITE_READY_TIMEOUT_MS=${FIXTURE_VITE_READY_TIMEOUT_MS:-30000}
 
 [ -r "$CONFIG_FILE" ] ||
 	fail "$CONFIG_FILE is not mounted or is not readable. The connector needs its configuration file to know which projects, workspaces and destinations it may publish; without it every route.publish is refused."
@@ -108,6 +118,76 @@ waitForReady().then(
 kill -0 "$APP_PID" 2>/dev/null || fail "the static application exited during startup."
 printf 'dev-fixture: the static application is ready\n' >&2
 
+# The Vite dev server, RVP-14's half of the fixture. It starts before
+# enrolment for the same reason the static application does: a route MUST NOT
+# be published before its destination is listening
+# (docs/CONNECTOR_PROTOCOL.md section 11).
+#
+# `node .../vite/bin/vite.js` rather than a `vite` binary on PATH: this image
+# installs the dependency tree but never symlinks a global binary, and
+# resolving the CLI's own path from the package it was installed into is more
+# robust than assuming one. The working directory is set by the subshell's
+# `cd`, not by an absolute `--root`, because vite.config.ts's two-entry-point
+# build (`index.html`, `products.html`) and its dev-server file watch are
+# both resolved against the process's current directory. No `--host`: that
+# flag is Vite's spelling of `0.0.0.0` and vite.config.ts already binds
+# 127.0.0.1 — passing it here would silently override the file and defeat the
+# loopback-only property this fixture exists to prove.
+#
+# `--configLoader native`: this container's root filesystem is read-only
+# (`deploy/compose/compose.yaml`, `docs/SECURITY.md` section 10). Vite's
+# default config loader bundles vite.config.ts and writes the bundled output
+# to a temp file under node_modules/.vite-temp — a location `cacheDir` does
+# not cover, so it would fail there with the filesystem read-only. The native
+# loader instead imports the config file directly, relying on Node's own
+# TypeScript support (`tsconfig.json`'s `erasableSyntaxOnly` keeps this
+# config within what Node can strip) rather than writing anything to disk to
+# load it.
+if [ "$FIXTURE_VITE_ENABLED" != "0" ]; then
+	printf 'dev-fixture: starting the Vite dev server on %s\n' "$FIXTURE_VITE_ORIGIN" >&2
+	(cd /app/vite-app && exec node node_modules/vite/bin/vite.js --config vite.config.ts --configLoader native) &
+	VITE_PID=$!
+
+	# Same probe shape as the static application's above: one bounded Node
+	# process rather than a shell polling loop, so a cold-start failure is
+	# reported here and named as Vite's, not surfaced three steps later as
+	# PORT_NOT_LISTENING against the wrong component.
+	# shellcheck disable=SC2016
+	FIXTURE_VITE_ORIGIN="$FIXTURE_VITE_ORIGIN" READY_TIMEOUT_MS="$VITE_READY_TIMEOUT_MS" node -e '
+const origin = process.env.FIXTURE_VITE_ORIGIN;
+const deadline = Date.now() + Number(process.env.READY_TIMEOUT_MS);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const waitForReady = async () => {
+  let lastError = "no response";
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${origin}/`);
+      if (response.ok) return;
+      lastError = `HTTP ${response.status}`;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    await sleep(200);
+  }
+  throw new Error(lastError);
+};
+
+waitForReady().then(
+  () => process.exit(0),
+  (error) => {
+    process.stderr.write(`${error.message}\n`);
+    process.exit(1);
+  },
+);
+' || fail "the Vite dev server did not answer GET ${FIXTURE_VITE_ORIGIN}/ within ${VITE_READY_TIMEOUT_MS}ms."
+
+	kill -0 "$VITE_PID" 2>/dev/null || fail "the Vite dev server exited during startup."
+	printf 'dev-fixture: the Vite dev server is ready\n' >&2
+else
+	printf 'dev-fixture: REVIEWPLANE_FIXTURE_VITE=0, not starting the Vite dev server\n' >&2
+fi
+
 # Enrolment is once per identity. In Compose the data directory is a tmpfs, so
 # every run starts empty and enrols with a fresh single-use token; on a plain
 # `docker run` with a persistent volume an existing record is reused, because
@@ -146,9 +226,10 @@ else
 	fi
 fi
 
-# exec, so the connector becomes PID 1 and receives SIGTERM directly. The static
-# application stays a child of PID 1 and goes down with the container; this is a
-# fixture, and a supervisor that restarted half of it would hide exactly the
-# failure the scenario is meant to surface.
+# exec, so the connector becomes PID 1 and receives SIGTERM directly. The
+# static application and the Vite dev server, when running, stay children of
+# PID 1 and go down with the container; this is a fixture, and a supervisor
+# that restarted part of it would hide exactly the failure the scenario is
+# meant to surface.
 printf 'dev-fixture: starting the connector channel\n' >&2
 exec reviewplane-connector run "$@"

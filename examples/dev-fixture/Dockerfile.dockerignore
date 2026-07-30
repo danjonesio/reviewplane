@@ -20,10 +20,14 @@ deploy/compose/secrets
 docs
 *.log
 
-# The fixture image builds the connector from source and copies the static
-# application. Nothing else under examples/ belongs in the context: the Vite
-# application is not installed or served here, and the agent instruction
-# examples are documentation.
+# The fixture image builds the connector from source and installs both
+# applications. Nothing else under examples/ belongs in the context: the agent
+# instruction examples are documentation, not something this image runs.
+#
+# `examples/dev-fixture/vite-app` is deliberately NOT excluded: the
+# `vite-app-builder` stage installs its dependencies from the committed
+# `package-lock.json` and copies its sources. `**/node_modules` above still
+# excludes a developer's local install from the context either way — the
+# image only ever gets the `npm ci` it runs for itself.
 examples/claude-code
 examples/opencode
-examples/dev-fixture/vite-app

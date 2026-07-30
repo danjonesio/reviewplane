@@ -135,6 +135,9 @@ describe("static-app", () => {
       ["/assets/logo.svg", 200, "image/svg+xml"],
       ["/absolute-url", 200, "text/html; charset=utf-8"],
       ["/cross-origin", 200, "text/html; charset=utf-8"],
+      ["/websocket", 200, "text/html; charset=utf-8"],
+      ["/sse", 200, "text/html; charset=utf-8"],
+      ["/throughput", 200, "text/html; charset=utf-8"],
       ["/healthz", 200, "application/json; charset=utf-8"],
       ["/no-such-page", 404, "text/html; charset=utf-8"],
     ];
@@ -156,6 +159,44 @@ describe("static-app", () => {
     assert.match(js.body, /data-testid="script-status"/u);
     const svg = await get(app, "/assets/logo.svg");
     assert.match(svg.body, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/u);
+  });
+
+  test("the websocket and sse pages carry their test hooks", async () => {
+    const websocket = await get(app, "/websocket");
+    assert.match(websocket.body, /<h1 id="page-title" data-testid="websocket-heading">/u);
+    assert.match(websocket.body, /data-testid="ws-state"/u);
+    // A heading, not a paragraph: the end-to-end scenario's `snapshot`
+    // evidence only sees accessibility roles, and headings are the ones this
+    // fixture has available (apps/browser-worker/src/session/snapshot.ts).
+    assert.match(websocket.body, /<h2 data-testid="ws-result">/u);
+    assert.match(websocket.body, /new WebSocket\(/u);
+
+    const sse = await get(app, "/sse");
+    assert.match(sse.body, /<h1 id="page-title" data-testid="sse-heading">/u);
+    assert.match(sse.body, /<h2 data-testid="sse-result">/u);
+    // The gap trace as a heading too, so it survives into the snapshot,
+    // alongside the <pre> a human reads from a screenshot.
+    assert.match(sse.body, /<h3 data-testid="sse-gaps">/u);
+    assert.match(sse.body, /data-testid="sse-timings"/u);
+    assert.match(sse.body, /"sse gaps ms: " \+ gaps\.join\(", "\)/u);
+    assert.match(sse.body, /new EventSource\(/u);
+
+    // Reachable from the home page, the same way /products and /checkout are.
+    const home = await get(app, "/");
+    assert.match(home.body, /<a href="\/websocket" data-testid="websocket-nav-link">/u);
+    assert.match(home.body, /<a href="\/sse" data-testid="sse-nav-link">/u);
+  });
+
+  test("the throughput page carries its test hooks and reports through a heading", async () => {
+    const throughput = await get(app, "/throughput");
+    assert.match(throughput.body, /<h1 id="page-title" data-testid="throughput-heading">/u);
+    assert.match(throughput.body, /data-testid="throughput-state"/u);
+    // A heading rather than a paragraph, so the result is legible in the
+    // browser worker's accessibility snapshot (only landmark/interactive
+    // roles, including headings, are included — see
+    // apps/browser-worker/src/session/snapshot.ts).
+    assert.match(throughput.body, /<h2 data-testid="throughput-result">/u);
+    assert.match(throughput.body, /fetch\("\/bulk\?bytes="/u);
   });
 
   test("healthz reports ok", async () => {

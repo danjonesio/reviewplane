@@ -1,4 +1,6 @@
+import { useState } from "react";
 import logoUrl from "./logo.svg";
+import { Marker } from "./Marker.tsx";
 import "./styles.css";
 
 export type Page = "home" | "products";
@@ -8,8 +10,15 @@ export type Page = "home" | "products";
  * and Vite serves them through its own transformed URLs — which is what makes
  * this fixture a test of a real development server's sub-resource handling
  * rather than of static files.
+ *
+ * The click counter lives here, in `App`, rather than inside `Marker` or
+ * `Home`. RVP-14's end-to-end scenario edits `Marker.tsx` alone while this
+ * file is unchanged, so React Fast Refresh remounts only `Marker` and leaves
+ * `App`'s state intact. A counter that survived the edit is therefore
+ * evidence the browser received a hot update, not a full page reload.
  */
 export function App({ page }: { page: Page }) {
+  const [clicks, setClicks] = useState(0);
   return (
     <div className="shell">
       <header className="masthead">
@@ -18,12 +27,18 @@ export function App({ page }: { page: Page }) {
           ReviewPlane Vite fixture
         </a>
       </header>
-      <main>{page === "home" ? <Home /> : <Products />}</main>
+      <main>
+        {page === "home" ? (
+          <Home clicks={clicks} onIncrement={() => setClicks((count) => count + 1)} />
+        ) : (
+          <Products />
+        )}
+      </main>
     </div>
   );
 }
 
-function Home() {
+function Home({ clicks, onIncrement }: { clicks: number; onIncrement: () => void }) {
   return (
     <>
       <h1 id="page-title" data-testid="home-heading">
@@ -31,12 +46,26 @@ function Home() {
       </h1>
       <p>
         Served by Vite on <code>127.0.0.1:5173</code> and reached only through a
-        connector route. Hot module replacement is disabled here: this fixture
-        proves plain HTTP page and sub-resource loading.
+        connector route. Hot module replacement runs over that same route: see
+        <code> vite.config.ts</code> for how the client finds the socket.
       </p>
       <p className="css-probe" data-testid="css-probe">
         Stylesheet applied.
       </p>
+      <div className="hmr-demo">
+        <Marker />
+        {/*
+          A heading, like the marker, so that both halves of the hot-reload
+          proof survive into the accessibility snapshot the end-to-end scenario
+          keeps as evidence. The counter is the half that proves the page was
+          not fully reloaded, so a snapshot showing only the marker would show
+          the weaker of the two facts.
+        */}
+        <h2 data-testid="hmr-clicks">clicks: {clicks}</h2>
+        <button type="button" data-testid="hmr-click" onClick={onIncrement}>
+          count
+        </button>
+      </div>
       <ul className="links">
         <li>
           <a href="products.html" data-testid="relative-products-link">
