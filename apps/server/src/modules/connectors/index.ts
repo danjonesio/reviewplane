@@ -17,17 +17,24 @@ import type { LogDestination, LogLevel } from "../../config.ts";
 import { ensureCertificateAuthority, ensureListenerCertificate, type TlsMaterial } from "./certificate-authority.ts";
 import { MAX_INBOUND_MESSAGE_BYTES, registerConnectorChannels } from "./channel.ts";
 import { loadConnectorModuleConfig, type ConnectorModuleConfig } from "./config.ts";
+import { ControlChannelRegistry } from "./publication.ts";
 import { startHeartbeatMonitor, type HeartbeatMonitor } from "./monitor.ts";
 import { ensureOrganisation } from "./repository.ts";
 import { registerConnectorRoutes } from "./routes.ts";
 
 export { loadConnectorModuleConfig } from "./config.ts";
 export type { ConnectorModuleConfig } from "./config.ts";
+export { ControlChannelRegistry } from "./publication.ts";
 
 export interface ConnectorModule {
   readonly config: ConnectorModuleConfig;
   readonly authority: TlsMaterial;
   readonly listener: FastifyInstance;
+  /**
+   * The live control channels, which route publication sends through
+   * (`docs/CONNECTOR_PROTOCOL.md` §11).
+   */
+  readonly channels: ControlChannelRegistry;
   /** The address the connector listener bound to, once started. */
   listenerAddress(): string | null;
   start(): Promise<void>;
@@ -87,10 +94,12 @@ export async function createConnectorModule(
   // Work started by a channel that must finish before shutdown, so that a
   // connector disconnecting as the server stops still records its event.
   const inFlight = new Set<Promise<unknown>>();
+  const channels = new ControlChannelRegistry();
   registerConnectorChannels(listener, {
     pool: options.pool,
     config,
     authority,
+    channels,
     track: (work) => {
       inFlight.add(work);
       void work.finally(() => inFlight.delete(work));
@@ -103,6 +112,7 @@ export async function createConnectorModule(
     config,
     authority,
     listener,
+    channels,
     listenerAddress(): string | null {
       const address = listener.server.address();
       if (address === null || typeof address === "string") return null;
@@ -116,6 +126,7 @@ export async function createConnectorModule(
     async stop(): Promise<void> {
       monitor?.stop();
       monitor = null;
+      channels.stop();
       await listener.close();
       await Promise.allSettled([...inFlight]);
     },

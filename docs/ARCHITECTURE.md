@@ -300,6 +300,17 @@ The leftmost label is the published service's `public_alias` (`DOMAIN_MODEL.md` 
 
 The gateway resolves an origin by dropping any port, dropping a trailing dot and lowercasing; what remains MUST be exactly one label followed by the configured suffix. Anything else resolves to no route. Host and origin handling MUST be deterministic and documented; the forwarding rules are in `CONNECTOR_PROTOCOL.md` §13.
 
+### 7.5 What the publication path does today
+
+The publication half of §7.2 is implemented and is exercised end to end against the real connector binary by `apps/server/test/route-publication.test.ts`:
+
+1. `POST /api/v1/projects/:projectId/published-services` validates the destination against the control plane's own policy before any row exists (`SECURITY.md` §9), writes the record as `requested` and records `published_service.requested`.
+2. The control plane sends `route.publish` down the control channel the connector already holds open, and waits, bounded, for the acknowledgement (`CONNECTOR_PROTOCOL.md` §11). No channel is `CONNECTOR_OFFLINE`; no answer is `CONTROL_PLANE_UNAVAILABLE`.
+3. The connector validates independently against its own configuration, probes the destination within a bounded startup grace, and answers `ready` with the destination it observed or `rejected` with a stable class.
+4. Only then is the route registered with the tunnel gateway, the record becomes `ready`, and `published_service.ready` is recorded. A refusal at any step leaves the record `failed` carrying the class, never free text.
+
+The connector opens no listening socket at any point, which the same test asserts with `ss -ltnp` while a route is being carried.
+
 Capabilities are minted by the control plane and verified by the gateway. A capability is opaque to its bearer, binds route, project and browser session, expires, and is revocable individually as well as through its route.
 
 ### 7.4 Application compatibility

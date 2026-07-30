@@ -30,8 +30,9 @@ import { STAGE_0_DESTINATION_POLICY } from "./modules/published-services/destina
 import type { DestinationPolicy } from "./modules/published-services/destination-policy.ts";
 import { HttpTunnelGateway } from "./modules/published-services/gateway-client.ts";
 import type { TunnelGateway } from "./modules/published-services/gateway-client.ts";
+import { ConnectorRoutePublisher } from "./modules/published-services/connector-publisher.ts";
 import { registerPublishedServiceRoutes } from "./modules/published-services/routes.ts";
-import { DirectRoutePublisher, PublishedServiceService } from "./modules/published-services/service.ts";
+import { PublishedServiceService } from "./modules/published-services/service.ts";
 import type { RoutePublisher } from "./modules/published-services/service.ts";
 
 export interface BuiltApp {
@@ -125,7 +126,7 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
   const publishedServices = new PublishedServiceService(
     pool,
     gateway,
-    options.publisher ?? new DirectRoutePublisher(),
+    options.publisher ?? new ConnectorRoutePublisher(connectors.channels),
     {
       organisationId: connectors.config.organisationId,
       destinationPolicy: options.destinationPolicy ?? STAGE_0_DESTINATION_POLICY,

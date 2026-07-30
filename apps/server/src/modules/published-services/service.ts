@@ -50,15 +50,14 @@ export interface RoutePublisher {
 }
 
 /**
- * The Stage 0 publisher.
+ * A publisher for tests that are not exercising the connector exchange.
  *
- * The control channel that carries `route.publish` to a connector is built by
- * the connector-enrolment work. Until it exists, the destination the control
- * plane authorised is the destination of record, and the connector still
- * refuses anything its own policy forbids when a stream arrives. Substituting
- * the real publisher is a constructor argument, not a change here.
+ * It answers with the destination the control plane authorised. Production uses
+ * {@link ConnectorRoutePublisher}, which sends `route.publish` down the
+ * connector's control channel and waits for the acknowledgement; nothing but a
+ * test should be satisfied by an answer the connector never gave.
  */
-export class DirectRoutePublisher implements RoutePublisher {
+export class StubRoutePublisher implements RoutePublisher {
   publish(input: {
     readonly localHost: string;
     readonly localPort: number;

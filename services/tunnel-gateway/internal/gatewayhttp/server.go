@@ -12,7 +12,7 @@ import (
 	"github.com/danjonesio/reviewplane/services/tunnel-gateway/datachannel"
 	"github.com/danjonesio/reviewplane/services/tunnel-gateway/internal/metrics"
 	"github.com/danjonesio/reviewplane/services/tunnel-gateway/internal/registry"
-	"github.com/danjonesio/reviewplane/services/tunnel-gateway/internal/wsx"
+	"github.com/danjonesio/reviewplane/services/tunnel-gateway/wsx"
 )
 
 // DataChannelPath is where a connector opens its multiplexed data channel. It

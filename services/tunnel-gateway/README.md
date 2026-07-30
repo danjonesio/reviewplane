@@ -117,7 +117,7 @@ does, it must equal the certificate-derived identifier; a mismatch is refused.
 exported so that `services/connector` uses the same code rather than a second
 implementation of the same mux.
 
-Transport: one WebSocket (`internal/wsx`, subprotocol
+Transport: one WebSocket (`wsx`, subprotocol
 `reviewplane.connector.data.v1`) carrying binary messages, each one frame:
 
 ```text

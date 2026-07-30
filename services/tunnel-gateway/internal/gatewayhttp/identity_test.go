@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/danjonesio/reviewplane/services/tunnel-gateway/internal/testca"
-	"github.com/danjonesio/reviewplane/services/tunnel-gateway/internal/wsx"
+	"github.com/danjonesio/reviewplane/services/tunnel-gateway/wsx"
 )
 
 // The connector data channel is mutually authenticated (docs/ARCHITECTURE.md

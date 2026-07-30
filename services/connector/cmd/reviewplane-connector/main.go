@@ -30,6 +30,7 @@ import (
 	"github.com/danjonesio/reviewplane/services/connector/internal/enrol"
 	"github.com/danjonesio/reviewplane/services/connector/internal/identity"
 	"github.com/danjonesio/reviewplane/services/connector/internal/logging"
+	"github.com/danjonesio/reviewplane/services/connector/internal/routes"
 	"github.com/danjonesio/reviewplane/services/connector/internal/transport"
 )
 
@@ -256,13 +257,50 @@ func runChannel(args []string, _, stderr *os.File) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	manager, err := routes.NewManager(routes.Options{
+		Publication:        cfg.Publication,
+		AuthorisedProjects: cfg.AuthorisedProjects(),
+		KnownWorkspaces:    cfg.KnownWorkspaces(),
+		Logger:             logger,
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitUsage
+	}
+
+	store := identity.NewStore(cfg.Identity.DataDir)
 	runner := &channel.Runner{
 		Config: cfg,
-		Store:  identity.NewStore(cfg.Identity.DataDir),
+		Store:  store,
 		Logger: logger,
+		Routes: manager,
 	}
-	if err := runner.Run(ctx); err != nil {
-		return reportFailure(stderr, logger, err)
+
+	// The data channel is a second outbound connection with its own life. It
+	// is supervised beside the control channel rather than inside it: a
+	// gateway restart must not take the control channel down with it, and a
+	// control-plane restart must not drop streams that are still in flight.
+	dataDone := make(chan struct{})
+	go func() {
+		defer close(dataDone)
+		manager.SuperviseDataChannel(ctx, routes.SupervisorOptions{
+			Store:  store,
+			Config: cfg,
+			Logger: logger,
+			Reconnect: routes.ReconnectPolicy{
+				Initial: cfg.Reconnect.InitialDelay,
+				Max:     cfg.Reconnect.MaxDelay,
+				Factor:  cfg.Reconnect.Factor,
+				Jitter:  cfg.Reconnect.Jitter,
+			},
+		})
+	}()
+
+	runErr := runner.Run(ctx)
+	stop()
+	<-dataDone
+	if runErr != nil {
+		return reportFailure(stderr, logger, runErr)
 	}
 	logger.Info("connector stopped")
 	return exitOK

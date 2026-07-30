@@ -1,0 +1,14 @@
+{
+  "name": "reviewplane-dev-fixture-static-app",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Loopback development fixture: a dependency-free multi-page site the connector publishes and a central browser opens through a route.",
+  "scripts": {
+    "start": "node src/main.ts",
+    "test": "node --test \"test/**/*.test.ts\""
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2"
+  }
+}

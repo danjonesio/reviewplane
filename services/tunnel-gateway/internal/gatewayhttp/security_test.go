@@ -14,7 +14,7 @@ import (
 	"github.com/danjonesio/reviewplane/packages/protocol/connectorv1"
 	"github.com/danjonesio/reviewplane/services/tunnel-gateway/datachannel"
 	"github.com/danjonesio/reviewplane/services/tunnel-gateway/internal/metrics"
-	"github.com/danjonesio/reviewplane/services/tunnel-gateway/internal/wsx"
+	"github.com/danjonesio/reviewplane/services/tunnel-gateway/wsx"
 )
 
 // Security layer (docs/TESTING.md sections 6, 10 and 21). Every rejection

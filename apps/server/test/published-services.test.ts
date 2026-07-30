@@ -24,6 +24,7 @@ import type {
   GatewayRouteView,
   TunnelGateway,
 } from "../src/modules/published-services/gateway-client.ts";
+import { StubRoutePublisher } from "../src/modules/published-services/service.ts";
 import type { PublishedServiceService } from "../src/modules/published-services/service.ts";
 import { testServerConfig } from "./support/config.ts";
 import { startPostgres } from "./support/postgres.ts";
@@ -104,6 +105,10 @@ describe("published-service endpoints", () => {
       config: testConfig(postgres.url),
       pool,
       gateway,
+      // The connector exchange has its own integration test against the real
+      // Go binary (test/route-publication.test.ts). This file is about the
+      // control plane's own rules, so the connector half is stubbed.
+      publisher: new StubRoutePublisher(),
       destinationPolicy: {
         // The fixture development server binds to an ephemeral port, so the
         // test policy is wider than the Stage 0 default. Everything the SSRF

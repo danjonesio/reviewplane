@@ -21,6 +21,12 @@
 // Deliberately absent: permessage-deflate and every other extension, text
 // messages, automatic reconnection, and any read path that allocates before it
 // has checked a declared length against the message bound.
+//
+// It is an exported package rather than an internal one because both ends of
+// the data channel must be one implementation: services/connector dials with
+// Dial and the gateway terminates with Accept. A second client written against
+// the same prose would be a second thing to keep in step with the handshake,
+// the subprotocol and the message bound.
 package wsx
 
 import (

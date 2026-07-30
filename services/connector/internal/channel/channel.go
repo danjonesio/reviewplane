@@ -37,16 +37,35 @@ import (
 // writeTimeout bounds one frame write.
 const writeTimeout = 15 * time.Second
 
+// Publisher answers a route publication.
+//
+// It is an interface so that the control channel can be tested without a
+// gateway to dial; the production implementation is
+// internal/routes.Manager.Publish.
+type Publisher interface {
+	Publish(request connectorv1.RoutePublish) connectorv1.RoutePublishAck
+	ActiveRoutes() int
+	ActiveStreams() int
+}
+
 // Runner maintains the channel for one enrolled connector.
 type Runner struct {
 	Config *config.Config
 	Store  *identity.Store
 	Logger *slog.Logger
 
+	// Routes answers route publications. A nil Routes refuses every
+	// publication with PROTOCOL_UNSUPPORTED rather than leaving the control
+	// plane waiting: an unanswered command is indistinguishable from a lost
+	// one, and docs/UX_FLOWS.md section 18 requires an actionable cause.
+	Routes Publisher
+
 	// OnConnected and OnHeartbeat let tests observe progress without parsing
 	// log output. They are nil in production.
 	OnConnected func(attempt int)
 	OnHeartbeat func(sequence int)
+	// OnPublished reports each acknowledgement the connector sent.
+	OnPublished func(ack connectorv1.RoutePublishAck)
 
 	startedAt time.Time
 }
@@ -169,6 +188,12 @@ func (r *Runner) session(ctx context.Context, attempt int) error {
 	idle := r.idleTimeout()
 	conn.SetPongHandler(func() { _ = conn.SetReadDeadline(time.Now().Add(idle)) })
 
+	// One writer serialises the heartbeat loop and the acknowledgements the
+	// read loop produces. Two goroutines writing to one WebSocket would
+	// interleave frames, which the peer would read as a malformed message and
+	// close the channel over.
+	writer := &frameWriter{conn: conn, connectorID: record.ConnectorID}
+
 	var (
 		writeMutex   sync.Mutex
 		writeFailure error
@@ -176,7 +201,7 @@ func (r *Runner) session(ctx context.Context, attempt int) error {
 	)
 	go func() {
 		defer close(finished)
-		err := r.heartbeatLoop(sessionCtx, conn, record.ConnectorID, logger)
+		err := r.heartbeatLoop(sessionCtx, writer, logger)
 		if err != nil && sessionCtx.Err() == nil {
 			writeMutex.Lock()
 			writeFailure = err
@@ -186,7 +211,7 @@ func (r *Runner) session(ctx context.Context, attempt int) error {
 		}
 	}()
 
-	readErr := r.readLoop(sessionCtx, conn, idle, logger)
+	readErr := r.readLoop(sessionCtx, conn, writer, idle, logger)
 	cancel()
 	<-finished
 
@@ -217,22 +242,21 @@ func (r *Runner) idleTimeout() time.Duration {
 // proves the channel is alive.
 func (r *Runner) heartbeatLoop(
 	ctx context.Context,
-	conn *ws.Conn,
-	connectorID string,
+	writer *frameWriter,
 	logger *slog.Logger,
 ) error {
 	ticker := time.NewTicker(r.Config.Heartbeat.Interval)
 	defer ticker.Stop()
 
 	for sequence := 1; ; sequence++ {
-		if err := r.sendHeartbeat(conn, connectorID); err != nil {
+		if err := r.sendHeartbeat(writer); err != nil {
 			return err
 		}
 		logger.Debug("heartbeat sent", slog.Int("sequence", sequence))
 		if r.OnHeartbeat != nil {
 			r.OnHeartbeat(sequence)
 		}
-		if err := conn.Ping(); err != nil {
+		if err := writer.ping(); err != nil {
 			return err
 		}
 		select {
@@ -243,15 +267,18 @@ func (r *Runner) heartbeatLoop(
 	}
 }
 
-func (r *Runner) sendHeartbeat(conn *ws.Conn, connectorID string) error {
+func (r *Runner) sendHeartbeat(writer *frameWriter) error {
+	activeRoutes, activeStreams := 0, 0
+	if r.Routes != nil {
+		activeRoutes = r.Routes.ActiveRoutes()
+		activeStreams = r.Routes.ActiveStreams()
+	}
 	payload := connectorv1.Heartbeat{
 		Status:        connectorv1.HeartbeatStatusHealthy,
 		UptimeSeconds: int64(time.Since(r.startedAt).Seconds()),
 		Version:       buildinfo.Version,
-		// Route publication and data streams are separate changes; this build
-		// holds none open, and reports that honestly rather than omitting it.
-		ActiveRoutes:  0,
-		ActiveStreams: 0,
+		ActiveRoutes:  int64(activeRoutes),
+		ActiveStreams: int64(activeStreams),
 	}
 	if summary := hostinfo.ReadResources(); summary.Load != nil || summary.MemoryAvailableBytes != nil {
 		// Only load and memory_available_bytes exist in the schema, so no
@@ -261,7 +288,19 @@ func (r *Runner) sendHeartbeat(conn *ws.Conn, connectorID string) error {
 			MemoryAvailableBytes: summary.MemoryAvailableBytes,
 		}
 	}
-	frame, err := protocolio.NewFrame(payload, connectorID, time.Now())
+	return writer.send(payload)
+}
+
+// frameWriter serialises every frame this connector sends on one channel.
+type frameWriter struct {
+	mu          sync.Mutex
+	conn        *ws.Conn
+	connectorID string
+}
+
+// send encodes payload as a control frame and writes it.
+func (w *frameWriter) send(payload connectorv1.Payload) error {
+	frame, err := protocolio.NewFrame(payload, w.connectorID, time.Now())
 	if err != nil {
 		return err
 	}
@@ -269,16 +308,30 @@ func (r *Runner) sendHeartbeat(conn *ws.Conn, connectorID string) error {
 	if err != nil {
 		return err
 	}
-	if err := conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := w.conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
 		return err
 	}
-	return conn.WriteText(encoded)
+	return w.conn.WriteText(encoded)
+}
+
+func (w *frameWriter) ping() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.conn.Ping()
 }
 
 // readLoop consumes control-plane frames. Every frame passes through the
 // generated decoder, so bounds, version, type and schema are checked before any
 // field is read, and an unknown type is refused rather than ignored.
-func (r *Runner) readLoop(ctx context.Context, conn *ws.Conn, idle time.Duration, logger *slog.Logger) error {
+func (r *Runner) readLoop(
+	ctx context.Context,
+	conn *ws.Conn,
+	writer *frameWriter,
+	idle time.Duration,
+	logger *slog.Logger,
+) error {
 	for {
 		if err := conn.SetReadDeadline(time.Now().Add(idle)); err != nil {
 			return err
@@ -313,22 +366,14 @@ func (r *Runner) readLoop(ctx context.Context, conn *ws.Conn, idle time.Duration
 			_ = conn.Close(ws.ClosePolicyViolation, string(connectorv1.ErrorClassProtocolUnsupported))
 			return fmt.Errorf("channel: refused a %s frame, which only the connector sends", frame.Envelope.Type)
 		}
-		r.dispatch(frame, logger)
+		r.dispatch(frame, writer, logger)
 	}
 }
 
-func (r *Runner) dispatch(frame connectorv1.Frame, logger *slog.Logger) {
+func (r *Runner) dispatch(frame connectorv1.Frame, writer *frameWriter, logger *slog.Logger) {
 	switch payload := frame.Payload.(type) {
 	case connectorv1.RoutePublish:
-		// Route publication is a separate change ("Publish a loopback
-		// development service and reach it from central Chromium"). This build
-		// advertises the tunnel capabilities but does not yet open routes, so
-		// the request is recorded and left unacknowledged rather than answered
-		// with an error class that would misdescribe the reason.
-		logger.Warn("route publication is not implemented by this connector build",
-			slog.String("route_id", payload.RouteID),
-			slog.String("message_id", frame.Envelope.MessageID),
-		)
+		r.handleRoutePublish(payload, writer, logger)
 	case connectorv1.RegistrationResponse:
 		logger.Warn("ignoring a registration response on an established channel",
 			slog.String("message_id", frame.Envelope.MessageID),
@@ -336,6 +381,43 @@ func (r *Runner) dispatch(frame connectorv1.Frame, logger *slog.Logger) {
 	default:
 		logger.Warn("no handler for message type",
 			slog.String("message_type", string(frame.Envelope.Type)),
+		)
+	}
+}
+
+// handleRoutePublish validates a publication and answers it.
+//
+// Every publication is answered. A `ready` acknowledgement carries the
+// destination the connector observed; a `rejected` one carries a stable error
+// class from docs/CONNECTOR_PROTOCOL.md section 21 and no free text
+// (docs/SECURITY.md section 18). Leaving one unanswered would leave the control
+// plane unable to tell a refusal from a lost frame, which
+// docs/UX_FLOWS.md section 18 forbids.
+func (r *Runner) handleRoutePublish(
+	payload connectorv1.RoutePublish,
+	writer *frameWriter,
+	logger *slog.Logger,
+) {
+	var ack connectorv1.RoutePublishAck
+	if r.Routes == nil {
+		class := connectorv1.ErrorClassProtocolUnsupported
+		ack = connectorv1.RoutePublishAck{
+			RouteID:    payload.RouteID,
+			Status:     connectorv1.RoutePublishAckStatusRejected,
+			ErrorClass: &class,
+		}
+		logger.Warn("route publication refused: this connector carries no routes",
+			slog.String("route_id", payload.RouteID))
+	} else {
+		ack = r.Routes.Publish(payload)
+	}
+	if r.OnPublished != nil {
+		r.OnPublished(ack)
+	}
+	if err := writer.send(ack); err != nil {
+		logger.Error("could not acknowledge a route publication",
+			slog.String("route_id", payload.RouteID),
+			slog.String("error", err.Error()),
 		)
 	}
 }

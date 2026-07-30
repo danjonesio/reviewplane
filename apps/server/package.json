@@ -10,7 +10,7 @@
     "dev": "node --conditions=development --watch src/main.ts",
     "start": "node dist/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --conditions=development --test \"test/**/*.test.ts\""
+    "test": "node --conditions=development --test --test-concurrency=1 \"test/**/*.test.ts\""
   },
   "dependencies": {
     "@fastify/websocket": "^11.2.0",

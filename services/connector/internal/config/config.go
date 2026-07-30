@@ -102,20 +102,62 @@ type Logging struct {
 	Format string
 }
 
-// Workspace is one entry of the workspaces block. Stage 0 parses it so that a
-// complete section 20 configuration loads, but workspace discovery is Stage 1
-// (docs/CONNECTOR_PROTOCOL.md section 9) and the connector does not act on it.
+// Workspace is one entry of the workspaces block.
+//
+// Workspace discovery is Stage 1 (docs/CONNECTOR_PROTOCOL.md section 9), so the
+// identifier the control plane names in a publication cannot be discovered yet.
+// It is configured instead: a publication whose workspace_id is not one of
+// these is refused with WORKSPACE_NOT_FOUND, which is the section 11 check the
+// connector owes independently of the control plane. Discovery replaces the
+// source of this list; it does not remove the check.
 type Workspace struct {
+	ID      string
 	Path    string
 	Project string
 }
 
-// Publication is the publication block. Stage 0 parses and validates it;
-// route publication itself is a separate change.
+// Publication is the publication block: this connector's own say over what it
+// will carry (docs/CONNECTOR_PROTOCOL.md section 11).
 type Publication struct {
 	AllowedHosts []string
 	AllowedPorts []string
 	MaxRoutes    int
+	// AllowedProjects lists the projects this connector serves. Empty means
+	// the projects named in the workspaces block, so an operator who has
+	// declared their workspaces does not have to declare the same projects
+	// twice.
+	AllowedProjects []string
+}
+
+// AuthorisedProjects reports the projects a publication may name.
+func (c *Config) AuthorisedProjects() []string {
+	if len(c.Publication.AllowedProjects) > 0 {
+		return append([]string(nil), c.Publication.AllowedProjects...)
+	}
+	seen := map[string]bool{}
+	projects := make([]string, 0, len(c.Workspaces))
+	for _, workspace := range c.Workspaces {
+		if workspace.Project == "" || seen[workspace.Project] {
+			continue
+		}
+		seen[workspace.Project] = true
+		projects = append(projects, workspace.Project)
+	}
+	return projects
+}
+
+// KnownWorkspaces reports the workspace identifiers a publication may name.
+func (c *Config) KnownWorkspaces() []string {
+	seen := map[string]bool{}
+	workspaces := make([]string, 0, len(c.Workspaces))
+	for _, workspace := range c.Workspaces {
+		if workspace.ID == "" || seen[workspace.ID] {
+			continue
+		}
+		seen[workspace.ID] = true
+		workspaces = append(workspaces, workspace.ID)
+	}
+	return workspaces
 }
 
 // Config is the validated connector configuration.
@@ -460,7 +502,11 @@ func loadWorkspaces(cfg *Config, root *yamlmin.Node) error {
 		if err != nil {
 			return err
 		}
-		if err := mapping.RejectUnknownKeys(name, "path", "project"); err != nil {
+		if err := mapping.RejectUnknownKeys(name, "id", "path", "project"); err != nil {
+			return err
+		}
+		identifier, err := mapping.Child("id").String(name + ".id")
+		if err != nil && !errors.Is(err, yamlmin.ErrNotFound) {
 			return err
 		}
 		path, err := mapping.Child("path").String(name + ".path")
@@ -474,7 +520,11 @@ func loadWorkspaces(cfg *Config, root *yamlmin.Node) error {
 		if err != nil && !errors.Is(err, yamlmin.ErrNotFound) {
 			return err
 		}
-		cfg.Workspaces = append(cfg.Workspaces, Workspace{Path: filepath.Clean(path), Project: project})
+		cfg.Workspaces = append(cfg.Workspaces, Workspace{
+			ID:      identifier,
+			Path:    filepath.Clean(path),
+			Project: project,
+		})
 	}
 	return nil
 }
@@ -484,7 +534,14 @@ func loadPublication(cfg *Config, root *yamlmin.Node) error {
 	if err != nil {
 		return err
 	}
-	if err := node.RejectUnknownKeys("publication", "allowed_hosts", "allowed_ports", "max_routes"); err != nil {
+	if err := node.RejectUnknownKeys(
+		"publication", "allowed_hosts", "allowed_ports", "max_routes", "allowed_projects",
+	); err != nil {
+		return err
+	}
+	if value, err := node.Child("allowed_projects").StringSlice("publication.allowed_projects"); err == nil {
+		cfg.Publication.AllowedProjects = value
+	} else if !errors.Is(err, yamlmin.ErrNotFound) {
 		return err
 	}
 	if value, err := node.Child("allowed_hosts").StringSlice("publication.allowed_hosts"); err == nil {

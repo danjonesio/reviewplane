@@ -43,6 +43,8 @@ Contract tests for a protocol run one committed fixture corpus in every language
 - MCP client and review retrieval
 - WebSocket live frames and control
 
+Running today: `apps/server/test/connector-integration.test.ts` (enrolment, channel, revocation, and the `ss -ltnp` evidence that the connector opens no listening socket) and `apps/server/test/route-publication.test.ts` (route publication end to end through the real connector binary and a real loopback service, including `PORT_NOT_LISTENING` after the bounded grace, `DESTINATION_NOT_ALLOWED`, `PROJECT_NOT_AUTHORISED`, `CONNECTOR_OFFLINE` and `ROUTE_EXPIRED`). Both build `services/connector` from source, so neither can drift from the binary an operator runs.
+
 ### End to end
 
 Complete user workflows in deployed Compose environment.

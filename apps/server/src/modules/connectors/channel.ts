@@ -25,6 +25,7 @@ import type { WebSocket } from "@fastify/websocket";
 
 import type { Pool } from "../../db/pool.ts";
 import type { TlsMaterial } from "./certificate-authority.ts";
+import type { ControlChannelRegistry } from "./publication.ts";
 import { CONTROL_PATH, ENROLMENT_PATH, type ConnectorModuleConfig } from "./config.ts";
 import { enrol, EnrolmentRefused } from "./enrolment.ts";
 import { certificateFingerprint } from "./x509.ts";
@@ -78,6 +79,11 @@ export interface ChannelContext {
    * `AGENTS.md` requires.
    */
   readonly track?: (work: Promise<unknown>) => void;
+  /**
+   * Where a live control channel is registered so that route publication can
+   * reach it (`docs/CONNECTOR_PROTOCOL.md` §11).
+   */
+  readonly channels?: ControlChannelRegistry;
 }
 
 /** The verified peer identity of a control connection, or null. */
@@ -296,6 +302,13 @@ async function handleControlSocket(
   await markConnected(context, connector, log);
   log.info({ certificate_fingerprint: fingerprint }, "connector control channel established");
 
+  // The channel becomes publishable only once the identity is confirmed, so a
+  // publication can never be sent down a socket whose peer is unknown.
+  context.channels?.register(connector.id, socket);
+  void closed.then(() => {
+    context.channels?.unregister(connector.id, socket);
+  });
+
   if (queue.overflowed) {
     log.warn("refusing a connector that sent more frames than the channel will buffer");
     socket.close(CLOSE.messageTooBig, "");
@@ -357,11 +370,22 @@ async function handleControlSocket(
         );
         break;
       }
-      case "route.publish.ack":
-        // Route publication is a separate change; the acknowledgement is
-        // recorded in the log until that handler exists.
-        log.info({ route_id: frame.payload.route_id, status: frame.payload.status }, "route acknowledgement");
+      case "route.publish.ack": {
+        // The acknowledgement carries a stable class and no free text, so it
+        // is safe to log whole (docs/SECURITY.md section 18).
+        const delivered = context.channels?.acknowledge(connector.id, frame.payload) ?? false;
+        log.info(
+          {
+            route_id: frame.payload.route_id,
+            status: frame.payload.status,
+            error_class: frame.payload.error_class ?? null,
+            observed_destination: frame.payload.observed_destination ?? null,
+            matched_a_publication: delivered,
+          },
+          "route acknowledgement",
+        );
         break;
+      }
       default:
         log.warn({ message_type: frame.type }, "no handler for message type");
         socket.close(CLOSE.policyViolation, "PROTOCOL_UNSUPPORTED");

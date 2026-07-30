@@ -17,6 +17,8 @@ import type { ServerConfig } from "../../src/config.ts";
 import { migrate } from "../../src/db/migrate.ts";
 import { createPool, type Pool } from "../../src/db/pool.ts";
 import { loadConnectorModuleConfig, type ConnectorModuleConfig } from "../../src/modules/connectors/index.ts";
+import type { DestinationPolicy } from "../../src/modules/published-services/destination-policy.ts";
+import type { TunnelGateway } from "../../src/modules/published-services/gateway-client.ts";
 import { testServerConfig } from "./config.ts";
 import { startPostgres, type TestDatabase } from "./postgres.ts";
 
@@ -111,6 +113,15 @@ export interface HarnessOptions {
   readonly connectorEnvironment?: Record<string, string>;
   /** Reuse an already running database. */
   readonly database?: TestDatabase;
+  /**
+   * Substitutes the tunnel gateway. The gateway's own behaviour is tested
+   * exhaustively in `services/tunnel-gateway`; a harness that needs a
+   * publication to reach `ready` supplies a recorder rather than a second
+   * gateway to run.
+   */
+  readonly gateway?: TunnelGateway;
+  /** Substitutes the destination policy, for a fixture on an ephemeral port. */
+  readonly destinationPolicy?: DestinationPolicy;
 }
 
 export async function startHarness(options: HarnessOptions = {}): Promise<Harness> {
@@ -136,7 +147,11 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
     logLevel: "debug",
   });
 
-  let built = await buildApp({ config, pool, connectorConfig, logDestination: collector });
+  const extras = {
+    ...(options.gateway === undefined ? {} : { gateway: options.gateway }),
+    ...(options.destinationPolicy === undefined ? {} : { destinationPolicy: options.destinationPolicy }),
+  };
+  let built = await buildApp({ config, pool, connectorConfig, logDestination: collector, ...extras });
   await built.start();
 
   const directory = await mkdtemp(join(tmpdir(), "reviewplane-harness-"));
@@ -178,7 +193,13 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
       const previousConnectorPort = connectorPort();
       await built.stop();
       const restarted: ConnectorModuleConfig = { ...connectorConfig, listenPort: previousConnectorPort };
-      built = await buildApp({ config, pool, connectorConfig: restarted, logDestination: collector });
+      built = await buildApp({
+        config,
+        pool,
+        connectorConfig: restarted,
+        logDestination: collector,
+        ...extras,
+      });
       await built.start();
     },
     async stop(): Promise<void> {

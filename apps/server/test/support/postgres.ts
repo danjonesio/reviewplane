@@ -25,7 +25,11 @@ const run = promisify(execFile);
 /** The pinned image. `docs/SECURITY.md` §19 requires pinned base images. */
 export const POSTGRES_IMAGE = "postgres:18-alpine";
 
-const READINESS_TIMEOUT_MS = 60_000;
+// Every test file that needs a database starts its own, and two of them also
+// build and run the Go connector. The suite therefore runs one file at a time
+// (`--test-concurrency=1` in package.json); this bound still allows for a slow
+// image pull on a first run.
+const READINESS_TIMEOUT_MS = 120_000;
 const READINESS_POLL_MS = 250;
 
 const liveContainers = new Set<string>();

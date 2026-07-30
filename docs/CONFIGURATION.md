@@ -128,7 +128,7 @@ The worker reads environment variables, with a `*_FILE` variant for every creden
 
 The two credentials have no defaults: the worker refuses to start without them. `disabled_high_risk` is the only way to disable the Chromium sandbox, and it logs the unsupported-configuration warning at startup. Limits requested by the control plane are clamped to these values rather than widening them, so a session cannot ask the worker to exceed what the operator configured.
 
-The control plane reads `REVIEWPLANE_LISTEN_ADDRESS`, `REVIEWPLANE_PORT`, `REVIEWPLANE_DATABASE_URL`, `REVIEWPLANE_BOOTSTRAP_TOKEN`, `REVIEWPLANE_WORKER_CREDENTIAL`, `REVIEWPLANE_WORKER_COMMAND_CREDENTIAL`, `REVIEWPLANE_WORKER_ENDPOINT`, `REVIEWPLANE_ARTEFACT_PATH` and `REVIEWPLANE_ARTEFACT_MAX_BYTES`, each with the same `*_FILE` support.
+The control plane reads `REVIEWPLANE_WORKER_CREDENTIAL`, `REVIEWPLANE_WORKER_COMMAND_CREDENTIAL`, `REVIEWPLANE_WORKER_ENDPOINT`, `REVIEWPLANE_ARTEFACT_PATH`, `REVIEWPLANE_ARTEFACT_MAX_BYTES` and `REVIEWPLANE_WORKER_REQUEST_TIMEOUT_MS` alongside the settings of §2, each with the same `*_FILE` support. Its listen address is `REVIEWPLANE_HOST`, which is the name §2 gives it; there is no separate `REVIEWPLANE_LISTEN_ADDRESS`.
 
 ## 4. Tunnel-gateway configuration
 
@@ -177,6 +177,20 @@ Key areas:
 - Privacy reporting
 - Logging
 - Proxy and certificate trust
+
+### 5.1 Publication settings
+
+The `publication` block is what the connector enforces on a `route.publish`, independently of the control plane and of the tunnel gateway (`CONNECTOR_PROTOCOL.md` §11).
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `publication.allowed_hosts` | `127.0.0.1`, `::1` | Literal addresses a route may target. A host name is refused at load, never resolved at publication. |
+| `publication.allowed_ports` | `3000-3999`, `4321`, `5173` | Port ranges a route may target |
+| `publication.max_routes` | `10` | Concurrent routes this connector will carry |
+| `publication.allowed_projects` | the projects named in `workspaces` | Projects a publication may name |
+| `workspaces[].id` | none | The workspace identifier a publication may name. Discovery is Stage 1, so it is configured until then. |
+
+Omitting a setting selects the default, which is the narrowest option — never the widest. `SECURITY.md` §9 requires deny by default, and a configuration file that leaves a block out MUST NOT be the most permissive configuration of the connector.
 
 ## 6. Feature flags
 

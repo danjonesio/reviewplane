@@ -21,7 +21,7 @@ import (
 	"github.com/danjonesio/reviewplane/services/tunnel-gateway/datachannel"
 	"github.com/danjonesio/reviewplane/services/tunnel-gateway/internal/registry"
 	"github.com/danjonesio/reviewplane/services/tunnel-gateway/internal/testca"
-	"github.com/danjonesio/reviewplane/services/tunnel-gateway/internal/wsx"
+	"github.com/danjonesio/reviewplane/services/tunnel-gateway/wsx"
 	"github.com/danjonesio/reviewplane/services/tunnel-gateway/policy"
 )
 

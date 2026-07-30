@@ -340,6 +340,10 @@ The connector must confirm:
 
 `allowed_browser_session_ids` must name at least one browser session. A route with no authorised session is not published.
 
+The startup grace exists because agents commonly publish before the development server has finished booting. It is bounded — 10 seconds by default — and it ends in `PORT_NOT_LISTENING`, never in an indefinite wait. A destination that begins listening inside the grace is accepted. Each of the checks above has one class: `PROJECT_NOT_AUTHORISED`, `WORKSPACE_NOT_FOUND`, `DESTINATION_NOT_ALLOWED`, `PORT_NOT_LISTENING`, `ROUTE_EXPIRED` and `ROUTE_LIMIT_EXCEEDED` respectively, and the control plane passes that class through to its caller unchanged (`API.md` §10).
+
+The control plane's wait for an acknowledgement is bounded too. A connector holding no control channel is `CONNECTOR_OFFLINE` before anything is sent; a connector that holds one and never answers is `CONTROL_PLANE_UNAVAILABLE` when the wait expires. Neither leaves a published service in `requested` for ever.
+
 The same checks are applied independently by the control plane before it publishes and by the tunnel gateway before it registers a route. Three implementations of one policy is the defence in depth `SECURITY.md` §9 requires: a control plane that had been persuaded to publish an unauthorised destination must still be refused by the gateway, and a gateway that had been misconfigured must still be refused by the connector. They are held to one shared corpus so that they cannot drift apart.
 
 ## 12. Data stream protocol
@@ -394,7 +398,50 @@ Concurrent streams per channel, bytes per stream and the size of one data-channe
 
 Route expiry and revocation both terminate streams that are already in flight, and both report `ROUTE_EXPIRED`. §21 is a closed vocabulary, so which of the two occurred is recorded in the audit trail and the metrics rather than on the wire.
 
-## 13. WebSocket and hot-reload support
+## 13. Header handling, WebSocket and hot-reload support
+
+### 13.1 Header rewriting
+
+Header rewriting is deterministic and is configured once, not decided per request. Every rule below is applied by the tunnel gateway; the connector relays the bytes it is given and parses none of them, so no header can change which socket the connector opens (§12).
+
+The browser sees `https://<public_alias>.internal.invalid/`. The development service believes it is serving `127.0.0.1:<port>`. Those two facts are irreconcilable in general, so the deployment chooses which one the application is told.
+
+**`Host`** is replaced, never forwarded. `REVIEWPLANE_TUNNEL_HOST_HEADER_MODE` selects:
+
+| Mode | `Host` the development service receives | Use it when |
+|---|---|---|
+| `upstream` (default) | the observed destination, for example `127.0.0.1:5173` | the development server has host or DNS-rebinding protection that accepts loopback and refuses an unfamiliar name. Vite and Next.js both do. |
+| `original` | `<public_alias>.internal.invalid` | the application generates absolute URLs from `Host` and must generate ones the browser can resolve. |
+
+The client's own `Host` is dropped before the request is forwarded, because it is the value the gateway resolved the route from and must not also be an instruction to the far end.
+
+**`Origin`** is forwarded unchanged. Chromium sets it from the internal origin, so a development service that checks it sees `https://<public_alias>.internal.invalid`. An application enforcing a same-origin or CSRF check against a configured origin MUST be configured with that value; the gateway MUST NOT rewrite it, because rewriting it would defeat the check it exists for.
+
+**Forwarded headers** are set by the gateway according to `REVIEWPLANE_TUNNEL_FORWARDED_HEADER_MODE`:
+
+| Mode | Added |
+|---|---|
+| `standard` (default) | `X-Forwarded-Proto: https` and `X-Forwarded-Host: <public_alias>.internal.invalid` |
+| `none` | nothing |
+
+No `X-Forwarded-For` is ever added. The client is a browser worker inside the control-plane zone, and its address is internal topology the development service has no use for.
+
+**Headers the gateway removes unconditionally**, whatever the mode:
+
+- the hop-by-hop headers of RFC 9110 §7.6.1, plus anything a `Connection` header nominates;
+- `Content-Length`, which the gateway recomputes;
+- the route-confusion set — `X-Forwarded-Host`, `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Port`, `X-Forwarded-Server`, `Forwarded`, `X-Real-IP`, `X-Original-Host`, `X-Original-URL`, `X-Rewrite-URL`, `X-HTTP-Host-Override`, `Host-Override` — so that a caller cannot persuade either the gateway or the development service that the request was for a different origin;
+- everything in the `X-ReviewPlane-` namespace, which is how the session capability is carried and why it never reaches the development service.
+
+A header value containing CR, LF or NUL is dropped rather than escaped.
+
+### 13.2 Absolute URLs emitted by the development service
+
+An absolute URL in a response body that names `localhost`, `127.0.0.1` or the development port is an expected failure mode and MUST NOT be repaired by rewriting response bodies. The browser resolves it against nothing the route can reach, so the sub-resource fails; body rewriting would mean parsing untrusted content in the request path and would break any application that emits an absolute URL for a legitimate reason.
+
+The supported repairs are, in order of preference: emit root-relative URLs; configure the application's public base URL to the internal origin; or set the `Host` mode to `original` so the application derives the right base itself. `examples/dev-fixture` serves a page that exhibits the failure so that it can be recognised rather than guessed at.
+
+### 13.3 Upgrades and streaming
 
 The route layer must preserve:
 
@@ -402,9 +449,9 @@ The route layer must preserve:
 - Bidirectional frames
 - Connection closure semantics
 - Idle timeout suitable for hot reload
-- Origin and forwarded headers according to configured mode
+- Origin and forwarded headers according to the modes above
 
-Header rewriting must be deterministic and documented.
+The Stage 0 gateway refuses an HTTP upgrade with `UNSUPPORTED_CAPABILITY`; WebSockets, server-sent events, HTTP streaming and hot reload arrive with the issue that owns them.
 
 ## 14. Local MCP bridge
 
@@ -525,7 +572,11 @@ environment:
   labels: [proxmox, development]
 
 workspaces:
-  - path: /home/dan/projects/refresh-surplus
+  # id is the workspace identifier a publication names. Workspace discovery is
+  # Stage 1 (section 9), so until it lands the identifier is configured, and a
+  # publication naming an unknown workspace is refused with WORKSPACE_NOT_FOUND.
+  - id: wsp_refresh_surplus
+    path: /home/dan/projects/refresh-surplus
     project: refresh-surplus
 
 publication:
@@ -537,6 +588,10 @@ publication:
     - 4321
     - 5173
   max_routes: 10
+  # Optional. Defaults to the projects named in the workspaces block, so an
+  # operator who has declared their workspaces does not declare them twice.
+  allowed_projects:
+    - refresh-surplus
 
 privacy:
   report_changed_paths: true
@@ -552,7 +607,9 @@ Configuration MUST be validated at startup and every failure MUST name the setti
 
 The connector accepts a deliberately small YAML subset — comments, block mappings, block and flow sequences, and plain or quoted scalars — and refuses anything outside it, including tabs for indentation, anchors, aliases, tags, multi-line scalars, flow mappings and multiple documents. That keeps the statically linked binary of §3 free of a YAML dependency and keeps the parser bounded.
 
-Two settings are refused rather than accepted at Stage 0, because no configuration of this build can honour them: `privacy.report_process_details: true`, since §8 permits only `load` and `memory_available_bytes` in a heartbeat, and `privacy.discover_workspaces: true`, since workspace discovery (§9) is not implemented. The `workspaces` and `publication` blocks are parsed and validated so that a complete configuration loads, and are not yet acted upon.
+Two settings are refused rather than accepted at Stage 0, because no configuration of this build can honour them: `privacy.report_process_details: true`, since §8 permits only `load` and `memory_available_bytes` in a heartbeat, and `privacy.discover_workspaces: true`, since workspace discovery (§9) is not implemented.
+
+The `publication` block is enforced. An omitted `allowed_hosts` or `allowed_ports` means the Stage 0 default of `SECURITY.md` §9 — loopback only, on the development-server ports above — never "everything"; a configuration file that omits a setting MUST NOT be the widest one. A host name is refused at load rather than resolved at publication, because resolving one is a rebinding surface: the name that passed the check need not be the address the connector later opens.
 
 The `enrol` command reads its one-time token from `--token`, `--token-file` or `REVIEWPLANE_ENROLMENT_TOKEN`, exactly one of which must be supplied. A file or environment variable keeps the credential out of the process table and shell history.
 
