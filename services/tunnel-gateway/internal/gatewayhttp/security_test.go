@@ -13,6 +13,7 @@ import (
 
 	"github.com/danjonesio/reviewplane/packages/protocol/connectorv1"
 	"github.com/danjonesio/reviewplane/services/tunnel-gateway/datachannel"
+	"github.com/danjonesio/reviewplane/services/tunnel-gateway/internal/metrics"
 	"github.com/danjonesio/reviewplane/services/tunnel-gateway/internal/wsx"
 )
 
@@ -43,6 +44,34 @@ func TestExpiredCapabilityIsRefusedWithRouteExpired(t *testing.T) {
 	capability := h.mint(testRouteID, testProjectID, testSessionID, time.Minute)
 	h.clock.advance(2 * time.Minute)
 	assertCode(t, h.browse(browserRequest{capability: capability}), http.StatusForbidden, CodeRouteExpired)
+}
+
+func TestADeniedRequestOpensNoStreamAndDoesNotRetry(t *testing.T) {
+	// A denial must be a single answer, not a loop. Nothing reaches the
+	// connector, so an expired or unauthorised capability cannot be turned into
+	// load on the development environment by a client that keeps trying.
+	h := newHarness(t, harnessOptions{})
+	h.publish(RegisterRequest{})
+	expired := h.mint(testRouteID, testProjectID, testSessionID, time.Minute)
+	h.clock.advance(2 * time.Minute)
+
+	before := h.gateway.Metrics().Value(metrics.Streams, "outcome", "opened")
+	for attempt := 0; attempt < 3; attempt++ {
+		assertCode(t, h.browse(browserRequest{capability: expired}), http.StatusForbidden, CodeRouteExpired)
+	}
+	if after := h.gateway.Metrics().Value(metrics.Streams, "outcome", "opened"); after != before {
+		t.Fatalf("%v streams were opened for denied requests", after-before)
+	}
+	route, live := h.gateway.Routes().Lookup(testRouteID)
+	if !live {
+		t.Fatal("the route was discarded by a denied request")
+	}
+	if _, _, opened, _ := route.Counters(); opened != 0 {
+		t.Fatalf("the route recorded %d streams for denied requests", opened)
+	}
+	if h.gateway.Metrics().Value(metrics.Denials, "reason", "capability_expired") != 3 {
+		t.Fatalf("the denials were not counted once each:\n%s", h.metricsText())
+	}
 }
 
 func TestAnotherProjectsCapabilityIsRefused(t *testing.T) {
