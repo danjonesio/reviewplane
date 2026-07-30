@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -90,8 +91,45 @@ type harness struct {
 	routes   *datachannel.RouteTable
 	session  *datachannel.Session
 	wrapConn func(datachannel.MessageConn) datachannel.MessageConn
+	requests *requestTracker
 
 	signingKey []byte
+}
+
+// requestTracker counts browser requests the gateway is still handling.
+//
+// A client's request completes when it has read the response, but the gateway
+// records the last of its counters — the stream outcome and the request code —
+// after the body has been written. Anything that asserts on metrics, counters,
+// logs or audit records after a request therefore has to wait for the handler
+// itself, not for the response.
+type requestTracker struct {
+	started  atomic.Int64
+	finished atomic.Int64
+	// notify carries one wake-up. A completion that finds it full does not
+	// block: the waiter re-reads the counters after every wake-up, so a dropped
+	// signal cannot lose a completion.
+	notify chan struct{}
+}
+
+func newRequestTracker() *requestTracker {
+	return &requestTracker{notify: make(chan struct{}, 1)}
+}
+
+func (t *requestTracker) wrap(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.started.Add(1)
+		defer func() {
+			// The counter is incremented before the signal, so a waiter that
+			// reads the counters after being woken always sees this completion.
+			t.finished.Add(1)
+			select {
+			case t.notify <- struct{}{}:
+			default:
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 type recordedRequest struct {
@@ -182,7 +220,8 @@ func newHarness(t *testing.T, options harnessOptions) *harness {
 	h.gateway = gateway
 	t.Cleanup(gateway.Shutdown)
 
-	h.proxy = httptest.NewServer(gateway.ProxyHandler())
+	h.requests = newRequestTracker()
+	h.proxy = httptest.NewServer(h.requests.wrap(gateway.ProxyHandler()))
 	t.Cleanup(h.proxy.Close)
 	h.admin = httptest.NewServer(gateway.AdminHandler())
 	t.Cleanup(h.admin.Close)
@@ -211,6 +250,11 @@ func newHarness(t *testing.T, options harnessOptions) *harness {
 // connect opens a connector data channel and starts serving streams on it.
 func (h *harness) connect(connectorID string, certificate tls.Certificate, claimedID string) *datachannel.Session {
 	h.t.Helper()
+	// A reconnection replaces an existing channel, and Channels.Put closes the
+	// one it replaced. Waiting for "a" live channel would therefore return the
+	// channel on its way out, and a stream opened on that one dies with it. The
+	// wait below is for a channel that is not the one seen here.
+	previous, _ := h.gateway.Channels().Get(connectorID)
 	conn, err := h.dialConnector(certificate, claimedID)
 	if err != nil {
 		h.t.Fatalf("dial connector data channel: %v", err)
@@ -225,7 +269,7 @@ func (h *harness) connect(connectorID string, certificate tls.Certificate, claim
 	}()
 	h.session = session
 	h.t.Cleanup(func() { session.Close(nil) })
-	h.waitForChannel(connectorID)
+	h.waitForChannel(connectorID, previous)
 	return session
 }
 
@@ -242,15 +286,17 @@ func (h *harness) dialConnector(certificate tls.Certificate, claimedID string) (
 	}, header, wsx.Options{MaxMessageBytes: 64 << 10})
 }
 
-func (h *harness) waitForChannel(connectorID string) {
+// waitForChannel blocks until the gateway has registered a channel for the
+// connector that is not the one previous names. Pass nil for a first connection.
+func (h *harness) waitForChannel(connectorID string, previous *datachannel.Session) {
 	h.t.Helper()
-	for attempt := 0; attempt < 200; attempt++ {
-		if _, live := h.gateway.Channels().Get(connectorID); live {
+	for attempt := 0; attempt < 400; attempt++ {
+		if current, live := h.gateway.Channels().Get(connectorID); live && current != previous {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	h.t.Fatal("the connector data channel never became live")
+	h.t.Fatalf("the data channel for %s never became live", connectorID)
 }
 
 // publish registers a route on the gateway and admits it to the connector, the
@@ -377,6 +423,36 @@ func (h *harness) browse(request browserRequest) *http.Response {
 		h.t.Fatalf("browser request: %v", err)
 	}
 	return response
+}
+
+// settle blocks until the gateway has finished handling every request whose
+// response a client has already read.
+//
+// It is not a sleep and not a retry loop: it waits on the handler's own
+// completion signal and re-reads the counters after each wake-up, so it returns
+// exactly when the last handler has returned. Reading a metric, a counter, a log
+// line or an audit record after a request without calling it is a race, because
+// the gateway records the stream outcome and the request code after the response
+// body has been written.
+//
+// A test that deliberately holds a request open — a streaming response, or one
+// blocked against a stream limit — must not call it, and none does.
+func (h *harness) settle() {
+	h.t.Helper()
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+	for {
+		started := h.requests.started.Load()
+		if h.requests.finished.Load() >= started {
+			return
+		}
+		select {
+		case <-h.requests.notify:
+		case <-timer.C:
+			h.t.Fatalf("the gateway is still handling %d request(s)",
+				started-h.requests.finished.Load())
+		}
+	}
 }
 
 func (h *harness) recorded() recordedRequest {

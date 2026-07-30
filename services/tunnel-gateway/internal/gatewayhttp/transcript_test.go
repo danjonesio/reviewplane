@@ -136,6 +136,9 @@ func TestProtocolTranscript(t *testing.T) {
 		t.Fatalf("proxied request: %d %s", proxied.StatusCode, proxiedBody)
 	}
 	upstream := h.recorded()
+	// The counters and the frame tail are recorded after the response body, so
+	// the transcript would otherwise be a snapshot of a half-finished request.
+	h.settle()
 	t.Logf("  <- %d, %d bytes of body", proxied.StatusCode, len(proxiedBody))
 	t.Logf("  the development server saw: %s %s  Host: %s",
 		upstream.Method, upstream.Path, upstream.Host)
@@ -165,6 +168,7 @@ func TestProtocolTranscript(t *testing.T) {
 	}
 	after := h.browse(browserRequest{capability: capability})
 	afterBody := readBody(t, after)
+	h.settle()
 	t.Logf("  a request after revocation: %d %s", after.StatusCode, strings.TrimSpace(afterBody))
 
 	t.Log("")

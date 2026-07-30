@@ -138,6 +138,9 @@ func TestMetricsRecordBytesStreamsAndRouteLifecycle(t *testing.T) {
 	response := h.browse(browserRequest{capability: h.defaultCapability()})
 	_ = readBody(t, response)
 	h.recorded()
+	// The stream outcome and the request code are recorded after the response
+	// body has been written, so the client having read it is not enough.
+	h.settle()
 
 	text := h.metricsText()
 	for _, required := range []string{

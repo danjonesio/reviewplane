@@ -59,6 +59,7 @@ func TestADeniedRequestOpensNoStreamAndDoesNotRetry(t *testing.T) {
 	for attempt := 0; attempt < 3; attempt++ {
 		assertCode(t, h.browse(browserRequest{capability: expired}), http.StatusForbidden, CodeRouteExpired)
 	}
+	h.settle()
 	if after := h.gateway.Metrics().Value(metrics.Streams, "outcome", "opened"); after != before {
 		t.Fatalf("%v streams were opened for denied requests", after-before)
 	}
@@ -384,7 +385,7 @@ func TestMalformedDataChannelFramesAreRefusedWithoutPanic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	h.waitForChannel("con_malformed")
+	h.waitForChannel("con_malformed", nil)
 
 	for _, malformed := range [][]byte{
 		{},                 // shorter than a frame header
@@ -405,9 +406,13 @@ func TestMalformedDataChannelFramesAreRefusedWithoutPanic(t *testing.T) {
 	}
 	_ = conn.Close(wsx.CloseNormal, "")
 
-	// The gateway is still serving: a malformed frame took down one channel,
-	// not the process.
-	h.connect(testConnectorID, h.authority.ConnectorCertificate(t, testConnectorID), "")
+	// The gateway is still serving: a malformed frame took down the channel that
+	// sent it and nothing else. The route's own channel was never disturbed, so
+	// the assertion is that it still carries traffic — reconnecting it here would
+	// test the harness rather than the gateway.
+	if _, live := h.gateway.Channels().Get(testConnectorID); !live {
+		t.Fatal("a malformed frame on another channel took down this one")
+	}
 	response := h.browse(browserRequest{capability: h.defaultCapability()})
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("the gateway did not survive malformed frames: %d", response.StatusCode)
@@ -423,7 +428,7 @@ func TestOversizedDataChannelMessagesAreRefused(t *testing.T) {
 		t.Fatalf("dial: %v", err)
 	}
 	defer func() { _ = conn.Close(wsx.CloseNormal, "") }()
-	h.waitForChannel("con_oversized")
+	h.waitForChannel("con_oversized", nil)
 
 	oversized := make([]byte, (64<<10)+1)
 	if err := conn.WriteMessage(oversized); err == nil {
@@ -468,6 +473,8 @@ func TestLogsCarryNoCapabilityCookieOrAuthorisationHeader(t *testing.T) {
 
 	_ = readBody(t, h.adminRequest(http.MethodGet, "/internal/v1/routes"))
 
+	// Both log lines are written inside the handler, after the response.
+	h.settle()
 	logs := h.logs.String()
 	for name, secret := range map[string]string{
 		"capability":          capability,
@@ -491,6 +498,7 @@ func TestAuditRecordsCarryNoCapability(t *testing.T) {
 	response := h.browse(browserRequest{capability: capability})
 	_ = readBody(t, response)
 	h.recorded()
+	h.settle()
 
 	encoded, err := json.Marshal(h.gateway.Auditor().Records())
 	if err != nil {
