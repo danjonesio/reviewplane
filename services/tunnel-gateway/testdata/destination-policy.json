@@ -1,0 +1,269 @@
+{
+  "description": "Shared corpus for the publication-time destination policy of docs/SECURITY.md section 9. The tunnel gateway (Go) and the control plane (TypeScript) both enforce this policy, and both run this file, so a case that only one of them refuses fails the build. Reasons are the stable classification recorded in audit payloads and metrics; the wire error class for every rejection is DESTINATION_NOT_ALLOWED, because a caller learning which check it tripped is a probing oracle.",
+  "policies": {
+    "stage0-default": {
+      "note": "Stage 0: loopback only, on the development-server ports of docs/CONNECTOR_PROTOCOL.md section 20, HTTP only.",
+      "allowed_hosts": ["127.0.0.1", "::1"],
+      "allowed_ports": ["3000-3999", "4321", "5173"],
+      "allowed_protocols": ["http"],
+      "allow_non_loopback": false,
+      "allow_link_local": false
+    },
+    "high-risk-widened": {
+      "note": "The explicit high-risk mode docs/CONFIGURATION.md section 4 requires before anything widens the tunnel. It still cannot reach a metadata endpoint.",
+      "allowed_hosts": ["127.0.0.1", "10.0.0.5", "169.254.10.1", "169.254.169.254"],
+      "allowed_ports": ["3000-3999"],
+      "allowed_protocols": ["http", "https"],
+      "allow_non_loopback": true,
+      "allow_link_local": true
+    }
+  },
+  "cases": [
+    {
+      "name": "loopback-vite",
+      "policy": "stage0-default",
+      "host": "127.0.0.1",
+      "port": 5173,
+      "protocol": "http",
+      "expect": "allowed"
+    },
+    {
+      "name": "loopback-astro",
+      "policy": "stage0-default",
+      "host": "127.0.0.1",
+      "port": 4321,
+      "protocol": "http",
+      "expect": "allowed"
+    },
+    {
+      "name": "loopback-range-low",
+      "policy": "stage0-default",
+      "host": "127.0.0.1",
+      "port": 3000,
+      "protocol": "http",
+      "expect": "allowed"
+    },
+    {
+      "name": "loopback-range-high",
+      "policy": "stage0-default",
+      "host": "127.0.0.1",
+      "port": 3999,
+      "protocol": "http",
+      "expect": "allowed"
+    },
+    {
+      "name": "ipv6-loopback",
+      "policy": "stage0-default",
+      "host": "::1",
+      "port": 3000,
+      "protocol": "http",
+      "expect": "allowed"
+    },
+    {
+      "name": "ipv4-mapped-loopback",
+      "policy": "stage0-default",
+      "host": "::ffff:127.0.0.1",
+      "port": 3000,
+      "protocol": "http",
+      "expect": "allowed",
+      "note": "The mapped form must resolve to the same decision as the plain form, or it is an allow-list bypass."
+    },
+    {
+      "name": "port-above-range",
+      "policy": "stage0-default",
+      "host": "127.0.0.1",
+      "port": 8080,
+      "protocol": "http",
+      "expect": "port_not_in_allow_list"
+    },
+    {
+      "name": "port-just-above-range",
+      "policy": "stage0-default",
+      "host": "127.0.0.1",
+      "port": 4000,
+      "protocol": "http",
+      "expect": "port_not_in_allow_list"
+    },
+    {
+      "name": "port-zero",
+      "policy": "stage0-default",
+      "host": "127.0.0.1",
+      "port": 0,
+      "protocol": "http",
+      "expect": "port_is_outside_the_valid_range"
+    },
+    {
+      "name": "port-above-sixteen-bits",
+      "policy": "stage0-default",
+      "host": "127.0.0.1",
+      "port": 65536,
+      "protocol": "http",
+      "expect": "port_is_outside_the_valid_range"
+    },
+    {
+      "name": "host-name-not-resolved",
+      "policy": "stage0-default",
+      "host": "localhost",
+      "port": 5173,
+      "protocol": "http",
+      "expect": "host_is_not_a_literal_address",
+      "note": "Stage 0 does not resolve names: a name that passes the check need not be the address the connector later opens."
+    },
+    {
+      "name": "host-name-that-resolves-to-metadata",
+      "policy": "stage0-default",
+      "host": "metadata.google.internal",
+      "port": 80,
+      "protocol": "http",
+      "expect": "host_is_not_a_literal_address"
+    },
+    {
+      "name": "ec2-metadata",
+      "policy": "stage0-default",
+      "host": "169.254.169.254",
+      "port": 80,
+      "protocol": "http",
+      "expect": "host_is_a_cloud_metadata_endpoint"
+    },
+    {
+      "name": "ec2-metadata-under-widened-policy",
+      "policy": "high-risk-widened",
+      "host": "169.254.169.254",
+      "port": 3000,
+      "protocol": "http",
+      "expect": "host_is_a_cloud_metadata_endpoint",
+      "note": "Naming the metadata address in the allow-list must not re-enable it."
+    },
+    {
+      "name": "ec2-metadata-ipv6",
+      "policy": "stage0-default",
+      "host": "fd00:ec2::254",
+      "port": 80,
+      "protocol": "http",
+      "expect": "host_is_a_cloud_metadata_endpoint"
+    },
+    {
+      "name": "ecs-task-metadata",
+      "policy": "stage0-default",
+      "host": "169.254.170.2",
+      "port": 80,
+      "protocol": "http",
+      "expect": "host_is_a_cloud_metadata_endpoint"
+    },
+    {
+      "name": "ipv4-link-local",
+      "policy": "stage0-default",
+      "host": "169.254.10.1",
+      "port": 3000,
+      "protocol": "http",
+      "expect": "host_is_link_local"
+    },
+    {
+      "name": "ipv6-link-local",
+      "policy": "stage0-default",
+      "host": "fe80::1",
+      "port": 3000,
+      "protocol": "http",
+      "expect": "host_is_link_local"
+    },
+    {
+      "name": "ipv4-link-local-under-widened-policy",
+      "policy": "high-risk-widened",
+      "host": "169.254.10.1",
+      "port": 3000,
+      "protocol": "http",
+      "expect": "allowed",
+      "note": "docs/SECURITY.md section 9 refuses link-local targets unless explicitly allowed."
+    },
+    {
+      "name": "private-network",
+      "policy": "stage0-default",
+      "host": "10.0.0.5",
+      "port": 3000,
+      "protocol": "http",
+      "expect": "host_is_not_loopback"
+    },
+    {
+      "name": "private-network-under-widened-policy",
+      "policy": "high-risk-widened",
+      "host": "10.0.0.5",
+      "port": 3000,
+      "protocol": "http",
+      "expect": "allowed"
+    },
+    {
+      "name": "home-network",
+      "policy": "stage0-default",
+      "host": "192.168.1.10",
+      "port": 3000,
+      "protocol": "http",
+      "expect": "host_is_not_loopback"
+    },
+    {
+      "name": "public-address",
+      "policy": "stage0-default",
+      "host": "203.0.113.9",
+      "port": 3000,
+      "protocol": "http",
+      "expect": "host_is_not_loopback"
+    },
+    {
+      "name": "unspecified-ipv4",
+      "policy": "stage0-default",
+      "host": "0.0.0.0",
+      "port": 3000,
+      "protocol": "http",
+      "expect": "host_is_the_unspecified_address"
+    },
+    {
+      "name": "unspecified-ipv6",
+      "policy": "stage0-default",
+      "host": "::",
+      "port": 3000,
+      "protocol": "http",
+      "expect": "host_is_the_unspecified_address"
+    },
+    {
+      "name": "multicast",
+      "policy": "stage0-default",
+      "host": "224.0.0.1",
+      "port": 3000,
+      "protocol": "http",
+      "expect": "host_is_multicast_or_broadcast"
+    },
+    {
+      "name": "ipv6-multicast",
+      "policy": "stage0-default",
+      "host": "ff02::1",
+      "port": 3000,
+      "protocol": "http",
+      "expect": "host_is_multicast_or_broadcast"
+    },
+    {
+      "name": "loopback-outside-the-allow-list",
+      "policy": "stage0-default",
+      "host": "127.0.0.2",
+      "port": 3000,
+      "protocol": "http",
+      "expect": "host_not_in_allow_list",
+      "note": "Being loopback is necessary, not sufficient."
+    },
+    {
+      "name": "protocol-not-allowed",
+      "policy": "stage0-default",
+      "host": "127.0.0.1",
+      "port": 5173,
+      "protocol": "https",
+      "expect": "protocol_not_allowed",
+      "note": "docs/ARCHITECTURE.md section 7.4 defers configurable upstream TLS; Stage 0 speaks HTTP/1.1 to a plain loopback destination."
+    },
+    {
+      "name": "protocol-allowed-under-widened-policy",
+      "policy": "high-risk-widened",
+      "host": "127.0.0.1",
+      "port": 3000,
+      "protocol": "https",
+      "expect": "allowed"
+    }
+  ]
+}
