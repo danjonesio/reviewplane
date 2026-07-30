@@ -330,6 +330,18 @@ For each supported upgrade path:
 - Verify connector compatibility
 - Verify rollback limitations
 
+The Stage 0 prior-version fixture is committed at `test/fixtures/stage0/`: a
+PostgreSQL dump at the Stage 0 migration head, the artefact-store files its rows
+reference, and a manifest carrying the product commit, the schema version, the
+per-table row counts a restore must reproduce and a SHA-256 for every file. It
+holds the named review `bugs-on-homepage` with two annotated human findings and
+one agent-submitted verification whose after screenshot is in the store. It was
+produced by running the Stage 0 product loop against real components rather than
+by writing rows, and carries no key material: `connector_tls_material` is
+excluded from the dump. `bash test/fixtures/stage0/verify.sh` restores it into a
+disposable PostgreSQL and checks it against its manifest; the fixture's own
+README states what it contains and how it was captured.
+
 ## 14. Backup and restore tests
 
 - Full backup and restore
