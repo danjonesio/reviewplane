@@ -77,7 +77,9 @@ Automated scenario:
 14. Export review.
 15. Verify event sequence and artefact hashes.
 
-Steps 1 to 6 run automatically as `pnpm test:e2e` (`deploy/compose/e2e/run.sh`). It starts the Compose stack, enrols the connector fixture, starts the fixture application on connector loopback, publishes it, reserves and allocates a browser session against the route, and navigates central Chromium to the internal origin. Every step asserts its own outcome and a step that cannot be verified aborts the run; evidence lands in `deploy/compose/e2e/evidence/`.
+Steps 1 to 6 run automatically as `pnpm test:e2e` (`deploy/compose/e2e/run.sh`). It starts the Compose stack, enrols the connector fixture, starts the fixture applications on connector loopback, publishes them, reserves and allocates browser sessions against the routes, and navigates central Chromium to the internal origins. Every step asserts its own outcome and a step that cannot be verified aborts the run; evidence lands in `deploy/compose/e2e/evidence/`.
+
+The same script then proves the tunnel capabilities `ARCHITECTURE.md` §7.4 makes mandatory, which those six steps do not reach: a WebSocket echo, server-sent events asserted on arrival timing, and Vite hot module replacement applying a source edit made on the development machine without a full page reload. It ends by recording the §12 baseline. These are numbered separately in the script because they are not steps of the scenario above; they are the capabilities the route has to have for that scenario to mean anything.
 
 Steps 7 to 15 need reviews, findings, verification and export, and arrive with the issues that introduce them.
 
