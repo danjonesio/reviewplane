@@ -539,6 +539,11 @@ export class PublishedServiceService {
     };
   }
 
+  /** Reads a route, or raises RESOURCE_NOT_FOUND. */
+  async read(serviceId: string): Promise<PublishedService> {
+    return this.#read(serviceId);
+  }
+
   async #read(serviceId: string): Promise<PublishedService> {
     const client: PoolClient = await this.#pool.connect();
     try {

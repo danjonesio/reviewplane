@@ -23,6 +23,16 @@ playwright/.cache/
 !.env.example
 deploy/compose/secrets/*
 !deploy/compose/secrets/.gitkeep
+# TLS material the end-to-end scenario generates: a private authority, the
+# gateway's key and certificate, and the trust bundles built from them.
+deploy/compose/tls/*
+!deploy/compose/tls/.gitkeep
+!deploy/compose/tls/README.md
+# The connector configuration run.sh rewrites with the generated project id.
+deploy/compose/connector-config.generated.yaml
+# Evidence from an end-to-end run. It is attached to a pull request, not
+# committed: it names generated identifiers that mean nothing on another run.
+deploy/compose/e2e/evidence/
 
 # Logs
 *.log

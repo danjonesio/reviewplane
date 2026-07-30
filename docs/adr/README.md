@@ -28,6 +28,7 @@ ADRs record decisions that materially affect architecture, security, protocols o
 | [0012](0012-pluggable-artefact-store.md) | Pluggable artefact store with filesystem default | Accepted |
 | [0013](0013-generated-protocol-models.md) | Generate protocol models from one bounded JSON Schema source | Accepted |
 | [0014](0014-connector-identity-x509.md) | Issue connector identities as X.509 client certificates from a control-plane CA | Accepted |
+| [0015](0015-browser-worker-tunnel-trust.md) | Reach the tunnel gateway by resolver rule and public-key pin, not by DNS and a trusted CA | Accepted |
 
 ## Pending decisions
 

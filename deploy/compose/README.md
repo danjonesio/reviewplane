@@ -83,3 +83,73 @@ The initial implementation must preserve these rules:
 - PostgreSQL is a private service; artefacts live on a private local volume by default (ADR-0012).
 - Secrets are mounted as files where possible.
 - Images are pinned to release versions or digests.
+
+## End-to-end scenario
+
+`pnpm test:e2e` runs `e2e/run.sh`, which is steps 1 to 6 of the primary
+scenario in `docs/TESTING.md` §3: start the stack, enrol the connector fixture,
+start the fixture application on connector loopback, publish it, allocate a
+browser session against the route, and navigate. It is release-blocking for the
+Stage 0 exit criterion "a dev server bound to loopback on a remote VM is usable
+by central Chromium".
+
+```bash
+pnpm test:e2e                            # about three minutes, needs Docker
+REVIEWPLANE_E2E_KEEP_UP=1 pnpm test:e2e  # leave the stack running to inspect
+```
+
+Evidence lands in `e2e/evidence/`: screenshots at both required viewports, the
+network summary the development service recorded, `ss -ltnp` taken inside the
+development environment during the load, the event sequence, the observed
+header behaviour and the absolute-URL finding. None of it is committed.
+
+`e2e/generate-secrets.sh` writes the development credentials and the tunnel CA.
+It is idempotent, because regenerating the capability signing key would
+invalidate every capability already minted and regenerating the gateway
+certificate would invalidate the pin the browser worker was started with
+(ADR-0015); pass `--force` to replace everything.
+
+### Why the generated secrets are mode 0644
+
+`uid`, `gid` and `mode` on a Compose secret reference are honoured by Docker
+Swarm only. Plain Compose bind-mounts a file-backed secret with the permissions
+it has on the host, and every service here runs as uid 10001 rather than as the
+user who ran the script, so a 0600 secret is unreadable to the service that
+needs it.
+
+These are generated development credentials for a stack that publishes no host
+port and has no route to the internet, and the directory is the boundary. A
+production deployment MUST NOT copy this: deliver secrets through Swarm or
+Kubernetes secrets, or pre-create the files owned by the service user.
+
+### Network topology
+
+Every network is `internal: true`, so Docker attaches no gateway to any of them
+and no container can reach the internet. `docs/ARCHITECTURE.md` §6.2 permits
+"explicit network routes only", and these four are the whole set:
+
+| Network | Members | Why |
+|---|---|---|
+| `data` | postgres, server | The database is reachable by the control plane and nothing else. |
+| `browser` | server, browser-worker | The control plane commands the worker. |
+| `tunnel` | server, tunnel-gateway, browser-worker | The worker reaches published services only through the gateway; the control plane reaches the gateway's admin API. |
+| `devnet` | server, tunnel-gateway, dev-fixture | The development environment dials out to enrol and to open its data channel. Nothing dials in. |
+
+The browser worker is on `browser` and `tunnel`. It has no route to `devnet`,
+so it cannot reach the development environment except through a route the
+gateway is carrying — which is what makes a published service a capability for
+one destination rather than network reach.
+
+The `dev-fixture` service stands in for a developer's VM and publishes no port
+at all. There is deliberately no `ports:` and no `expose:` on it, and the
+scenario asserts that no container in the project publishes a host port.
+
+### Rotating the gateway certificate
+
+The browser worker pins the gateway certificate's public key (ADR-0015), so a
+new certificate needs a new pin:
+
+```bash
+deploy/compose/e2e/generate-secrets.sh --force   # rewrites .env with the new pin
+docker compose --profile e2e up -d --force-recreate tunnel-gateway browser-worker
+```

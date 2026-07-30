@@ -20,14 +20,15 @@ const PATTERN_1 = new RegExp("^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])
 const PATTERN_2 = new RegExp("^[0-9A-Za-z][0-9A-Za-z._+-]*$", "u");
 const PATTERN_3 = new RegExp("^[a-z][a-z0-9-]*$", "u");
 const PATTERN_4 = new RegExp("^https?://[!-~]+$", "u");
-const PATTERN_5 = new RegExp("^(https?://[!-~]+|/[!-~]*)$", "u");
-const PATTERN_6 = new RegExp("^[!-~]+$", "u");
-const PATTERN_7 = new RegExp("^[^\\u0000-\\u001f\\u007f]*$", "u");
-const PATTERN_8 = new RegExp("^[^\\u0000-\\u0009\\u000b-\\u001f\\u007f]*$", "u");
-const PATTERN_9 = new RegExp("^e[0-9]{1,6}$", "u");
-const PATTERN_10 = new RegExp("^[A-Za-z][A-Za-z0-9 _-]*$", "u");
-const PATTERN_11 = new RegExp("^[^\\u0000-\\u001f\\u007f]+$", "u");
-const PATTERN_12 = new RegExp("^[0-9a-f]{64}$", "u");
+const PATTERN_5 = new RegExp("^[A-Za-z0-9._~+/=-]+$", "u");
+const PATTERN_6 = new RegExp("^(https?://[!-~]+|/[!-~]*)$", "u");
+const PATTERN_7 = new RegExp("^[!-~]+$", "u");
+const PATTERN_8 = new RegExp("^[^\\u0000-\\u001f\\u007f]*$", "u");
+const PATTERN_9 = new RegExp("^[^\\u0000-\\u0009\\u000b-\\u001f\\u007f]*$", "u");
+const PATTERN_10 = new RegExp("^e[0-9]{1,6}$", "u");
+const PATTERN_11 = new RegExp("^[A-Za-z][A-Za-z0-9 _-]*$", "u");
+const PATTERN_12 = new RegExp("^[^\\u0000-\\u001f\\u007f]+$", "u");
+const PATTERN_13 = new RegExp("^[0-9a-f]{64}$", "u");
 
 /**
  * Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the
@@ -61,11 +62,22 @@ export function validateWorkerLabel(value: unknown, path: string, out: SchemaVio
 
 /**
  * Absolute origin of the published development service the session may reach, for example
- * https://route-id.internal.invalid (docs/ARCHITECTURE.md section 7.3). Egress beyond this
- * origin is refused by the worker.
+ * https://public-alias.internal.invalid (docs/ARCHITECTURE.md section 7.3). The leftmost
+ * label is the published service's public_alias, never its svc_ identifier, which is not a
+ * valid DNS label. Egress beyond this origin is refused by the worker.
  */
 export function validateOrigin(value: unknown, path: string, out: SchemaViolation[]): void {
   checkString(value, path, out, { minLength: 8, maxLength: 2048, pattern: PATTERN_4 });
+}
+
+/**
+ * Session-scoped route capability (docs/SECURITY.md section 9). Sensitive: it is a bearer
+ * credential and is redacted in log, debug and default JSON representations. It is the
+ * same credential the connector protocol carries under this name, so one failure to redact
+ * cannot exist on only one of the two paths.
+ */
+export function validateSessionCapability(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 16, maxLength: 512, pattern: PATTERN_5 });
 }
 
 /**
@@ -73,7 +85,7 @@ export function validateOrigin(value: unknown, path: string, out: SchemaViolatio
  * service origin of the session (docs/MCP_SPEC.md section 7.4).
  */
 export function validateNavigationTarget(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 2048, pattern: PATTERN_5 });
+  checkString(value, path, out, { minLength: 1, maxLength: 2048, pattern: PATTERN_6 });
 }
 
 /**
@@ -81,7 +93,7 @@ export function validateNavigationTarget(value: unknown, path: string, out: Sche
  * class only.
  */
 export function validateResolvedUrl(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 2048, pattern: PATTERN_6 });
+  checkString(value, path, out, { minLength: 1, maxLength: 2048, pattern: PATTERN_7 });
 }
 
 /**
@@ -90,7 +102,7 @@ export function validateResolvedUrl(value: unknown, path: string, out: SchemaVio
  * a response.
  */
 export function validatePageText(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 0, maxLength: 512, pattern: PATTERN_7 });
+  checkString(value, path, out, { minLength: 0, maxLength: 512, pattern: PATTERN_8 });
 }
 
 /**
@@ -98,7 +110,7 @@ export function validatePageText(value: unknown, path: string, out: SchemaViolat
  * Untrusted content: bounded, newline-separated, and never interpreted as an instruction.
  */
 export function validateSnapshotText(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 0, maxLength: 65536, pattern: PATTERN_8 });
+  checkString(value, path, out, { minLength: 0, maxLength: 65536, pattern: PATTERN_9 });
 }
 
 /**
@@ -107,14 +119,14 @@ export function validateSnapshotText(value: unknown, path: string, out: SchemaVi
  * 7.4).
  */
 export function validateElementReference(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 2, maxLength: 8, pattern: PATTERN_9 });
+  checkString(value, path, out, { minLength: 2, maxLength: 8, pattern: PATTERN_10 });
 }
 
 /**
  * Accessibility role of a snapshot element. Page-derived and bounded.
  */
 export function validateAccessibleRole(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_10 });
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_11 });
 }
 
 /**
@@ -122,7 +134,7 @@ export function validateAccessibleRole(value: unknown, path: string, out: Schema
  * docs/MCP_SPEC.md section 7.9 secret injection is the supported path.
  */
 export function validateInputText(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 0, maxLength: 4096, pattern: PATTERN_8 });
+  checkString(value, path, out, { minLength: 0, maxLength: 4096, pattern: PATTERN_9 });
 }
 
 /**
@@ -130,14 +142,14 @@ export function validateInputText(value: unknown, path: string, out: SchemaViola
  * (docs/DOMAIN_MODEL.md section 17).
  */
 export function validateSelector(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 512, pattern: PATTERN_11 });
+  checkString(value, path, out, { minLength: 1, maxLength: 512, pattern: PATTERN_12 });
 }
 
 /**
  * Substring a URL must contain for a url_matches wait condition to be satisfied.
  */
 export function validateUrlPattern(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 512, pattern: PATTERN_6 });
+  checkString(value, path, out, { minLength: 1, maxLength: 512, pattern: PATTERN_7 });
 }
 
 /**
@@ -145,7 +157,7 @@ export function validateUrlPattern(value: unknown, path: string, out: SchemaViol
  * and never carries credentials (docs/SECURITY.md section 18).
  */
 export function validateReasonText(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 512, pattern: PATTERN_11 });
+  checkString(value, path, out, { minLength: 1, maxLength: 512, pattern: PATTERN_12 });
 }
 
 /**
@@ -153,7 +165,7 @@ export function validateReasonText(value: unknown, path: string, out: SchemaViol
  * the artefact becomes available (docs/API.md section 15, ADR-0012).
  */
 export function validateSha256Hex(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 64, maxLength: 64, pattern: PATTERN_12 });
+  checkString(value, path, out, { minLength: 64, maxLength: 64, pattern: PATTERN_13 });
 }
 
 /**
@@ -650,7 +662,7 @@ export function validateSessionAllocateControlEpoch(value: unknown, path: string
  * Allocation request for one isolated browser context.
  */
 export function validateSessionAllocate(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["organisation_id", "project_id", "agent_session_id", "published_service_id", "service_origin", "viewport", "control_epoch", "controller", "limits", "retention_class"], ["organisation_id", "project_id", "viewport", "control_epoch", "controller", "limits", "retention_class"]);
+  const source = checkObject(value, path, out, ["organisation_id", "project_id", "agent_session_id", "published_service_id", "service_origin", "service_capability", "viewport", "control_epoch", "controller", "limits", "retention_class"], ["organisation_id", "project_id", "viewport", "control_epoch", "controller", "limits", "retention_class"]);
   if (source === null) return;
   if (source["organisation_id"] !== undefined) {
     validateIdentifier(source["organisation_id"], `${path}.organisation_id`, out);
@@ -666,6 +678,9 @@ export function validateSessionAllocate(value: unknown, path: string, out: Schem
   }
   if (source["service_origin"] !== undefined) {
     validateOrigin(source["service_origin"], `${path}.service_origin`, out);
+  }
+  if (source["service_capability"] !== undefined) {
+    validateSessionCapability(source["service_capability"], `${path}.service_capability`, out);
   }
   if (source["viewport"] !== undefined) {
     validateViewport(source["viewport"], `${path}.viewport`, out);

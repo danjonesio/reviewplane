@@ -186,10 +186,18 @@
     },
     "origin": {
       "type": "string",
-      "description": "Absolute origin of the published development service the session may reach, for example https://route-id.internal.invalid (docs/ARCHITECTURE.md section 7.3). Egress beyond this origin is refused by the worker.",
+      "description": "Absolute origin of the published development service the session may reach, for example https://public-alias.internal.invalid (docs/ARCHITECTURE.md section 7.3). The leftmost label is the published service's public_alias, never its svc_ identifier, which is not a valid DNS label. Egress beyond this origin is refused by the worker.",
       "minLength": 8,
       "maxLength": 2048,
       "pattern": "^https?://[!-~]+$"
+    },
+    "session_capability": {
+      "type": "string",
+      "description": "Session-scoped route capability (docs/SECURITY.md section 9). Sensitive: it is a bearer credential and is redacted in log, debug and default JSON representations. It is the same credential the connector protocol carries under this name, so one failure to redact cannot exist on only one of the two paths.",
+      "x-sensitive": true,
+      "minLength": 16,
+      "maxLength": 512,
+      "pattern": "^[A-Za-z0-9._~+/=-]+$"
     },
     "navigation_target": {
       "type": "string",
@@ -769,6 +777,10 @@
         "service_origin": {
           "$ref": "#/$defs/origin",
           "description": "Origin the published service is reachable at. Relative navigation resolves against it, and the worker refuses navigation to any other origin."
+        },
+        "service_capability": {
+          "$ref": "#/$defs/session_capability",
+          "description": "Session-scoped route capability the worker presents to the tunnel gateway on every request to service_origin (docs/ARCHITECTURE.md section 7.3). The control plane mints it and the gateway verifies it; the worker only carries it, and never to any other origin."
         },
         "viewport": {
           "$ref": "#/$defs/viewport",

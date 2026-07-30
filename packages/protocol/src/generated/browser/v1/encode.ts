@@ -168,6 +168,9 @@ export function encodeSessionAllocate(value: SessionAllocate): string {
   if (value.service_origin !== undefined) {
     fields.push(`"service_origin":${jsonString(value.service_origin)}`);
   }
+  if (value.service_capability !== undefined) {
+    fields.push(`"service_capability":${jsonString(value.service_capability.reveal())}`);
+  }
   fields.push(`"viewport":${encodeViewport(value.viewport)}`);
   fields.push(`"control_epoch":${jsonInteger(value.control_epoch)}`);
   fields.push(`"controller":${encodeControllerIdentity(value.controller)}`);

@@ -93,9 +93,20 @@ func run() error {
 		return err
 	}
 
+	// docs/ARCHITECTURE.md section 7.3 gives the browser an https origin, so the
+	// browser-facing listener terminates TLS with the same certificate the
+	// connector listener uses. A deployment that terminates TLS in front of the
+	// gateway leaves the certificate settings unset and gets a plain listener;
+	// the connector listener still requires them, because mutual TLS there is
+	// not something a front end can stand in for.
+	proxyTLS, err := proxyTLSConfig(settings)
+	if err != nil {
+		return err
+	}
 	proxy := &http.Server{
 		Addr:              settings.ProxyListenAddress,
 		Handler:           gateway.ProxyHandler(),
+		TLSConfig:         proxyTLS,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	connector := &http.Server{
@@ -112,7 +123,11 @@ func run() error {
 
 	go gateway.Run()
 	failures := make(chan error, 3)
-	go serve(failures, proxy.ListenAndServe)
+	if proxyTLS == nil {
+		go serve(failures, proxy.ListenAndServe)
+	} else {
+		go serve(failures, func() error { return proxy.ListenAndServeTLS("", "") })
+	}
 	go serve(failures, func() error { return connector.ListenAndServeTLS("", "") })
 	go serve(failures, admin.ListenAndServe)
 
@@ -121,6 +136,7 @@ func run() error {
 		slog.String("connector", settings.ConnectorListenAddress),
 		slog.String("admin", settings.AdminListenAddress),
 		slog.String("internal_suffix", settings.InternalSuffix),
+		slog.Bool("proxy_tls", proxyTLS != nil),
 	)
 
 	signals := make(chan os.Signal, 1)
@@ -143,6 +159,25 @@ func serve(failures chan<- error, listen func() error) {
 	if err := listen(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		failures <- err
 	}
+}
+
+// proxyTLSConfig builds the browser-facing listener's TLS configuration, or
+// returns nil when no certificate is configured and TLS is terminated in front.
+func proxyTLSConfig(settings config.Config) (*tls.Config, error) {
+	if settings.TLSCertFile == "" || settings.TLSKeyFile == "" {
+		return nil, nil
+	}
+	certificate, err := tls.LoadX509KeyPair(settings.TLSCertFile, settings.TLSKeyFile)
+	if err != nil {
+		return nil, err
+	}
+	// No client certificate is requested here: the browser worker authenticates
+	// with a route capability, not with an identity, and asking for one would
+	// be a second authentication scheme with nothing behind it.
+	return &tls.Config{
+		Certificates: []tls.Certificate{certificate},
+		MinVersion:   tls.VersionTLS12,
+	}, nil
 }
 
 func connectorTLSConfig(settings config.Config) (*tls.Config, error) {

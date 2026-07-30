@@ -14,6 +14,14 @@ import type { AddressInfo } from "node:net";
 export interface FixtureApp {
   readonly origin: string;
   readonly requests: string[];
+  /**
+   * Headers each request arrived with, in the same order as `requests`.
+   *
+   * The route capability is a bearer credential, so a test has to be able to
+   * see which requests carried it and which did not; asserting on the session's
+   * own state would only prove what the worker meant to do.
+   */
+  readonly headers: Record<string, string | string[] | undefined>[];
   stop(): Promise<void>;
 }
 
@@ -73,9 +81,11 @@ const COOKIE_PAGE = `<!doctype html>
 
 export async function startFixtureApp(): Promise<FixtureApp> {
   const requests: string[] = [];
+  const receivedHeaders: Record<string, string | string[] | undefined>[] = [];
   const server: Server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://fixture.invalid");
     requests.push(url.pathname);
+    receivedHeaders.push({ ...request.headers });
 
     const send = (body: string, headers: Record<string, string> = {}): void => {
       response.writeHead(200, {
@@ -127,6 +137,7 @@ export async function startFixtureApp(): Promise<FixtureApp> {
   return {
     origin: `http://127.0.0.1:${String(address.port)}`,
     requests,
+    headers: receivedHeaders,
     async stop() {
       await new Promise<void>((resolve) => {
         server.close(() => {

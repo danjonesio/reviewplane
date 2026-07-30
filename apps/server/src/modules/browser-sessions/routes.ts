@@ -70,9 +70,9 @@ export async function registerBrowserSessionRoutes(
       viewport?: Viewport;
       controller?: ControllerIdentity;
       published_service_id?: string;
-      service_origin?: string;
       agent_session_id?: string;
       retention_class?: "action_screenshots" | "verification_evidence";
+      allocate?: boolean;
     };
     if (body.organisation_id === undefined || body.viewport === undefined) {
       throw new ApiError(
@@ -80,20 +80,53 @@ export async function registerBrowserSessionRoutes(
         "organisation_id and viewport are required to start a browser session.",
       );
     }
-    const record = await options.sessions.start({
+    const common = {
       organisationId: body.organisation_id,
       projectId,
       viewport: body.viewport,
       controller: body.controller ?? { type: "agent", id: newId("ags_") },
       retentionClass: body.retention_class ?? "verification_evidence",
+      ...(body.agent_session_id === undefined ? {} : { agentSessionId: body.agent_session_id }),
+      actor: ADMINISTRATOR,
+    } as const;
+
+    // allocate=false reserves the identifier without contacting the worker, so
+    // that it can be named in a route's allowed_browser_session_ids before the
+    // session's egress origin is fixed (docs/API.md section 11).
+    if (body.allocate === false) {
+      const reserved = await options.sessions.create(common);
+      return reply.status(201).send({ data: reserved, meta: { request_id: request.id } });
+    }
+
+    const record = await options.sessions.start({
+      ...common,
       ...(body.published_service_id === undefined
         ? {}
         : { publishedServiceId: body.published_service_id }),
-      ...(body.service_origin === undefined ? {} : { serviceOrigin: body.service_origin }),
-      ...(body.agent_session_id === undefined ? {} : { agentSessionId: body.agent_session_id }),
-      actor: ADMINISTRATOR,
+      requestId: request.id,
     });
     return reply.status(201).send({ data: record, meta: { request_id: request.id } });
+  });
+
+  /**
+   * Allocates a reserved session on its worker, optionally binding a published
+   * service. The origin and the capability are derived from the route here; a
+   * caller-supplied origin is not accepted, because the origin is the egress
+   * allow-list itself.
+   */
+  app.post("/api/v1/browser-sessions/:sessionId/allocate", async (request, reply) => {
+    admin(request);
+    const { sessionId } = request.params as { sessionId: string };
+    const body = (request.body ?? {}) as { published_service_id?: string };
+    const record = await options.sessions.allocate({
+      browserSessionId: sessionId,
+      ...(body.published_service_id === undefined
+        ? {}
+        : { publishedServiceId: body.published_service_id }),
+      actor: ADMINISTRATOR,
+      requestId: request.id,
+    });
+    return reply.send({ data: record, meta: { request_id: request.id } });
   });
 
   app.get("/api/v1/projects/:projectId/browser-sessions", async (request, reply) => {

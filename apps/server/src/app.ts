@@ -32,6 +32,7 @@ import { HttpTunnelGateway } from "./modules/published-services/gateway-client.t
 import type { TunnelGateway } from "./modules/published-services/gateway-client.ts";
 import { ConnectorRoutePublisher } from "./modules/published-services/connector-publisher.ts";
 import { registerPublishedServiceRoutes } from "./modules/published-services/routes.ts";
+import { PublishedServiceBinder } from "./modules/published-services/session-binder.ts";
 import { PublishedServiceService } from "./modules/published-services/service.ts";
 import type { RoutePublisher } from "./modules/published-services/service.ts";
 
@@ -154,7 +155,14 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     timeoutMs: config.workerRequestTimeoutMs,
     ...(options.workerFetch === undefined ? {} : { fetchImplementation: options.workerFetch }),
   });
-  const sessions = new BrowserSessionService(pool, workers, workerClient);
+  // A browser session learns its egress origin and its route capability from
+  // the published-service record, never from its caller.
+  const sessions = new BrowserSessionService(
+    pool,
+    workers,
+    workerClient,
+    new PublishedServiceBinder(publishedServices),
+  );
 
   await registerProjectRoutes(app, {
     pool,

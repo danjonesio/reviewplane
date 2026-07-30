@@ -11,6 +11,7 @@
  * (`docs/EVENTS.md` section 9).
  */
 
+import { SensitiveString } from "@reviewplane/protocol";
 import type { Pool } from "pg";
 
 import type {
@@ -58,12 +59,36 @@ export interface StartSessionInput {
   readonly projectId: string;
   readonly agentSessionId?: string;
   readonly publishedServiceId?: string;
-  readonly serviceOrigin?: string;
   readonly viewport: Viewport;
   readonly controller: ControllerIdentity;
   readonly retentionClass: "action_screenshots" | "verification_evidence";
   readonly limits?: Partial<SessionLimits>;
   readonly actor: EventActor;
+}
+
+/**
+ * Binds a session to a published service at allocation.
+ *
+ * The origin and the capability are both derived from the route by the control
+ * plane, never taken from the caller. A caller-supplied origin would let anyone
+ * who can start a session choose what that session's browser is allowed to
+ * reach, which is the egress control itself (`docs/SECURITY.md` §9).
+ */
+export interface ServiceBinding {
+  readonly publishedServiceId: string;
+  readonly serviceOrigin: string;
+  readonly serviceCapability: string;
+}
+
+/** Resolves a published service into the binding a session is allocated with. */
+export interface ServiceBinder {
+  bind(input: {
+    readonly publishedServiceId: string;
+    readonly projectId: string;
+    readonly browserSessionId: string;
+    readonly actor: EventActor;
+    readonly requestId: string;
+  }): Promise<ServiceBinding>;
 }
 
 export const DEFAULT_SESSION_LIMITS: SessionLimits = {
@@ -109,21 +134,39 @@ export class BrowserSessionService {
   readonly #pool: Pool;
   readonly #workers: WorkerRegistry;
   readonly #client: BrowserWorkerClient;
+  readonly #binder: ServiceBinder | null;
 
-  constructor(pool: Pool, workers: WorkerRegistry, client: BrowserWorkerClient) {
+  constructor(
+    pool: Pool,
+    workers: WorkerRegistry,
+    client: BrowserWorkerClient,
+    binder: ServiceBinder | null = null,
+  ) {
     this.#pool = pool;
     this.#workers = workers;
     this.#client = client;
+    this.#binder = binder;
   }
 
   /**
-   * Allocates a session: `REQUESTED` → `ALLOCATING` → `READY`.
+   * Reserves a session: the row and its initial control lease, and nothing
+   * else. The session is `REQUESTED`, has a worker chosen but not contacted,
+   * and can already be named in a route's `allowed_browser_session_ids`.
+   *
+   * This exists because publication and allocation each need the other to have
+   * happened first. `POST /published-services` requires the session identifiers
+   * a route authorises (`docs/CONNECTOR_PROTOCOL.md` §11: a route no session
+   * may use is not published), while the worker's egress policy is fixed when
+   * the context is created and cannot be widened afterwards. Reserving the
+   * identifier first breaks the cycle without weakening either rule, and
+   * `REQUESTED` is already the first state of the `docs/DOMAIN_MODEL.md` §12
+   * lifecycle — this is the state finally being used for what it describes.
    *
    * The initial control lease is issued to the requesting controller at epoch
    * 1, because ADR-0007 needs a controller and an epoch to exist before any
    * command can be validated against them.
    */
-  async start(input: StartSessionInput): Promise<BrowserSessionRecord> {
+  async create(input: StartSessionInput): Promise<BrowserSessionRecord> {
     const worker = await this.#workers.active();
     if (worker === null) {
       throw new ApiError(
@@ -168,8 +211,10 @@ export class BrowserSessionService {
           input.projectId,
           worker.id,
           input.agentSessionId ?? null,
-          input.publishedServiceId ?? null,
-          input.serviceOrigin ?? null,
+          // The route binding is written at allocation, once the control plane
+          // has read the route and minted a capability for this session.
+          null,
+          null,
           input.controller.type,
           input.controller.id,
           epoch,
@@ -193,45 +238,122 @@ export class BrowserSessionService {
       });
       return toRecord(inserted.rows[0] as Record<string, unknown>);
     });
+    return created;
+  }
 
-    await this.#setStatus(created, "ALLOCATING", input.actor, "browser_session.allocated", {
-      worker_id: worker.id,
+  /**
+   * Allocates a reserved session on its worker: `REQUESTED` → `ALLOCATING` →
+   * `READY`.
+   *
+   * When the session is bound to a published service, the origin and the
+   * capability come from the route, resolved here. Neither is ever taken from
+   * the caller: the origin is the worker's egress allow-list and the capability
+   * is a bearer credential, so accepting either from a request body would hand
+   * the caller the control it is the point of.
+   */
+  async allocate(input: {
+    readonly browserSessionId: string;
+    readonly publishedServiceId?: string;
+    readonly actor: EventActor;
+    readonly requestId: string;
+  }): Promise<BrowserSessionRecord> {
+    const session = await this.get(input.browserSessionId);
+    if (session.status !== "REQUESTED") {
+      throw new ApiError(
+        "BROWSER_SESSION_NOT_ACTIVE",
+        "Only a reserved browser session can be allocated.",
+        { status: session.status },
+      );
+    }
+    if (session.worker_id === null) {
+      throw new ApiError("BROWSER_CAPACITY_EXHAUSTED", "This session has no worker.");
+    }
+
+    let binding: ServiceBinding | null = null;
+    if (input.publishedServiceId !== undefined) {
+      if (this.#binder === null) {
+        throw new ApiError(
+          "UNSUPPORTED_CAPABILITY",
+          "This control plane cannot bind a published service to a browser session.",
+        );
+      }
+      binding = await this.#binder.bind({
+        publishedServiceId: input.publishedServiceId,
+        projectId: session.project_id,
+        browserSessionId: session.id,
+        actor: input.actor,
+        requestId: input.requestId,
+      });
+      await this.#pool.query(
+        "UPDATE browser_sessions SET published_service_id = $2, service_origin = $3 WHERE id = $1",
+        [session.id, binding.publishedServiceId, binding.serviceOrigin],
+      );
+    }
+
+    const bound = await this.get(session.id);
+    await this.#setStatus(bound, "ALLOCATING", input.actor, "browser_session.allocated", {
+      worker_id: session.worker_id,
+      published_service_id: binding?.publishedServiceId ?? null,
     });
 
     const allocation: SessionAllocate = {
-      organisation_id: input.organisationId,
-      project_id: input.projectId,
-      ...(input.agentSessionId === undefined ? {} : { agent_session_id: input.agentSessionId }),
-      ...(input.publishedServiceId === undefined
+      organisation_id: session.organisation_id,
+      project_id: session.project_id,
+      ...(session.agent_session_id === null ? {} : { agent_session_id: session.agent_session_id }),
+      ...(binding === null
         ? {}
-        : { published_service_id: input.publishedServiceId }),
-      ...(input.serviceOrigin === undefined ? {} : { service_origin: input.serviceOrigin }),
-      viewport: input.viewport,
-      control_epoch: epoch,
-      controller: input.controller,
-      limits,
-      retention_class: input.retentionClass,
+        : {
+            published_service_id: binding.publishedServiceId,
+            service_origin: binding.serviceOrigin,
+            // The capability is a bearer credential. It is passed here and
+            // nowhere else, and the generated model redacts it in every log,
+            // debug and default JSON representation.
+            service_capability: new SensitiveString(binding.serviceCapability),
+          }),
+      viewport: session.viewport,
+      control_epoch: session.control_epoch,
+      controller: session.current_controller ?? { type: "system", id: "sys_allocation" },
+      limits: session.limits,
+      retention_class: session.retention_policy as "action_screenshots" | "verification_evidence",
     };
 
     try {
-      const allocated = await this.#client.allocate(worker.id, sessionId, allocation);
+      const allocated = await this.#client.allocate(session.worker_id, session.id, allocation);
       await this.#pool.query(
         "UPDATE browser_sessions SET browser_version = $2, viewport = $3::jsonb WHERE id = $1",
-        [sessionId, allocated.browser_version, JSON.stringify(allocated.viewport)],
+        [session.id, allocated.browser_version, JSON.stringify(allocated.viewport)],
       );
-      const ready = await this.get(sessionId);
+      const ready = await this.get(session.id);
       await this.#setStatus(ready, allocated.status, input.actor, "browser_session.ready", {
         browser_type: allocated.browser_type,
         browser_version: allocated.browser_version,
       });
-      return this.get(sessionId);
+      return this.get(session.id);
     } catch (error) {
-      const failing = await this.get(sessionId);
+      const failing = await this.get(session.id);
       await this.#setStatus(failing, "FAILED", input.actor, "browser_session.failed", {
         reason: error instanceof Error ? error.message : String(error),
       });
       throw error;
     }
+  }
+
+  /**
+   * Reserves and allocates in one call, for a session that needs no route or
+   * whose route already names it.
+   */
+  async start(
+    input: StartSessionInput & { readonly requestId?: string },
+  ): Promise<BrowserSessionRecord> {
+    const created = await this.create(input);
+    return this.allocate({
+      browserSessionId: created.id,
+      ...(input.publishedServiceId === undefined
+        ? {}
+        : { publishedServiceId: input.publishedServiceId }),
+      actor: input.actor,
+      requestId: input.requestId ?? "req_internal",
+    });
   }
 
   async get(browserSessionId: string): Promise<BrowserSessionRecord> {

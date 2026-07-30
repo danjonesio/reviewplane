@@ -15,6 +15,19 @@ export class ConfigurationError extends Error {}
 
 export type SandboxMode = "required" | "disabled_high_risk";
 
+/**
+ * How Chromium reaches the tunnel gateway (ADR-0015).
+ *
+ * Absent means the worker can reach no published service at all, which is the
+ * correct default: a worker with no tunnel configured must not silently fall
+ * back to a resolver and the public trust store.
+ */
+export interface TunnelAccessConfig {
+  readonly internalSuffix: string;
+  readonly gatewayAddress: string;
+  readonly certificateSpki: string;
+}
+
 export interface WorkerConfig {
   /** Operator-assigned worker name (`docs/CONFIGURATION.md` section 3). */
   readonly name: string;
@@ -41,6 +54,12 @@ export interface WorkerConfig {
   /** Whether to register with the control plane on start. */
   readonly registerOnStart: boolean;
   readonly heartbeatIntervalSeconds: number;
+  /**
+   * How to reach published services. Absent means none can be reached: a worker
+   * with no tunnel configured must not fall back to a resolver and the public
+   * trust store (ADR-0015).
+   */
+  readonly tunnel?: TunnelAccessConfig;
 }
 
 export type Environment = Readonly<Record<string, string | undefined>>;
@@ -89,6 +108,41 @@ function integer(
 }
 
 const WORKER_NAME_PATTERN = /^[a-z][a-z0-9-]{0,63}$/u;
+
+/**
+ * Reads the tunnel settings, which are all-or-nothing.
+ *
+ * A partial configuration is refused rather than half-applied: a resolver rule
+ * without a pin would send the browser to the gateway and then trust whatever
+ * certificate it offered, and a pin without a rule would resolve nothing.
+ */
+function readTunnel(environment: Environment): TunnelAccessConfig | undefined {
+  const gatewayAddress = environment["REVIEWPLANE_TUNNEL_GATEWAY_ADDRESS"] ?? "";
+  const certificateSpki = environment["REVIEWPLANE_TUNNEL_CERTIFICATE_SPKI"] ?? "";
+  const internalSuffix = optionalString(environment, "REVIEWPLANE_INTERNAL_SUFFIX", "internal.invalid");
+  if (gatewayAddress === "" && certificateSpki === "") return undefined;
+  if (gatewayAddress === "" || certificateSpki === "") {
+    throw new ConfigurationError(
+      "REVIEWPLANE_TUNNEL_GATEWAY_ADDRESS and REVIEWPLANE_TUNNEL_CERTIFICATE_SPKI must be set together",
+    );
+  }
+  if (!/^[A-Za-z0-9.:_-]+:[0-9]{1,5}$/u.test(gatewayAddress)) {
+    throw new ConfigurationError(
+      `REVIEWPLANE_TUNNEL_GATEWAY_ADDRESS must be host:port, got ${gatewayAddress}`,
+    );
+  }
+  if (!/^[A-Za-z0-9+/]{43}=$/u.test(certificateSpki)) {
+    throw new ConfigurationError(
+      "REVIEWPLANE_TUNNEL_CERTIFICATE_SPKI must be a base64 SHA-256 digest of the gateway certificate's SubjectPublicKeyInfo",
+    );
+  }
+  if (!/^[a-z0-9.-]+$/u.test(internalSuffix)) {
+    throw new ConfigurationError(
+      `REVIEWPLANE_INTERNAL_SUFFIX must be a domain, got ${internalSuffix}`,
+    );
+  }
+  return { internalSuffix, gatewayAddress, certificateSpki };
+}
 
 export function loadWorkerConfig(environment: Environment = process.env): WorkerConfig {
   const name = optionalString(environment, "REVIEWPLANE_WORKER_NAME", "browser-worker-01");
@@ -141,6 +195,8 @@ export function loadWorkerConfig(environment: Environment = process.env): Worker
     );
   }
 
+  const tunnel = readTunnel(environment);
+
   return {
     name,
     listenAddress: optionalString(environment, "REVIEWPLANE_WORKER_LISTEN_ADDRESS", "127.0.0.1"),
@@ -189,5 +245,6 @@ export function loadWorkerConfig(environment: Environment = process.env): Worker
       5,
       300,
     ),
+    ...(tunnel === undefined ? {} : { tunnel }),
   };
 }

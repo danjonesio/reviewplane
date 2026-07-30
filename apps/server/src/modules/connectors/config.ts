@@ -37,6 +37,16 @@ export interface ConnectorModuleConfig {
    * differ from the listen address when a reverse proxy sits in front.
    */
   readonly publicUrl: string;
+  /**
+   * Where a connector opens its multiplexed data channel.
+   *
+   * This is the tunnel gateway, not the control plane: `docs/ARCHITECTURE.md`
+   * §4.6 puts data-channel termination in the gateway, and the control plane
+   * never carries tunnelled bytes. It is advertised in the registration
+   * response so that a connector learns both endpoints at enrolment
+   * (`docs/CONNECTOR_PROTOCOL.md` §4.3).
+   */
+  readonly dataUrl: string;
   /** Lifetime of an issued device identity. Identities are bounded in time. */
   readonly identityTtlDays: number;
   /** Expiry applied to an enrolment token when the request names none. */
@@ -68,6 +78,12 @@ export function loadConnectorModuleConfig(environment: Environment = process.env
   }
 
   const publicUrl = optionalString(environment, "REVIEWPLANE_CONNECTOR_PUBLIC_URL");
+  const dataUrl = optionalString(environment, "REVIEWPLANE_CONNECTOR_DATA_URL");
+  if (dataUrl !== undefined && !dataUrl.startsWith("wss://")) {
+    throw new ConfigurationError(
+      `REVIEWPLANE_CONNECTOR_DATA_URL must use the wss scheme, found ${JSON.stringify(dataUrl)}`,
+    );
+  }
   if (publicUrl !== undefined && !publicUrl.startsWith("wss://")) {
     throw new ConfigurationError(
       `REVIEWPLANE_CONNECTOR_PUBLIC_URL must use the wss scheme, found ${JSON.stringify(publicUrl)}`,
@@ -100,6 +116,10 @@ export function loadConnectorModuleConfig(environment: Environment = process.env
     tlsCertificateFile: certificateFile,
     tlsPrivateKeyFile: privateKeyFile,
     publicUrl: publicUrl ?? `wss://${tlsHosts[0] ?? "localhost"}:${listenPort}`,
+    // The default keeps a single-host development stack working, where the
+    // control plane also terminates the data channel. A real deployment names
+    // the tunnel gateway.
+    dataUrl: dataUrl ?? `${publicUrl ?? `wss://${tlsHosts[0] ?? "localhost"}:${listenPort}`}${DATA_PATH}`,
     identityTtlDays: readInteger(environment, "REVIEWPLANE_CONNECTOR_IDENTITY_TTL_DAYS", 365, {
       minimum: 1,
       maximum: 3650,

@@ -140,6 +140,12 @@ export class SessionManager {
         ? {}
         : { publishedServiceId: request.published_service_id }),
       ...(request.service_origin === undefined ? {} : { serviceOrigin: request.service_origin }),
+      // reveal() is called exactly here, at the boundary where the credential
+      // enters the session that will present it. It is held privately from
+      // this point and never returned or logged.
+      ...(request.service_capability === undefined
+        ? {}
+        : { serviceCapability: request.service_capability.reveal() }),
       viewport: request.viewport,
       controlEpoch: request.control_epoch,
       controller: request.controller,
@@ -151,6 +157,7 @@ export class SessionManager {
     const session = await BrowserSession.allocate(allocation, {
       sessionRoot: this.#config.sessionRoot,
       sandbox: this.#config.sandbox,
+      ...(this.#config.tunnel === undefined ? {} : { tunnel: this.#config.tunnel }),
       onSelfTermination: (terminated, status, reason) => {
         this.#sessions.delete(terminated.id);
         this.#report(terminated, status, "ACTIVE", reason);

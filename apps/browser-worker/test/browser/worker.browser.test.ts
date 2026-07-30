@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
 
+import { SensitiveString } from "@reviewplane/protocol";
 import {
   validateBrowserCommandResult,
   type BrowserCommand,
@@ -30,7 +31,7 @@ import { loadWorkerConfig, type WorkerConfig } from "../../src/config.ts";
 import { ControlPlaneClient } from "../../src/control-plane.ts";
 import { newId } from "../../src/ids.ts";
 import { createRecordingLogger } from "../../src/logging.ts";
-import { directoryExists } from "../../src/session/session.ts";
+import { directoryExists, tunnelArguments } from "../../src/session/session.ts";
 import { SessionManager, SessionRefusal } from "../../src/session/manager.ts";
 import { captureSize } from "../../src/session/viewport.ts";
 
@@ -577,4 +578,72 @@ test("typing into a referenced input works and a submit invalidates references",
   });
   assert.equal(typed.ok, true, JSON.stringify(typed.error));
   assert.equal(typed.trust, "trusted_control_plane");
+});
+
+// docs/ARCHITECTURE.md section 7.3: the worker presents the session's route
+// capability to the tunnel gateway on every request to its own origin. This is
+// the browser-side half of the capability path; the control-plane half is
+// apps/server/test/session-service-binding.test.ts.
+test("the route capability is attached to every request to the session origin", async () => {
+  const id = newId("brs_");
+  await manager.allocate(
+    id,
+    allocationFor({
+      service_capability: new SensitiveString("rp1.test-capability-value-0123456789"),
+    }),
+  );
+  const before = fixture.headers.length;
+  await run(id, navigate("/", "load"));
+
+  // This fixture's home page is a single document; the sub-resource case is
+  // covered by the end-to-end scenario, whose fixture serves CSS, JS and an
+  // image. What matters here is that every request that did reach the origin
+  // carried the credential.
+  const seen = fixture.headers.slice(before);
+  assert.ok(seen.length >= 1, `the page produced ${String(seen.length)} requests`);
+  for (const headers of seen) {
+    assert.equal(
+      headers["x-reviewplane-capability"],
+      "rp1.test-capability-value-0123456789",
+      `a request reached the origin without the capability: ${JSON.stringify(Object.keys(headers))}`,
+    );
+  }
+});
+
+// The capability is a bearer credential, so a session that has none must send
+// none. It is attached inside the branch that has already established the
+// request is for this session's own origin, which is why a refused request can
+// never carry it either.
+test("a session with no capability sends no capability header", async () => {
+  const id = newId("brs_");
+  await manager.allocate(id, allocationFor());
+  const before = fixture.headers.length;
+  await run(id, navigate("/", "load"));
+
+  const seen = fixture.headers.slice(before);
+  assert.ok(seen.length >= 1);
+  for (const headers of seen) {
+    assert.equal(headers["x-reviewplane-capability"], undefined);
+  }
+});
+
+// ADR-0015: the two Chromium flags are scoped to the configured suffix and to
+// one public key, and are absent entirely when no tunnel is configured. A
+// worker that fell back to a resolver and the public trust store would be
+// reaching the network in a way docs/SECURITY.md section 10 does not allow.
+test("the tunnel flags are scoped, and absent when no tunnel is configured", () => {
+  assert.deepEqual(tunnelArguments(undefined), []);
+
+  const args = tunnelArguments({
+    internalSuffix: "internal.invalid",
+    gatewayAddress: "tunnel-gateway:8443",
+    certificateSpki: "K7gNU3sdo+OL0wNhqoVWhr3g6s1xYv72ol/pe/Unols=",
+  });
+  assert.deepEqual(args, [
+    "--host-resolver-rules=MAP *.internal.invalid tunnel-gateway:8443",
+    "--ignore-certificate-errors-spki-list=K7gNU3sdo+OL0wNhqoVWhr3g6s1xYv72ol/pe/Unols=",
+  ]);
+  // Neither flag may disable verification generally or touch the sandbox.
+  assert.ok(!args.includes("--ignore-certificate-errors"));
+  assert.ok(!args.some((argument) => argument.includes("no-sandbox")));
 });

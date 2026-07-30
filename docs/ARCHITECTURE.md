@@ -313,6 +313,8 @@ The connector opens no listening socket at any point, which the same test assert
 
 Capabilities are minted by the control plane and verified by the gateway. A capability is opaque to its bearer, binds route, project and browser session, expires, and is revocable individually as well as through its route.
 
+The browser worker receives its session's capability in the allocation message and presents it as `X-ReviewPlane-Capability` on every request to the session's origin, and on no other request. The gateway strips the whole `X-ReviewPlane-` namespace before forwarding, so the credential never reaches the development service. How Chromium resolves an internal origin and trusts the gateway's certificate is ADR-0015.
+
 ### 7.4 Application compatibility
 
 The tunnel must support:

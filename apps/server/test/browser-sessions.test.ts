@@ -47,7 +47,6 @@ async function startSession(projectId: string, organisationId: string, overrides
       organisation_id: organisationId,
       viewport: DESKTOP,
       controller: { type: "agent", id: "ags_test" },
-      service_origin: "https://route-test.internal.invalid",
       ...overrides,
     },
   });

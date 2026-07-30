@@ -29,7 +29,7 @@
       "kind": "browser_frame",
       "file": "valid/session-allocate.json",
       "message_type": "browser_session.allocate",
-      "note": "Allocation carrying the published-service origin that bounds egress, the initial epoch and the worker-enforced session limits."
+      "note": "Allocation carrying the published-service origin that bounds egress, the route capability the worker presents to the tunnel gateway on requests to that origin, the initial epoch and the worker-enforced session limits. The origin's leftmost label is the service public_alias, never its svc_ identifier."
     },
     {
       "name": "session-allocated",
@@ -75,6 +75,13 @@
     }
   ],
   "invalid": [
+    {
+      "name": "allocate-capability-too-short",
+      "kind": "browser_frame",
+      "file": "invalid/allocate-capability-too-short.json",
+      "expect_reason": "schema_violation",
+      "note": "The route capability has the same bounds as the connector protocol gives it, so a value too short to be a real credential is refused by the schema rather than presented to the tunnel gateway."
+    },
     {
       "name": "command-without-control-epoch",
       "kind": "browser_frame",

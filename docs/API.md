@@ -234,6 +234,7 @@ Requirements:
 GET    /api/v1/projects/:projectId/browser-sessions
 POST   /api/v1/projects/:projectId/browser-sessions
 GET    /api/v1/browser-sessions/:sessionId
+POST   /api/v1/browser-sessions/:sessionId/allocate
 POST   /api/v1/browser-sessions/:sessionId/commands
 POST   /api/v1/browser-sessions/:sessionId/pause
 POST   /api/v1/browser-sessions/:sessionId/resume
@@ -272,6 +273,7 @@ The command body is the `browser_command` of `packages/protocol/schemas/browser/
 
 ```json
 {
+  "organisation_id": "org_...",
   "published_service_id": "svc_...",
   "viewport": {
     "width": 1440,
@@ -282,6 +284,36 @@ The command body is the `browser_command` of `packages/protocol/schemas/browser/
   "video_enabled": false
 }
 ```
+
+`organisation_id` and `viewport` are required. `published_service_id` names the route the session may reach; the control plane resolves the origin from that record and mints the session-scoped capability itself. Neither the origin nor the capability is accepted from the caller: the origin *is* the worker's egress allow-list (`SECURITY.md` §9) and the capability is a bearer credential the control plane alone mints (`ARCHITECTURE.md` §7.3).
+
+### Reserving a session before publishing a route
+
+Publication and allocation each need the other to have gone first. `POST /api/v1/projects/:projectId/published-services` requires the browser sessions a route authorises, and `CONNECTOR_PROTOCOL.md` §11 forbids publishing a route no session may use; meanwhile a worker's egress policy is fixed when its browser context is created and MUST NOT be widened afterwards.
+
+A start request MAY therefore set `"allocate": false`, which reserves the session and stops:
+
+```json
+{
+  "organisation_id": "org_...",
+  "viewport": {"width": 1440, "height": 900, "device_scale_factor": 1},
+  "allocate": false
+}
+```
+
+The response is a `REQUESTED` session (`DOMAIN_MODEL.md` §12) with an identifier and a chosen worker, and no worker has been contacted. That identifier can then appear in the route's `allowed_browser_session_ids`, after which the session is allocated:
+
+```text
+POST /api/v1/browser-sessions/:sessionId/allocate
+```
+
+```json
+{ "published_service_id": "svc_..." }
+```
+
+Allocation contacts the worker, binds the origin and the freshly minted capability, and moves the session `REQUESTED` → `ALLOCATING` → `READY`. Only a `REQUESTED` session may be allocated; anything else is `BROWSER_SESSION_NOT_ACTIVE`. A published service belonging to another project is refused with `PROJECT_CONTEXT_MISMATCH`, and a session the route does not name is refused with `AUTHORISATION_DENIED` before any capability is minted.
+
+The one-request form remains available for a session that needs no route, or whose route already names it: omit `allocate` and the control plane reserves and allocates in one call.
 
 ## 12. Review endpoints
 

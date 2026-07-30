@@ -37,6 +37,13 @@ export interface SessionAllocation {
   readonly agentSessionId?: string;
   readonly publishedServiceId?: string;
   readonly serviceOrigin?: string;
+  /**
+   * Session-scoped route capability. The worker presents it to the tunnel
+   * gateway on every request to serviceOrigin and to no other origin, and it is
+   * never written to a log: it is held as a private field and read only when a
+   * request header is being built.
+   */
+  readonly serviceCapability?: string;
   readonly viewport: Viewport;
   readonly controlEpoch: number;
   readonly controller: ControllerIdentity;
@@ -47,12 +54,66 @@ export interface SessionAllocation {
 export interface SessionEnvironment {
   readonly sessionRoot: string;
   readonly sandbox: SandboxMode;
+  /**
+   * How Chromium reaches the tunnel gateway (ADR-0015).
+   *
+   * `*.internal.invalid` has no DNS, deliberately: the origin names a route,
+   * not a host, and the reserved TLD guarantees no resolver anywhere will
+   * answer for it. The mapping is handed to Chromium so that the browser
+   * connects to the gateway without a resolver being involved at all.
+   */
+  readonly tunnel?: TunnelAccess;
   /** Called when the worker itself ends the session, for example on timeout. */
   readonly onSelfTermination: (
     session: BrowserSession,
     status: SessionStatus,
     reason: string,
   ) => void;
+}
+
+/**
+ * The header the tunnel gateway authorises on.
+ *
+ * It matches `CapabilityHeader` in `services/tunnel-gateway`. A header rather
+ * than a query parameter or part of the origin, because both of those end up
+ * somewhere durable: an origin appears in Referer and in the development
+ * server's access log, a query parameter appears in those plus browser history.
+ * The gateway strips the whole `X-ReviewPlane-` namespace before the request
+ * reaches the development service.
+ */
+const CAPABILITY_HEADER = "x-reviewplane-capability";
+
+/** Where an internal origin resolves to, and what certificate is trusted there. */
+export interface TunnelAccess {
+  /** Domain the internal origins live under, without a leading dot. */
+  readonly internalSuffix: string;
+  /** `host:port` of the tunnel gateway's browser-facing listener. */
+  readonly gatewayAddress: string;
+  /**
+   * Base64 SHA-256 of the gateway certificate's SubjectPublicKeyInfo.
+   *
+   * The gateway serves a certificate for a reserved TLD issued by a private
+   * authority, which no public trust store can vouch for. Pinning that one key
+   * is narrower than installing an authority that could then vouch for
+   * anything: a certificate for any other name, or from any other issuer, still
+   * fails. ADR-0015 records why this rather than a CA import.
+   */
+  readonly certificateSpki: string;
+}
+
+/**
+ * The Chromium flags that make an internal origin reachable.
+ *
+ * Both are scoped to the suffix and to one public key. Neither disables
+ * certificate verification generally, and neither widens what the session may
+ * reach: the egress policy still refuses every origin but the session's own.
+ */
+export function tunnelArguments(tunnel: TunnelAccess | undefined): string[] {
+  if (tunnel === undefined) return [];
+  return [
+    `--host-resolver-rules=MAP *.${tunnel.internalSuffix} ${tunnel.gatewayAddress}`,
+    `--ignore-certificate-errors-spki-list=${tunnel.certificateSpki}`,
+  ];
 }
 
 const TERMINAL_STATUSES: ReadonlySet<SessionStatus> = new Set<SessionStatus>([
@@ -83,6 +144,8 @@ export class BrowserSession {
   #browserVersion = "unknown";
   #durationTimer: NodeJS.Timeout | null = null;
   #endedAt: Date | null = null;
+  /** Never logged, never returned, never put on a request to another origin. */
+  readonly #serviceCapability: string | undefined;
 
   private constructor(allocation: SessionAllocation) {
     this.id = allocation.browserSessionId;
@@ -91,6 +154,7 @@ export class BrowserSession {
     this.agentSessionId = allocation.agentSessionId;
     this.publishedServiceId = allocation.publishedServiceId;
     this.serviceOrigin = allocation.serviceOrigin;
+    this.#serviceCapability = allocation.serviceCapability;
     this.limits = allocation.limits;
     this.retentionClass = allocation.retentionClass;
     this.createdAt = new Date();
@@ -120,6 +184,7 @@ export class BrowserSession {
         // A hostile page must not be able to open a window that escapes the
         // session's egress policy.
         permissions: [],
+        args: tunnelArguments(environment.tunnel),
       });
       session.#context = context;
       session.#browserVersion = context.browser()?.version() ?? "unknown";
@@ -152,6 +217,7 @@ export class BrowserSession {
    */
   async #applyEgressPolicy(context: BrowserContext): Promise<void> {
     const allowed = this.serviceOrigin;
+    const capability = this.#serviceCapability;
     await context.route("**/*", (route) => {
       const target = route.request().url();
       if (target.startsWith("about:") || target.startsWith("data:")) {
@@ -159,7 +225,18 @@ export class BrowserSession {
         return;
       }
       if (allowed !== undefined && isWithinOrigin(target, allowed)) {
-        void route.continue();
+        if (capability === undefined) {
+          void route.continue();
+          return;
+        }
+        // The capability is attached inside the branch that has already
+        // established the request is for this session's own origin. A
+        // context-wide extra header would instead put a bearer credential on
+        // requests this policy is about to refuse, and would follow a redirect
+        // to wherever it led.
+        void route.continue({
+          headers: { ...route.request().headers(), [CAPABILITY_HEADER]: capability },
+        });
         return;
       }
       void route.abort("blockedbyclient");

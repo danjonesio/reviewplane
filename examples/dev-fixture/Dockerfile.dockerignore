@@ -1,0 +1,29 @@
+# Build context exclusions for examples/dev-fixture/Dockerfile only.
+#
+# BuildKit prefers `<dockerfile>.dockerignore` over the repository root's
+# `.dockerignore` when it exists, and it does not merge the two. This file
+# exists because the root list excludes `examples`, which the fixture image has
+# to copy; everything else below is the root list restated, because dropping it
+# would let a developer's node_modules and secrets into the context.
+**/node_modules
+**/dist
+**/.turbo
+**/*.tsbuildinfo
+.git
+.github
+.claude
+coverage
+test-results
+playwright-report
+blob-report
+deploy/compose/secrets
+docs
+*.log
+
+# The fixture image builds the connector from source and copies the static
+# application. Nothing else under examples/ belongs in the context: the Vite
+# application is not installed or served here, and the agent instruction
+# examples are documentation.
+examples/claude-code
+examples/opencode
+examples/dev-fixture/vite-app

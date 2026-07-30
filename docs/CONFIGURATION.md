@@ -125,6 +125,11 @@ The worker reads environment variables, with a `*_FILE` variant for every creden
 | `REVIEWPLANE_WORKER_SNAPSHOT_MAX_NODES` | `400` | Largest number of elements a snapshot may describe |
 | `REVIEWPLANE_WORKER_SNAPSHOT_MAX_BYTES` | `32768` | Largest rendered snapshot before truncation |
 | `REVIEWPLANE_WORKER_HEARTBEAT_SECONDS` | `15` | Heartbeat interval |
+| `REVIEWPLANE_INTERNAL_SUFFIX` | `internal.invalid` | Domain the internal origins live under |
+| `REVIEWPLANE_TUNNEL_GATEWAY_ADDRESS` | none | `host:port` every `*.<suffix>` name resolves to (ADR-0015) |
+| `REVIEWPLANE_TUNNEL_CERTIFICATE_SPKI` | none | Base64 SHA-256 of the gateway certificate's SubjectPublicKeyInfo (ADR-0015) |
+
+The last two are set together or not at all: the worker refuses to start with one and not the other, because a resolver rule without a pin would trust whatever certificate the gateway offered and a pin without a rule would resolve nothing. A worker with neither can reach no published service, which is the correct default. The pin is a digest of a public key and is deployment data rather than a secret; ADR-0015 records how to compute it.
 
 The two credentials have no defaults: the worker refuses to start without them. `disabled_high_risk` is the only way to disable the Chromium sandbox, and it logs the unsupported-configuration warning at startup. Limits requested by the control plane are clamped to these values rather than widening them, so a session cannot ask the worker to exceed what the operator configured.
 

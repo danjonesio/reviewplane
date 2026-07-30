@@ -7,6 +7,7 @@
  * in frame.ts always validate first.
  */
 
+import { SensitiveString } from "../../../sensitive.ts";
 import type {
   BrowserCommand,
   BrowserCommandResult,
@@ -161,6 +162,7 @@ export function decodeSessionAllocate(value: unknown): SessionAllocate {
     ...(source["agent_session_id"] === undefined ? {} : { agent_session_id: source["agent_session_id"] as string }),
     ...(source["published_service_id"] === undefined ? {} : { published_service_id: source["published_service_id"] as string }),
     ...(source["service_origin"] === undefined ? {} : { service_origin: source["service_origin"] as string }),
+    ...(source["service_capability"] === undefined ? {} : { service_capability: new SensitiveString(source["service_capability"] as string) }),
     viewport: decodeViewport(source["viewport"]),
     control_epoch: source["control_epoch"] as number,
     controller: decodeControllerIdentity(source["controller"]),

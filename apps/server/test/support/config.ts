@@ -14,6 +14,16 @@ export const TEST_BOOTSTRAP_TOKEN = "bootstrap-administrator-token-for-tests";
 export const TEST_WORKER_CREDENTIAL = "worker-credential-for-tests";
 export const TEST_WORKER_COMMAND_CREDENTIAL = "worker-command-credential-tests";
 
+/**
+ * The capability signing key the tests use.
+ *
+ * It is exported so that a test can verify a capability the server minted with
+ * the same keyring the tunnel gateway would use, rather than trusting the
+ * server's own claim that it signed one.
+ */
+export const TEST_CAPABILITY_KEY_ID = "test-a";
+export const TEST_CAPABILITY_KEY = new Uint8Array(32).fill(7);
+
 export function testServerConfig(overrides: Partial<ServerConfig> = {}): ServerConfig {
   return {
     databaseUrl: "unused-in-tests",
@@ -24,8 +34,8 @@ export function testServerConfig(overrides: Partial<ServerConfig> = {}): ServerC
     gatewayControlUrl: "http://tunnel-gateway.invalid:8445",
     gatewayControlToken: "test-gateway-control-token-0123456789",
     internalSuffix: "internal.invalid",
-    capabilityKeyId: "test-a",
-    capabilityKey: new Uint8Array(32).fill(7),
+    capabilityKeyId: TEST_CAPABILITY_KEY_ID,
+    capabilityKey: TEST_CAPABILITY_KEY,
     capabilityTtlSeconds: 300,
     routeTtlMaxSeconds: 8 * 60 * 60,
     workerCredential: TEST_WORKER_CREDENTIAL,

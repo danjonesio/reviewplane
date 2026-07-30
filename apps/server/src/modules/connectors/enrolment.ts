@@ -24,7 +24,7 @@ import type { Pool } from "../../db/pool.ts";
 import { inTransaction } from "../../db/pool.ts";
 import { appendEvent } from "../../events/append.ts";
 import type { TlsMaterial } from "./certificate-authority.ts";
-import { CONTROL_PATH, DATA_PATH, type ConnectorModuleConfig } from "./config.ts";
+import { CONTROL_PATH, type ConnectorModuleConfig } from "./config.ts";
 import { hashEnrolmentToken, newConnectorId, newEnvironmentId, newMessageId } from "./identifiers.ts";
 import {
   consumeEnrolmentToken,
@@ -199,7 +199,7 @@ export async function enrol(
       },
       control_plane_endpoints: {
         control_url: `${config.publicUrl}${CONTROL_PATH}`,
-        data_url: `${config.publicUrl}${DATA_PATH}`,
+        data_url: config.dataUrl,
       },
       policy_digest: emptyPolicyDigest(),
     };

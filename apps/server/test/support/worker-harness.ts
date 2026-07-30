@@ -23,6 +23,12 @@ import {
 } from "@reviewplane/protocol/browser";
 
 import { buildApp, type BuiltApp } from "../../src/app.ts";
+import type {
+  GatewayRegisterRequest,
+  GatewayRouteView,
+  TunnelGateway,
+} from "../../src/modules/published-services/gateway-client.ts";
+import type { RoutePublisher } from "../../src/modules/published-services/service.ts";
 import type { ServerConfig } from "../../src/config.ts";
 import { newId } from "../../src/ids.ts";
 import { testServerConfig } from "./config.ts";
@@ -50,7 +56,63 @@ export interface Harness {
   readonly worker: StubWorkerBehaviour;
   /** Requests the control plane made to the worker, in order. */
   readonly workerRequests: { path: string; authorization: string | undefined }[];
+  /**
+   * Allocation payloads the worker received, decoded.
+   *
+   * A test asserting on the route capability has to see what actually reached
+   * the worker: the value is redacted in every log and JSON representation on
+   * purpose, so reading it back out of the frame the stub decoded is the only
+   * honest way to check it was sent and is verifiable.
+   */
+  readonly allocations: { browserSessionId: string; payload: Record<string, unknown> }[];
   stop(): Promise<void>;
+}
+
+export interface HarnessOptions {
+  /** Substitutes the connector exchange for tests that are not exercising it. */
+  readonly publisher?: RoutePublisher;
+  /** Substitutes the tunnel gateway, which this harness does not run. */
+  readonly gateway?: TunnelGateway;
+}
+
+/**
+ * A tunnel gateway that accepts every registration and remembers it.
+ *
+ * The gateway's own behaviour is tested exhaustively in
+ * `services/tunnel-gateway`; a control-plane test that needs a publication to
+ * reach `ready` needs a peer, not a second gateway to run.
+ */
+export class AcceptingGateway implements TunnelGateway {
+  readonly registered: GatewayRegisterRequest[] = [];
+  readonly revokedRoutes: string[] = [];
+
+  register(request: GatewayRegisterRequest): Promise<GatewayRouteView> {
+    this.registered.push(request);
+    return Promise.resolve({
+      route_id: request.route_id,
+      project_id: request.project_id,
+      connector_id: request.connector_id,
+      public_alias: request.public_alias,
+      internal_origin: `https://${request.public_alias}.internal.invalid/`,
+      status: "ready",
+      expires_at: request.expires_at,
+      observed_destination: request.observed_destination,
+      connector_connected: true,
+      streams_opened: 0,
+      streams_active: 0,
+      bytes_to_destination: 0,
+      bytes_from_destination: 0,
+    });
+  }
+
+  revokeRoute(routeId: string): Promise<void> {
+    this.revokedRoutes.push(routeId);
+    return Promise.resolve();
+  }
+
+  revokeCapability(): Promise<void> {
+    return Promise.resolve();
+  }
 }
 
 const DEFAULT_ALLOCATION = {
@@ -61,10 +123,11 @@ const DEFAULT_ALLOCATION = {
   allocated_at: "2026-07-29T09:16:01.480Z",
 } as const;
 
-export async function startHarness(pool: Pool): Promise<Harness> {
+export async function startHarness(pool: Pool, options: HarnessOptions = {}): Promise<Harness> {
   const artefactRoot = await mkdtemp(join(tmpdir(), "reviewplane-artefacts-"));
   const worker: StubWorkerBehaviour = {};
   const workerRequests: { path: string; authorization: string | undefined }[] = [];
+  const allocations: { browserSessionId: string; payload: Record<string, unknown> }[] = [];
 
   const config: ServerConfig = testServerConfig({
     bootstrapToken: BOOTSTRAP_TOKEN,
@@ -109,6 +172,18 @@ export async function startHarness(pool: Pool): Promise<Harness> {
     const envelope = frame.envelope;
 
     if (frame.type === "browser_session.allocate") {
+      // The capability is a SensitiveString on the decoded frame. reveal() is
+      // called here, in a test stub standing in for the worker, which is the
+      // one place that is the correct thing to do with it.
+      const received = { ...(frame.payload as unknown as Record<string, unknown>) };
+      const capability = received["service_capability"];
+      if (capability !== undefined && capability !== null) {
+        received["service_capability"] = (capability as { reveal(): string }).reveal();
+      }
+      allocations.push({
+        browserSessionId: envelope.browser_session_id as string,
+        payload: received,
+      });
       const payload = (worker.allocate?.(frame) ?? DEFAULT_ALLOCATION) as typeof DEFAULT_ALLOCATION;
       return frameResponse({
         envelope: {
@@ -183,7 +258,13 @@ export async function startHarness(pool: Pool): Promise<Harness> {
     );
   };
 
-  const built = await buildApp({ config, pool, workerFetch });
+  const built = await buildApp({
+    config,
+    pool,
+    workerFetch,
+    ...(options.publisher === undefined ? {} : { publisher: options.publisher }),
+    ...(options.gateway === undefined ? {} : { gateway: options.gateway }),
+  });
   await built.app.ready();
 
   return {
@@ -192,6 +273,7 @@ export async function startHarness(pool: Pool): Promise<Harness> {
     artefactRoot,
     worker,
     workerRequests,
+    allocations,
     async stop() {
       await built.app.close();
       await rm(artefactRoot, { recursive: true, force: true });

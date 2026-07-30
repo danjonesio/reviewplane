@@ -435,11 +435,26 @@ No `X-Forwarded-For` is ever added. The client is a browser worker inside the co
 
 A header value containing CR, LF or NUL is dropped rather than escaped.
 
+### 13.1.1 Observed behaviour
+
+The end-to-end scenario (`deploy/compose/e2e/run.sh`) records what the development service actually received, in `evidence/header-behaviour.txt` and `evidence/network-summary.txt`. With the default modes, twenty requests through the route — one document, three sub-resources, repeated across four pages — produced:
+
+| Header | Value the development service received |
+|---|---|
+| `Host` | `127.0.0.1:4321`, on every request |
+| `X-Forwarded-Host` | `svc-<alias>.internal.invalid`, on every request |
+| `X-Forwarded-Proto` | `https`, on every request |
+| `X-Forwarded-For` | absent |
+
+Zero requests answered `>= 400`. The development service is told it is itself, which is what satisfies its own host check; the internal origin reaches it only through `X-Forwarded-Host`.
+
 ### 13.2 Absolute URLs emitted by the development service
 
 An absolute URL in a response body that names `localhost`, `127.0.0.1` or the development port is an expected failure mode and MUST NOT be repaired by rewriting response bodies. The browser resolves it against nothing the route can reach, so the sub-resource fails; body rewriting would mean parsing untrusted content in the request path and would break any application that emits an absolute URL for a legitimate reason.
 
 The supported repairs are, in order of preference: emit root-relative URLs; configure the application's public base URL to the internal origin; or set the `Host` mode to `original` so the application derives the right base itself. `examples/dev-fixture` serves a page that exhibits the failure so that it can be recognised rather than guessed at.
+
+Observed: the end-to-end scenario navigates to that page and records the outcome in `evidence/absolute-url-finding.txt`. The document loads — `200`, correct title — and the stylesheet it names by absolute URL never reaches the development service at all. It does not appear in that service's request log, because the browser resolves `http://127.0.0.1:4321/` against the browser container rather than the development machine, and the session's egress policy refuses every origin but its own before the request leaves. The failure is therefore silent in the page and visible in the evidence, which is exactly why the fixture serves the case.
 
 ### 13.3 Upgrades and streaming
 

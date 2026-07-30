@@ -77,6 +77,10 @@ Automated scenario:
 14. Export review.
 15. Verify event sequence and artefact hashes.
 
+Steps 1 to 6 run automatically as `pnpm test:e2e` (`deploy/compose/e2e/run.sh`). It starts the Compose stack, enrols the connector fixture, starts the fixture application on connector loopback, publishes it, reserves and allocates a browser session against the route, and navigates central Chromium to the internal origin. Every step asserts its own outcome and a step that cannot be verified aborts the run; evidence lands in `deploy/compose/e2e/evidence/`.
+
+Steps 7 to 15 need reviews, findings, verification and export, and arrive with the issues that introduce them.
+
 This scenario is release-blocking.
 
 ## 4. Domain tests
