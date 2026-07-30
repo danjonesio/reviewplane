@@ -1,0 +1,118 @@
+{
+  "protocol": "mcp",
+  "version": 1,
+  "description": "Fixture corpus for the version 1 MCP interface: the tool responses of docs/MCP_SPEC.md sections 7.1, 7.4, 7.6 and 7.7 inside the common envelope of section 5. Valid cases must decode and re-encode to the byte string recorded in canonical.json; invalid cases must be refused with the recorded reason. Several invalid cases exist only to hold the trust contract of section 6 and ADR-0010: a response carrying page-derived or uploaded content is refused when it declares a trusted label, because a mislabelled response is the one an agent would act on.",
+  "valid": [
+    {
+      "name": "review-get-bugs-on-homepage",
+      "kind": "mcp_tool_response",
+      "file": "valid/review-get-bugs-on-homepage.json",
+      "message_type": "review_get",
+      "note": "The Stage 0 exit criterion in one document: an MCP client retrieved bugs-on-homepage by its project-scoped slug and received the review, a bounded page of findings, a cursor for the rest and evidence as links rather than bytes. The label is mixed, because the review title is a human instruction while the finding's URL came from a page."
+    },
+    {
+      "name": "project-current",
+      "kind": "mcp_tool_response",
+      "file": "valid/project-current.json",
+      "message_type": "project_current",
+      "note": "Project, workspace and policy. agent_may_accept_findings is false and secret_tools_available is false, so the agent learns both boundaries from the first call rather than from a refusal."
+    },
+    {
+      "name": "agent-session-status",
+      "kind": "mcp_tool_response",
+      "file": "valid/agent-session-status.json",
+      "message_type": "agent_session_status",
+      "note": "Session identity, the negotiated capability set including review_inbox: false, and the browser session with the control epoch a capture must present."
+    },
+    {
+      "name": "browser-take-screenshot",
+      "kind": "mcp_tool_response",
+      "file": "valid/browser-take-screenshot.json",
+      "message_type": "browser_take_screenshot",
+      "note": "The after screenshot of the Stage 0 exit criterion: a verified artefact returned as a resource link with its digest, never as inline image bytes, and labelled untrusted_browser_content because it is a picture of a page."
+    },
+    {
+      "name": "finding-submit-verification",
+      "kind": "mcp_tool_response",
+      "file": "valid/finding-submit-verification.json",
+      "message_type": "finding_submit_verification",
+      "note": "A submitted verification with summary, branch, commit, tested viewports, checks and the after artefact. Its status is submitted and the finding is FIXED_UNVERIFIED: the agent has claimed a fix with evidence, and nothing here accepts it."
+    },
+    {
+      "name": "finding-update-status-awaiting-human-review",
+      "kind": "mcp_tool_response",
+      "file": "valid/finding-update-status-awaiting-human-review.json",
+      "message_type": "finding_update_status",
+      "note": "The terminal state available to an agent. There is no response in this corpus in which an agent moved a human-authored finding further, because the tool argument enumeration cannot express one."
+    },
+    {
+      "name": "finding-get-degraded-without-image-content",
+      "kind": "mcp_tool_response",
+      "file": "valid/finding-get-degraded-without-image-content.json",
+      "message_type": "finding_get",
+      "note": "A client that declared no image capability. It still receives the annotation with its text label, the evidence link and its digest, plus a warning naming what it missed. Degradation is a warning on a success, not a failure (docs/ARCHITECTURE.md section 8.3)."
+    }
+  ],
+  "invalid": [
+    {
+      "name": "not-json",
+      "kind": "mcp_tool_response",
+      "file": "invalid/not-json.raw",
+      "expect_reason": "malformed_json",
+      "note": "Prose where a response was expected. A tool result is a document with a schema, not a sentence an agent parses by reading it."
+    },
+    {
+      "name": "unsupported-protocol-version",
+      "kind": "mcp_tool_response",
+      "file": "invalid/unsupported-protocol-version.json",
+      "expect_reason": "unsupported_protocol_version",
+      "expect_error_class": "UNSUPPORTED_CAPABILITY",
+      "note": "A future protocol version is refused rather than best-effort parsed (docs/MCP_SPEC.md section 14)."
+    },
+    {
+      "name": "unknown-tool",
+      "kind": "mcp_tool_response",
+      "file": "invalid/unknown-tool.json",
+      "expect_reason": "unknown_message_type",
+      "expect_error_class": "UNSUPPORTED_CAPABILITY",
+      "note": "A secret tool, which Stage 0 does not expose at all. An unknown tool is rejected rather than dispatched to a default, so a response claiming to come from a tool this build does not have cannot be read."
+    },
+    {
+      "name": "envelope-with-unknown-property",
+      "kind": "mcp_tool_response",
+      "file": "invalid/envelope-with-unknown-property.json",
+      "expect_reason": "schema_violation",
+      "note": "An unknown envelope property. It carries a credential here to make the point concrete: additionalProperties false is what stops a response growing a field nobody agreed to, and docs/SECURITY.md section 18 is why that matters."
+    },
+    {
+      "name": "policy-allows-agent-acceptance",
+      "kind": "mcp_tool_response",
+      "file": "invalid/policy-allows-agent-acceptance.json",
+      "expect_reason": "schema_violation",
+      "note": "agent_may_accept_findings is a boolean. A string here would be truthy in JavaScript, which is exactly how an authority rule gets inverted by accident."
+    },
+    {
+      "name": "finding-without-untrusted-fields",
+      "kind": "mcp_tool_response",
+      "file": "invalid/finding-without-untrusted-fields.json",
+      "expect_reason": "schema_violation",
+      "note": "untrusted_fields is required on every finding. A finding always carries the URL it was captured at, so a response that names no page-derived member is one that forgot to."
+    },
+    {
+      "name": "screenshot-labelled-trusted",
+      "kind": "mcp_tool_response",
+      "file": "invalid/screenshot-labelled-trusted.json",
+      "expect_reason": "untrusted_content_mislabelled",
+      "expect_error_class": "POLICY_DENIED",
+      "note": "A capture declaring trusted_control_plane. ADR-0010 forbids returning page content without an untrusted label, and the codec refuses it on the way out as well as on the way in."
+    },
+    {
+      "name": "review-findings-labelled-trusted",
+      "kind": "mcp_tool_response",
+      "file": "invalid/review-findings-labelled-trusted.json",
+      "expect_reason": "untrusted_content_mislabelled",
+      "expect_error_class": "POLICY_DENIED",
+      "note": "Findings under a trusted label, with an instruction planted in the captured URL. This is the shape a prompt-injection attempt would need to succeed, and it is refused before an agent sees it."
+    }
+  ]
+}

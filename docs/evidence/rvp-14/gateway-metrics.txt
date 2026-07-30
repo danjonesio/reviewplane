@@ -1,0 +1,43 @@
+# HELP reviewplane_tunnel_bytes_total Tunnel bytes transferred, by direction.
+# TYPE reviewplane_tunnel_bytes_total counter
+reviewplane_tunnel_bytes_total{direction="from_destination"} 1.6026372e+07
+reviewplane_tunnel_bytes_total{direction="to_destination"} 40795
+# HELP reviewplane_tunnel_connector_channels_open Connector data channels open now.
+# TYPE reviewplane_tunnel_connector_channels_open gauge
+reviewplane_tunnel_connector_channels_open 1
+# HELP reviewplane_tunnel_connector_channels_total Connector data channels terminated, by outcome.
+# TYPE reviewplane_tunnel_connector_channels_total counter
+reviewplane_tunnel_connector_channels_total{outcome="accepted"} 1
+# HELP reviewplane_tunnel_requests_total Browser requests, by the stable code the gateway answered with.
+# TYPE reviewplane_tunnel_requests_total counter
+reviewplane_tunnel_requests_total{code="ok"} 53
+# HELP reviewplane_tunnel_route_bytes Bytes transferred on each route registered now, by direction.
+# TYPE reviewplane_tunnel_route_bytes gauge
+reviewplane_tunnel_route_bytes{route_id="svc_13b32b2ed9594baea3adc553a18441f4",direction="from_destination"} 0
+reviewplane_tunnel_route_bytes{route_id="svc_13b32b2ed9594baea3adc553a18441f4",direction="to_destination"} 0
+reviewplane_tunnel_route_bytes{route_id="svc_d517817541f0432c9807648a4540d98d",direction="from_destination"} 35669
+reviewplane_tunnel_route_bytes{route_id="svc_d517817541f0432c9807648a4540d98d",direction="to_destination"} 22594
+# HELP reviewplane_tunnel_route_lifecycle_total Published-service lifecycle transitions observed by the gateway.
+# TYPE reviewplane_tunnel_route_lifecycle_total counter
+reviewplane_tunnel_route_lifecycle_total{transition="ready"} 2
+# HELP reviewplane_tunnel_route_streams Streams opened on each route registered now.
+# TYPE reviewplane_tunnel_route_streams gauge
+reviewplane_tunnel_route_streams{route_id="svc_13b32b2ed9594baea3adc553a18441f4",state="active"} 0
+reviewplane_tunnel_route_streams{route_id="svc_13b32b2ed9594baea3adc553a18441f4",state="opened"} 0
+reviewplane_tunnel_route_streams{route_id="svc_d517817541f0432c9807648a4540d98d",state="active"} 0
+reviewplane_tunnel_route_streams{route_id="svc_d517817541f0432c9807648a4540d98d",state="opened"} 30
+# HELP reviewplane_tunnel_routes_active Routes registered now.
+# TYPE reviewplane_tunnel_routes_active gauge
+reviewplane_tunnel_routes_active 2
+# HELP reviewplane_tunnel_streams_total Tunnel streams, by outcome.
+# TYPE reviewplane_tunnel_streams_total counter
+reviewplane_tunnel_streams_total{outcome="completed"} 53
+reviewplane_tunnel_streams_total{outcome="opened"} 54
+# HELP reviewplane_tunnel_upgrades_open Upgraded connections open now.
+# TYPE reviewplane_tunnel_upgrades_open gauge
+reviewplane_tunnel_upgrades_open 1
+# HELP reviewplane_tunnel_upgrades_total HTTP upgrade requests carried by the tunnel, by outcome.
+# TYPE reviewplane_tunnel_upgrades_total counter
+reviewplane_tunnel_upgrades_total{outcome="closed"} 1
+reviewplane_tunnel_upgrades_total{outcome="requested"} 2
+reviewplane_tunnel_upgrades_total{outcome="switched"} 2

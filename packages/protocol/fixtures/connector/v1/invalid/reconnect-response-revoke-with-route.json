@@ -1,0 +1,31 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JQ8ZR3M4T5V6W7X8Y9Z0A1K9",
+  "type": "connector.reconnect.response",
+  "sent_at": "2026-07-28T11:05:02Z",
+  "connector_id": "con_01JQ8ZR3M4T5V6W7X8Y9Z0A1C2",
+  "payload": {
+    "reconciled_at": "2026-07-28T11:05:02Z",
+    "upgrade": "compatible",
+    "routes": [
+      {
+        "route_id": "svc_01JQ8ZR3M4T5V6W7X8Y9Z0A1E2",
+        "decision": "revoke",
+        "reason": "expired",
+        "route": {
+          "route_id": "svc_01JQ8ZR3M4T5V6W7X8Y9Z0A1E2",
+          "project_id": "prj_01JQ8ZR3M4T5V6W7X8Y9Z0A1E3",
+          "workspace_id": "wsp_01JQ8ZR3M4T5V6W7X8Y9Z0A1E4",
+          "local_host": "127.0.0.1",
+          "local_port": 4321,
+          "protocol": "http",
+          "expires_at": "2026-07-28T12:00:00Z",
+          "allowed_browser_session_ids": [
+            "brs_01JQ8ZR3M4T5V6W7X8Y9Z0A1E5"
+          ]
+        }
+      }
+    ],
+    "sessions": []
+  }
+}

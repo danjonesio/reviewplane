@@ -1,0 +1,17 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JSELFASSIGNED",
+  "type": "worker.register",
+  "sent_at": "2026-07-29T09:15:02.104Z",
+  "worker_id": "wkr_01JSELFASSIGNED",
+  "payload": {
+    "worker_name": "browser-worker-01",
+    "worker_version": "0.1.0",
+    "browser_type": "chromium",
+    "browser_version": "143.0.7499.4",
+    "capacity": 4,
+    "labels": [],
+    "sandbox_enabled": true,
+    "started_at": "2026-07-29T09:15:01.000Z"
+  }
+}

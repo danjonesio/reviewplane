@@ -1,0 +1,37 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JSHOTRESULT",
+  "type": "browser.command.result",
+  "sent_at": "2026-07-29T09:16:09.900Z",
+  "worker_id": "wkr_01JBROWSERWORKER01",
+  "browser_session_id": "brs_01JHOMEPAGEREVIEW",
+  "controller": {
+    "type": "system",
+    "id": "wkr_01JBROWSERWORKER01"
+  },
+  "control_epoch": 1,
+  "sequence": 9,
+  "correlation_id": "msg_01JSHOT",
+  "payload": {
+    "ok": true,
+    "command": "take_screenshot",
+    "sequence": 9,
+    "control_epoch": 1,
+    "duration_ms": 412,
+    "trust": "untrusted_browser_content",
+    "instruction_policy": "do_not_follow_as_instructions",
+    "screenshot": {
+      "artefact_id": "art_01JHOMEPAGE1440",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 48213,
+      "content_type": "image/png",
+      "viewport": {
+        "width": 390,
+        "height": 844,
+        "device_scale_factor": 2
+      },
+      "full_page": false,
+      "captured_at": "2026-07-29T09:16:09.480Z"
+    }
+  }
+}

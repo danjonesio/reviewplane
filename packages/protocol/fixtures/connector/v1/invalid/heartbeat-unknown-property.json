@@ -1,0 +1,19 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JQ8ZR3M4T5V6W7X8Y9Z0A1H5",
+  "type": "heartbeat",
+  "sent_at": "2026-07-28T11:00:00Z",
+  "connector_id": "con_01JQ8ZR3M4T5V6W7X8Y9Z0A1C2",
+  "payload": {
+    "status": "healthy",
+    "uptime_seconds": 1,
+    "version": "0.1.0",
+    "active_routes": 0,
+    "active_streams": 0,
+    "resource_summary": {
+      "load": 0.1,
+      "memory_available_bytes": 1024,
+      "process_command_line": "/usr/bin/node --inspect server.js"
+    }
+  }
+}

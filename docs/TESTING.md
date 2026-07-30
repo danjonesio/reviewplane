@@ -33,6 +33,8 @@ Tests must prove the primary workflow, distributed protocol behaviour, security 
 - Event payload compatibility
 - API OpenAPI compatibility
 
+Contract tests for a protocol run one committed fixture corpus in every language that speaks it. For the connector protocol that corpus is `packages/protocol/fixtures/connector/v1/`: its manifest lists the frames that must be accepted, with their canonical encodings, and the frames that must be refused, with the reason each must report. `pnpm protocol:check` runs the corpus in both languages and additionally fails when either language's generated models differ from the schema source, which is the snapshot test for an unreviewed schema change.
+
 ### Integration
 
 - API, PostgreSQL and both artefact-store drivers
@@ -40,6 +42,16 @@ Tests must prove the primary workflow, distributed protocol behaviour, security 
 - Connector and loopback dev server
 - MCP client and review retrieval
 - WebSocket live frames and control
+
+Running today: `apps/server/test/connector-integration.test.ts` (enrolment, channel, revocation, and the `ss -ltnp` evidence that the connector opens no listening socket) and `apps/server/test/route-publication.test.ts` (route publication end to end through the real connector binary and a real loopback service, including `PORT_NOT_LISTENING` after the bounded grace, `DESTINATION_NOT_ALLOWED`, `PROJECT_NOT_AUTHORISED`, `CONNECTOR_OFFLINE` and `ROUTE_EXPIRED`). Both build `services/connector` from source, so neither can drift from the binary an operator runs.
+
+The live-frame integration runs against a real listening server and a real
+WebSocket client (`apps/server/test/live.test.ts`), because the properties
+under test are properties of the handshake and of message ordering: a refusal
+before the upgrade, a text metadata message immediately followed by the binary
+message it describes, and a worker stream that closes when the last viewer
+leaves. The measured-rate half of section 12 is settled in the browser suite,
+where a real Chromium is producing the frames.
 
 ### End to end
 
@@ -73,7 +85,33 @@ Automated scenario:
 14. Export review.
 15. Verify event sequence and artefact hashes.
 
+Steps 1 to 6 run automatically as `pnpm test:e2e` (`deploy/compose/e2e/run.sh`). It starts the Compose stack, enrols the connector fixture, starts the fixture applications on connector loopback, publishes them, reserves and allocates browser sessions against the routes, and navigates central Chromium to the internal origins. Every step asserts its own outcome and a step that cannot be verified aborts the run; evidence lands in `deploy/compose/e2e/evidence/`.
+
+The same script then proves the tunnel capabilities `ARCHITECTURE.md` §7.4 makes mandatory, which those six steps do not reach: a WebSocket echo, server-sent events asserted on arrival timing, and Vite hot module replacement applying a source edit made on the development machine without a full page reload. It ends by recording the §12 baseline. These are numbered separately in the script because they are not steps of the scenario above; they are the capabilities the route has to have for that scenario to mean anything.
+
+Steps 7 to 15 need reviews, findings, verification and export, and arrive with the issues that introduce them.
+
 This scenario is release-blocking.
+
+### 3.1 What runs automatically today
+
+| Steps | Harness | Command |
+|---|---|---|
+| 5 to 7, browser side | `apps/browser-worker/test/browser/` | `pnpm test:browser` |
+| 7, annotation UI | `apps/web/test/ui/` | `pnpm test:ui` |
+| 8 to 12 | `apps/mcp-server/test/integration/` | `pnpm --filter @reviewplane/mcp-server run test:integration` |
+
+Steps 9 to 12 — agent retrieves and claims `bugs-on-homepage`, changes the
+fixture application, captures the after screenshot and submits verification —
+run against real components: a real PostgreSQL, the real control-plane process,
+the real MCP server, a real Chromium browser worker in its own process, and the
+official MCP TypeScript SDK as the client. The suite runs in the browser
+worker's own image under the container controls of
+`deploy/compose/compose.yaml`, on an internal Docker network whose only
+reachable peer is its database, with a unique name per run.
+
+Steps 1 to 4 need the connector, and steps 13 to 15 need human acceptance and
+review export; both arrive in Stage 1.
 
 ## 4. Domain tests
 
@@ -103,15 +141,28 @@ Required transition tests:
 - Loopback HTTP route
 - WebSocket hot reload route
 - Server-sent events
+- Chunked and otherwise streamed responses
+- Upgrade denied without a capability, with another project's capability, or on header-based route confusion
+- Upgrade to a protocol other than `websocket` refused
+- Closure propagated in both directions, browser-initiated and service-initiated
+- Long editing pause: an idle upgraded connection survives its configured window
 - Connector reconnect
 - Route expiry
-- Revocation during active stream
+- Revocation during active stream, including an already-upgraded connection
 - Destination host substitution rejected
 - Cross-project capability rejected
 - Link-local and metadata destination rejected
 - Stream and memory limits
-- Malformed frames
+- Malformed frames, in the data channel and on an upgraded connection
 - Slow consumer and backpressure
+
+Connector reconnect is the Stage 0 exit criterion "Protocol round trip survives connector reconnect", and it is a three-part assertion rather than a single one: a request issued before the interruption succeeds, a request issued during it fails with `CONNECTOR_OFFLINE` or `PUBLISHED_SERVICE_UNAVAILABLE` and does not hang, and an equivalent request issued afterwards succeeds over the same `route_id` against the same destination with no operator action. A test making it MUST also show that no request was served by a different environment, which needs a second environment to be wrong about.
+
+Running today: `services/connector/internal/protocolsim` (the Protocol simulation mode of `DEVELOPMENT.md` §4 — the three-part round trip, the six-field reconnect payload, routes closed on reconciliation, the desired-state timeout, flapping reconnects, the terminal upgrade classification, and the measured reconnect-time distribution over ten forced disconnects), `apps/server/test/connector-reconnect.test.ts` (a real connector process killed and restarted, a control-plane restart, claims on another connector's route, an expired route, a revoked identity, and browser sessions degraded and resumed) and `apps/server/test/reconciliation.test.ts` (the decision table).
+
+A streaming test MUST assert on **arrival timing**, not only on the final body. Server-sent events fail in a specific and recognisable way when any hop buffers — every event arrives at once at stream close — and a test that compared only the assembled result would pass against exactly the implementation the capability exists to exclude.
+
+Both ends of the data channel MUST be given the same session configuration in a test harness. The initial flow-control window is a constant of the protocol rather than of a deployment (`CONNECTOR_PROTOCOL.md` §12.2), so a harness that gave the two ends different windows would produce a protocol violation instead of the backpressure the test was asking about.
 
 ## 7. Browser tests
 
@@ -127,6 +178,17 @@ Required transition tests:
 - Worker crash and orphan cleanup
 - Browser sandbox configuration check
 
+These live in `apps/browser-worker/test/browser/` and run with `pnpm test:browser`, which builds the worker image and runs the suite inside it under the same container controls `deploy/compose/compose.yaml` applies. Running them anywhere laxer would not answer the question the sandbox check asks. They are excluded from `pnpm test` because they need a Chromium and its system libraries.
+
+The suite drives the worker against the fixture applications in `test/browser/fixture-app.ts`, including a page whose visible content instructs the agent to change policy and exfiltrate source. Element-reference tests assert that a stale reference fails rather than targeting whatever now occupies its position, which is the failure mode a passing "it clicked something" test would hide.
+
+Live capture is exercised in the same suite. It needs a page that repaints,
+because a CDP screencast emits on paint and a static page produces one frame
+and then silence; `fixture-app.ts` therefore serves an animated page whose only
+purpose is to give the compositor work. The measured rate for each mode is
+printed by the run, so the figures `docs/TESTING.md` section 12 asks to be
+published come from the suite rather than from a separate benchmark.
+
 ## 8. MCP tests
 
 - Project resolution
@@ -140,6 +202,24 @@ Required transition tests:
 - Capability degradation for clients without image support
 - Inbox acknowledgement semantics
 - Completion-gate missing evidence response
+
+Every item on this list except the last two is covered by
+`apps/mcp-server/test/mcp.test.ts`, which drives the endpoint with the official
+MCP TypeScript SDK client against a real database. Inbox semantics and
+completion gates arrive with the tools they test, in Stage 1.
+
+The suite also holds the properties that are specific to the Stage 0 agent
+surface: the advertised tool set equals the schema's availability set; no
+advertised status enumeration can express a final disposition; a slug from
+another project resolves as not found; an agent credential is refused by the
+administrative API; a human session cookie is refused as agent authentication; a
+credential that expires mid-session refuses the next call rather than executing
+part of it; a transport session identifier is not a credential; and no tool
+response carries a credential.
+
+`apps/mcp-server/test/unit.test.ts` holds the contract snapshot of the
+advertised tool schemas, so a breaking tool change cannot land silently
+(section 2 "Contract").
 
 ## 9. API tests
 
@@ -196,6 +276,12 @@ Verify persisted artefacts and logs are redacted according to policy.
 | Failure | Expected behaviour |
 |---|---|
 | Connector disconnect during navigation | Action fails clearly, route unavailable, session remains diagnosable |
+| Connector process killed and restarted | Route resumes under the same `route_id` and destination, no operator action |
+| Network partition with the connector process alive | Bounded jittered reconnect; requests fail with a stable code meanwhile |
+| Control-plane restart while a connector is connected | Connector reconnects and reconciles; unexpired authorised routes continue |
+| Connector disconnect during an open data stream | Stream fails with `CONNECTOR_OFFLINE`, never a generic error and never a hang |
+| Repeated flapping reconnects | No duplicate routes, no leaked streams |
+| Timeout awaiting the reconnect desired state | Connector serves no route rather than serving an unreconciled one |
 | Worker crash after screenshot upload | Uploaded evidence remains, session marked failed |
 | API restart during live view | Client reconnects and refreshes state |
 | Database unavailable | State changes denied; no unaudited continuation |
@@ -203,6 +289,11 @@ Verify persisted artefacts and logs are redacted according to policy.
 | Human takeover during agent click | Ordered lease transition, no concurrent input |
 | Duplicate verification request | One verification record through idempotency |
 | Retention deletion partial failure | Retry, metadata not falsely tombstoned |
+| Development service closes a WebSocket | Closure reaches the browser with the service's close code and reason |
+| Connector disconnect during an open WebSocket | Connection closed, route answers `CONNECTOR_OFFLINE` |
+| Route revoked during an open WebSocket | Connection closed promptly, not at the next request |
+| Exceeding the stream limit with upgraded connections | `STREAM_LIMIT_EXCEEDED` |
+| Long editing pause with no traffic | Connection survives the configured idle window and closes past it |
 
 ## 12. Performance tests
 
@@ -218,6 +309,8 @@ Measure:
 - Object upload throughput
 
 Publish tested hardware and configuration.
+
+Tunnel throughput and hot-reload responsiveness are measured by the Compose scenario (`deploy/compose/e2e/run.sh`) and written to `evidence/performance-baseline.txt` on every run, alongside the configuration and the machine the figures came from. Hot-reload responsiveness is measured as the wall-clock time from the source edit landing on the development machine to the updated text being visible in central Chromium, which is the figure a user experiences; it therefore includes the file watcher, the bundler and the browser, not the tunnel alone. A baseline is a recorded number, not a threshold: `docs/ROADMAP.md` defers tuning, so the scenario records the figure and does not fail on it.
 
 ## 13. Upgrade tests
 
@@ -249,6 +342,42 @@ For each supported upgrade path:
 - Responsive layouts at 390x844 and 1440x900
 - Browser live surface reconnect
 - Before-and-after comparison
+
+Annotation alignment is proved in `apps/web/test/ui/annotation.browser.test.ts`,
+which owns the Stage 0 exit criterion "a screenshot annotation aligns after UI
+resize". Every case measures two things and requires them to agree: where the
+mark sits as a fraction of the rendered content rectangle, and what the
+screenshot itself shows at that same fraction. The fixture page paints a
+distinctly coloured region, the annotation claims exactly that region, and a
+mark that drifts by a few per cent lands on the background instead — so the
+suite cannot pass by proving only that an overlay exists somewhere. The
+conditions are 390x844 and 1440x900, device pixel ratio 1 and 2, an in-page
+container resize, a panel scroll and a zoom change. The contained-rectangle
+arithmetic is recomputed inside the test from `getBoundingClientRect` and
+`naturalWidth` rather than read from the component, so a mistake shared between
+renderer and test cannot cancel itself out.
+
+These live in `apps/web/test/ui/` and run with `pnpm test:ui`, which builds the
+bundle and drives it in a real Chromium against a stub control plane that
+speaks the generated live-view protocol. They are separate from `pnpm test` for
+the same reason the browser suite is: a Chromium and its system libraries are
+not assumed on a developer's machine, so the suite runs inside the browser
+worker's image under the same container controls.
+
+The stub is restartable, which is what makes the API-restart case of section 11
+testable end to end: the control plane is stopped mid-stream, the page is
+asserted to show `Reconnecting`, the control plane is restarted on the same
+port, and the page is asserted to return to `Live` with its painted-frame count
+still advancing. The suite also asserts that the page issues no request to any
+host but its own, which is ADR-0011's no-CDN requirement observed at run time
+rather than in the bundle.
+
+Frame-lifetime evidence is split deliberately: `apps/server/test/live.test.ts`
+proves the artefact store, the database and the event payloads hold no frame
+after a sustained viewing session, and
+`apps/browser-worker/test/browser/live.browser.test.ts` proves the same of the
+worker's own filesystem — including that the ephemeral profile directory gains
+no image file and does not survive termination.
 
 ## 16. Release gates
 

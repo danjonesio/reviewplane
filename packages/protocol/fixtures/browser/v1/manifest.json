@@ -1,0 +1,172 @@
+{
+  "protocol": "browser",
+  "version": 1,
+  "description": "Cross-language fixture corpus for the browser-worker protocol. Valid cases must decode and re-encode to the byte string recorded in canonical.json; invalid cases must be refused with the recorded reason. A fixture is the only place a protocol example is written down. The frame_too_large and payload_too_large reasons are exercised in test/browser-frame.test.ts with values built at run time rather than by a committed fixture, because reaching either bound needs roughly 200 KiB of committed data.",
+  "valid": [
+    {
+      "name": "worker-register",
+      "kind": "browser_frame",
+      "file": "valid/worker-register.json",
+      "message_type": "worker.register",
+      "note": "Registration precedes identity assignment, so the envelope carries no worker_id. sandbox_enabled records the docs/SECURITY.md section 10 posture."
+    },
+    {
+      "name": "worker-register-ack",
+      "kind": "browser_frame",
+      "file": "valid/worker-register-ack.json",
+      "message_type": "worker.register.ack",
+      "note": "Assigns the worker identity and the single project it may accept sessions for."
+    },
+    {
+      "name": "worker-heartbeat",
+      "kind": "browser_frame",
+      "file": "valid/worker-heartbeat.json",
+      "message_type": "worker.heartbeat",
+      "note": "Capacity report used to detect a lost worker."
+    },
+    {
+      "name": "session-allocate",
+      "kind": "browser_frame",
+      "file": "valid/session-allocate.json",
+      "message_type": "browser_session.allocate",
+      "note": "Allocation carrying the published-service origin that bounds egress, the route capability the worker presents to the tunnel gateway on requests to that origin, the initial epoch and the worker-enforced session limits. The origin's leftmost label is the service public_alias, never its svc_ identifier."
+    },
+    {
+      "name": "session-allocated",
+      "kind": "browser_frame",
+      "file": "valid/session-allocated.json",
+      "message_type": "browser_session.allocated",
+      "note": "READY response recording browser type and version on the session."
+    },
+    {
+      "name": "command-navigate-relative",
+      "kind": "browser_frame",
+      "file": "valid/command-navigate-relative.json",
+      "message_type": "browser.command",
+      "note": "The docs/MCP_SPEC.md section 7.4 example: a relative URL and a bounded wait condition, with the section 6.4 envelope fields present."
+    },
+    {
+      "name": "command-result-snapshot",
+      "kind": "browser_frame",
+      "file": "valid/command-result-snapshot.json",
+      "message_type": "browser.command.result",
+      "note": "The section 7.4 snapshot shape, labelled untrusted_browser_content with instruction_policy do_not_follow_as_instructions."
+    },
+    {
+      "name": "command-result-screenshot",
+      "kind": "browser_frame",
+      "file": "valid/command-result-screenshot.json",
+      "message_type": "browser.command.result",
+      "note": "A system capture at the 390x844 preset with device_scale_factor 2, reporting the verified artefact digest and size."
+    },
+    {
+      "name": "command-result-epoch-stale",
+      "kind": "browser_frame",
+      "file": "valid/command-result-epoch-stale.json",
+      "message_type": "browser.command.result",
+      "note": "A refusal carries no page-derived content, so it is labelled trusted_control_plane and returns the epoch that is actually current."
+    },
+    {
+      "name": "session-status-failed",
+      "kind": "browser_frame",
+      "file": "valid/session-status-failed.json",
+      "message_type": "browser_session.status",
+      "note": "Crash transition carrying both the previous and the new status, per docs/EVENTS.md section 8."
+    }
+  ],
+  "invalid": [
+    {
+      "name": "allocate-capability-too-short",
+      "kind": "browser_frame",
+      "file": "invalid/allocate-capability-too-short.json",
+      "expect_reason": "schema_violation",
+      "note": "The route capability has the same bounds as the connector protocol gives it, so a value too short to be a real credential is refused by the schema rather than presented to the tunnel gateway."
+    },
+    {
+      "name": "command-without-control-epoch",
+      "kind": "browser_frame",
+      "file": "invalid/command-without-control-epoch.json",
+      "expect_reason": "schema_violation",
+      "note": "docs/ARCHITECTURE.md section 6.4 makes the control epoch mandatory on every command; the schema, not the worker, is the first thing that refuses its absence."
+    },
+    {
+      "name": "command-without-controller",
+      "kind": "browser_frame",
+      "file": "invalid/command-without-controller.json",
+      "expect_reason": "schema_violation",
+      "note": "A command with no controller identity could not be authorised against a lease."
+    },
+    {
+      "name": "command-navigate-with-click-params",
+      "kind": "browser_frame",
+      "file": "invalid/command-navigate-with-click-params.json",
+      "expect_reason": "schema_violation",
+      "note": "A command carries only its own parameters, so an unused parameter set cannot ride along."
+    },
+    {
+      "name": "command-timeout-out-of-range",
+      "kind": "browser_frame",
+      "file": "invalid/command-timeout-out-of-range.json",
+      "expect_reason": "schema_violation",
+      "note": "docs/MCP_SPEC.md section 7.4 forbids an unbounded wait; a day-long timeout is outside the declared bound."
+    },
+    {
+      "name": "wait-network-idle-with-selector",
+      "kind": "browser_frame",
+      "file": "invalid/wait-network-idle-with-selector.json",
+      "expect_reason": "schema_violation",
+      "note": "Network idleness has no target, so a selector alongside it is a contradiction rather than an ignored field."
+    },
+    {
+      "name": "navigate-to-non-http-scheme",
+      "kind": "browser_frame",
+      "file": "invalid/navigate-to-non-http-scheme.json",
+      "expect_reason": "schema_violation",
+      "note": "A navigation target is an http(s) URL or a root-relative path; file: never reaches the browser."
+    },
+    {
+      "name": "result-trusted-with-snapshot",
+      "kind": "browser_frame",
+      "file": "invalid/result-trusted-with-snapshot.json",
+      "expect_reason": "schema_violation",
+      "note": "ADR-0010: page-derived content cannot be returned under a trusted label. The generated validator refuses it on both sides of the channel."
+    },
+    {
+      "name": "snapshot-text-with-control-characters",
+      "kind": "browser_frame",
+      "file": "invalid/snapshot-text-with-control-characters.json",
+      "expect_reason": "schema_violation",
+      "note": "A hostile page cannot smuggle terminal escape sequences through a snapshot."
+    },
+    {
+      "name": "register-with-worker-id",
+      "kind": "browser_frame",
+      "file": "invalid/register-with-worker-id.json",
+      "expect_reason": "schema_violation",
+      "note": "A worker does not assign its own identity; the control plane does."
+    },
+    {
+      "name": "allocate-unknown-property",
+      "kind": "browser_frame",
+      "file": "invalid/allocate-unknown-property.json",
+      "expect_reason": "schema_violation",
+      "note": "Unknown properties are refused, so a request cannot smuggle a sandbox-disabling flag past the schema."
+    },
+    {
+      "name": "unknown-message-type",
+      "kind": "browser_frame",
+      "file": "invalid/unknown-message-type.json",
+      "expect_reason": "unknown_message_type",
+      "expect_error_class": "PROTOCOL_UNSUPPORTED",
+      "note": "An unknown command type is rejected, never ignored: script evaluation is not a version 1 capability."
+    },
+    {
+      "name": "unknown-protocol-version",
+      "kind": "browser_frame",
+      "file": "invalid/unknown-protocol-version.json",
+      "expect_reason": "unsupported_protocol_version",
+      "expect_error_class": "PROTOCOL_UNSUPPORTED",
+      "note": "Stage 0 pins version 1 and does not best-effort parse a later one."
+    }
+  ]
+}

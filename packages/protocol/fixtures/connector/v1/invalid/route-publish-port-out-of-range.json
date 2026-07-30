@@ -1,0 +1,19 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JQ8ZR3M4T5V6W7X8Y9Z0A1J2",
+  "type": "route.publish",
+  "sent_at": "2026-07-28T11:00:01Z",
+  "connector_id": "con_01JQ8ZR3M4T5V6W7X8Y9Z0A1C2",
+  "payload": {
+    "route_id": "svc_01JQ8ZR3M4T5V6W7X8Y9Z0A1E2",
+    "project_id": "prj_01JQ8ZR3M4T5V6W7X8Y9Z0A1E3",
+    "workspace_id": "wsp_01JQ8ZR3M4T5V6W7X8Y9Z0A1E4",
+    "local_host": "127.0.0.1",
+    "local_port": 70000,
+    "protocol": "http",
+    "expires_at": "2026-07-28T12:00:00Z",
+    "allowed_browser_session_ids": [
+      "brs_01JQ8ZR3M4T5V6W7X8Y9Z0A1E5"
+    ]
+  }
+}

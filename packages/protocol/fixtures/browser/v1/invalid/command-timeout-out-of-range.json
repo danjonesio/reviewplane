@@ -1,0 +1,21 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JFOREVER",
+  "type": "browser.command",
+  "sent_at": "2026-07-29T09:16:04.000Z",
+  "worker_id": "wkr_01JBROWSERWORKER01",
+  "browser_session_id": "brs_01JHOMEPAGEREVIEW",
+  "controller": {
+    "type": "agent",
+    "id": "ags_01JCLAUDECODE"
+  },
+  "control_epoch": 1,
+  "sequence": 7,
+  "payload": {
+    "command": "wait",
+    "timeout_ms": 86400000,
+    "wait": {
+      "condition": "network_idle"
+    }
+  }
+}

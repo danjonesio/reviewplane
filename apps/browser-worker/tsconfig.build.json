@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Emit resolves a workspace dependency's build output, not its sources:
+    // pulling another package's .ts files into this program would put them
+    // outside `rootDir` and emit them into this package's `dist`. The root
+    // `pnpm build` runs in workspace dependency order, so the output this
+    // needs is already there.
+    "customConditions": [],
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src/**/*.ts"]
+}

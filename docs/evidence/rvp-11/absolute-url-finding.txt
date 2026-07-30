@@ -1,0 +1,26 @@
+The absolute-URL failure mode (docs/CONNECTOR_PROTOCOL.md section 13.2)
+======================================================================
+
+The fixture page /absolute-url emits:
+    <link rel="stylesheet" href="http://127.0.0.1:4321/assets/site.css">
+
+which is what a development server that derives absolute URLs from its own
+listen address produces.
+
+Observed through the route:
+  navigation ok:        True
+  settled URL:          https://svc-63abd52bf724442e8dd56166095319de.internal.invalid/absolute-url
+  document status:      200
+  document title:       Absolute URL — ReviewPlane dev fixture
+
+The document loads. The stylesheet it names does not: the browser resolves
+http://127.0.0.1:4321/ against the browser container, not the development
+machine, and the session egress policy refuses every origin but its own, so
+the request is aborted before it leaves. It does not appear in the
+development service request log, which is the evidence that it never
+arrived rather than arriving and failing.
+
+This is not repaired by rewriting response bodies. Doing so would mean
+parsing and editing untrusted HTML in the request path, and would still miss
+a URL built in JavaScript. The supported repairs are root-relative URLs, a
+configured public base URL, or host_header_mode: original.

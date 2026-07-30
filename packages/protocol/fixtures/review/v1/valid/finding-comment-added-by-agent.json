@@ -1,0 +1,36 @@
+{
+  "id": "evt_01JCOMMENTADDED",
+  "schema_version": 1,
+  "sequence": 45,
+  "type": "finding.comment_added",
+  "occurred_at": "2026-07-30T10:09:47.220Z",
+  "organisation_id": "org_01JREFRESH",
+  "project_id": "prj_01JREFRESHSURPLUS",
+  "actor": {
+    "type": "agent_session",
+    "id": "ags_01JCLAUDECODE",
+    "display": "claude-code"
+  },
+  "correlation": {
+    "review_id": "rev_01JBUGSONHOMEPAGE",
+    "finding_id": "fin_01JHEROOVERLAPS",
+    "agent_session_id": "ags_01JCLAUDECODE"
+  },
+  "payload": {
+    "comment": {
+      "id": "cmt_01JBREAKPOINTNOTE",
+      "organisation_id": "org_01JREFRESH",
+      "project_id": "prj_01JREFRESHSURPLUS",
+      "review_id": "rev_01JBUGSONHOMEPAGE",
+      "finding_id": "fin_01JHEROOVERLAPS",
+      "body": "Reproduced at 820x1180. The navigation wraps because the collapse breakpoint is 768px.",
+      "created_by": {
+        "type": "agent_session",
+        "id": "ags_01JCLAUDECODE",
+        "display": "claude-code"
+      },
+      "revision": 1,
+      "created_at": "2026-07-30T10:09:47.220Z"
+    }
+  }
+}

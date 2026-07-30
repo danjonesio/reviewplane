@@ -1,0 +1,176 @@
+{
+  "protocol": "capability",
+  "version": 1,
+  "description": "Golden corpus for the session-scoped route capability codec of packages/protocol. The control plane mints these tokens in TypeScript and the tunnel gateway verifies them in Go, so both languages assert against this file. Key material here is fixture material and is never deployed.",
+  "keys": {
+    "stage0-a": "ERERERERERERERERERERERERERERERERERERERERERE=",
+    "stage0-b": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIi",
+    "k": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM=",
+    "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk": "RERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERA=="
+  },
+  "verifier_keyring": [
+    "stage0-a",
+    "stage0-b",
+    "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
+  ],
+  "mint": [
+    {
+      "name": "typical",
+      "key_id": "stage0-a",
+      "capability_id": "cap_01K9G3ZJ4T2W6Q8B",
+      "route_id": "svc_01K9G3ZJ4T2W6Q8C",
+      "project_id": "prj_01K9G3ZJ4T2W6Q8D",
+      "browser_session_id": "brs_01K9G3ZJ4T2W6Q8E",
+      "issued_at": 1785000000,
+      "expires_at": 1785000300,
+      "note": "The shape the control plane mints for a five-minute browser session lease.",
+      "token": "rp1.AQhzdGFnZTAtYQAAAABqZPBAAAAAAGpk8WwUY2FwXzAxSzlHM1pKNFQyVzZROEIUc3ZjXzAxSzlHM1pKNFQyVzZROEMUcHJqXzAxSzlHM1pKNFQyVzZROEQUYnJzXzAxSzlHM1pKNFQyVzZROEU.Cbu-zS0mBsmL_cLaie2d1d9UYRaX4My9sjiiLu0zuYY"
+    },
+    {
+      "name": "second-key",
+      "key_id": "stage0-b",
+      "capability_id": "cap_second",
+      "route_id": "svc_second",
+      "project_id": "prj_second",
+      "browser_session_id": "brs_second",
+      "issued_at": 1785000000,
+      "expires_at": 1785003600,
+      "note": "A verifier holding several keys selects by key_id, which is how a key rotates.",
+      "token": "rp1.AQhzdGFnZTAtYgAAAABqZPBAAAAAAGpk_lAKY2FwX3NlY29uZApzdmNfc2Vjb25kCnByal9zZWNvbmQKYnJzX3NlY29uZA.prDpvOxu3DVJPEtQHCvzKq2btCY7yyGS1JQ8m3v5LVs"
+    },
+    {
+      "name": "opaque-identifiers",
+      "key_id": "k",
+      "capability_id": "0",
+      "route_id": "route-without-a-prefix",
+      "project_id": "P-r-o-j-e-c-t_1",
+      "browser_session_id": "b",
+      "issued_at": 1,
+      "expires_at": 2,
+      "note": "Identifiers are opaque (docs/DOMAIN_MODEL.md section 3): no prefix is required.",
+      "token": "rp1.AQFrAAAAAAAAAAEAAAAAAAAAAgEwFnJvdXRlLXdpdGhvdXQtYS1wcmVmaXgPUC1yLW8tai1lLWMtdF8xAWI.Km74Ay9-8IPNOzRkY5DbqwIa1Gjv9b3jDdw5HqrY99E"
+    },
+    {
+      "name": "maximum-length",
+      "key_id": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+      "capability_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "route_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+      "project_id": "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp",
+      "browser_session_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "issued_at": 4000000000,
+      "expires_at": 4000003600,
+      "note": "Worst case for the schema's 512-character session_capability bound.",
+      "token": "rp1.ASBra2tra2tra2tra2tra2tra2tra2tra2tra2tra2trawAAAADuaygAAAAAAO5rNhBAY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY0BycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJyQHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBAYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYg.wpOLuNO-n7B4iEK1TPmya-w9huNv5kHaZs1qz9Efd_o"
+    }
+  ],
+  "verify": [
+    {
+      "name": "typical-accepted",
+      "token": "rp1.AQhzdGFnZTAtYQAAAABqZPBAAAAAAGpk8WwUY2FwXzAxSzlHM1pKNFQyVzZROEIUc3ZjXzAxSzlHM1pKNFQyVzZROEMUcHJqXzAxSzlHM1pKNFQyVzZROEQUYnJzXzAxSzlHM1pKNFQyVzZROEU.Cbu-zS0mBsmL_cLaie2d1d9UYRaX4My9sjiiLu0zuYY",
+      "now": 1785000000,
+      "expect": "valid",
+      "claims": {
+        "key_id": "stage0-a",
+        "capability_id": "cap_01K9G3ZJ4T2W6Q8B",
+        "route_id": "svc_01K9G3ZJ4T2W6Q8C",
+        "project_id": "prj_01K9G3ZJ4T2W6Q8D",
+        "browser_session_id": "brs_01K9G3ZJ4T2W6Q8E",
+        "issued_at": 1785000000,
+        "expires_at": 1785000300
+      }
+    },
+    {
+      "name": "second-key-accepted",
+      "token": "rp1.AQhzdGFnZTAtYgAAAABqZPBAAAAAAGpk_lAKY2FwX3NlY29uZApzdmNfc2Vjb25kCnByal9zZWNvbmQKYnJzX3NlY29uZA.prDpvOxu3DVJPEtQHCvzKq2btCY7yyGS1JQ8m3v5LVs",
+      "now": 1785000000,
+      "expect": "valid",
+      "claims": {
+        "key_id": "stage0-b",
+        "capability_id": "cap_second",
+        "route_id": "svc_second",
+        "project_id": "prj_second",
+        "browser_session_id": "brs_second",
+        "issued_at": 1785000000,
+        "expires_at": 1785003600
+      }
+    },
+    {
+      "name": "maximum-length-accepted",
+      "token": "rp1.ASBra2tra2tra2tra2tra2tra2tra2tra2tra2tra2trawAAAADuaygAAAAAAO5rNhBAY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY0BycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJyQHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBAYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYg.wpOLuNO-n7B4iEK1TPmya-w9huNv5kHaZs1qz9Efd_o",
+      "now": 4000000000,
+      "expect": "valid",
+      "claims": {
+        "key_id": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+        "capability_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "route_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "project_id": "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp",
+        "browser_session_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "issued_at": 4000000000,
+        "expires_at": 4000003600
+      }
+    },
+    {
+      "name": "expired-at-the-instant-of-expiry",
+      "token": "rp1.AQhzdGFnZTAtYQAAAABqZPBAAAAAAGpk8WwUY2FwXzAxSzlHM1pKNFQyVzZROEIUc3ZjXzAxSzlHM1pKNFQyVzZROEMUcHJqXzAxSzlHM1pKNFQyVzZROEQUYnJzXzAxSzlHM1pKNFQyVzZROEU.Cbu-zS0mBsmL_cLaie2d1d9UYRaX4My9sjiiLu0zuYY",
+      "now": 1785000300,
+      "expect": "expired",
+      "note": "Expiry is inclusive: a capability is dead at expires_at, not one second later."
+    },
+    {
+      "name": "expired-long-after",
+      "token": "rp1.AQhzdGFnZTAtYQAAAABqZPBAAAAAAGpk8WwUY2FwXzAxSzlHM1pKNFQyVzZROEIUc3ZjXzAxSzlHM1pKNFQyVzZROEMUcHJqXzAxSzlHM1pKNFQyVzZROEQUYnJzXzAxSzlHM1pKNFQyVzZROEU.Cbu-zS0mBsmL_cLaie2d1d9UYRaX4My9sjiiLu0zuYY",
+      "now": 1785086700,
+      "expect": "expired"
+    },
+    {
+      "name": "signature-tampered",
+      "token": "rp1.AQhzdGFnZTAtYQAAAABqZPBAAAAAAGpk8WwUY2FwXzAxSzlHM1pKNFQyVzZROEIUc3ZjXzAxSzlHM1pKNFQyVzZROEMUcHJqXzAxSzlHM1pKNFQyVzZROEQUYnJzXzAxSzlHM1pKNFQyVzZROEU.Cbu-zS0mBsmL_cLaie2d1d9UYRaX4My9sjiiLu0zAYY",
+      "now": 1785000000,
+      "expect": "bad_signature"
+    },
+    {
+      "name": "payload-tampered",
+      "token": "rp1.AQhzdGFnZTAtYQAAAABqZPBAAABAAGpk8WwUY2FwXzAxSzlHM1pKNFQyVzZROEIUc3ZjXzAxSzlHM1pKNFQyVzZROEMUcHJqXzAxSzlHM1pKNFQyVzZROEQUYnJzXzAxSzlHM1pKNFQyVzZROEU.Cbu-zS0mBsmL_cLaie2d1d9UYRaX4My9sjiiLu0zuYY",
+      "now": 1785000000,
+      "expect": "bad_signature",
+      "note": "An edit inside the signed expiry invalidates the MAC, so claims are never read from it."
+    },
+    {
+      "name": "unknown-key",
+      "token": "rp1.AQFrAAAAAAAAAAEAAAAAAAAAAgEwFnJvdXRlLXdpdGhvdXQtYS1wcmVmaXgPUC1yLW8tai1lLWMtdF8xAWI.Km74Ay9-8IPNOzRkY5DbqwIa1Gjv9b3jDdw5HqrY99E",
+      "now": 1,
+      "expect": "unknown_key",
+      "note": "key_id 'k' is not in the verifier keyring below."
+    },
+    {
+      "name": "wrong-scheme",
+      "token": "rp0.AQhzdGFnZTAtYQAAAABqZPBAAAAAAGpk8WwUY2FwXzAxSzlHM1pKNFQyVzZROEIUc3ZjXzAxSzlHM1pKNFQyVzZROEMUcHJqXzAxSzlHM1pKNFQyVzZROEQUYnJzXzAxSzlHM1pKNFQyVzZROEU.Cbu-zS0mBsmL_cLaie2d1d9UYRaX4My9sjiiLu0zuYY",
+      "now": 1785000000,
+      "expect": "malformed"
+    },
+    {
+      "name": "missing-signature",
+      "token": "rp1.AQhzdGFnZTAtYQAAAABqZPBAAAAAAGpk8WwUY2FwXzAxSzlHM1pKNFQyVzZROEIUc3ZjXzAxSzlHM1pKNFQyVzZROEMUcHJqXzAxSzlHM1pKNFQyVzZROEQUYnJzXzAxSzlHM1pKNFQyVzZROEU",
+      "now": 1785000000,
+      "expect": "malformed"
+    },
+    {
+      "name": "extra-segment",
+      "token": "rp1.AQhzdGFnZTAtYQAAAABqZPBAAAAAAGpk8WwUY2FwXzAxSzlHM1pKNFQyVzZROEIUc3ZjXzAxSzlHM1pKNFQyVzZROEMUcHJqXzAxSzlHM1pKNFQyVzZROEQUYnJzXzAxSzlHM1pKNFQyVzZROEU.Cbu-zS0mBsmL_cLaie2d1d9UYRaX4My9sjiiLu0zuYY.extra",
+      "now": 1785000000,
+      "expect": "malformed"
+    },
+    {
+      "name": "payload-not-base64url",
+      "token": "rp1.not*base64.Cbu-zS0mBsmL_cLaie2d1d9UYRaX4My9sjiiLu0zuYY",
+      "now": 1785000000,
+      "expect": "malformed"
+    },
+    {
+      "name": "empty-token",
+      "token": "",
+      "now": 1785000000,
+      "expect": "malformed"
+    }
+  ]
+}

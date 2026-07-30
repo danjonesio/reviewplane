@@ -1,0 +1,20 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JQ8ZR3M4T5V6W7X8Y9Z0A1E6",
+  "type": "route.publish",
+  "sent_at": "2026-07-28T11:00:02Z",
+  "connector_id": "con_01JQ8ZR3M4T5V6W7X8Y9Z0A1C2",
+  "payload": {
+    "route_id": "01JQ8ZR3M4T5V6W7X8Y9Z0A1E7",
+    "project_id": "PROJECT-2",
+    "workspace_id": "w",
+    "local_host": "::1",
+    "local_port": 5173,
+    "protocol": "https",
+    "expires_at": "2026-07-28T12:00:00Z",
+    "allowed_browser_session_ids": [
+      "session-a",
+      "session-b"
+    ]
+  }
+}

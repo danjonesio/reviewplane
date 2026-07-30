@@ -1,0 +1,32 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JEXTRAFIELD",
+  "type": "browser_session.allocate",
+  "sent_at": "2026-07-29T09:16:00.000Z",
+  "worker_id": "wkr_01JBROWSERWORKER01",
+  "browser_session_id": "brs_01JHOMEPAGEREVIEW",
+  "payload": {
+    "organisation_id": "org_01JREFRESH",
+    "project_id": "prj_01JREFRESHSURPLUS",
+    "viewport": {
+      "width": 1440,
+      "height": 900,
+      "device_scale_factor": 1
+    },
+    "control_epoch": 1,
+    "controller": {
+      "type": "agent",
+      "id": "ags_01JCLAUDECODE"
+    },
+    "limits": {
+      "max_duration_seconds": 7200,
+      "default_timeout_ms": 30000,
+      "max_command_timeout_ms": 120000,
+      "screenshot_max_bytes": 20971520,
+      "snapshot_max_nodes": 400,
+      "snapshot_max_bytes": 32768
+    },
+    "retention_class": "verification_evidence",
+    "chromium_sandbox": false
+  }
+}

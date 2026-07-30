@@ -1,0 +1,33 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JQ8ZR3M4T5V6W7X8Y9Z0A1K1",
+  "type": "connector.reconnect.request",
+  "sent_at": "2026-07-28T11:05:00Z",
+  "connector_id": "con_01JQ8ZR3M4T5V6W7X8Y9Z0A1C2",
+  "payload": {
+    "connector_version": "0.1.0",
+    "capabilities": [
+      "http-tunnel",
+      "websocket-tunnel"
+    ],
+    "active_routes": [
+      {
+        "route_id": "svc_01JQ8ZR3M4T5V6W7X8Y9Z0A1E2",
+        "project_id": "prj_01JQ8ZR3M4T5V6W7X8Y9Z0A1E3",
+        "workspace_id": "wsp_01JQ8ZR3M4T5V6W7X8Y9Z0A1E4",
+        "observed_destination": "127.0.0.1:4321",
+        "expires_at": "2026-07-28T12:00:00Z"
+      }
+    ],
+    "active_streams": [
+      {
+        "stream_id": "str_01JQ8ZR3M4T5V6W7X8Y9Z0A1K2",
+        "route_id": "svc_01JQ8ZR3M4T5V6W7X8Y9Z0A1E2",
+        "browser_session_id": "brs_01JQ8ZR3M4T5V6W7X8Y9Z0A1E5",
+        "deadline": "2026-07-28T11:10:00Z"
+      }
+    ],
+    "known_agent_sessions": [],
+    "workspace_head_state": []
+  }
+}

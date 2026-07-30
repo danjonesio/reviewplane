@@ -1,0 +1,143 @@
+/**
+ * Workspaces (`docs/DOMAIN_MODEL.md` section 9).
+ *
+ * The workspace is the checkout an agent is working in. Stage 1's connector
+ * reports it; Stage 0 registers it administratively, because
+ * `docs/MCP_SPEC.md` section 4 has to answer session initialisation with a
+ * branch and a head commit and a value the control plane invented would be
+ * worse than an absent one.
+ *
+ * It exists in Stage 0 for one concrete reason beyond the answer shape: it is
+ * what `finding_submit_verification` checks a claimed branch against. Without
+ * it the branch on a verification is an unverifiable string.
+ */
+
+import type { Pool } from "pg";
+
+import { ApiError, notFound } from "../../errors.ts";
+import { newId } from "../../ids.ts";
+
+export interface WorkspaceRecord {
+  readonly id: string;
+  readonly organisation_id: string;
+  readonly project_id: string;
+  readonly root_path: string;
+  readonly branch: string;
+  readonly head_commit: string;
+  readonly dirty: boolean;
+}
+
+interface WorkspaceRow {
+  id: string;
+  organisation_id: string;
+  project_id: string;
+  root_path: string;
+  branch: string;
+  head_commit: string;
+  dirty: boolean;
+}
+
+export class WorkspaceStore {
+  readonly #pool: Pool;
+
+  constructor(pool: Pool) {
+    this.#pool = pool;
+  }
+
+  /**
+   * Registers or updates the workspace at one root path in one project.
+   *
+   * Upsert on `(project_id, root_path)` rather than insert-or-fail: a connector
+   * reporting the same checkout after a commit is the normal case, and a second
+   * row for the same directory would make "which workspace is this agent in"
+   * ambiguous for the wrong reason.
+   */
+  async register(input: {
+    readonly organisationId: string;
+    readonly projectId: string;
+    readonly rootPath: string;
+    readonly branch: string;
+    readonly headCommit: string;
+    readonly dirty?: boolean;
+    readonly connectorId?: string;
+  }): Promise<WorkspaceRecord> {
+    if (!/^[0-9a-f]{7,64}$/u.test(input.headCommit)) {
+      throw new ApiError(
+        "UNSUPPORTED_CAPABILITY",
+        "head_commit must be 7 to 64 lowercase hexadecimal characters.",
+        { field: "head_commit" },
+      );
+    }
+    if (input.rootPath.trim() === "" || input.branch.trim() === "") {
+      throw new ApiError("UNSUPPORTED_CAPABILITY", "root_path and branch are required.", {
+        field: "root_path",
+      });
+    }
+    const rows = await this.#pool.query<WorkspaceRow>(
+      `INSERT INTO workspaces
+         (id, organisation_id, project_id, connector_id, root_path, branch, head_commit, dirty, last_seen_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+       ON CONFLICT (project_id, root_path) DO UPDATE
+          SET branch = EXCLUDED.branch,
+              head_commit = EXCLUDED.head_commit,
+              dirty = EXCLUDED.dirty,
+              connector_id = EXCLUDED.connector_id,
+              updated_at = now(),
+              last_seen_at = now()
+       RETURNING id, organisation_id, project_id, root_path, branch, head_commit, dirty`,
+      [
+        newId("wsp_"),
+        input.organisationId,
+        input.projectId,
+        input.connectorId ?? null,
+        input.rootPath,
+        input.branch,
+        input.headCommit,
+        input.dirty ?? false,
+      ],
+    );
+    const row = rows.rows[0];
+    if (row === undefined) throw notFound("The workspace");
+    return row;
+  }
+
+  async listForProject(projectId: string): Promise<WorkspaceRecord[]> {
+    const rows = await this.#pool.query<WorkspaceRow>(
+      `SELECT id, organisation_id, project_id, root_path, branch, head_commit, dirty
+         FROM workspaces WHERE project_id = $1 ORDER BY root_path LIMIT 50`,
+      [projectId],
+    );
+    return rows.rows;
+  }
+
+  async get(workspaceId: string): Promise<WorkspaceRecord | null> {
+    const rows = await this.#pool.query<WorkspaceRow>(
+      `SELECT id, organisation_id, project_id, root_path, branch, head_commit, dirty
+         FROM workspaces WHERE id = $1`,
+      [workspaceId],
+    );
+    return rows.rows[0] ?? null;
+  }
+
+  /**
+   * Resolves the workspace a session is in.
+   *
+   * A hint matching one workspace wins. No hint and exactly one workspace wins,
+   * because there is nothing to be ambiguous about. No hint and several
+   * workspaces resolves to none: the branch on a later verification is then
+   * recorded with a warning rather than checked against a workspace picked at
+   * random, which would be worse than not checking it.
+   */
+  async resolve(projectId: string, hint: string | null): Promise<WorkspaceRecord | null> {
+    const workspaces = await this.listForProject(projectId);
+    if (hint !== null && hint !== "") {
+      const normalised = hint.replace(/\/+$/u, "");
+      const matched = workspaces.filter(
+        (workspace) =>
+          workspace.id === hint || workspace.root_path.replace(/\/+$/u, "") === normalised,
+      );
+      return matched.length === 1 ? (matched[0] as WorkspaceRecord) : null;
+    }
+    return workspaces.length === 1 ? (workspaces[0] as WorkspaceRecord) : null;
+  }
+}

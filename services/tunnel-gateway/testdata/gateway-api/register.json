@@ -1,0 +1,108 @@
+{
+  "description": "Shared corpus for the gateway control API: the private interface between the control plane (apps/server, TypeScript) and the tunnel gateway (Go). Both run it, so a field one side adds and the other drops fails the build. It is not generated from packages/protocol yet: docs/DEVELOPMENT.md section 3 says API schemas belong there, and the generator is built for the connector protocol only. Move this corpus into the package when API schemas land.",
+  "endpoints": {
+    "register": "PUT /internal/v1/routes/{routeId}",
+    "show": "GET /internal/v1/routes/{routeId}",
+    "list": "GET /internal/v1/routes",
+    "revoke_route": "DELETE /internal/v1/routes/{routeId}",
+    "revoke_connector": "DELETE /internal/v1/connectors/{connectorId}",
+    "revoke_capability": "DELETE /internal/v1/capabilities/{capabilityId}"
+  },
+  "authentication": {
+    "scheme": "Bearer",
+    "setting": "REVIEWPLANE_TUNNEL_ADMIN_TOKEN",
+    "note": "Compared in constant time. Never logged, never echoed in an error body."
+  },
+  "register_request_fields": [
+    "route_id",
+    "project_id",
+    "connector_id",
+    "workspace_id",
+    "public_alias",
+    "local_host",
+    "local_port",
+    "protocol",
+    "scope",
+    "expires_at",
+    "allowed_browser_session_ids",
+    "observed_destination"
+  ],
+  "route_view_fields": [
+    "route_id",
+    "project_id",
+    "connector_id",
+    "public_alias",
+    "internal_origin",
+    "status",
+    "expires_at",
+    "observed_destination",
+    "connector_connected",
+    "streams_opened",
+    "streams_active",
+    "bytes_to_destination",
+    "bytes_from_destination"
+  ],
+  "unknown_fields": {
+    "behaviour": "refused",
+    "note": "The handler decodes with unknown fields disallowed. A field the receiver drops is a field the two sides disagree about silently.",
+    "example_code": "UNSUPPORTED_CAPABILITY"
+  },
+  "examples": {
+    "register_request": {
+      "route_id": "svc_01K9G3ZJ4T2W6Q8C",
+      "project_id": "prj_01K9G3ZJ4T2W6Q8D",
+      "connector_id": "con_01K9G3ZJ4T2W6Q8F",
+      "workspace_id": "wsp_01K9G3ZJ4T2W6Q8G",
+      "public_alias": "svc-01k9g3zj4t2w6q8c",
+      "local_host": "127.0.0.1",
+      "local_port": 5173,
+      "protocol": "http",
+      "scope": "browser_session",
+      "expires_at": "2026-07-30T13:00:00Z",
+      "allowed_browser_session_ids": ["brs_01K9G3ZJ4T2W6Q8E"],
+      "observed_destination": "127.0.0.1:5173"
+    },
+    "register_response": {
+      "data": {
+        "route_id": "svc_01K9G3ZJ4T2W6Q8C",
+        "project_id": "prj_01K9G3ZJ4T2W6Q8D",
+        "connector_id": "con_01K9G3ZJ4T2W6Q8F",
+        "public_alias": "svc-01k9g3zj4t2w6q8c",
+        "internal_origin": "https://svc-01k9g3zj4t2w6q8c.internal.invalid/",
+        "status": "ready",
+        "expires_at": "2026-07-30T13:00:00Z",
+        "observed_destination": "127.0.0.1:5173",
+        "connector_connected": true,
+        "streams_opened": 0,
+        "streams_active": 0,
+        "bytes_to_destination": 0,
+        "bytes_from_destination": 0
+      },
+      "meta": { "request_id": "reqexamplereqexample" }
+    },
+    "register_rejection": {
+      "error": {
+        "code": "DESTINATION_NOT_ALLOWED",
+        "message": "The gateway refused this publication.",
+        "details": {
+          "reason": "destination_not_allowed",
+          "policy_reason": "host_is_a_cloud_metadata_endpoint"
+        }
+      },
+      "meta": { "request_id": "reqexamplereqexample" }
+    }
+  },
+  "rejection_codes": {
+    "destination_not_allowed": "DESTINATION_NOT_ALLOWED",
+    "public_alias_is_not_a_dns_label": "DESTINATION_NOT_ALLOWED",
+    "public_alias_already_registered": "DESTINATION_NOT_ALLOWED",
+    "route_already_registered": "ROUTE_LIMIT_EXCEEDED",
+    "connector_route_limit_exceeded": "ROUTE_LIMIT_EXCEEDED",
+    "expiry_is_not_in_the_future": "ROUTE_EXPIRED",
+    "expiry_exceeds_the_maximum_route_lifetime": "ROUTE_EXPIRED",
+    "no_browser_session_authorised": "PROJECT_NOT_AUTHORISED",
+    "too_many_browser_sessions": "PROJECT_NOT_AUTHORISED",
+    "identifier_missing": "PROJECT_NOT_AUTHORISED",
+    "scope_not_supported": "PROJECT_NOT_AUTHORISED"
+  }
+}

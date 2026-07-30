@@ -1,0 +1,29 @@
+{
+  "id": "evt_01JFINDINGAWAITING",
+  "schema_version": 1,
+  "sequence": 48,
+  "type": "finding.status_changed",
+  "occurred_at": "2026-07-30T10:12:04.118Z",
+  "recorded_at": "2026-07-30T10:12:04.126Z",
+  "organisation_id": "org_01JREFRESH",
+  "project_id": "prj_01JREFRESHSURPLUS",
+  "actor": {
+    "type": "agent_session",
+    "id": "ags_01JCLAUDECODE",
+    "display": "Claude Code on dev-ai-03"
+  },
+  "correlation": {
+    "review_id": "rev_01JBUGSONHOMEPAGE",
+    "finding_id": "fin_01JHEROOVERLAPS",
+    "agent_session_id": "ags_01JCLAUDECODE"
+  },
+  "payload": {
+    "finding_id": "fin_01JHEROOVERLAPS",
+    "review_id": "rev_01JBUGSONHOMEPAGE",
+    "from": "IN_PROGRESS",
+    "to": "AWAITING_HUMAN_REVIEW",
+    "version": 4,
+    "source": "human",
+    "reason": "Agent submitted verification; a human must accept."
+  }
+}

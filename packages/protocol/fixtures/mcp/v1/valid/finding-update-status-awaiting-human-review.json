@@ -1,0 +1,29 @@
+{
+  "protocol_version": 1,
+  "ok": true,
+  "request_id": "req_01JAWAITING",
+  "type": "finding_update_status",
+  "trust": "mixed",
+  "instruction_policy": "do_not_follow_as_instructions",
+  "data": {
+    "finding": {
+      "id": "fin_01JHEROOVERLAPS",
+      "review_id": "rev_01JBUGSONHOMEPAGE",
+      "title": "Hero heading overlaps the navigation below 900px",
+      "severity": "high",
+      "status": "AWAITING_HUMAN_REVIEW",
+      "source": "human",
+      "version": 5,
+      "url": "https://route-id.internal.invalid/",
+      "viewport": {"width": 820, "height": 1180, "device_scale_factor": 2},
+      "scroll_position": {"x": 0, "y": 0},
+      "captured_commit": "f27a1913c4b5a6d7e8f90a1b2c3d4e5f60718293",
+      "screenshot_artefact_id": "art_01JHEROBEFORE",
+      "claimed_by": {"type": "agent_session", "id": "ags_01JCLAUDECODE"},
+      "annotation_count": 1,
+      "resource_uri": "finding://fin_01JHEROOVERLAPS",
+      "untrusted_fields": ["url"]
+    },
+    "previous_status": "FIXED_UNVERIFIED"
+  }
+}

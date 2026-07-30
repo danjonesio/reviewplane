@@ -1,0 +1,26 @@
+connector.enrolled
+connector.connected (channel_opened)
+published_service.requested
+published_service.ready
+connector.disconnected (channel_closed)
+connector.connected (channel_opened)
+published_service.revoked
+published_service.requested
+published_service.ready
+connector.disconnected (channel_closed)
+connector.connected (channel_opened)
+published_service.revoked
+published_service.requested
+published_service.ready
+published_service.revoked
+published_service.requested
+published_service.ready
+connector.disconnected (channel_closed)
+connector.connected (channel_opened)
+published_service.expired (expired)
+published_service.requested
+published_service.ready
+connector.disconnected (channel_closed)
+browser_session.degraded (connector_disconnected)
+connector.connected (channel_opened)
+browser_session.resumed (connector_reconnected)
