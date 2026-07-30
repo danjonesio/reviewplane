@@ -33,6 +33,8 @@ Tests must prove the primary workflow, distributed protocol behaviour, security 
 - Event payload compatibility
 - API OpenAPI compatibility
 
+Contract tests for a protocol run one committed fixture corpus in every language that speaks it. For the connector protocol that corpus is `packages/protocol/fixtures/connector/v1/`: its manifest lists the frames that must be accepted, with their canonical encodings, and the frames that must be refused, with the reason each must report. `pnpm protocol:check` runs the corpus in both languages and additionally fails when either language's generated models differ from the schema source, which is the snapshot test for an unreviewed schema change.
+
 ### Integration
 
 - API, PostgreSQL and both artefact-store drivers

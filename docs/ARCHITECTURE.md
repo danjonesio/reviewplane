@@ -425,7 +425,7 @@ Initial preferred technologies:
 | Artefact store | Filesystem driver default; S3-compatible driver optional |
 | Realtime | WebSockets |
 | Deployment | OCI containers and Docker Compose |
-| Schemas | JSON Schema or equivalent generated TypeScript/Go models |
+| Schemas | JSON Schema 2020-12 in `packages/protocol`, with generated TypeScript and Go models (ADR-0013) |
 
 Specific libraries require ADR when they shape public interfaces or operational dependencies.
 

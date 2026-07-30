@@ -27,6 +27,8 @@ examples/
 
 The exact structure may be refined before code is created, but separation between control plane, browser execution and connector must remain.
 
+Existing today: `packages/protocol` (pnpm workspace member and Go module `github.com/danjonesio/reviewplane/packages/protocol`), plus the workspace root that carries `pnpm-workspace.yaml`, `tsconfig.base.json`, `eslint.config.js` and `go.work`. Go modules are listed in `go.work` so that a service resolves `packages/protocol` from the working tree rather than from a tag; add each new module there as it is created.
+
 ## 2. Toolchain direction
 
 - TypeScript with strict mode
@@ -52,6 +54,10 @@ Pin tool versions in repository-managed files. Avoid relying on globally install
 - Stable error codes
 
 Generate or validate Go and TypeScript models from one versioned source. Do not hand-maintain structurally equivalent types in several services.
+
+The mechanism is ADR-0013. Each protocol version has one machine-readable source — for the connector protocol, `packages/protocol/schemas/connector/v1.schema.json` — from which `pnpm protocol:generate` renders the committed TypeScript and Go. `pnpm protocol:check` re-renders both in memory and fails when a committed file differs, so a change made in one language alone cannot land. It also runs the committed cross-language fixture corpus and the Go test suite. The Go toolchain is required for both commands, because the generator formats its Go output with `gofmt`.
+
+Connector-protocol messages are implemented today. API, MCP and event schemas join the package as the issues that introduce those surfaces land.
 
 ## 4. Local development modes
 
@@ -96,6 +102,8 @@ go vet ./...
 ```
 
 Prefer root orchestration commands that run the correct service-specific tooling.
+
+Working today at the repository root: `pnpm install`, `pnpm build`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm protocol:generate` and `pnpm protocol:check`. `go test ./...` and `go vet ./...` run from a module directory such as `packages/protocol`. The remaining scripts arrive with the surfaces they exercise.
 
 ## 6. Configuration
 

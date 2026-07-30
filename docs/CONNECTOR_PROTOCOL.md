@@ -4,6 +4,8 @@
 
 The connector links development environments to the control plane without exposing inbound management ports. It publishes selected local development services, reports bounded project context and provides local identity for agent sessions.
 
+The machine-readable definition of this protocol is `packages/protocol/schemas/connector/v1.schema.json`. TypeScript and Go models, validators and canonical encoders are generated from it (ADR-0013). Where this document and that schema describe the same field, the schema is the implementable form; a change to one MUST be made in the other in the same change. No service may hand-maintain an equivalent type.
+
 ## 2. Non-goals
 
 The connector is not:
@@ -76,7 +78,29 @@ The connector generates a key pair locally. The private key never leaves the env
 }
 ```
 
-The response provides connector ID, signed identity, control-plane endpoints and organisation policy digest.
+`protocol_version` is carried by the message envelope of §7 and is not repeated inside the payload. The envelope's `connector_id` MUST be absent on the registration exchange, because the identity is still being established.
+
+The enrolment token is a credential. It is marked sensitive in the schema, and generated models redact it in every default log, debug and JSON representation; only the canonical wire encoder reveals it (`SECURITY.md` §18).
+
+The response provides connector ID, signed identity, control-plane endpoints and organisation policy digest:
+
+```json
+{
+  "connector_id": "con_...",
+  "signed_identity": {
+    "certificate": "...",
+    "certificate_fingerprint": "sha256:...",
+    "expires_at": "2027-07-28T10:59:13Z"
+  },
+  "control_plane_endpoints": {
+    "control_url": "wss://agents.example.internal/connector/control",
+    "data_url": "wss://agents.example.internal/connector/data"
+  },
+  "policy_digest": "sha256:..."
+}
+```
+
+Endpoints MUST use the `wss` scheme; a plaintext endpoint is refused by the schema.
 
 ## 5. Transport
 
@@ -103,6 +127,18 @@ events      local project and agent-session observations
 upgrade     version and compatibility notices
 ```
 
+Version 1 defines these message types, each bound to one channel:
+
+| Type | Channel | Direction |
+|---|---|---|
+| `connector.registration.request` | `control` | connector to control plane |
+| `connector.registration.response` | `control` | control plane to connector |
+| `heartbeat` | `heartbeat` | connector to control plane |
+| `route.publish` | `routes` | control plane to connector |
+| `route.publish.ack` | `routes` | connector to control plane |
+
+The data-stream header of §12 travels on the `data` channel and is not carried in a control envelope. The `events` and `upgrade` channels are reserved at version 1: no message type is defined for them yet.
+
 ## 7. Message envelope
 
 ```json
@@ -118,6 +154,41 @@ upgrade     version and compatibility notices
 ```
 
 Messages must have bounded size. Large payloads are not transferred through the control channel.
+
+`message_id`, `connector_id` and `correlation_id` are opaque identifiers (`DOMAIN_MODEL.md` §3). Their conventional prefixes are documentation: implementations MUST bound length and character class only, and MUST NOT require a prefix.
+
+`connector_id` MUST be absent on `connector.registration.request` and `connector.registration.response`, and MUST be present on every other message type. `correlation_id` is optional and identifies the message or command being answered.
+
+### Bounds
+
+Version 1 bounds, all enforced by the schema:
+
+| Bound | Value |
+|---|---|
+| Control-channel frame | 65 536 bytes |
+| Data-stream header | 4 096 bytes |
+| `connector.registration.request` payload | 4 096 bytes |
+| `connector.registration.response` payload | 8 192 bytes |
+| `heartbeat` payload | 1 024 bytes |
+| `route.publish` payload | 2 048 bytes |
+| `route.publish.ack` payload | 1 024 bytes |
+
+Every string, array and numeric field additionally carries its own explicit bound in the schema. The frame bound MUST be applied to the raw bytes before deserialisation; the payload bound is measured on the canonical encoding.
+
+### Rejection
+
+A receiver MUST refuse, never best-effort parse:
+
+| Condition | Result |
+|---|---|
+| Frame exceeds its byte bound | Refused before deserialisation |
+| Frame is not well-formed JSON, is truncated, or carries trailing data | Refused |
+| `protocol_version` absent or not an accepted version | Refused with error class `PROTOCOL_UNSUPPORTED` |
+| `type` absent or not a version 1 message type | Refused with error class `PROTOCOL_UNSUPPORTED` |
+| Envelope or payload fails its schema, including any unknown property | Refused |
+| Payload exceeds the bound for its type | Refused |
+
+Unknown message types are rejected rather than ignored. Refusals report a stable reason; only the two conditions above carry a §21 wire error class.
 
 ## 8. Heartbeats
 
@@ -139,7 +210,9 @@ Payload:
 }
 ```
 
-Resource reporting is optional and should avoid sensitive process details.
+`status` is the connector's self-report and is one of `healthy` or `degraded`; delayed and disconnected are conclusions the control plane draws, not values a connector sends.
+
+Resource reporting is optional and must avoid sensitive process details. The `resource_summary` object permits only `load` and `memory_available_bytes`; any other property is refused, so process detail cannot ride along.
 
 State guidance:
 
@@ -217,9 +290,13 @@ The connector must confirm:
 }
 ```
 
+`status` is `ready` or `rejected`. A `ready` acknowledgement carries `observed_destination` and no error class. A `rejected` acknowledgement carries an `error_class` from §21 and no destination, and carries no free-text message: stable error codes are used instead (`SECURITY.md` §18).
+
+`allowed_browser_session_ids` must name at least one browser session. A route with no authorised session is not published.
+
 ## 12. Data stream protocol
 
-Each tunnelled connection includes:
+Each tunnelled connection is opened by a bounded header carrying exactly:
 
 - Route ID
 - Browser session ID
@@ -228,7 +305,9 @@ Each tunnelled connection includes:
 - Destination protocol
 - Deadline
 
-The connector opens only the pre-authorised local destination. It does not accept a host or port supplied by the browser request.
+The connector opens only the pre-authorised local destination. It does not accept a host or port supplied by the browser request. The header schema has no host or port field and rejects unknown properties, so a destination cannot be smuggled into it.
+
+The session capability is a bearer credential. It is marked sensitive in the schema and is redacted in every default log, debug and JSON representation.
 
 Flow control must prevent one stream from exhausting connector memory.
 
@@ -366,7 +445,7 @@ logging:
 
 ## 21. Errors
 
-Stable connector error classes:
+Stable connector error classes. This list is the complete wire vocabulary; adding a class is a protocol change requiring an ADR. It is generated into both languages from `packages/protocol`, which fails to build if the two lists disagree.
 
 - `ENROLMENT_TOKEN_INVALID`
 - `IDENTITY_REVOKED`
@@ -381,6 +460,10 @@ Stable connector error classes:
 - `CONTROL_PLANE_UNAVAILABLE`
 - `UPGRADE_REQUIRED`
 
+These classes describe authorisation, identity and lifecycle outcomes. A frame that is oversized, malformed or schema-invalid is refused with a local reason and no wire error class, except for an unknown `protocol_version` or `type`, which report `PROTOCOL_UNSUPPORTED` (§7 "Rejection").
+
 ## 22. Security requirements
 
 See `SECURITY.md`. Protocol implementations require fuzzing, malformed-frame handling, bounded allocations, stream deadlines and negative authorisation tests.
+
+The bounds of §7 are the mechanism behind the bounded-allocation requirement, and are declared once in `packages/protocol/schemas/connector/v1.schema.json`. The generator refuses a schema in which any string, array, numeric field or payload lacks an explicit bound, so a new field cannot be added without one.
