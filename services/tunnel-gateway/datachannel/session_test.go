@@ -244,7 +244,7 @@ func TestADeadlineClosesAStreamThatMakesNoProgress(t *testing.T) {
 	if _, err := connector.Accept(); err != nil {
 		t.Fatalf("accept: %v", err)
 	}
-	stream.SetDeadline(now.Add(time.Minute))
+	stream.SetPolicyDeadline(now.Add(time.Minute))
 
 	if closed := gateway.EnforceDeadlines(now); closed.Total() != 0 {
 		t.Fatalf("%d streams were closed before their deadline", closed.Total())

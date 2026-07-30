@@ -175,6 +175,8 @@ A streaming test MUST assert on **arrival timing**, not only on the final body. 
 
 Both ends of the data channel MUST be given the same session configuration in a test harness. The initial flow-control window is a constant of the protocol rather than of a deployment (`CONNECTOR_PROTOCOL.md` §12.2), so a harness that gave the two ends different windows would produce a protocol violation instead of the backpressure the test was asking about.
 
+A stream deadline and a socket deadline are two clocks and MUST NOT be confused. A stream's deadline is policy — the route's expiry, read against the clock the gateway and the connector have injected, so that a test can move an expiry without sleeping for hours. A socket deadline is an absolute instant the kernel compares against the real clock, and the kernel has no other. An instant that crosses from the first to the second MUST be translated into the lifetime still remaining (`datachannel.SocketDeadline`); handing the policy instant straight to `net.Conn.SetDeadline` works only while the two clocks agree, which is the one condition an injected clock removes. RVP-61 is what that costs: a harness clock fixed at a date, seven upgrade tests passing until the wall clock passed it, and then failing on every run afterwards for a reason that looks like a network fault. A harness clock therefore SHOULD be fixed rather than seeded from `time.Now`, because a fixed origin makes the mistake fail immediately instead of intermittently, and `services/tunnel-gateway` carries a test that fails when any deadline in the module is set from an instant that does not name the real clock.
+
 ## 7. Browser tests
 
 - Launch and termination

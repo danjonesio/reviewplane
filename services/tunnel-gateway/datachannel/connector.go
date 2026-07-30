@@ -425,12 +425,15 @@ func serveStream(stream *Stream, config ConnectorConfig) {
 	if err := stream.ConfirmAccepted(); err != nil {
 		return
 	}
-	if deadline, ok := stream.Deadline(); ok {
+	if deadline, ok := stream.PolicyDeadline(); ok {
 		// The absolute deadline is the route's expiry, so the local socket
 		// cannot outlive the authorisation that opened it even if every other
 		// control failed. It is not the liveness control: that is the idle
 		// window, enforced by the sweep above.
-		_ = upstream.SetDeadline(deadline)
+		//
+		// The instant arrives on the policy clock and the socket is enforced
+		// against the real one, so the remaining lifetime is what crosses.
+		_ = upstream.SetDeadline(SocketDeadline(deadline, config.Now))
 	}
 
 	// A stream that ends while this goroutine is parked reading the local
