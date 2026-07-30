@@ -2,22 +2,33 @@
 -- section 10). Current state stays in normalised tables; this table is the
 -- audit history, session timeline and realtime source.
 --
--- Created with "if not exists" because several Stage 0 branches introduce the
--- same table independently. The definition here is the one the events module
--- writes; a branch that needs another column adds it in its own migration.
+-- This is the single canonical events migration. Several Stage 0 branches
+-- introduced one independently; they are unified here so that the shape cannot
+-- depend on which migration a database happened to apply first. Anything the
+-- envelope of docs/EVENTS.md section 2 does not name belongs in `payload`.
+--
+-- The table is append-only by policy (section 4: corrections are new events).
+-- No UPDATE or DELETE path exists in the server, and retention deletion, when
+-- it arrives, is a documented operation rather than an ordinary write.
 
+-- Allocates the next sequence for a stream. A sequence row that this statement
+-- locks and increments keeps docs/EVENTS.md section 3's per-stream monotonicity
+-- exact under concurrency, which a max()+1 read would not.
+--
+-- A stream is a project where one exists and the organisation otherwise, which
+-- is what lets a connector event that precedes any project association still be
+-- ordered and resumed.
 create table if not exists event_streams (
-  -- A project where one exists, the organisation otherwise. docs/EVENTS.md
-  -- section 3 makes sequence monotonic within a project stream; an event that
-  -- precedes any project association is ordered within its organisation.
   stream_key     text   primary key,
   last_sequence  bigint not null
 );
 
 create table if not exists events (
   id              text        primary key,
-  schema_version  integer     not null,
+  schema_version  integer     not null default 1,
   stream_key      text        not null,
+  -- Monotonic within a stream. Global ordering across projects is not
+  -- guaranteed (docs/EVENTS.md section 3).
   sequence        bigint      not null,
   type            text        not null,
   occurred_at     timestamptz not null,
@@ -27,7 +38,11 @@ create table if not exists events (
   actor_type      text        not null,
   actor_id        text,
   actor_display   text,
+  -- Correlation identifiers of docs/EVENTS.md section 2 and
+  -- docs/ARCHITECTURE.md section 15.
   correlation     jsonb       not null default '{}'::jsonb,
+  -- Payloads exclude raw secrets and sensitive headers
+  -- (docs/EVENTS.md section 8).
   payload         jsonb       not null default '{}'::jsonb,
 
   constraint events_stream_sequence_unique unique (stream_key, sequence),
@@ -36,6 +51,7 @@ create table if not exists events (
   )
 );
 
-create index if not exists events_stream_sequence_index on events (stream_key, sequence);
-create index if not exists events_type_index on events (type, occurred_at);
+create index if not exists events_stream_sequence_index on events (stream_key, sequence desc);
+create index if not exists events_project_sequence_index on events (project_id, sequence desc);
+create index if not exists events_type_index on events (type, recorded_at desc);
 create index if not exists events_organisation_index on events (organisation_id, occurred_at);

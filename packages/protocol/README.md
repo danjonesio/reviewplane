@@ -13,7 +13,9 @@ surfaces; they belong in this package, not in a service.
 ```text
 schemas/connector/v1.schema.json   the only place a message is defined
 fixtures/connector/v1/             the cross-language corpus and its manifest
-src/                               hand-written runtime (frames, redaction, canonical JSON)
+fixtures/capability/v1/            the golden corpus for route-capability tokens
+src/                               hand-written runtime (frames, redaction, canonical JSON,
+                                   route capabilities)
 src/generated/connector/v1/        generated TypeScript models    DO NOT EDIT
 connectorv1/                       hand-written Go runtime, plus  *_gen.go  DO NOT EDIT
 tools/                             the generator and pnpm protocol:check
@@ -87,6 +89,34 @@ is produced only by `reveal()`/`Reveal()`, which the generated canonical
 encoders call when they build a wire frame. `docs/SECURITY.md` §18 forbids raw
 credentials in logs, and accidental serialisation is the most common way they
 get there.
+
+## Route capabilities
+
+`session_capability` is the bearer credential a browser session presents to the
+tunnel gateway (`docs/SECURITY.md` §9). The schema types and bounds the field;
+it cannot express the token's internal encoding, because the control plane
+mints it in TypeScript and the tunnel gateway verifies it in Go.
+
+`mintCapability`/`MintCapability` and `verifyCapability`/`VerifyCapability`
+are that codec, and they live here rather than in either service so that one
+definition serves both. The token is `rp1.<base64url payload>.<base64url
+HMAC-SHA256>`; the payload carries a key identifier, issue and expiry instants
+and the capability, route, project and browser-session identifiers, so a
+verifier decides expiry, project scope, route binding and session binding
+without a lookup. Verification checks the MAC before it returns any claim, and
+checks expiry last, on claims that are already authentic.
+
+`fixtures/capability/v1/manifest.json` is the golden corpus: the minting cases
+record the exact token each set of claims must produce, and the verification
+cases record the stable rejection each malformed, forged, unknown-key or
+expired token must report. Both test suites run it, so a change made in one
+language alone fails the other. The key material in the corpus is fixture
+material and is never deployed.
+
+Stage 0 signs with a symmetric key shared by the control plane and the gateway,
+which is sound while both run in one trust zone. `key_id` is signed so that a
+key can rotate, and so a later multi-instance deployment can add an asymmetric
+scheme without changing the token's shape.
 
 ## Canonical encoding
 

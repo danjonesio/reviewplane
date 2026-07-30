@@ -2,9 +2,14 @@
  * A disposable PostgreSQL for component and integration tests
  * (`docs/TESTING.md` §2: "API handlers with real database").
  *
+ * A real database is the point: the migrations, the constraints and the
+ * per-stream event sequence are where several of this server's invariants
+ * actually live, and none of them is exercised by a fake.
+ *
  * Each caller gets its own container on an ephemeral host port. The container
- * is removed on test completion and again on process exit, so an interrupted
- * run does not leave one behind.
+ * is removed when the caller stops it and again on process exit, so an
+ * interrupted run does not leave one behind. Set `REVIEWPLANE_TEST_DATABASE_URL`
+ * to run against an existing database instead.
  */
 
 import { execFile, execFileSync } from "node:child_process";
@@ -22,6 +27,12 @@ const READINESS_POLL_MS = 250;
 const liveContainers = new Set<string>();
 let exitHookInstalled = false;
 
+/**
+ * A killed or crashed test process never reaches its cleanup hook, and a
+ * container that outlives its run holds a port and a few hundred megabytes until
+ * someone notices. The exit handler must be synchronous, because nothing
+ * asynchronous runs after `exit` is emitted.
+ */
 function installExitHook(): void {
   if (exitHookInstalled) return;
   exitHookInstalled = true;
@@ -71,6 +82,11 @@ async function waitForReadiness(name: string): Promise<void> {
 }
 
 export async function startPostgres(): Promise<TestDatabase> {
+  const existing = process.env["REVIEWPLANE_TEST_DATABASE_URL"];
+  if (existing !== undefined && existing !== "") {
+    return { url: existing, containerName: "", stop: () => Promise.resolve() };
+  }
+
   installExitHook();
   const name = `reviewplane-test-${randomUUID().slice(0, 8)}`;
   await run("docker", [
@@ -93,6 +109,10 @@ export async function startPostgres(): Promise<TestDatabase> {
     "--tmpfs",
     "/var/lib/postgresql",
     POSTGRES_IMAGE,
+    // fsync off: this database is thrown away, and the durability it would buy
+    // is not a property any test asserts.
+    "-c",
+    "fsync=off",
   ]);
   liveContainers.add(name);
 

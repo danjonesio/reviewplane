@@ -6,7 +6,7 @@
  */
 
 import type { Pool, PoolClient } from "../../db/pool.ts";
-import { withTransaction } from "../../db/pool.ts";
+import { inTransaction } from "../../db/pool.ts";
 import { appendEvent, type AppendedEvent } from "../../events/append.ts";
 
 /** `docs/DOMAIN_MODEL.md` §8 connector lifecycle. */
@@ -299,7 +299,7 @@ export async function transitionConnector(
     readonly payload?: Record<string, unknown>;
   },
 ): Promise<AppendedEvent | null> {
-  return withTransaction(pool, async (client) => {
+  return inTransaction(pool, async (client) => {
     const updated = await client.query<ConnectorRow>(
       `update connectors
           set status       = $3,
@@ -378,7 +378,7 @@ export async function revokeConnector(
   connectorId: string,
   actor: { readonly type: "human_user" | "system"; readonly id?: string },
 ): Promise<AppendedEvent | null> {
-  return withTransaction(pool, async (client) => {
+  return inTransaction(pool, async (client) => {
     const updated = await client.query<ConnectorRow>(
       `update connectors
           set status = 'REVOKED', revoked_at = now()

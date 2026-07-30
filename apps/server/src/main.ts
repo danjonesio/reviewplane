@@ -1,12 +1,20 @@
 /**
- * Server entry point: load configuration, apply migrations, build the app,
- * listen, and shut down cleanly on a signal.
+ * The control-plane server entry point.
+ *
+ * It loads configuration, applies migrations, starts the HTTP API and the
+ * connector listener, runs the background sweep that expires published
+ * services, and shuts down cleanly on a signal. Everything it does is
+ * delegated: composition is `app.ts`, and each domain owns a directory under
+ * `src/modules/`.
  */
 
 import { buildApp } from "./app.ts";
 import { ConfigurationError, loadServerConfig } from "./config.ts";
 import { migrate } from "./db/migrate.ts";
 import { createPool } from "./db/pool.ts";
+
+/** How often published-service expiry is enforced. */
+const SWEEP_INTERVAL_MS = 30_000;
 
 async function main(): Promise<void> {
   let config;
@@ -37,11 +45,20 @@ async function main(): Promise<void> {
     "connector listener started",
   );
 
+  const sweep = setInterval(() => {
+    built.publishedServices.expireDue().catch((error: unknown) => {
+      built.app.log.error({ err: error }, "published-service expiry sweep failed");
+    });
+  }, SWEEP_INTERVAL_MS);
+  // The sweep must not hold the process open on shutdown.
+  sweep.unref();
+
   let shuttingDown = false;
   const shutdown = (signal: string): void => {
     if (shuttingDown) return;
     shuttingDown = true;
     built.app.log.info({ signal }, "shutting down");
+    clearInterval(sweep);
     void built
       .stop()
       .then(async () => pool.end())

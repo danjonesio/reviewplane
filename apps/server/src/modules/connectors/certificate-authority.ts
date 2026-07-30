@@ -11,7 +11,7 @@
 import { readFile } from "node:fs/promises";
 
 import type { Pool } from "../../db/pool.ts";
-import { withTransaction } from "../../db/pool.ts";
+import { inTransaction } from "../../db/pool.ts";
 import type { ConnectorModuleConfig } from "./config.ts";
 import { generateCertificateAuthority, issueListenerCertificate, type Authority } from "./x509.ts";
 
@@ -68,7 +68,7 @@ export async function ensureCertificateAuthority(pool: Pool): Promise<TlsMateria
     organization: "ReviewPlane",
     notAfter: daysFromNow(CA_TTL_DAYS),
   });
-  await withTransaction(pool, async (client) => {
+  await inTransaction(pool, async (client) => {
     await client.query(
       `insert into connector_tls_material (purpose, certificate_pem, private_key_pem, not_after)
          values ($1, $2, $3, $4)
@@ -112,7 +112,7 @@ export async function ensureListenerCertificate(
     organization: "ReviewPlane",
     notAfter: daysFromNow(LISTENER_TTL_DAYS),
   });
-  await withTransaction(pool, async (client) => {
+  await inTransaction(pool, async (client) => {
     await client.query(
       `insert into connector_tls_material (purpose, certificate_pem, private_key_pem, not_after)
          values ($1, $2, $3, $4)

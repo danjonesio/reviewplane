@@ -81,7 +81,7 @@ describe("enrolment-token issuance", () => {
       });
       assert.equal(response.status, 401, `headers ${JSON.stringify(headers)} were accepted`);
       const body = (await response.json()) as { error: { code: string } };
-      assert.equal(body.error.code, "UNAUTHORISED");
+      assert.equal(body.error.code, "AUTHENTICATION_REQUIRED");
     }
   });
 
@@ -128,9 +128,9 @@ describe("enrolment-token issuance", () => {
         headers: { "content-type": "application/json", authorization: `Bearer ${BOOTSTRAP_TOKEN}` },
         body: JSON.stringify(body),
       });
-      assert.equal(response.status, 400, `${JSON.stringify(body)} was accepted`);
+      assert.equal(response.status, 422, `${JSON.stringify(body)} was accepted`);
       const payload = (await response.json()) as { error: { code: string } };
-      assert.equal(payload.error.code, "INVALID_REQUEST");
+      assert.equal(payload.error.code, "VALIDATION_FAILED");
     }
   });
 });

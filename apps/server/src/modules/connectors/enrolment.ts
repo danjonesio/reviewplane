@@ -21,7 +21,7 @@ import {
 } from "@reviewplane/protocol";
 
 import type { Pool } from "../../db/pool.ts";
-import { withTransaction } from "../../db/pool.ts";
+import { inTransaction } from "../../db/pool.ts";
 import { appendEvent } from "../../events/append.ts";
 import type { TlsMaterial } from "./certificate-authority.ts";
 import { CONTROL_PATH, DATA_PATH, type ConnectorModuleConfig } from "./config.ts";
@@ -94,7 +94,7 @@ export async function enrol(
   const tokenHash = hashEnrolmentToken(request.enrolment_token.reveal());
   const publicKeyDer = decodePublicKey(request.public_key);
 
-  return withTransaction(pool, async (client) => {
+  return inTransaction(pool, async (client) => {
     const token = await lockEnrolmentTokenByHash(client, tokenHash);
     const now = new Date();
 

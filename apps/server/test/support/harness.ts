@@ -132,6 +132,16 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
     host: "127.0.0.1",
     port: 0,
     logLevel: "debug",
+    // The tunnel gateway is not part of this harness. The URL is unroutable on
+    // purpose, so a test that reaches it fails rather than talking to something
+    // real, and the capability key is a fixed test key that signs nothing else.
+    gatewayControlUrl: "http://tunnel-gateway.invalid:8445",
+    gatewayControlToken: "harness-gateway-token-0123456789abcdef",
+    internalSuffix: "internal.invalid",
+    capabilityKeyId: "harness-a",
+    capabilityKey: new Uint8Array(32).fill(7),
+    capabilityTtlSeconds: 300,
+    routeTtlMaxSeconds: 8 * 60 * 60,
   };
 
   let built = await buildApp({ config, pool, connectorConfig, logDestination: collector });

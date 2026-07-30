@@ -3,8 +3,10 @@
  *
  * Migrations are plain SQL files in `apps/server/migrations`, applied in
  * lexical order, each inside its own transaction, each recorded by file name in
- * `schema_migrations` so that it runs exactly once. There is no down
- * migration: forward-only is the documented default.
+ * `schema_migrations` so that it runs exactly once. Plain SQL stays reviewable
+ * in a way a generated migration is not, and there is no down migration:
+ * forward-only is the documented default, and a reversible step that has never
+ * been exercised is worse than none.
  *
  * A PostgreSQL advisory lock serialises concurrent starts, so that two server
  * processes coming up together cannot apply the same file twice.
@@ -18,6 +20,13 @@ import type { Pool } from "./pool.ts";
 /** Lock key for the migration advisory lock. Any stable value works. */
 const MIGRATION_LOCK_KEY = 0x52564d47; // "RVMG"
 
+/**
+ * File names must be `NNNN_lower_snake_case.sql` so that lexical order is the
+ * apply order and two migrations written on different branches cannot claim an
+ * ambiguous position.
+ */
+const MIGRATION_PATTERN = /^[0-9]{4}_[a-z0-9_]+\.sql$/u;
+
 export const MIGRATIONS_DIRECTORY = join(import.meta.dirname, "..", "..", "migrations");
 
 export interface MigrationResult {
@@ -25,9 +34,20 @@ export interface MigrationResult {
   readonly alreadyApplied: readonly string[];
 }
 
-async function listMigrations(directory: string): Promise<string[]> {
+/** Migration file names, validated, in the order they must be applied. */
+export async function listMigrations(directory: string = MIGRATIONS_DIRECTORY): Promise<string[]> {
   const entries = await readdir(directory);
-  return entries.filter((name) => name.endsWith(".sql")).sort((left, right) => left.localeCompare(right));
+  const files = entries
+    .filter((name) => name.endsWith(".sql"))
+    .sort((left, right) => left.localeCompare(right));
+  for (const file of files) {
+    if (!MIGRATION_PATTERN.test(file)) {
+      throw new Error(
+        `migration ${file} must be named NNNN_lower_snake_case.sql so ordering is unambiguous`,
+      );
+    }
+  }
+  return files;
 }
 
 export async function migrate(pool: Pool, directory = MIGRATIONS_DIRECTORY): Promise<MigrationResult> {

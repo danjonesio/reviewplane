@@ -117,12 +117,25 @@ func TestChannelHoldsOpenAndHeartbeats(t *testing.T) {
 			t.Fatalf("heartbeat %d never arrived", want)
 		}
 	}
+	// OnHeartbeat fires when the connector has written the frame, which is
+	// before the control plane has finished reading it. Waiting for the far side
+	// to record all three keeps the assertion about what was received rather
+	// than about scheduling.
+	var received []connectorv1.Heartbeat
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		received = h.server.Heartbeats()
+		if len(received) >= 3 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("Run returned %v after cancellation", err)
 	}
 
-	received := h.server.Heartbeats()
 	if len(received) < 3 {
 		t.Fatalf("the control plane received %d heartbeats", len(received))
 	}

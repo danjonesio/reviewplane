@@ -3,11 +3,13 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "ReviewPlane control-plane server: HTTP API, connector enrolment and the connector control channel.",
-  "main": "src/main.ts",
+  "description": "ReviewPlane control-plane server: the authoritative HTTP API for projects, connectors, published services, reviews, findings, sessions and events.",
+  "main": "dist/main.js",
   "scripts": {
+    "prebuild": "pnpm --filter @reviewplane/protocol run build",
+    "build": "tsc -p tsconfig.build.json",
     "dev": "node --watch src/main.ts",
-    "start": "node src/main.ts",
+    "start": "node dist/main.js",
     "pretypecheck": "pnpm --filter @reviewplane/protocol run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "pretest": "pnpm --filter @reviewplane/protocol run build",
@@ -16,12 +18,12 @@
   "dependencies": {
     "@fastify/websocket": "^11.2.0",
     "@reviewplane/protocol": "workspace:*",
-    "fastify": "^5.6.1",
-    "pg": "^8.16.3"
+    "fastify": "^5.10.0",
+    "pg": "^8.22.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",
-    "@types/pg": "^8.15.6",
+    "@types/pg": "^8.20.0",
     "@types/ws": "^8.18.1",
     "ws": "^8.21.1"
   }

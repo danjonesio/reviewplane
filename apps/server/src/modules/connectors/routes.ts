@@ -13,6 +13,7 @@ import type { FastifyInstance } from "fastify";
 
 import { requireBootstrapAdministrator } from "../../auth/bootstrap-token.ts";
 import type { Pool } from "../../db/pool.ts";
+import { ApiError } from "../../errors.ts";
 import type { TlsMaterial } from "./certificate-authority.ts";
 import { ENROLMENT_PATH, type ConnectorModuleConfig } from "./config.ts";
 import { hashEnrolmentToken, newEnrolmentToken, newEnrolmentTokenId } from "./identifiers.ts";
@@ -33,38 +34,25 @@ interface IssueTokenBody {
   readonly environment_labels?: unknown;
 }
 
-class RequestError extends Error {
-  readonly code: string;
-  readonly statusCode: number;
-
-  constructor(statusCode: number, code: string, message: string) {
-    super(message);
-    this.name = "RequestError";
-    this.code = code;
-    this.statusCode = statusCode;
-  }
-}
-
 function readLabels(value: unknown): string[] {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) {
-    throw new RequestError(400, "INVALID_REQUEST", "environment_labels must be an array of labels.");
+    throw new ApiError("VALIDATION_FAILED", "environment_labels must be an array of labels.");
   }
   if (value.length > MAX_LABELS) {
-    throw new RequestError(400, "INVALID_REQUEST", `environment_labels must list at most ${MAX_LABELS} labels.`);
+    throw new ApiError("VALIDATION_FAILED", `environment_labels must list at most ${MAX_LABELS} labels.`);
   }
   const labels = value.map((entry) => {
     if (typeof entry !== "string" || !LABEL_PATTERN.test(entry)) {
-      throw new RequestError(
-        400,
-        "INVALID_REQUEST",
+      throw new ApiError(
+        "VALIDATION_FAILED",
         "Each environment label must match ^[a-z0-9][a-z0-9._-]*$.",
       );
     }
     return entry;
   });
   if (new Set(labels).size !== labels.length) {
-    throw new RequestError(400, "INVALID_REQUEST", "environment_labels must not repeat a label.");
+    throw new ApiError("VALIDATION_FAILED", "environment_labels must not repeat a label.");
   }
   return labels;
 }
@@ -72,10 +60,10 @@ function readLabels(value: unknown): string[] {
 function readBoundedInteger(value: unknown, name: string, fallback: number, minimum: number, maximum: number): number {
   if (value === undefined || value === null) return fallback;
   if (typeof value !== "number" || !Number.isInteger(value)) {
-    throw new RequestError(400, "INVALID_REQUEST", `${name} must be an integer.`);
+    throw new ApiError("VALIDATION_FAILED", `${name} must be an integer.`);
   }
   if (value < minimum || value > maximum) {
-    throw new RequestError(400, "INVALID_REQUEST", `${name} must be between ${minimum} and ${maximum}.`);
+    throw new ApiError("VALIDATION_FAILED", `${name} must be between ${minimum} and ${maximum}.`);
   }
   return value;
 }
@@ -88,21 +76,10 @@ export interface ConnectorRoutesContext {
 }
 
 export function registerConnectorRoutes(app: FastifyInstance, context: ConnectorRoutesContext): void {
+  // Errors are rendered by the one hook `src/app.ts` installs. A second error
+  // handler here would replace it for the whole instance, so the module raises
+  // ApiError and leaves rendering to composition.
   const administrator = requireBootstrapAdministrator(context.bootstrapToken);
-
-  app.setErrorHandler(async (error, request, reply) => {
-    if (error instanceof RequestError) {
-      return reply.code(error.statusCode).send({
-        error: { code: error.code, message: error.message },
-        meta: { request_id: request.id },
-      });
-    }
-    request.log.error({ err: error }, "request failed");
-    return reply.code(500).send({
-      error: { code: "INTERNAL_ERROR", message: "The request could not be completed." },
-      meta: { request_id: request.id },
-    });
-  });
 
   /**
    * `POST /api/v1/connectors/enrolment-tokens` — creates a one-time enrolment
@@ -116,7 +93,7 @@ export function registerConnectorRoutes(app: FastifyInstance, context: Connector
       const body = request.body ?? {};
       const projectId = body.project_id === undefined || body.project_id === null ? null : body.project_id;
       if (projectId !== null && typeof projectId !== "string") {
-        throw new RequestError(400, "INVALID_REQUEST", "project_id must be a string.");
+        throw new ApiError("VALIDATION_FAILED", "project_id must be a string.");
       }
       const maxUses = readBoundedInteger(body.max_uses, "max_uses", 1, 1, MAX_USES_LIMIT);
       const ttlSeconds = readBoundedInteger(
