@@ -8,6 +8,7 @@
  * internet.
  */
 
+import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -22,6 +23,15 @@ export interface FixtureApp {
    * own state would only prove what the worker meant to do.
    */
   readonly headers: Record<string, string | string[] | undefined>[];
+  /**
+   * Headers each WebSocket handshake arrived with.
+   *
+   * They are recorded separately because they arrive by a different route: a
+   * WebSocket upgrade is not offered to Playwright's request routing at all, so
+   * whether it carries the capability is a different question from whether an
+   * ordinary request does, and it has to be asked separately.
+   */
+  readonly socketHandshakes: Record<string, string | string[] | undefined>[];
   stop(): Promise<void>;
 }
 
@@ -79,6 +89,54 @@ const COOKIE_PAGE = `<!doctype html>
   document.getElementById("cookie").textContent = document.cookie === "" ? "no-cookie" : document.cookie;
 </script></main></body></html>`;
 
+
+/**
+ * A page that opens a WebSocket back to its own origin.
+ *
+ * Hot module replacement is a WebSocket, so this is the shape of the thing the
+ * session has to be able to open. The result is rendered as text because the
+ * worker exposes no way to read a value out of a page other than by reading
+ * what it displays.
+ */
+const WEBSOCKET_PAGE = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>WebSocket</title></head>
+<body><main><h1 id="ws">connecting</h1>
+<script>
+  const socket = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws-echo");
+  socket.addEventListener("message", (event) => {
+    document.getElementById("ws").textContent = event.data;
+  });
+  socket.addEventListener("open", () => { socket.send("hello"); });
+  socket.addEventListener("error", () => {
+    document.getElementById("ws").textContent = "ws-failed";
+  });
+</script></main></body></html>`;
+
+/**
+ * The same, aimed at another origin. The session's egress policy must close it:
+ * a socket is not exempt from the rule that a session reaches one origin.
+ */
+const WEBSOCKET_OFFSITE_PAGE = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>WebSocket offsite</title></head>
+<body><main><h1 id="ws">connecting</h1>
+<script>
+  const socket = new WebSocket("ws://127.0.0.1:9/blocked");
+  socket.addEventListener("message", () => {
+    document.getElementById("ws").textContent = "ws-reached-another-origin";
+  });
+  socket.addEventListener("error", () => {
+    document.getElementById("ws").textContent = "ws-blocked";
+  });
+  socket.addEventListener("close", () => {
+    if (document.getElementById("ws").textContent === "connecting") {
+      document.getElementById("ws").textContent = "ws-blocked";
+    }
+  });
+</script></main></body></html>`;
+
+/** RFC 6455 section 1.3. */
+const WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-5AB0DC85B11F";
+
 export async function startFixtureApp(): Promise<FixtureApp> {
   const requests: string[] = [];
   const receivedHeaders: Record<string, string | string[] | undefined>[] = [];
@@ -115,6 +173,12 @@ export async function startFixtureApp(): Promise<FixtureApp> {
       case "/read-cookie":
         send(COOKIE_PAGE);
         return;
+      case "/websocket":
+        send(WEBSOCKET_PAGE);
+        return;
+      case "/websocket-offsite":
+        send(WEBSOCKET_OFFSITE_PAGE);
+        return;
       case "/never":
         // Never answers, so a navigation must fail on its own timeout rather
         // than wait indefinitely.
@@ -129,6 +193,53 @@ export async function startFixtureApp(): Promise<FixtureApp> {
     }
   });
 
+  // The WebSocket half, implemented by hand because this fixture has no
+  // dependencies and because what is under test is the handshake reaching the
+  // server at all, with the headers the worker attached to it. Only one small
+  // masked text frame is ever parsed; anything else closes the socket.
+  const socketHandshakes: Record<string, string | string[] | undefined>[] = [];
+  server.on("upgrade", (request, socket) => {
+    socketHandshakes.push({ ...request.headers });
+    const key = request.headers["sec-websocket-key"];
+    if (new URL(request.url ?? "/", "http://fixture.invalid").pathname !== "/ws-echo" ||
+        typeof key !== "string" || key === "") {
+      socket.destroy();
+      return;
+    }
+    const accept = createHash("sha1").update(key + WEBSOCKET_GUID).digest("base64");
+    socket.write(
+      "HTTP/1.1 101 Switching Protocols\r\n" +
+        "Upgrade: websocket\r\nConnection: Upgrade\r\n" +
+        `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
+    );
+    socket.on("data", (frame: Buffer) => {
+      // One unfragmented masked text frame of at most 125 bytes, which is all
+      // the page below sends. Every bound is checked before anything is read,
+      // so a malformed frame closes the socket rather than throwing.
+      if (frame.length < 6) {
+        socket.destroy();
+        return;
+      }
+      const opcode = frame.readUInt8(0) & 0x0f;
+      const masked = (frame.readUInt8(1) & 0x80) !== 0;
+      const length = frame.readUInt8(1) & 0x7f;
+      if (opcode !== 0x1 || !masked || length > 125 || frame.length < 6 + length) {
+        socket.destroy();
+        return;
+      }
+      const mask = frame.subarray(2, 6);
+      const payload = Buffer.from(frame.subarray(6, 6 + length));
+      for (let index = 0; index < payload.length; index += 1) {
+        payload.writeUInt8(payload.readUInt8(index) ^ mask.readUInt8(index % 4), index);
+      }
+      const answer = Buffer.from(`echo:${payload.toString("utf8")}`, "utf8");
+      socket.write(Buffer.concat([Buffer.from([0x81, answer.length]), answer]));
+    });
+    socket.on("error", () => {
+      socket.destroy();
+    });
+  });
+
   await new Promise<void>((resolve) => {
     server.listen(0, "127.0.0.1", resolve);
   });
@@ -138,7 +249,13 @@ export async function startFixtureApp(): Promise<FixtureApp> {
     origin: `http://127.0.0.1:${String(address.port)}`,
     requests,
     headers: receivedHeaders,
+    socketHandshakes,
     async stop() {
+      // An upgraded socket is a connection the server keeps open by design, and
+      // `close` waits for every connection to end. Without this the suite would
+      // hang at teardown after any test that opened a WebSocket, which reads as
+      // a hung test rather than as a fixture that never let go.
+      server.closeAllConnections();
       await new Promise<void>((resolve) => {
         server.close(() => {
           resolve();

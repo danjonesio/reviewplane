@@ -14,7 +14,7 @@ import {
 
 import { buildResult, resolveNavigationTarget } from "../src/session/commands.ts";
 import { captureSize, sameViewport, VIEWPORT_PRESETS } from "../src/session/viewport.ts";
-import { isWithinOrigin } from "../src/session/session.ts";
+import { isSocketWithinOrigin, isWithinOrigin } from "../src/session/session.ts";
 
 const ORIGIN = "https://route-01jdevserver.internal.invalid";
 
@@ -80,6 +80,28 @@ test("origin membership is compared on parsed origin, not on a string prefix", (
   assert.equal(isWithinOrigin(`${ORIGIN}/a`, ORIGIN), true);
   assert.equal(isWithinOrigin(`${ORIGIN}:8443/a`, ORIGIN), false);
   assert.equal(isWithinOrigin("not a url", ORIGIN), false);
+});
+
+test("a WebSocket for the session's own origin is recognised as within it", () => {
+  // A page at https://host opens wss://host, and those two URLs are different
+  // origins by the WHATWG definition even though the browser treats the socket
+  // as same-origin. Getting this wrong closes the hot-reload socket of every
+  // development server, which is the failure this pairing exists to prevent.
+  const socket = ORIGIN.replace("https://", "wss://");
+  assert.equal(isSocketWithinOrigin(`${socket}/`, ORIGIN), true);
+  assert.equal(isSocketWithinOrigin(`${socket}/hmr?token=1`, ORIGIN), true);
+
+  // Another origin, another port, and a downgrade to an insecure socket are
+  // each outside. The last one matters most: matching on host and port alone
+  // would let ws:// count as within an https:// origin.
+  assert.equal(isSocketWithinOrigin("wss://elsewhere.internal.invalid/", ORIGIN), false);
+  assert.equal(isSocketWithinOrigin(`${socket}:8443/`, ORIGIN), false);
+  assert.equal(isSocketWithinOrigin(ORIGIN.replace("https://", "ws://"), ORIGIN), false);
+
+  // Anything that is not a WebSocket URL at all is outside, so a scheme this
+  // pairing does not know cannot be admitted by omission.
+  assert.equal(isSocketWithinOrigin(`${ORIGIN}/`, ORIGIN), false);
+  assert.equal(isSocketWithinOrigin("not a url", ORIGIN), false);
 });
 
 test("a result carrying page-derived content is labelled untrusted", () => {
