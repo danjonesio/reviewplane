@@ -466,10 +466,22 @@ capture_screenshot() {
   response="$(session_command "${session}" 1 \
     '{"command":"take_screenshot","timeout_ms":30000,"take_screenshot":{"full_page":false,"persist":true,"purpose":"verification"}}')"
   artefact="$(field "${response}" 'data.get("screenshot", {}).get("artefact_id")')" || return 1
+  # ADR-0019: no route serves an artefact from its identifier. The bytes are
+  # reachable only through a short-lived grant bound to the subject that minted
+  # it, so this mints one and redeems it with the same credential. The grant
+  # identifier in the URL admits nobody on its own.
   "${COMPOSE[@]}" exec -T -e RP_ID="${artefact}" -e RP_TOKEN="${BOOTSTRAP_TOKEN}" server node -e '
-      const response = await fetch(`http://127.0.0.1:8080/api/v1/artefacts/${process.env.RP_ID}/content`, {
-        headers: { authorization: `Bearer ${process.env.RP_TOKEN}` },
+      const authorization = `Bearer ${process.env.RP_TOKEN}`;
+      const granted = await fetch(`http://127.0.0.1:8080/api/v1/artefacts/${process.env.RP_ID}/grants`, {
+        method: "POST",
+        headers: { authorization },
       });
+      if (!granted.ok) {
+        process.stderr.write(`grant for ${process.env.RP_ID}: ${granted.status}\n`);
+        process.exit(1);
+      }
+      const grant = (await granted.json()).data;
+      const response = await fetch(`http://127.0.0.1:8080${grant.url}`, { headers: { authorization } });
       if (!response.ok) { process.stderr.write(`artefact ${process.env.RP_ID}: ${response.status}\n`); process.exit(1); }
       process.stdout.write(Buffer.from(await response.arrayBuffer()).toString("base64"));
     ' | base64 -d > "${EVIDENCE}/${name}.png" || return 1
