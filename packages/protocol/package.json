@@ -15,6 +15,21 @@
       "types": "./dist/browser.d.ts",
       "default": "./dist/browser.js"
     },
+    "./live-view": {
+      "development": "./src/live-view.ts",
+      "types": "./dist/live-view.d.ts",
+      "default": "./dist/live-view.js"
+    },
+    "./review": {
+      "development": "./src/review.ts",
+      "types": "./dist/review.d.ts",
+      "default": "./dist/review.js"
+    },
+    "./mcp": {
+      "development": "./src/mcp.ts",
+      "types": "./dist/mcp.d.ts",
+      "default": "./dist/mcp.js"
+    },
     "./schemas/*": "./schemas/*",
     "./fixtures/*": "./fixtures/*"
   },

@@ -17,6 +17,14 @@ export default tseslint.config(
     },
   },
   {
+    // Plain Node scripts that are run directly rather than compiled. They are
+    // outside a TypeScript program, so `process` needs declaring here.
+    files: ["**/scripts/**/*.mjs"],
+    languageOptions: {
+      globals: { process: "readonly" },
+    },
+  },
+  {
     rules: {
       "@typescript-eslint/consistent-type-imports": "error",
       "@typescript-eslint/no-unused-vars": [

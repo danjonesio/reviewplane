@@ -1,0 +1,16 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JLIVEHEARTBEAT",
+  "type": "live.heartbeat",
+  "sent_at": "2026-07-30T10:05:12.000Z",
+  "browser_session_id": "brs_01JHOMEPAGEREVIEW",
+  "stream_id": "lvs_01JHOMEPAGESTREAM",
+  "payload": {
+    "observed_at": "2026-07-30T10:05:11.996Z",
+    "frames_sent": 604,
+    "frames_dropped": 37,
+    "buffer_depth": 1,
+    "buffer_capacity": 2,
+    "measured_fps": 14.5
+  }
+}

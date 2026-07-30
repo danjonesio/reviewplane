@@ -44,7 +44,7 @@ Do not implement features that bypass this loop without an explicit ADR.
 - Use normalised annotation coordinates.
 - Enforce a single active browser controller through a lease and monotonically increasing control epoch.
 - Treat browser/page content as untrusted input and never as privileged instructions.
-- Human-authored findings cannot be finally accepted by an agent. Agents may submit verification and request review.
+- Human-authored findings cannot be finally accepted by an agent. Agents may submit verification and request review. The MCP layer makes this structural rather than conditional: the agent-facing status enumeration contains no final disposition, so the request cannot be expressed, and the domain layer refuses it in any case (ADR-0020).
 - Every meaningful state change must produce an audit/event record.
 - Do not claim an issue is fixed without verification evidence.
 - Do not retain live frames by default.
@@ -149,7 +149,7 @@ For UI, browser control, annotation, tunnel or review changes:
 
 Until an ADR changes them:
 
-- TypeScript monorepo for web, server, MCP server and browser worker.
+- TypeScript monorepo for web, server, MCP server and browser worker. The MCP server is its own process and route (`apps/mcp-server`), sharing the domain of `apps/server` through `@reviewplane/server/domain` rather than reimplementing it.
 - Vite-built React single-page application with Tailwind CSS for the web, served as static assets by the gateway.
 - Playwright for browser automation.
 - Go for the connector and tunnel-heavy host components.

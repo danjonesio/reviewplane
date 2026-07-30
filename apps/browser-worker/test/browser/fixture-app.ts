@@ -83,6 +83,37 @@ function bulky(count: number): string {
 <body><main><h1>Bulky</h1><ul>${items}</ul></main></body></html>`;
 }
 
+/**
+ * A page that repaints continuously.
+ *
+ * CDP screencast emits a frame when Chromium paints, so a static page produces
+ * one frame and then silence. Measuring a frame rate needs a page that gives
+ * the compositor something to do, and this is the smallest one that does:
+ * a large block whose colour and position change every animation frame.
+ */
+const ANIMATED = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Animated</title>
+<style>
+  body { margin: 0; background: #101820; }
+  #box { position: absolute; width: 40vw; height: 40vh; }
+</style></head>
+<body><main><h1 id="tick" style="color:#fff">0</h1><div id="box"></div></main>
+<script>
+  let tick = 0;
+  const box = document.getElementById("box");
+  const label = document.getElementById("tick");
+  function paint() {
+    tick += 1;
+    const hue = tick % 360;
+    box.style.background = "hsl(" + hue + ", 80%, 50%)";
+    box.style.left = (tick % 55) + "vw";
+    box.style.top = ((tick * 2) % 55) + "vh";
+    label.textContent = String(tick);
+    requestAnimationFrame(paint);
+  }
+  requestAnimationFrame(paint);
+</script></main></body></html>`;
+
 const COOKIE_PAGE = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Cookie</title></head>
 <body><main><h1 id="cookie">no-cookie</h1>
@@ -169,6 +200,9 @@ export async function startFixtureApp(): Promise<FixtureApp> {
         return;
       case "/hostile":
         send(HOSTILE);
+        return;
+      case "/animated":
+        send(ANIMATED);
         return;
       case "/bulky":
         send(bulky(Number(url.searchParams.get("count") ?? "800")));

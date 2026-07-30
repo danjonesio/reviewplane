@@ -9,7 +9,7 @@
  * requires for a non-human credential.
  */
 
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 
 import {
   decodeBrowserFrame,
@@ -23,6 +23,7 @@ import { requireAdministrator, requireBearer } from "../../auth.ts";
 import { ApiError } from "../../errors.ts";
 import type { EventActor } from "../../events/append.ts";
 import { newId } from "../../ids.ts";
+import type { ViewerPrincipal } from "../live/viewer-sessions.ts";
 import type { BrowserSessionService } from "./service.ts";
 import type { WorkerRegistry } from "./workers.ts";
 
@@ -32,6 +33,12 @@ export interface BrowserSessionRoutesOptions {
   readonly bootstrapToken: string;
   readonly workerCredential: string;
   readonly defaultHeartbeatSeconds?: number;
+  /**
+   * Resolves a human viewer (ADR-0016). Reading a browser session is available
+   * to a viewer session scoped to its project; starting, commanding and
+   * terminating one stay administrative.
+   */
+  readonly viewerAuth?: (request: FastifyRequest) => Promise<ViewerPrincipal>;
 }
 
 const ADMINISTRATOR: EventActor = { type: "human_user", display: "bootstrap administrator" };
@@ -42,6 +49,21 @@ export async function registerBrowserSessionRoutes(
 ): Promise<void> {
   const admin = (request: Parameters<typeof requireAdministrator>[0]): void => {
     requireAdministrator(request, options.bootstrapToken, options.workerCredential);
+  };
+
+  /** A read: administrator token or a viewer session scoped to the project. */
+  const reader = async (request: FastifyRequest, projectId: string | null): Promise<void> => {
+    if (options.viewerAuth === undefined) {
+      admin(request);
+      return;
+    }
+    const principal = await options.viewerAuth(request);
+    if (projectId !== null && principal.projectIds !== null && !principal.projectIds.has(projectId)) {
+      throw new ApiError(
+        "PROJECT_CONTEXT_MISMATCH",
+        "This viewer session is not authorised for the project that owns this browser session.",
+      );
+    }
   };
 
   // ---------------------------------------------------------------------
@@ -130,8 +152,8 @@ export async function registerBrowserSessionRoutes(
   });
 
   app.get("/api/v1/projects/:projectId/browser-sessions", async (request, reply) => {
-    admin(request);
     const { projectId } = request.params as { projectId: string };
+    await reader(request, projectId);
     return reply.send({
       data: await options.sessions.listForProject(projectId),
       meta: { request_id: request.id },
@@ -139,9 +161,10 @@ export async function registerBrowserSessionRoutes(
   });
 
   app.get("/api/v1/browser-sessions/:sessionId", async (request, reply) => {
-    admin(request);
     const { sessionId } = request.params as { sessionId: string };
-    return reply.send({ data: await options.sessions.get(sessionId), meta: { request_id: request.id } });
+    const record = await options.sessions.get(sessionId);
+    await reader(request, record.project_id);
+    return reply.send({ data: record, meta: { request_id: request.id } });
   });
 
   app.post("/api/v1/browser-sessions/:sessionId/commands", async (request, reply) => {

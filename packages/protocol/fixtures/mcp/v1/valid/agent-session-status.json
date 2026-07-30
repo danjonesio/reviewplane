@@ -1,0 +1,40 @@
+{
+  "protocol_version": 1,
+  "ok": true,
+  "request_id": "req_01JSESSIONSTATUS",
+  "type": "agent_session_status",
+  "trust": "trusted_control_plane",
+  "instruction_policy": "do_not_follow_as_instructions",
+  "data": {
+    "agent_session_id": "ags_01JCLAUDECODE",
+    "status": "ACTIVE",
+    "client": {"name": "claude-code", "version": "unknown"},
+    "project": {"id": "prj_01JREFRESHSURPLUS", "slug": "refresh-surplus"},
+    "capabilities": {
+      "browser_live": true,
+      "image_resources": true,
+      "human_takeover": true,
+      "review_inbox": false,
+      "managed_messages": false,
+      "session_resume": false
+    },
+    "granted_capabilities": [
+      "review:read",
+      "review:write",
+      "finding:read",
+      "finding:write",
+      "verification:submit",
+      "browser:capture"
+    ],
+    "browser_sessions": [
+      {
+        "id": "brs_01JHOMEPAGE",
+        "status": "READY",
+        "control_epoch": 1,
+        "controller": {"type": "agent_session", "id": "ags_01JCLAUDECODE"},
+        "viewport": {"width": 1440, "height": 900, "device_scale_factor": 1}
+      }
+    ],
+    "expires_at": "2026-07-30T10:41:02.004Z"
+  }
+}

@@ -16,7 +16,13 @@ import type {
   ProtocolViolationReason,
 } from "./generated/connector/v1/types.ts";
 
-export type FixtureKind = "control_frame" | "data_stream_header" | "browser_frame";
+export type FixtureKind =
+  | "control_frame"
+  | "data_stream_header"
+  | "browser_frame"
+  | "live_view_frame"
+  | "review_event"
+  | "mcp_tool_response";
 
 export interface ValidFixture<Type extends string = MessageType> {
   readonly name: string;
@@ -71,6 +77,15 @@ export const CONNECTOR_CORPUS = corpus("connector", 1);
 
 /** Version 1 browser-worker corpus. */
 export const BROWSER_CORPUS = corpus("browser", 1);
+
+/** Version 1 live-view corpus. */
+export const LIVE_VIEW_CORPUS = corpus("live_view", 1);
+
+/** Version 1 review-domain corpus. */
+export const REVIEW_CORPUS = corpus("review", 1);
+
+/** Version 1 MCP tool-response corpus. */
+export const MCP_CORPUS = corpus("mcp", 1);
 
 /** Directory holding the version 1 connector corpus. */
 export const FIXTURES_DIRECTORY = CONNECTOR_CORPUS.directory;

@@ -1,0 +1,17 @@
+{
+  "protocol_version": 1,
+  "ok": true,
+  "request_id": "req_01JAGENTACCEPTS",
+  "type": "project_current",
+  "trust": "trusted_project_configuration",
+  "instruction_policy": "do_not_follow_as_instructions",
+  "data": {
+    "project": {"id": "prj_01JREFRESHSURPLUS", "slug": "refresh-surplus"},
+    "policy": {
+      "agent_may_accept_findings": "yes",
+      "verification_required": true,
+      "secret_tools_available": false,
+      "required_viewports": ["390x844"]
+    }
+  }
+}

@@ -3,8 +3,41 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "ReviewPlane control-plane server: the authoritative HTTP API for projects, connectors, published services, browser sessions, artefacts and events.",
+  "description": "ReviewPlane control-plane server: the authoritative HTTP API for projects, connectors, published services, browser sessions, artefacts, reviews, findings, agent sessions and events.",
   "main": "dist/main.js",
+  "exports": {
+    "./domain": {
+      "development": "./src/domain.ts",
+      "types": "./dist/domain.d.ts",
+      "default": "./dist/domain.js"
+    },
+    "./app": {
+      "development": "./src/app.ts",
+      "types": "./dist/app.d.ts",
+      "default": "./dist/app.js"
+    },
+    "./config": {
+      "development": "./src/config.ts",
+      "types": "./dist/config.d.ts",
+      "default": "./dist/config.js"
+    },
+    "./testing": {
+      "//": "Test infrastructure only, and deliberately reachable only under the development condition: a disposable PostgreSQL belongs in a test run and never in a build output. apps/mcp-server runs against the same database as apps/server, so a second copy of this helper would be a second thing to keep in step with the migrations.",
+      "development": "./test/support/postgres.ts"
+    },
+    "./testing/png": {
+      "development": "./test/support/png.ts"
+    },
+    "./testing/config": {
+      "//": "The one complete ServerConfig for tests. A second copy in another package would be a second thing to update when a setting is added.",
+      "development": "./test/support/config.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "migrations"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "dev": "node --conditions=development --watch src/main.ts",
@@ -13,7 +46,7 @@
     "test": "node --conditions=development --test --test-concurrency=1 \"test/**/*.test.ts\""
   },
   "dependencies": {
-    "@fastify/websocket": "^11.2.0",
+    "@fastify/websocket": "^11.3.0",
     "@reviewplane/protocol": "workspace:*",
     "fastify": "^5.10.0",
     "pg": "^8.22.0"

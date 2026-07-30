@@ -27,7 +27,7 @@ examples/
 
 The exact structure may be refined before code is created, but separation between control plane, browser execution and connector must remain.
 
-Existing today: `packages/protocol` (pnpm workspace member and Go module `github.com/danjonesio/reviewplane/packages/protocol`), `apps/server` (pnpm workspace member `@reviewplane/server`: control-plane HTTP API, connector channels, published services, browser-session orchestration and artefacts), `apps/browser-worker` (`@reviewplane/browser-worker`), `services/connector` (Go module `github.com/danjonesio/reviewplane/services/connector`), `services/tunnel-gateway` (Go module `github.com/danjonesio/reviewplane/services/tunnel-gateway`), `examples/dev-fixture` and `deploy/compose`, plus the workspace root that carries `pnpm-workspace.yaml`, `tsconfig.base.json`, `eslint.config.js` and `go.work`. Go modules are listed in `go.work` so that a service resolves `packages/protocol` from the working tree rather than from a tag; add each new module there as it is created.
+Existing today: `packages/protocol` (pnpm workspace member and Go module `github.com/danjonesio/reviewplane/packages/protocol`), `apps/server` (pnpm workspace member `@reviewplane/server`: control-plane HTTP API, connector channels, published services, browser-session orchestration, artefacts, reviews and agent sessions), `apps/mcp-server` (`@reviewplane/mcp-server`: the agent-facing MCP endpoint), `apps/browser-worker` (`@reviewplane/browser-worker`), `apps/web` (`@reviewplane/web`), `services/connector` (Go module `github.com/danjonesio/reviewplane/services/connector`), `services/tunnel-gateway` (Go module `github.com/danjonesio/reviewplane/services/tunnel-gateway`), `examples/dev-fixture` and `deploy/compose` (including the edge that serves the web build output). The workspace root carries `pnpm-workspace.yaml`, `tsconfig.base.json`, `eslint.config.js` and `go.work`. Go modules are listed in `go.work` so that a service resolves `packages/protocol` from the working tree rather than from a tag; add each new module there as it is created.
 
 Inside a TypeScript application: `src/main.ts` is a thin entry point, `src/app.ts` (or `src/worker.ts`) is composition only, and domain code lives in `src/modules/<domain>/`. Shared files at `src/` are kept to the few things every module needs — configuration, identifiers, errors, authentication, events and the database pool. Migrations are plain SQL in `apps/server/migrations`, applied in lexical order exactly once by the runner in `src/db/migrate.ts`, which records applied file names in `schema_migrations`.
 
@@ -59,7 +59,7 @@ Generate or validate Go and TypeScript models from one versioned source. Do not 
 
 The mechanism is ADR-0013. Each protocol version has one machine-readable source — for the connector protocol, `packages/protocol/schemas/connector/v1.schema.json` — from which `pnpm protocol:generate` renders the committed TypeScript and Go. `pnpm protocol:check` re-renders both in memory and fails when a committed file differs, so a change made in one language alone cannot land. It also runs the committed cross-language fixture corpus and the Go test suite. The Go toolchain is required for both commands, because the generator formats its Go output with `gofmt`.
 
-Connector-protocol messages and browser-worker messages (`packages/protocol/schemas/browser/v1.schema.json`) are implemented today. API, MCP and event schemas join the package as the issues that introduce those surfaces land.
+Connector-protocol messages, browser-worker messages (`packages/protocol/schemas/browser/v1.schema.json`) and live-view messages (`packages/protocol/schemas/live_view/v1.schema.json`) are implemented today. The remaining API, MCP and event schemas join the package as the issues that introduce those surfaces land.
 
 Each schema source declares the languages it renders in its own `x-protocol.languages`, and `pnpm protocol:check` compares exactly that set. The browser-worker protocol declares `["typescript"]`: both its parties, `apps/server` and `apps/browser-worker`, are TypeScript, so a Go rendering would have no consumer. Declaring the set keeps the ADR-0013 guarantee exact rather than weakening it — when a Go component needs those messages the field changes and the check starts failing until the Go is committed.
 
@@ -111,7 +111,7 @@ go vet ./...
 
 Prefer root orchestration commands that run the correct service-specific tooling.
 
-Working today at the repository root: `pnpm install`, `pnpm build`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm test:browser`, `pnpm test:e2e`, `pnpm protocol:generate` and `pnpm protocol:check`. `go test ./...`, `go test -race ./...` and `go vet ./...` run from a module directory such as `packages/protocol`, `services/connector` or `services/tunnel-gateway`. The remaining scripts arrive with the surfaces they exercise.
+Working today at the repository root: `pnpm install`, `pnpm build`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm test:browser`, `pnpm test:ui`, `pnpm test:integration`, `pnpm test:e2e`, `pnpm protocol:generate` and `pnpm protocol:check`. `go test ./...`, `go test -race ./...` and `go vet ./...` run from a module directory: `packages/protocol`, `services/connector` or `services/tunnel-gateway`. The remaining scripts arrive with the surfaces they exercise.
 
 `pnpm test` needs Docker: the `apps/server` suite starts a disposable PostgreSQL and removes it afterwards, because the artefact, event and published-service behaviour it covers is only meaningful against the real database. Set `REVIEWPLANE_TEST_DATABASE_URL` to run against an existing database instead. The connector integration test additionally builds `services/connector` from source, so the Go toolchain must be available too.
 
@@ -120,6 +120,10 @@ Working today at the repository root: `pnpm install`, `pnpm build`, `pnpm lint`,
 `pnpm test:e2e` runs `deploy/compose/e2e/run.sh`, the end-to-end scenario of `docs/TESTING.md` §3 steps 1 to 6: it brings up the Compose stack, enrols the connector fixture, starts the fixture development services on loopback, publishes them, starts browser sessions and navigates to them. It then proves the tunnel capabilities `docs/ARCHITECTURE.md` §7.4 makes mandatory — a WebSocket echo, server-sent events with their arrival timing, and Vite hot module replacement applying a source edit made on the development machine without a full page reload — and records the performance baseline of `docs/TESTING.md` §12. It needs Docker and roughly four minutes.
 
 Each run takes its own Compose project name, so two runs on one machine do not share containers, networks or volumes; built images carry a fixed name so that a per-run project does not leave a copy of every image behind. `deploy/compose/README.md` records both and how to override them.
+
+`pnpm test:integration` runs steps 9 to 12 of the primary end-to-end scenario (`docs/TESTING.md` section 3.1): a real PostgreSQL, the real control-plane process, the real MCP server, a real Chromium browser worker in its own process, and the official MCP TypeScript SDK as the client. It runs in the same worker image under the same controls as `pnpm test:browser`, on an internal Docker network whose only reachable peer is its own database, with a unique name per run so two can run at once.
+
+`pnpm test:ui` runs the user-interface and accessibility suite of `docs/TESTING.md` section 15. It builds the web bundle and drives it in the same image, for the same reason: the repository has one Chromium and keeping a second in step would be a liability rather than a convenience. `pnpm build` for `apps/web` also fails when the produced bundle would reach an external host, so a green build is part of the ADR-0011 no-CDN guarantee.
 
 ## 6. Configuration
 
@@ -181,6 +185,34 @@ In `apps/browser-worker` these read as:
 - Avoid colour-only state indication
 - Live streams degrade without breaking review workflows
 - Original evidence remains available when overlay rendering fails
+
+In `apps/web` these read as:
+
+- `src/live/client.ts` is the live channel and holds no React. Reconnect,
+  stall detection and the pairing of frame metadata with the binary message
+  that follows it are testable without a browser, and a later overlay renderer
+  gets the frame's declared dimensions and sequence from the same place.
+- Live frames are drawn into a canvas as decoded images. Page-derived content
+  is never inserted as markup, and a page-derived URL is rendered as text
+  rather than as a link (ADR-0010).
+- "Degrades without breaking" is specific: a failed or stalled stream shows a
+  named cause from `docs/UX_FLOWS.md` section 18 over the last frame, states
+  that navigation and screenshot capture still work, and offers a reconnect.
+- Reduced motion is answered by running the stream in the low-rate mode and
+  saying so, not only by disabling CSS transitions.
+- `src/components/AnnotationOverlay.tsx` converts coordinates exactly once, at
+  its edge: the stage's measured box becomes a content rectangle, and
+  normalised geometry is placed inside it. Nothing between those two steps
+  multiplies by a device pixel ratio or reads an intrinsic pixel size, which is
+  why the overlay survives a container resize, a zoom, a scroll and a
+  device-pixel-ratio change. The arithmetic is
+  `@reviewplane/protocol/review`'s, shared with the server that validates the
+  same geometry.
+- "Original evidence remains available when overlay rendering fails" is
+  specific too: `ArtefactViewer` names the cause — an artefact the server could
+  not measure, or a renderer failure caught by its error boundary — and keeps
+  the screenshot and the annotation list on screen. The annotation list is a
+  peer of the canvas rather than a fallback, so it is always rendered.
 
 ## 12. Feature flags
 

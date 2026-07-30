@@ -1,0 +1,13 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JLIVEERROR0001",
+  "type": "live.error",
+  "sent_at": "2026-07-30T10:07:44.000Z",
+  "browser_session_id": "brs_01JHOMEPAGEREVIEW",
+  "payload": {
+    "code": "BROWSER_SESSION_NOT_ACTIVE",
+    "state": "browser_worker_failed",
+    "message": "The browser worker stopped responding. The session is marked failed; uploaded evidence is unaffected.",
+    "retryable": false
+  }
+}

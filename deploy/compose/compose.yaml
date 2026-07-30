@@ -3,7 +3,11 @@
 # Stage 0 shape. The rules `deploy/compose/README.md` records are enforced
 # here rather than left to the operator:
 #
-#   * only the gateway publishes host ports.
+#   * only the edge gateway publishes host ports. It serves the web
+#     application's static assets, proxies `/api` and `/mcp`, upgrades `/ws` to
+#     the control plane, and refuses the worker channel outright. The server,
+#     the MCP server, the tunnel gateway, the worker and PostgreSQL publish
+#     nothing.
 #   * Chromium runs in `browser-worker`, never in the API container.
 #   * no container mounts the Docker socket.
 #   * PostgreSQL is private; artefacts live on a private volume (ADR-0012).
@@ -43,6 +47,11 @@ networks:
   # out on both; nothing dials in.
   devnet:
     internal: true
+  # The edge gateway to the control plane and the MCP server. Also internal: the
+  # edge is the only service with a published port, and it reaches them over this
+  # network rather than over the host.
+  edge:
+    internal: true
 
 # Built images carry a fixed name, independent of the Compose project name.
 #
@@ -68,6 +77,7 @@ volumes:
   # the proof edits. A bind mount of the repository would have done the same
   # job while writing into the developer's checkout, which a test must not do.
   dev-fixture-vite-src:
+  caddy-data:
 
 services:
   postgres:
@@ -87,13 +97,35 @@ services:
       timeout: 5s
       retries: 12
 
+  # The only service with a published port. It serves `apps/web`'s build
+  # output, proxies `/api`, upgrades `/ws` and refuses `/internal`
+  # (`docs/ARCHITECTURE.md` section 4.1).
+  gateway:
+    image: ${REVIEWPLANE_IMAGE_PREFIX:-reviewplane}/gateway:local
+    build:
+      context: ../..
+      dockerfile: deploy/compose/gateway/Dockerfile
+    restart: unless-stopped
+    networks: [edge]
+    depends_on:
+      - server
+      - mcp-server
+    ports:
+      - "${REVIEWPLANE_GATEWAY_PORT:-8443}:8443"
+    volumes:
+      - caddy-data:/data
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt:
+      - no-new-privileges:true
+
   server:
     image: ${REVIEWPLANE_IMAGE_PREFIX:-reviewplane}/server:local
     build:
       context: ../..
       dockerfile: apps/server/Dockerfile
     restart: unless-stopped
-    networks: [data, browser, tunnel, devnet]
+    networks: [data, browser, tunnel, devnet, edge]
     depends_on:
       postgres:
         condition: service_healthy
@@ -121,6 +153,12 @@ services:
       # plane never carries tunnelled bytes (docs/ARCHITECTURE.md section 4.6).
       REVIEWPLANE_CONNECTOR_DATA_URL: wss://tunnel-gateway:8444/connector/data
       REVIEWPLANE_CONNECTOR_TLS_HOSTS: server,localhost,127.0.0.1
+      # Origins a browser may open the live WebSocket from. It is the edge
+      # gateway's public URL: a viewer's page is served from there and nowhere
+      # else.
+      REVIEWPLANE_ALLOWED_ORIGINS: ${REVIEWPLANE_PUBLIC_ORIGIN:-https://localhost:8443}
+      # The edge gateway terminates TLS, so the viewer session cookie is Secure.
+      REVIEWPLANE_SECURE_COOKIES: "true"
     # Short syntax: `uid`, `gid` and `mode` on a secret reference are honoured
     # by Docker Swarm only. Plain Compose bind-mounts the file with the
     # permissions it has on the host, which is why generate-secrets.sh writes
@@ -151,6 +189,49 @@ services:
       timeout: 5s
       retries: 20
       start_period: 30s
+
+  # The agent-facing interface. It is a separate process and route from the
+  # control-plane API (`docs/ARCHITECTURE.md` section 4.4) and reaches the
+  # gateway on `/mcp/*` only.
+  #
+  # It joins `data` because it translates MCP tools into domain commands
+  # directly, and `browser` because `browser_take_screenshot` sends a command to
+  # the worker. It is the same trust zone as `server`, which is why it may hold
+  # the worker command credential — and it is *not* given the bootstrap token,
+  # because an agent-facing process has no administrative work to do.
+  mcp-server:
+    image: ${REVIEWPLANE_IMAGE_PREFIX:-reviewplane}/mcp-server:local
+    build:
+      context: ../..
+      dockerfile: apps/mcp-server/Dockerfile
+    restart: unless-stopped
+    networks: [data, browser, edge]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      REVIEWPLANE_MCP_LISTEN_ADDRESS: 0.0.0.0
+      REVIEWPLANE_MCP_PORT: "8081"
+      REVIEWPLANE_MCP_PATH: /mcp/v1
+      REVIEWPLANE_DATABASE_URL_FILE: /run/secrets/database_url
+      REVIEWPLANE_WORKER_COMMAND_CREDENTIAL_FILE: /run/secrets/worker_command_credential
+      REVIEWPLANE_WORKER_ENDPOINT: http://browser-worker:8090
+      REVIEWPLANE_ARTEFACT_PATH: /var/lib/reviewplane/artefacts
+      REVIEWPLANE_API_PATH_PREFIX: /api/v1
+    secrets:
+      - database_url
+      - worker_command_credential
+    volumes:
+      # Read-only: the MCP server serves evidence and never writes it. The
+      # browser worker uploads through the control-plane API (ADR-0012).
+      - artefact-data:/var/lib/reviewplane/artefacts:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    user: "10001:10001"
 
   browser-worker:
     image: ${REVIEWPLANE_IMAGE_PREFIX:-reviewplane}/browser-worker:local

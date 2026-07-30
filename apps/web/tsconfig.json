@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node", "vite/client"],
+    "lib": ["es2023", "dom", "dom.iterable"],
+    // Vite resolves and bundles; nothing here is emitted by tsc.
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "jsx": "react-jsx",
+    "allowJs": false
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.ts", "vite.config.ts"]
+}

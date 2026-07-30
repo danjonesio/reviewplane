@@ -1,0 +1,30 @@
+{
+  "id": "evt_01JARTACCESS",
+  "schema_version": 1,
+  "sequence": 49,
+  "type": "artefact.access_granted",
+  "occurred_at": "2026-07-30T10:12:04.118Z",
+  "recorded_at": "2026-07-30T10:12:04.126Z",
+  "organisation_id": "org_01JREFRESH",
+  "project_id": "prj_01JREFRESHSURPLUS",
+  "actor": {
+    "type": "human_user",
+    "id": "vwr_01JBOOTSTRAPADMIN",
+    "display": "bootstrap administrator"
+  },
+  "correlation": {
+    "artefact_id": "art_01JHOMEPAGESHOT",
+    "review_id": "rev_01JBUGSONHOMEPAGE",
+    "finding_id": "fin_01JHEROOVERLAPS"
+  },
+  "payload": {
+    "artefact_id": "art_01JHOMEPAGESHOT",
+    "grant_id": "agr_01JSHORTLIVED",
+    "subject": {
+      "type": "human_user",
+      "id": "vwr_01JBOOTSTRAPADMIN",
+      "display": "bootstrap administrator"
+    },
+    "expires_at": "2026-07-30T10:14:04.118Z"
+  }
+}

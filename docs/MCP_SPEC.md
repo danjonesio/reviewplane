@@ -39,6 +39,43 @@ Used when an agent client supports authenticated remote MCP directly.
 
 The endpoint must require scoped credentials and must not accept human browser cookies as agent authentication.
 
+Stage 0 implements this form, and only this form (ADR-0020). It is served by
+`apps/mcp-server` at `/mcp/v1`, a separate process behind a separate gateway
+route (`docs/ARCHITECTURE.md` section 4.4, `docs/API.md` section 3).
+
+The credential is an `Authorization: Bearer` header carrying an agent credential
+of `docs/SECURITY.md` section 6.3. No other credential is accepted: a viewer
+session cookie is not consulted, and the administrator bootstrap token is not an
+agent credential. The credential MUST be re-resolved on every request, so a
+credential that expires or is revoked mid-session refuses the next call with
+`AUTHENTICATION_REQUIRED` rather than allowing partial execution.
+
+MCP's own initialisation handshake carries a client name, a client version and
+the MCP capability set. It has nowhere to carry the session-scoped inputs of
+section 4, so those travel as query parameters on the endpoint URL, which is the
+one thing every MCP client can be configured with:
+
+```text
+https://reviewplane.example/mcp/v1?project_hint=refresh-surplus
+    &workspace_hint=/workspace/refresh-surplus
+    &image_content=false
+```
+
+| Parameter | Meaning | Default |
+|---|---|---|
+| `project_hint` | Project slug or identifier. Narrows the credential's binding; never widens it. | absent |
+| `workspace_hint` | Checkout root, matched against a registered workspace. | absent |
+| `resources` | Whether the client can read MCP resources. | `true` |
+| `image_content` | Whether the client can consume image content. | `true` |
+| `session_resume` | Whether the client can resume a session. | `false` |
+
+A client that sends none of them gets the generous defaults and, where its
+credential is bound to one project, a fully resolved session.
+
+The MCP transport session identifier is not a credential. A request presenting
+another session's identifier with a valid credential of its own MUST be refused:
+the server records which credential opened each session.
+
 ## 4. Session initialisation
 
 The client provides:
@@ -86,6 +123,27 @@ The server returns:
 
 Ambiguous project association must fail with a resolvable error rather than guessing.
 
+The rule is `PROJECT_CONTEXT_AMBIGUOUS` with the candidates in
+`error.details.candidates`, and **no agent session is created**. The credential's
+project set is the outer bound and `project_hint` may only narrow it:
+
+- exactly one project survives — the session is bound to it;
+- the hint names a project the credential is not bound to —
+  `PROJECT_CONTEXT_MISMATCH`;
+- more than one survives — `PROJECT_CONTEXT_AMBIGUOUS`, with the candidates so
+  the agent can reconnect naming one. The server never chooses.
+
+The workspace is resolved the same way and is allowed to resolve to nothing: a
+project with no registered workspace answers without one, and a later
+verification records its branch with a
+`verification_branch_uncorroborated` warning rather than being refused. A
+project with several workspaces and no `workspace_hint` behaves the same way,
+because a workspace picked at random would be worse than none.
+
+The response shapes are
+`session_initialisation_request` and `session_initialisation_result` in
+`packages/protocol/schemas/mcp/v1.schema.json`.
+
 ## 5. Common response envelope
 
 Tools should return a stable envelope:
@@ -117,6 +175,26 @@ Errors:
 }
 ```
 
+Both shapes are defined in `packages/protocol/schemas/mcp/v1.schema.json`
+(`envelope` and `tool_refusal`) and carry three additive fields the examples
+above omit: `protocol_version`, which is the section 14 product protocol
+version; `type`, the tool that answered, which selects the schema of `data`; and
+`instruction_policy`, which is the section 6 metadata of `docs/SECURITY.md`
+section 11. Additive fields are permitted within a major version and clients
+ignore what they do not recognise (`docs/API.md` section 20).
+
+A **refusal is a completed tool call reporting `ok: false`**, not a transport or
+JSON-RPC error. An agent reads the stable code, decides and carries on; a
+protocol-level error would make every domain refusal look like a broken
+connection. Only authentication, project resolution and transport failures are
+reported below the envelope, because at that point there is no session to answer
+in. A refused call is additionally marked `isError` in the MCP result so a model
+can tell that the call did not do what it asked.
+
+The envelope is produced by one encoder, which enforces the section 13 per-tool
+byte bound and the section 6 trust rule. A handler cannot emit a response larger
+than its tool declares, or return page-derived content under a trusted label.
+
 ## 6. Trust labels
 
 Every response containing external or page-derived data must declare trust.
@@ -131,6 +209,23 @@ Values:
 - `mixed`
 
 Page content must never be returned without an untrusted label.
+
+`mixed` marks a response that carries both control-plane fact and page-derived
+or uploaded content, which is the usual case for a review or a finding: a human
+wrote the title, and a page supplied the URL the capture was taken at. It counts
+as untrusted. A `finding` view therefore carries a non-empty `untrusted_fields`
+list naming the page-derived members, so `mixed` is actionable rather than a
+shrug.
+
+Every response also carries
+`instruction_policy: do_not_follow_as_instructions`, including the trusted ones.
+An agent should never have to infer the absence of a rule from the absence of a
+field.
+
+The rule is enforced by the codec rather than by each handler: a response whose
+`data` contains a finding, an artefact link or a capture is refused, on the way
+out as well as on the way in, if its label is a trusted one
+(`untrusted_content_mislabelled`, reported as `POLICY_DENIED`).
 
 ## 7. Tool catalogue
 
@@ -316,11 +411,25 @@ Input:
 ```json
 {
   "browser_session_id": "brs_...",
+  "control_epoch": 12,
   "full_page": false,
   "persist": true,
   "purpose": "verification"
 }
 ```
+
+Stage 0 accepts `purpose: "verification"` only, and always persists: a capture
+that produced no artefact would produce no evidence, and evidence is the only
+reason the tool exists in Stage 0. The result is an `artefact_link` — identifier,
+digest, content rectangle and a short-lived content path minted for this agent
+session (ADR-0019) — and never inline image bytes. Its trust label is
+`untrusted_browser_content`, because a picture of a page is page-derived whatever
+is in it.
+
+The capture is non-interactive, so it does not require the control lease, but it
+does require a current `control_epoch`: a superseded epoch is refused with
+`CONTROL_EPOCH_STALE` rather than captured from a browser somebody else now
+controls.
 
 ### `browser_console_messages`
 
@@ -386,14 +495,27 @@ Input supports immutable ID or project-scoped slug:
   "review": "bugs-on-homepage",
   "include": [
     "findings",
-    "comments",
-    "artefact_links",
-    "staleness"
-  ]
+    "artefact_links"
+  ],
+  "findings_limit": 20,
+  "findings_cursor": "..."
 }
 ```
 
 Returns branch, commit, findings, status and resource links. Large images are resources, not embedded indiscriminately.
+
+Resolution is project scoped in both forms. A slug that exists only in another
+project, and an immutable identifier belonging to another project, both resolve
+as `RESOURCE_NOT_FOUND`; no cross-project search is performed and no refusal
+distinguishes "exists elsewhere" from "does not exist".
+
+Findings are one bounded page, oldest first, so an agent works them in the order
+a human recorded them. `findings_next_cursor` is present only when more remain,
+with a `findings_truncated` warning beside it.
+
+`staleness` is deliberately absent from the Stage 0 `include` vocabulary.
+Staleness calculation is Stage 2 (`docs/DOMAIN_MODEL.md` section 24), and a field
+that would have to be guessed is omitted rather than falsely reported.
 
 ### `review_claim`
 
@@ -403,11 +525,22 @@ Claims a review for the current agent session when allowed.
 
 Agents may request:
 
-- `in_progress`
-- `awaiting_human_review`
-- `blocked`
+- `IN_PROGRESS`
+- `AWAITING_HUMAN_REVIEW`
 
-Agents may not set a human-authored review to `accepted`.
+Agents may not set a human-authored review to `ACCEPTED`. The status enumeration
+this tool accepts does not contain it, so the request cannot be expressed
+(ADR-0020).
+
+An earlier revision of this section also listed `blocked`.
+`docs/DOMAIN_MODEL.md` section 14 defines no such review status and takes
+precedence over a protocol specification, so it is removed here rather than
+invented there: an agent that cannot continue records the block on the finding
+it is stuck on, where `BLOCKED` is a real status.
+
+Review statuses move along the edges of `docs/DOMAIN_MODEL.md` section 14. In
+particular `ASSIGNED` does not reach `AWAITING_HUMAN_REVIEW` directly; the agent
+passes through `IN_PROGRESS`.
 
 ### `review_add_comment`
 
@@ -429,14 +562,28 @@ Input includes expected version.
 
 Allowed agent transitions:
 
-- `open` -> `claimed`
-- `claimed` -> `in_progress`
-- `in_progress` -> `blocked`
-- `in_progress` -> `fixed_unverified`
-- `fixed_unverified` -> `awaiting_human_review`
-- `reopened` -> `in_progress`
+- `OPEN` -> `CLAIMED`
+- `CLAIMED` -> `IN_PROGRESS`
+- `IN_PROGRESS` -> `BLOCKED`
+- `IN_PROGRESS` -> `FIXED_UNVERIFIED`
+- `FIXED_UNVERIFIED` -> `AWAITING_HUMAN_REVIEW`
+- `REOPENED` -> `IN_PROGRESS`
 
-Human-only transitions remain unavailable.
+Human-only transitions remain unavailable, and unavailable means **not
+expressible**. The status enumeration this tool accepts contains none of
+`RESOLVED`, `WONT_FIX`, `DUPLICATE` or `ACCEPTED`, so an agent cannot name a
+final disposition and therefore cannot request one (ADR-0020). The authority
+rule of `docs/DOMAIN_MODEL.md` section 15 is additionally enforced in the domain
+layer, which refuses the same transitions for an `agent_session` actor whatever
+the protocol layer let through.
+
+A transition outside the list is refused with `POLICY_DENIED` and
+`details.allowed_transitions`, so a refusal says what is possible from here
+rather than only what is not.
+
+`BLOCKED` requires a `reason`, and `FIXED_UNVERIFIED` requires a
+`resolution_note`: a completion claim without evidence is refused with
+`EVIDENCE_REQUIRED`.
 
 ### `finding_add_comment`
 
@@ -465,6 +612,27 @@ Input:
 ```
 
 The server validates evidence ownership, commit context and required policy checks.
+
+**Evidence ownership.** Every `artefact_id` must exist, be verified, belong to
+this project, and — where it came from a browser session — have come from a
+browser session of this project. At least one must be a screenshot: a
+verification with no screenshot is a completion claim without evidence. An
+artefact belonging to another project is reported as `RESOURCE_NOT_FOUND`, not
+as forbidden, because a distinct refusal for "exists but is not yours" would
+make another tenant's identifiers enumerable (`docs/TESTING.md` section 10).
+
+**Commit context.** The `commit` MUST differ from the commit the finding was
+captured at: a fix cannot exist at the revision the defect was recorded from.
+Where a workspace is registered for the project, `branch` MUST equal the branch
+that workspace is on; where none is, the branch is recorded with a
+`verification_branch_uncorroborated` warning, because an uncorroborated branch
+is still better evidence than a refused submission with a verified screenshot
+behind it.
+
+Submission records a verification with status `submitted` and moves an
+`IN_PROGRESS` finding to `FIXED_UNVERIFIED`. It stops there. Reaching
+`AWAITING_HUMAN_REVIEW` is a separate, deliberate call, and reaching anything
+beyond it is not available to an agent at all.
 
 ### `finding_mark_blocked`
 
@@ -566,6 +734,22 @@ trace://<artefact-id>
 
 Resources must enforce the same authorisation as tools.
 
+Stage 0 serves `review://`, `finding://`, `artefact://` and `screenshot://`.
+`trace://` is deliberately absent: no trace is persisted yet, and a resource
+template for something that never resolves is worse than none.
+
+The authorisation is the same because the query is the same: every read runs
+through the project-scoped domain services a tool would use, so another
+project's review, finding or artefact resolves as `RESOURCE_NOT_FOUND` rather
+than as forbidden. The project part of a `review://` URI must be this session's
+project; accepting another project's slug and then filtering would let a caller
+learn which projects exist by watching which refusals differ.
+
+`screenshot://` is the one place image bytes are served, and only because a
+resource read is an explicit request for them (section 13). Reading it mints an
+audited access grant for the agent session (`docs/SECURITY.md` section 16,
+ADR-0019).
+
 ## 9. Inbox workflow
 
 Recommended agent checkpoints:
@@ -583,6 +767,17 @@ The server may signal that inbox items exist, but agents must explicitly retriev
 State-changing tools require an `idempotency_key` when retries can occur.
 
 The key is scoped to actor, tool and project. Reusing a key with different input returns `IDEMPOTENCY_CONFLICT`.
+
+Stage 0 requires a key on every state-changing tool rather than only where a
+retry is likely, and stores it under exactly that composite scope with a digest
+of the arguments. The key is claimed **before** the operation runs, so a
+duplicate submission produces one record — which is the property
+`docs/TESTING.md` section 11 asks for of a duplicate verification — and the
+stored response is replayed verbatim. A duplicate that arrives while the first
+call is still in flight is answered `RATE_LIMITED` with `retry_after_ms` rather
+than allowed to run the operation concurrently. A key whose call was refused is
+released: a refusal is not a result to hand back for ever to an agent that fixed
+its arguments.
 
 ## 11. Concurrency
 
@@ -633,6 +828,21 @@ Adding a code is additive within a protocol version, and clients MUST tolerate a
 
 `CONNECTOR_OFFLINE` covers a connector that is not connected and a connector that disappears mid-request: a request already in flight when the data channel drops MUST report it rather than a generic failure, and MUST NOT hang (`ARCHITECTURE.md` §14, `TESTING.md` §11). `PUBLISHED_SERVICE_UNAVAILABLE` is the code when the route itself is not one the deployment carries. The two are distinguishable on purpose: the first says come back, the second says publish again.
 
+The enumeration is the single source in
+`packages/protocol/schemas/mcp/v1.schema.json` (`x-protocol.error_classes`), and
+the control-plane API reports the same codes (`docs/API.md` section 5): a refusal
+that starts in the domain layer reaches the agent without being renamed on the
+way. Each refusal states `retryable` explicitly rather than leaving a client to
+infer it from the code, because the answer is not derivable from the code's
+shape — `RATE_LIMITED` and `VERSION_CONFLICT` are both conflicts and only one of
+them is worth repeating verbatim.
+
+`PROJECT_CONTEXT_AMBIGUOUS` carries `details.candidates`; `VERSION_CONFLICT`
+carries `details.current_version`; `CONTROL_EPOCH_STALE` carries
+`details.current_epoch`; a refused transition carries
+`details.allowed_transitions`; `EVIDENCE_REQUIRED` carries
+`details.required_evidence`.
+
 ## 13. Bounded context
 
 Tools must avoid returning unbounded page text, logs or histories.
@@ -655,3 +865,63 @@ Clients and servers negotiate:
 - Resource content support
 
 Breaking tool changes require a new major protocol version or a parallel tool name.
+
+The product protocol version is `protocol_version` in the response envelope.
+Stage 0 pins `1`; any other value is refused rather than best-effort parsed.
+
+### 14.1 Stage 0 tool availability set
+
+A client relies on negotiated availability rather than discovering gaps at
+runtime, so the set is recorded here and is the same list the server advertises
+in `tools/list`. It is generated from `x-protocol.messages` in
+`packages/protocol/schemas/mcp/v1.schema.json`, so a tool cannot be advertised
+without a result schema and a response bound, and a test asserts that the
+registered set and the schema's set are the same list.
+
+| Tool | Section | Capability required |
+|---|---|---|
+| `project_current` | 7.1 | `project:read` |
+| `agent_session_status` | 7.1 | `project:read` |
+| `review_get` | 7.6 | `review:read` |
+| `review_claim` | 7.6 | `review:write` |
+| `review_update_status` | 7.6 | `review:write` |
+| `finding_get` | 7.7 | `finding:read` |
+| `finding_claim` | 7.7 | `finding:write` |
+| `finding_update_status` | 7.7 | `finding:write` |
+| `finding_add_comment` | 7.7 | `finding:write` |
+| `finding_submit_verification` | 7.7 | `verification:submit` |
+| `browser_take_screenshot` | 7.4 | `browser:capture` |
+
+Everything else in the section 7 catalogue is **absent** from Stage 0 rather
+than present and failing:
+
+| Absent | Section | Arrives |
+|---|---|---|
+| `agent_inbox_list`, `agent_inbox_acknowledge` | 7.1, 9 | Stage 1 |
+| `development_services_list`, `development_service_publish`, `development_service_unpublish` | 7.2 | Stage 1 |
+| `browser_session_*` lifecycle, `browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_wait`, `browser_console_messages`, `browser_network_requests` | 7.3, 7.4 | Stage 1 |
+| `visual_inspect`, `finding_create_from_observation` | 7.5 | Stage 1 |
+| `review_list`, `review_search`, `review_add_comment` | 7.6 | Stage 1 |
+| `finding_mark_blocked` | 7.7 | `finding_update_status` with `BLOCKED` covers it in Stage 0 |
+| `task_validation_status`, `task_complete` | 7.8 | Stage 1 |
+| `secret_list_references`, `secret_inject_browser`, `secret_inject_header` | 7.9 | Stage 2 |
+
+The secret row is the important one. `docs/PROJECT.md` section 9 and
+`docs/SECURITY.md` section 12.1 require that no raw secret reaches an agent;
+Stage 0 exposes no secret tool at all, which is the strongest available form of
+that guarantee, and `project_current` reports
+`policy.secret_tools_available: false` so an agent learns it without asking.
+
+The negotiated server capability set reports `review_inbox: false` and
+`managed_messages: false` for the same reason: a capability that is absent is
+stated, not left to be discovered.
+
+### 14.2 Capability degradation
+
+A client that declares `image_content=false` completes the whole workflow. Tool
+results already carry resource links and digests rather than image bytes, so
+nothing changes there; a `screenshot://` resource read answers with the
+artefact's metadata, digest and short-lived content path instead of the bytes,
+and every affected response carries an `image_content_unsupported` warning
+naming what was withheld and how to obtain it. Degradation is a warning on a
+success and never a failure (`docs/ARCHITECTURE.md` section 8.3).

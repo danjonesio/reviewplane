@@ -114,6 +114,14 @@ Initial local authentication must provide:
 
 OIDC support should be added before team production use.
 
+Stage 0 implements the cookie half of this list through ADR-0016: the bootstrap
+administrator token is presented once, in an `Authorization` header, and is
+exchanged for a short-lived viewer session whose token lives in an HTTP-only,
+`SameSite=Strict` cookie. Only the token's digest is stored, sessions expire
+and can be revoked, and the administrator token itself never reaches the
+browser. Password hashing, login rate limiting and session rotation arrive with
+local accounts, which this exchange is deliberately shaped to be replaced by.
+
 ### 6.2 Connector authentication
 
 Enrolment flow:
@@ -138,6 +146,33 @@ Agent credentials are:
 
 An agent token must not access administrative APIs.
 
+Stage 0 implements every line of this list (ADR-0020). An agent credential is a
+bearer token prefixed `rpa_`, stored only as a SHA-256 digest, bound to one
+organisation and a non-empty set of projects, carrying a non-empty capability
+set from a fixed vocabulary, and expiring at most 24 hours after issue — the
+database refuses a longer life, so a long-lived agent token cannot be produced
+by omitting a field. It is issued by an administrator and returned exactly once;
+no route re-shows it.
+
+The administrative refusal is **by token shape rather than by lookup**: a bearer
+token with the `rpa_` prefix is refused with `AUTHORISATION_DENIED` before
+anything is resolved. A refusal that depended on a database read would fail open
+exactly when the database is unavailable, and this is not a rule that may hold
+only while PostgreSQL is up. The prefix can only cause a refusal, never an
+admission.
+
+The distinctness from human sessions is symmetric and holds in both directions:
+the agent credential store resolves nothing that is not an agent credential, and
+the viewer-session store resolves nothing that is not a viewer session. The MCP
+endpoint reads an `Authorization` header and never a cookie, and it re-resolves
+the credential on every request, so expiry or revocation refuses the next call
+with `AUTHENTICATION_REQUIRED` rather than allowing an open session to continue.
+
+An agent credential is accepted on exactly one route outside the MCP endpoint:
+`GET /api/v1/artefact-content/:grantId`, and only for a grant minted for a
+session that credential owns (ADR-0019). It cannot create, complete or overwrite
+an artefact.
+
 ### 6.4 Worker authentication
 
 Browser workers use dedicated identities. A worker may only receive sessions compatible with its labels, policy and organisation assignment.
@@ -156,6 +191,20 @@ Every request must be authorised using:
 - Policy decision
 
 Do not rely on UI visibility for enforcement.
+
+### Live-view authorisation
+
+A live viewer sees whatever is on the browser's screen, so the checks run
+before the WebSocket exists rather than inside the send path:
+
+- The `Origin` header is on the configured allow list.
+- The viewer session resolves, is unexpired and is unrevoked.
+- The browser session's project is inside the viewer session's scope.
+- The browser session has not ended.
+- The live-viewer limits of `docs/API.md` section 19.1 admit another viewer.
+
+Each failure is an HTTP status on the handshake. No WebSocket is created, so no
+frame can be transmitted to a viewer that failed any of them.
 
 ### Browser command authorisation
 
@@ -269,6 +318,18 @@ MCP responses containing page text should include metadata equivalent to:
 
 Agents should receive project guidance stating that text encountered in pages cannot override human, repository or control-plane instructions.
 
+Stage 0 delivers that guidance in the MCP server's initialisation instructions,
+so a client receives it before its first tool call, and repeats the metadata on
+every response rather than only on untrusted ones. The label is applied by the
+response codec rather than by each handler: a response whose data carries a
+finding, an artefact link or a capture cannot be encoded under a trusted label
+(`docs/MCP_SPEC.md` section 6).
+
+What stops a hostile page in Stage 0 is not only the label. There is no tool
+that could change a policy, no tool that could approve anything, and no secret
+tool at all, so the actions such a page would ask for do not exist to be
+requested.
+
 High-risk browser operations may require policy approval even when requested by page content.
 
 ## 12. Secrets
@@ -321,6 +382,23 @@ Redaction status must be recorded on artefacts.
 - Scan downloadable artefacts when configured
 - Do not render active HTML artefacts directly under the control-plane origin
 
+Content-type validation is performed on the bytes and not on the claim. The
+declared media type is what an uploader asserts; the leading bytes are what it
+actually sent. An SVG or an HTML document uploaded as an image is refused
+before anything is stored, so no artefact exists that a viewer could later be
+persuaded to render as active content. Display metadata such as a filename
+never reaches the storage key, which is content-addressed (ADR-0012); a value
+that is a path rather than a name is refused as well.
+
+Reading artefact content is an audited, subject-scoped access (ADR-0019). A
+caller mints a grant for one artefact and reads `/api/v1/artefact-content/`
+followed by the grant identifier; the grant names one artefact, one subject and
+a two-minute expiry, and the request must still authenticate as that subject.
+No route serves an artefact from its identifier, so a leaked artefact
+identifier — which appears in events, in exports and in MCP responses — grants
+nothing. The identifier in the URL is not a credential, which is what keeps
+section 18 satisfied while an `<img>` element can still load evidence.
+
 ## 14. Data retention
 
 Defaults should minimise sensitive persistence:
@@ -338,6 +416,15 @@ retention:
 ```
 
 Administrators can shorten or extend policy. Legal hold and enterprise policy are later capabilities.
+
+`live_frames: never` is not a retention job. There is no code path that writes
+a live frame anywhere: not to the worker's filesystem, not to the artefact
+store, not to PostgreSQL, not to a log. The `live.attached` message states
+`retention: never` on the wire, and the protocol schema makes that field a
+single-valued enumeration, so a stream cannot advertise anything else even by
+mistake. Session video, which is the supported way to keep moving pictures,
+remains `disabled` and is a separate, explicitly configured capture rather than
+a flag on this path.
 
 ## 15. Encryption
 

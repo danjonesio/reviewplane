@@ -44,6 +44,15 @@ export const API_ERROR_CODES = [
 export type ApiErrorCode = (typeof API_ERROR_CODES)[number] | ErrorClass;
 
 /**
+ * The name the review, agent and MCP modules use for the same vocabulary.
+ *
+ * One enumeration, two names: `docs/API.md` §5 and `docs/MCP_SPEC.md` §12 are
+ * the same list, and an alias is cheaper than a second declaration that could
+ * drift from it.
+ */
+export type ErrorCode = ApiErrorCode;
+
+/**
  * The status each code is answered with unless a caller states otherwise.
  *
  * Deriving the status from the code is what stops two handlers reporting the
@@ -53,6 +62,9 @@ export type ApiErrorCode = (typeof API_ERROR_CODES)[number] | ErrorClass;
 const STATUS_BY_CODE: Readonly<Record<ApiErrorCode, number>> = {
   AUTHENTICATION_REQUIRED: 401,
   AUTHORISATION_DENIED: 403,
+  // The caller authenticated and is authorised; it has not said enough. A
+  // conflict rather than a 400, because the request is well formed and the
+  // resolution is to name one of the candidates the refusal returns.
   PROJECT_CONTEXT_AMBIGUOUS: 409,
   PROJECT_CONTEXT_MISMATCH: 403,
   RESOURCE_NOT_FOUND: 404,
@@ -61,6 +73,9 @@ const STATUS_BY_CODE: Readonly<Record<ApiErrorCode, number>> = {
   IDEMPOTENCY_CONFLICT: 409,
   VALIDATION_FAILED: 422,
   CONNECTOR_OFFLINE: 503,
+  // A route the deployment does not carry, or one that is no longer pending:
+  // the request conflicts with the route's state rather than reporting a
+  // service that is temporarily away, which is CONNECTOR_OFFLINE's job.
   PUBLISHED_SERVICE_UNAVAILABLE: 409,
   BROWSER_CAPACITY_EXHAUSTED: 503,
   BROWSER_SESSION_NOT_ACTIVE: 409,

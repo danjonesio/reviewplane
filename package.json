@@ -17,6 +17,7 @@
     "typecheck": "pnpm -r --if-present run typecheck",
     "test": "pnpm -r --if-present run test",
     "test:browser": "pnpm --filter @reviewplane/browser-worker run test:browser:container",
+    "test:ui": "pnpm --filter @reviewplane/web run test:ui:container",
     "test:integration": "pnpm -r --if-present run test:integration",
     "test:e2e": "bash deploy/compose/e2e/run.sh",
     "protocol:generate": "pnpm --filter @reviewplane/protocol run generate",

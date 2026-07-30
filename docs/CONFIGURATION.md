@@ -80,6 +80,30 @@ privacy:
   external_visual_analysis: disabled
 ```
 
+`persist_live_frames` has no `true`: `docs/SECURITY.md` section 14 sets
+`live_frames: never` and there is no code path that writes one, so the setting
+records the guarantee rather than selecting between two behaviours.
+
+### 2.1 Settings implemented today
+
+The server reads environment variables, with a `*_FILE` variant for every
+credential:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `REVIEWPLANE_LISTEN_ADDRESS` | `0.0.0.0` | Listener address |
+| `REVIEWPLANE_PORT` | `8080` | Listener port; reached through the gateway only |
+| `REVIEWPLANE_DATABASE_URL` | none | PostgreSQL connection string |
+| `REVIEWPLANE_BOOTSTRAP_TOKEN` | none | Administrator bootstrap token (`docs/ARCHITECTURE.md` section 11) |
+| `REVIEWPLANE_WORKER_CREDENTIAL` | none | Credential the browser worker presents to this server |
+| `REVIEWPLANE_WORKER_COMMAND_CREDENTIAL` | none | Credential this server presents to the worker |
+| `REVIEWPLANE_WORKER_ENDPOINT` | `http://browser-worker:8090` | Worker's internal listener |
+| `REVIEWPLANE_ARTEFACT_PATH` | `/var/lib/reviewplane/artefacts` | Filesystem artefact-store root (ADR-0012) |
+| `REVIEWPLANE_ARTEFACT_MAX_BYTES` | `20971520` | Largest artefact accepted |
+| `REVIEWPLANE_WORKER_REQUEST_TIMEOUT_MS` | `150000` | Bound on one worker request |
+| `REVIEWPLANE_ALLOWED_ORIGINS` | empty | Comma-separated origins a browser may open the live WebSocket from (ADR-0016). Empty accepts a request with no `Origin`, which is a non-browser client |
+| `REVIEWPLANE_SECURE_COOKIES` | `true` | Whether the viewer session cookie is marked `Secure`. Set to `false` only for plain-HTTP local development |
+
 ## 3. Browser-worker configuration
 
 ```yaml
@@ -138,6 +162,28 @@ The last two are set together or not at all: the worker refuses to start with on
 The two credentials have no defaults: the worker refuses to start without them. `disabled_high_risk` is the only way to disable the Chromium sandbox, and it logs the unsupported-configuration warning at startup. Limits requested by the control plane are clamped to these values rather than widening them, so a session cannot ask the worker to exceed what the operator configured.
 
 The control plane reads `REVIEWPLANE_WORKER_CREDENTIAL`, `REVIEWPLANE_WORKER_COMMAND_CREDENTIAL`, `REVIEWPLANE_WORKER_ENDPOINT`, `REVIEWPLANE_ARTEFACT_PATH`, `REVIEWPLANE_ARTEFACT_MAX_BYTES` and `REVIEWPLANE_WORKER_REQUEST_TIMEOUT_MS` alongside the settings of §2, each with the same `*_FILE` support. Its listen address is `REVIEWPLANE_HOST`, which is the name §2 gives it; there is no separate `REVIEWPLANE_LISTEN_ADDRESS`.
+
+### 3.1 MCP-server environment
+
+The agent-facing process (`docs/ARCHITECTURE.md` section 4.4, ADR-0020) is
+configured separately, because it is a separate process:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `REVIEWPLANE_MCP_LISTEN_ADDRESS` | `0.0.0.0` | Listener address; reached through the gateway only |
+| `REVIEWPLANE_MCP_PORT` | `8081` | Listener port |
+| `REVIEWPLANE_MCP_PATH` | `/mcp/v1` | Endpoint route. It must start with `/mcp/` (`docs/API.md` section 3) |
+| `REVIEWPLANE_DATABASE_URL` | none | Same database as the control plane |
+| `REVIEWPLANE_WORKER_COMMAND_CREDENTIAL` | none | Credential presented to the worker for a capture |
+| `REVIEWPLANE_WORKER_ENDPOINT` | `http://browser-worker:8090` | Worker's internal listener |
+| `REVIEWPLANE_ARTEFACT_PATH` | `/var/lib/reviewplane/artefacts` | Artefact store, mounted read-only |
+| `REVIEWPLANE_API_PATH_PREFIX` | `/api/v1` | Prefix used to build the evidence path an agent fetches |
+
+It deliberately does **not** read `REVIEWPLANE_BOOTSTRAP_TOKEN`. The agent-facing
+process has no administrative work to do, and a process that cannot read an
+administrator credential cannot leak one. It does not run migrations either: the
+control-plane server owns the schema, and two processes racing to migrate one
+database is a failure mode with no upside.
 
 ## 4. Tunnel-gateway configuration
 

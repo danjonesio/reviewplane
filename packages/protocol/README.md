@@ -3,16 +3,38 @@
 The single versioned source for ReviewPlane protocol schemas, with generated
 TypeScript and Go models.
 
-At Stage 0 it covers two protocols:
+At Stage 0 it covers five protocols:
 
 - the version 1 **connector protocol** of `docs/CONNECTOR_PROTOCOL.md`, spoken
   between the Go connector, the Go tunnel gateway and the TypeScript control
   plane;
 - the version 1 **browser-worker protocol** of `docs/ARCHITECTURE.md` §4.5,
   §6.4 and §11, spoken between the control-plane server and a central Chromium
-  worker.
+  worker;
+- the version 1 **live-view channel** of `docs/API.md` §18.2, spoken by the
+  worker, the control plane and the web application. Its binary frame payload
+  is deliberately not a JSON schema: it is a separate transport message
+  described by the `live.frame` metadata before it, and
+  `live-view-stream.ts` carries the length-prefixed framing that keeps the two
+  associated on the internal worker-to-control-plane leg;
+- the version 1 **review domain** of `docs/DOMAIN_MODEL.md` §§14–20: the
+  review, finding, annotation and artefact records, the request bodies of
+  `docs/API.md` §§12–15, and the audit events of `docs/EVENTS.md` §7. It is the
+  first source here that is not a wire protocol between two processes — it is
+  the shared vocabulary of the HTTP API, the MCP tools of `docs/MCP_SPEC.md`
+  §§7.6–7.7 and the event stream, which is exactly why it belongs in one place.
+  `annotation-geometry.ts` beside it holds the coordinate contract those three
+  surfaces share;
+- the version 1 **MCP interface** of `docs/MCP_SPEC.md`: the Stage 0 tool
+  arguments and results, the response envelope of §5, the trust labels of §6,
+  the resource URI forms of §8 and the stable error codes of §12. Its
+  `x-protocol.messages` is keyed by **tool name**, so the generated
+  `MESSAGE_TYPE_VALUES` *is* the Stage 0 tool availability set of §14 and
+  `PAYLOAD_MAX_BYTES` *is* the per-tool response bound of §13. A tool cannot be
+  advertised without a result schema and a bound, because the generator refuses
+  a message without one.
 
-API, MCP and event schemas (`docs/DEVELOPMENT.md` §3) are added by the issues
+The remaining API schemas (`docs/DEVELOPMENT.md` §3) are added by the issues
 that introduce those surfaces; they belong in this package, not in a service.
 
 ## Layout
@@ -22,7 +44,7 @@ schemas/<protocol>/v1.schema.json   the only place a message is defined
 fixtures/<protocol>/v1/             the cross-language corpus and its manifest
 fixtures/capability/v1/             the golden corpus for route-capability tokens
 src/                                hand-written runtime (frames, redaction, canonical JSON,
-                                    route capabilities)
+                                    route capabilities, annotation geometry, MCP responses)
 src/generated/<protocol>/v1/        generated TypeScript models    DO NOT EDIT
 connectorv1/                        hand-written Go runtime, plus  *_gen.go  DO NOT EDIT
 tools/                              the generator and pnpm protocol:check
@@ -37,24 +59,71 @@ each source declares the languages it renders in its own
 ```ts
 import { decodeControlFrame } from "@reviewplane/protocol";
 import { decodeBrowserFrame } from "@reviewplane/protocol/browser";
+import { decodeLiveViewFrame } from "@reviewplane/protocol/live-view";
+import { decodeReviewEvent, checkGeometryForType } from "@reviewplane/protocol/review";
+import { encodeMcpToolResponse, MESSAGE_TYPE_VALUES } from "@reviewplane/protocol/mcp";
 ```
 
-The browser protocol is a separate subpath export because both protocols
-declare an `Envelope`, a `MessageType` and a `LIMITS` block; a single namespace
-would make the two indistinguishable at a call site.
+Each protocol is a separate subpath export because all five declare an
+`Envelope`, a `MessageType` and a `LIMITS` block; a single namespace would make
+them indistinguishable at a call site.
 
-## Why the browser protocol renders TypeScript only
+`@reviewplane/protocol/live-view` and `@reviewplane/protocol/review` run in a
+browser as well as in Node, because `apps/web` decodes live messages and
+renders annotation overlays itself. Nothing on those paths imports a Node
+built-in; `byteLength` in `canonical.ts` counts UTF-8 bytes rather than calling
+`Buffer.byteLength` for exactly that reason.
 
-`x-protocol.languages` in `schemas/browser/v1.schema.json` is
-`["typescript"]`. Both parties to that protocol — `apps/server` and
-`apps/browser-worker` — are TypeScript, so a Go rendering would have no
-consumer, and producing one would mean extracting the hand-written Go runtime
-in `connectorv1/` into a shared package and regenerating every committed Go
-file to call it through exported names. ADR-0013's guarantee is that a change
-made in one language cannot land in another; scoping the languages in the
-schema keeps that guarantee exact rather than weakening it, because
-`pnpm protocol:check` renders and compares precisely the set the source
-declares. When a Go component needs these messages, the field changes to
+## The annotation coordinate contract
+
+`src/annotation-geometry.ts` is hand-written runtime beside the generated
+review models, and it is the only place the normalised-geometry contract of
+`docs/DOMAIN_MODEL.md` §16 is implemented. `apps/server` validates with it and
+`apps/web` renders with it, so a mark drawn by a human and a mark refused by
+the API cannot disagree about what a coordinate means.
+
+Which geometry members each annotation type uses is read at load time from the
+schema's own `geometry_by_annotation_type` vocabulary rather than restated in
+code: JSON Schema cannot condition a nested object on a sibling property, so
+the rule has to live in TypeScript, but its content still has exactly one
+source. A type added to the schema without its members throws at import rather
+than validating against an empty rule.
+
+## The MCP envelope names its payload slot `data`
+
+Every other source calls the type-selected slot `payload`, which is what a wire
+protocol calls it. `docs/MCP_SPEC.md` §5 calls it `data`, and renaming it here
+would leave the schema and the normative document disagreeing about what goes on
+the wire — exactly the drift this package exists to prevent. So a source may
+declare `x-protocol.envelope_payload_property`, defaulting to `payload`, and the
+MCP source declares `data`.
+
+## The MCP trust rule is in the codec, not the schema
+
+`browser_command_result` holds its trust rule in the schema, because the label
+and the content it constrains are siblings in one object. The MCP envelope
+cannot: its `trust` has to be conditioned on what the type-selected `data`
+turned out to contain, and the generator's conditional rules see only siblings.
+
+`mcp-response.ts` therefore refuses a response whose `data` carries a finding, an
+artefact link or a capture under a trusted label — on the way out as well as on
+the way in, with the violation reason `untrusted_content_mislabelled` and the
+wire code `POLICY_DENIED`. The server encodes every response through that
+function, so a handler cannot ship page-derived content under a trusted label
+even by mistake (ADR-0010, `docs/MCP_SPEC.md` §6).
+
+## Why the browser, live-view, review and MCP sources render TypeScript only
+
+`x-protocol.languages` in `schemas/browser/v1.schema.json`,
+`schemas/live_view/v1.schema.json`, `schemas/review/v1.schema.json` and
+`schemas/mcp/v1.schema.json` is `["typescript"]`. Every party to them — `apps/server`, `apps/browser-worker`
+and `apps/web` — is TypeScript, so a Go rendering would have no consumer, and producing one would
+mean extracting the hand-written Go runtime in `connectorv1/` into a shared
+package and regenerating every committed Go file to call it through exported
+names. ADR-0013's guarantee is that a change made in one language cannot land
+in another; scoping the languages in the schema keeps that guarantee exact
+rather than weakening it, because `pnpm protocol:check` renders and compares
+precisely the set the source declares. When a Go component needs these messages, the field changes to
 `["typescript", "go"]` and the check starts failing until the Go is committed.
 
 ## Commands

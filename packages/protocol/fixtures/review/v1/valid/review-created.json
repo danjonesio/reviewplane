@@ -1,0 +1,44 @@
+{
+  "id": "evt_01JREVIEWCREATED",
+  "schema_version": 1,
+  "sequence": 41,
+  "type": "review.created",
+  "occurred_at": "2026-07-30T10:12:04.118Z",
+  "recorded_at": "2026-07-30T10:12:04.126Z",
+  "organisation_id": "org_01JREFRESH",
+  "project_id": "prj_01JREFRESHSURPLUS",
+  "actor": {
+    "type": "human_user",
+    "id": "vwr_01JBOOTSTRAPADMIN",
+    "display": "bootstrap administrator"
+  },
+  "correlation": {
+    "request_id": "req_01JCREATEREVIEW",
+    "review_id": "rev_01JBUGSONHOMEPAGE",
+    "browser_session_id": "brs_01JHOMEPAGEREVIEW"
+  },
+  "payload": {
+    "review": {
+      "id": "rev_01JBUGSONHOMEPAGE",
+      "organisation_id": "org_01JREFRESH",
+      "project_id": "prj_01JREFRESHSURPLUS",
+      "slug": "bugs-on-homepage",
+      "title": "Bugs on homepage",
+      "description": "Fix these before continuing with the product page.",
+      "status": "DRAFT",
+      "version": 1,
+      "created_by": {
+        "type": "human_user",
+        "id": "vwr_01JBOOTSTRAPADMIN",
+        "display": "bootstrap administrator"
+      },
+      "captured_branch": "feat/homepage-refresh",
+      "captured_commit": "4a45b94f1c2d3e4a5b6c7d8e9f0a1b2c3d4e5f60",
+      "captured_workspace_id": "wsp_01JREFRESHDEV",
+      "source_browser_session_id": "brs_01JHOMEPAGEREVIEW",
+      "finding_count": 0,
+      "created_at": "2026-07-30T10:12:04.118Z",
+      "updated_at": "2026-07-30T10:12:04.118Z"
+    }
+  }
+}

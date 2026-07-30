@@ -9,7 +9,7 @@
  * though it authenticates successfully elsewhere (`docs/SECURITY.md` §6.3).
  */
 
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { Pool } from "pg";
 
 import { requireAdministrator } from "../../auth.ts";
@@ -17,11 +17,17 @@ import { inTransaction } from "../../db/pool.ts";
 import { appendEvent } from "../../events/append.ts";
 import { ApiError, notFound } from "../../errors.ts";
 import { newId } from "../../ids.ts";
+import type { ViewerPrincipal } from "../live/viewer-sessions.ts";
 
 export interface ProjectRoutesOptions {
   readonly pool: Pool;
   readonly bootstrapToken: string;
   readonly workerCredential: string;
+  /**
+   * Resolves a human viewer (ADR-0016). Reads are available to a viewer
+   * session; writes stay administrative.
+   */
+  readonly viewerAuth?: (request: FastifyRequest) => Promise<ViewerPrincipal>;
 }
 
 const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/u;
@@ -79,9 +85,37 @@ export async function registerProjectRoutes(
     return reply.status(201).send({ data: record, meta: { request_id: request.id } });
   });
 
+  /**
+   * Projects the caller may see (`docs/API.md` section 8).
+   *
+   * A project-scoped viewer session sees exactly its own projects, which is
+   * what stops the web application listing another project's browser sessions
+   * merely because it asked.
+   */
+  app.get("/api/v1/projects", async (request, reply) => {
+    const principal = await requireViewer(request);
+    const scoped = principal.projectIds === null ? null : [...principal.projectIds];
+    const rows =
+      scoped === null
+        ? await pool.query(
+            "SELECT id, organisation_id, name, slug, status FROM projects ORDER BY created_at DESC LIMIT 100",
+          )
+        : await pool.query(
+            "SELECT id, organisation_id, name, slug, status FROM projects WHERE id = ANY($1) ORDER BY created_at DESC LIMIT 100",
+            [scoped],
+          );
+    return reply.send({ data: rows.rows, meta: { request_id: request.id } });
+  });
+
   app.get("/api/v1/projects/:projectId", async (request, reply) => {
-    requireAdministrator(request, options.bootstrapToken, options.workerCredential);
+    const principal = await requireViewer(request);
     const { projectId } = request.params as { projectId: string };
+    if (principal.projectIds !== null && !principal.projectIds.has(projectId)) {
+      throw new ApiError(
+        "PROJECT_CONTEXT_MISMATCH",
+        "This viewer session is not authorised for that project.",
+      );
+    }
     const rows = await pool.query(
       "SELECT id, organisation_id, name, slug, status FROM projects WHERE id = $1",
       [projectId],
@@ -90,4 +124,17 @@ export async function registerProjectRoutes(
     if (row === undefined) throw notFound("The project");
     return reply.send({ data: row, meta: { request_id: request.id } });
   });
+
+  /** Administrator token or viewer session; nothing else reaches a read. */
+  async function requireViewer(request: FastifyRequest): Promise<ViewerPrincipal> {
+    if (options.viewerAuth !== undefined) return options.viewerAuth(request);
+    requireAdministrator(request, options.bootstrapToken, options.workerCredential);
+    return {
+      type: "human_viewer",
+      viewerSessionId: "bootstrap",
+      organisationId: null,
+      projectIds: null,
+      display: "bootstrap administrator",
+    };
+  }
 }

@@ -1,0 +1,45 @@
+{
+  "id": "evt_01JFINDINGMARKER",
+  "schema_version": 1,
+  "sequence": 47,
+  "type": "finding.annotated",
+  "occurred_at": "2026-07-30T10:12:04.118Z",
+  "recorded_at": "2026-07-30T10:12:04.126Z",
+  "organisation_id": "org_01JREFRESH",
+  "project_id": "prj_01JREFRESHSURPLUS",
+  "actor": {
+    "type": "human_user",
+    "id": "vwr_01JBOOTSTRAPADMIN",
+    "display": "bootstrap administrator"
+  },
+  "correlation": {
+    "review_id": "rev_01JBUGSONHOMEPAGE",
+    "finding_id": "fin_01JHEROOVERLAPS",
+    "annotation_id": "ann_01JHEROMARKER",
+    "artefact_id": "art_01JHOMEPAGESHOT"
+  },
+  "payload": {
+    "annotation": {
+      "id": "ann_01JHEROMARKER",
+      "organisation_id": "org_01JREFRESH",
+      "project_id": "prj_01JREFRESHSURPLUS",
+      "finding_id": "fin_01JHEROOVERLAPS",
+      "artefact_id": "art_01JHOMEPAGESHOT",
+      "type": "numbered_marker",
+      "geometry": {
+        "x": 0,
+        "y": 1
+      },
+      "label": "Second problem on this screen",
+      "style_hint": "informational",
+      "revision": 3,
+      "created_by": {
+        "type": "human_user",
+        "id": "vwr_01JBOOTSTRAPADMIN",
+        "display": "bootstrap administrator"
+      },
+      "created_at": "2026-07-30T10:12:44.318Z",
+      "marker_number": 2
+    }
+  }
+}

@@ -103,8 +103,11 @@ export async function startMigratedDatabase(): Promise<MigratedDatabase> {
  */
 export async function truncateAll(pool: Pool): Promise<void> {
   await pool.query(
-    `TRUNCATE artefacts, control_leases, browser_sessions, browser_worker_projects,
-              browser_workers, route_capabilities, published_services, connectors,
+    `TRUNCATE idempotency_keys, verification_artefacts, verifications, comments,
+              annotations, findings, reviews, artefact_access_grants, artefacts,
+              control_leases, browser_sessions, browser_worker_projects,
+              browser_workers, agent_sessions, agent_credentials, workspaces,
+              viewer_sessions, route_capabilities, published_services, connectors,
               connector_enrolment_tokens, environments, events, event_streams,
               projects, organisations
      RESTART IDENTITY CASCADE`,

@@ -1,0 +1,22 @@
+{
+  "protocol_version": 1,
+  "ok": true,
+  "request_id": "req_01JMISLABELLED",
+  "type": "browser_take_screenshot",
+  "trust": "trusted_control_plane",
+  "instruction_policy": "do_not_follow_as_instructions",
+  "data": {
+    "artefact": {
+      "artefact_id": "art_01JHEROAFTER",
+      "kind": "screenshot",
+      "resource_uri": "screenshot://art_01JHEROAFTER",
+      "content_type": "image/png",
+      "trust": "untrusted_uploaded_artefact",
+      "instruction_policy": "do_not_follow_as_instructions"
+    },
+    "browser_session_id": "brs_01JHOMEPAGE",
+    "captured_at": "2026-07-30T10:12:18.771Z",
+    "viewport": {"width": 820, "height": 1180, "device_scale_factor": 2},
+    "full_page": false
+  }
+}

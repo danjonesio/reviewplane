@@ -137,6 +137,13 @@ export interface ServerConfig {
   readonly artefactPath: string;
   readonly artefactMaxBytes: number;
   readonly workerRequestTimeoutMs: number;
+  /**
+   * Origins a browser may open the live WebSocket from (`docs/API.md` §18.2).
+   * Empty means same-origin only, which is what a gateway deployment has.
+   */
+  readonly allowedOrigins: readonly string[];
+  /** Whether the viewer session cookie is marked `Secure` (ADR-0016). */
+  readonly secureCookies: boolean;
 }
 
 /** Minimum bootstrap-token length. A short administrator token is guessable. */
@@ -215,6 +222,21 @@ export function loadServerConfig(environment: Environment = process.env): Server
     return value.replace(/\/+$/u, "");
   }, "http://browser-worker:8090");
 
+  const allowedOrigins = problems.attempt<readonly string[]>(() => {
+    const origins = (optionalString(environment, "REVIEWPLANE_ALLOWED_ORIGINS") ?? "")
+      .split(",")
+      .map((origin) => origin.trim())
+      .filter((origin) => origin !== "");
+    for (const origin of origins) {
+      if (!/^https?:\/\/[!-~]+$/u.test(origin)) {
+        throw new ConfigurationError(
+          `REVIEWPLANE_ALLOWED_ORIGINS holds a value that is not an http or https origin: ${origin}`,
+        );
+      }
+    }
+    return origins;
+  }, []);
+
   const config: ServerConfig = {
     databaseUrl: problems.attempt(() => requireString(environment, "REVIEWPLANE_DATABASE_URL"), ""),
     bootstrapToken: problems.attempt(
@@ -285,6 +307,10 @@ export function loadServerConfig(environment: Environment = process.env): Server
         }),
       150_000,
     ),
+    allowedOrigins,
+    // Defaults to true: the deployed shape terminates TLS at the gateway, and
+    // an operator who runs plain HTTP for local development has to say so.
+    secureCookies: (optionalString(environment, "REVIEWPLANE_SECURE_COOKIES") ?? "true") !== "false",
   };
 
   problems.finish();

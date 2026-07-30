@@ -1,0 +1,200 @@
+{
+  "protocol": "review",
+  "version": 1,
+  "description": "Fixture corpus for the version 1 review domain: the audit events of docs/EVENTS.md section 7 that carry the review, finding, annotation and artefact records of docs/DOMAIN_MODEL.md sections 14 to 20. Valid cases must decode and re-encode to the byte string recorded in canonical.json; invalid cases must be refused with the recorded reason. Several invalid cases exist only to hold the annotation coordinate contract: geometry outside 0 to 1 is a coordinate-frame mistake, and it is refused here rather than clamped, because a clamped coordinate produces a plausible-looking overlay in the wrong place.",
+  "valid": [
+    {
+      "name": "review-created",
+      "kind": "review_event",
+      "file": "valid/review-created.json",
+      "message_type": "review.created",
+      "note": "The bugs-on-homepage review of docs/UX_FLOWS.md section 10, carrying the captured branch, commit, workspace and source browser session that make it reproducible after the session has gone (ADR-0004)."
+    },
+    {
+      "name": "review-named",
+      "kind": "review_event",
+      "file": "valid/review-named.json",
+      "message_type": "review.named",
+      "note": "A rename. The previous slug is recorded because a slug is a mutable alias and never an identity (docs/DOMAIN_MODEL.md section 3)."
+    },
+    {
+      "name": "review-status-changed",
+      "kind": "review_event",
+      "file": "valid/review-status-changed.json",
+      "message_type": "review.status_changed",
+      "note": "DRAFT to READY by a human, with the version the record now holds so a consumer can tell a stale read from a fresh one."
+    },
+    {
+      "name": "finding-created",
+      "kind": "review_event",
+      "file": "valid/finding-created.json",
+      "message_type": "finding.created",
+      "note": "A human-authored finding with the whole docs/UX_FLOWS.md section 9 captured-context list: URL, viewport with device pixel ratio, scroll position, commit, screenshot artefact and element context."
+    },
+    {
+      "name": "finding-annotated-rectangle",
+      "kind": "review_event",
+      "file": "valid/finding-annotated-rectangle.json",
+      "message_type": "finding.annotated",
+      "note": "The exact geometry shape of docs/DOMAIN_MODEL.md section 16, normalised to the artefact content rectangle and referencing the original artefact rather than being drawn into it (ADR-0006)."
+    },
+    {
+      "name": "finding-annotated-arrow",
+      "kind": "review_event",
+      "file": "valid/finding-annotated-arrow.json",
+      "message_type": "finding.annotated",
+      "note": "An arrow pointing up and to the right. Tail and head are separate normalised points rather than a signed delta, so no member ever has to leave the 0 to 1 range."
+    },
+    {
+      "name": "finding-annotated-marker-at-bounds",
+      "kind": "review_event",
+      "file": "valid/finding-annotated-marker-at-bounds.json",
+      "message_type": "finding.annotated",
+      "note": "A numbered marker at exactly 0 and exactly 1. The range is inclusive, so the corners of an artefact are addressable; revision 3 shows that an edited annotation keeps its history."
+    },
+    {
+      "name": "finding-status-changed-by-agent",
+      "kind": "review_event",
+      "file": "valid/finding-status-changed-by-agent.json",
+      "message_type": "finding.status_changed",
+      "note": "The furthest an agent may move a human-authored finding: AWAITING_HUMAN_REVIEW. The payload repeats the finding's source so the authority rule that permitted the transition is legible in the audit trail."
+    },
+    {
+      "name": "artefact-upload-started",
+      "kind": "review_event",
+      "file": "valid/artefact-upload-started.json",
+      "message_type": "artefact.upload_started",
+      "note": "An intent. Size and digest are declared values and are named as such, because nothing may treat them as verified until the server recomputes them."
+    },
+    {
+      "name": "artefact-upload-completed",
+      "kind": "review_event",
+      "file": "valid/artefact-upload-completed.json",
+      "message_type": "artefact.upload_completed",
+      "note": "Verification succeeded. The storage key is content-addressed and carries no user-entered name (ADR-0012), and the content rectangle records the frame annotation geometry is normalised against."
+    },
+    {
+      "name": "artefact-upload-failed",
+      "kind": "review_event",
+      "file": "valid/artefact-upload-failed.json",
+      "message_type": "artefact.upload_failed",
+      "note": "A digest mismatch. The artefact stays unavailable, so a finding that referenced it would remain visibly without evidence."
+    },
+    {
+      "name": "artefact-access-granted",
+      "kind": "review_event",
+      "file": "valid/artefact-access-granted.json",
+      "message_type": "artefact.access_granted",
+      "note": "Reading evidence is an audited access (docs/SECURITY.md section 16). The grant names one artefact, one subject and an expiry two minutes out (ADR-0019)."
+    },
+    {
+      "name": "screenshot-captured",
+      "kind": "review_event",
+      "file": "valid/screenshot-captured.json",
+      "message_type": "screenshot.captured",
+      "note": "A verified screenshot at the 390x844 preset with a device pixel ratio of 2: the content rectangle is 780x1688 device pixels, which is exactly why geometry is not normalised against the viewport."
+    },
+    {
+      "name": "review-claimed-by-agent",
+      "kind": "review_event",
+      "file": "valid/review-claimed-by-agent.json",
+      "message_type": "review.claimed",
+      "note": "An agent session took bugs-on-homepage. The actor is agent_session and not human_user, which is the distinction every later authority decision about this review is made on."
+    },
+    {
+      "name": "finding-claimed-by-agent",
+      "kind": "review_event",
+      "file": "valid/finding-claimed-by-agent.json",
+      "message_type": "finding.claimed",
+      "note": "One finding claimed with the version the record now holds, so a concurrent claim can be told from a stale read."
+    },
+    {
+      "name": "finding-comment-added-by-agent",
+      "kind": "review_event",
+      "file": "valid/finding-comment-added-by-agent.json",
+      "message_type": "finding.comment_added",
+      "note": "An agent's note on a finding, clearly attributed. The reproduction detail is recorded as a comment rather than as a status change, because it is information and not a decision."
+    },
+    {
+      "name": "finding-verification-submitted",
+      "kind": "review_event",
+      "file": "valid/finding-verification-submitted.json",
+      "message_type": "finding.verification_submitted",
+      "note": "The Stage 0 evidence event: summary, branch, commit, both artefacts and the viewports of AGENTS.md, with status submitted. Nothing here accepts the finding, and the commit differs from the one the finding was captured at because a fix cannot exist at the revision the defect was recorded from."
+    }
+  ],
+  "invalid": [
+    {
+      "name": "annotation-geometry-out-of-range",
+      "kind": "review_event",
+      "file": "invalid/annotation-geometry-out-of-range.json",
+      "expect_reason": "schema_violation",
+      "note": "width 1.38 is outside the artefact content rectangle. Refused, not clamped: clamping would store a mark that renders somewhere plausible and wrong."
+    },
+    {
+      "name": "annotation-geometry-negative",
+      "kind": "review_event",
+      "file": "invalid/annotation-geometry-negative.json",
+      "expect_reason": "schema_violation",
+      "note": "A negative coordinate. The lower bound is enforced for the same reason as the upper one."
+    },
+    {
+      "name": "annotation-geometry-in-css-pixels",
+      "kind": "review_event",
+      "file": "invalid/annotation-geometry-in-css-pixels.json",
+      "expect_reason": "schema_violation",
+      "note": "The most likely real mistake: geometry sent in CSS pixels instead of normalised units. The bound catches it at the boundary rather than at render time."
+    },
+    {
+      "name": "event-without-actor",
+      "kind": "review_event",
+      "file": "invalid/event-without-actor.json",
+      "expect_reason": "schema_violation",
+      "note": "docs/EVENTS.md section 5 requires the actor type to be explicit. An event that cannot say who acted is not an audit record."
+    },
+    {
+      "name": "unknown-message-type",
+      "kind": "review_event",
+      "file": "invalid/unknown-message-type.json",
+      "expect_reason": "unknown_message_type",
+      "expect_error_class": "UNSUPPORTED_CAPABILITY",
+      "note": "Unknown types are rejected, never ignored. Events are append-only (section 4), so review.deleted does not exist."
+    },
+    {
+      "name": "unsupported-schema-version",
+      "kind": "review_event",
+      "file": "invalid/unsupported-schema-version.json",
+      "expect_reason": "unsupported_schema_version",
+      "expect_error_class": "UNSUPPORTED_CAPABILITY",
+      "note": "A future envelope version is refused rather than best-effort parsed."
+    },
+    {
+      "name": "review-slug-not-a-slug",
+      "kind": "review_event",
+      "file": "invalid/review-slug-not-a-slug.json",
+      "expect_reason": "schema_violation",
+      "note": "A slug is the value an agent is given on a command line. Spaces and capitals are refused at the source rather than normalised silently into something the human did not type."
+    },
+    {
+      "name": "finding-without-captured-context",
+      "kind": "review_event",
+      "file": "invalid/finding-without-captured-context.json",
+      "expect_reason": "schema_violation",
+      "note": "Scroll position and screenshot are absent. docs/UX_FLOWS.md section 9 makes both required: a finding without them cannot be reproduced later, so it is refused rather than stored incomplete."
+    },
+    {
+      "name": "correlation-with-unknown-property",
+      "kind": "review_event",
+      "file": "invalid/correlation-with-unknown-property.json",
+      "expect_reason": "schema_violation",
+      "note": "Correlation carries identifiers only. An authorisation header riding along inside it is exactly what docs/EVENTS.md section 8 and docs/SECURITY.md section 18 forbid, and additionalProperties: false is what stops it."
+    },
+    {
+      "name": "annotation-unknown-type",
+      "kind": "review_event",
+      "file": "invalid/annotation-unknown-type.json",
+      "expect_reason": "schema_violation",
+      "note": "freehand is named in docs/DOMAIN_MODEL.md section 16 and is deliberately not implemented in Stage 0. It is refused rather than stored as geometry no renderer understands."
+    }
+  ]
+}

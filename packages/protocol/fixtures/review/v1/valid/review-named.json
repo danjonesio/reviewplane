@@ -1,0 +1,24 @@
+{
+  "id": "evt_01JREVIEWNAMED",
+  "schema_version": 1,
+  "sequence": 42,
+  "type": "review.named",
+  "occurred_at": "2026-07-30T10:12:04.118Z",
+  "recorded_at": "2026-07-30T10:12:04.126Z",
+  "organisation_id": "org_01JREFRESH",
+  "project_id": "prj_01JREFRESHSURPLUS",
+  "actor": {
+    "type": "human_user",
+    "id": "vwr_01JBOOTSTRAPADMIN",
+    "display": "bootstrap administrator"
+  },
+  "correlation": {
+    "review_id": "rev_01JBUGSONHOMEPAGE"
+  },
+  "payload": {
+    "review_id": "rev_01JBUGSONHOMEPAGE",
+    "slug": "bugs-on-homepage",
+    "title": "Bugs on homepage",
+    "previous_slug": "homepage-draft"
+  }
+}

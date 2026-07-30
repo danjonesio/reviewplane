@@ -44,6 +44,10 @@ export function testServerConfig(overrides: Partial<ServerConfig> = {}): ServerC
     artefactPath: "/nonexistent-artefact-root",
     artefactMaxBytes: 20_971_520,
     workerRequestTimeoutMs: 5000,
+    // Same-origin only, which is what a gateway deployment has, and plain HTTP
+    // in tests, so the viewer cookie is not marked Secure.
+    allowedOrigins: [],
+    secureCookies: false,
     ...overrides,
   };
 }

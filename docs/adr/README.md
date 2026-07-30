@@ -29,8 +29,11 @@ ADRs record decisions that materially affect architecture, security, protocols o
 | [0013](0013-generated-protocol-models.md) | Generate protocol models from one bounded JSON Schema source | Accepted |
 | [0014](0014-connector-identity-x509.md) | Issue connector identities as X.509 client certificates from a control-plane CA | Accepted |
 | [0015](0015-browser-worker-tunnel-trust.md) | Reach the tunnel gateway by resolver rule and public-key pin, not by DNS and a trusted CA | Accepted |
+| [0016](0016-viewer-sessions-from-bootstrap-token.md) | Exchange the bootstrap administrator token for a scoped viewer session | Accepted |
 | [0017](0017-tunnel-upgrade-streams.md) | Carry HTTP upgrades as a declared stream mode, and bound streams by idle window rather than a flat lifetime | Accepted |
 | [0018](0018-reconnect-reconciliation.md) | Reconnect reconciliation is control-plane authoritative and fails closed | Accepted |
+| [0019](0019-artefact-access-grants.md) | Reach artefact content through subject-bound access grants | Accepted |
+| [0020](0020-remote-mcp-endpoint-and-agent-credentials.md) | Serve the agent interface as a remote authenticated MCP endpoint with scoped agent credentials | Accepted |
 
 ## Pending decisions
 

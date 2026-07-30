@@ -1,0 +1,26 @@
+{
+  "name": "@reviewplane/mcp-server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ReviewPlane MCP server: the agent-facing interface on its own process and route, translating MCP tools into domain commands.",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "node --conditions=development src/main.ts",
+    "start": "node src/main.ts",
+    "test": "node --conditions=development --test \"test/*.test.ts\"",
+    "test:integration": "bash scripts/run-integration-tests.sh",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@reviewplane/protocol": "workspace:*",
+    "@reviewplane/server": "workspace:*",
+    "fastify": "^5.10.0",
+    "pg": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "@types/pg": "^8.20.0"
+  }
+}

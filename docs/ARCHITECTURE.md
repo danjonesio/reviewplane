@@ -52,6 +52,27 @@ Responsibilities:
 
 A bundled Caddy configuration is the preferred default. Bring-your-own reverse proxy remains supported.
 
+The bundled configuration is `deploy/compose/gateway/`. It is the only service
+in the Compose stack that publishes a host port, and it is deliberately thin: it
+holds no credential, reaches no database and gets no Docker socket.
+
+- `/api/*` and `/ws/*` proxy to the control plane, the second carrying
+  WebSocket upgrades. Idle timeouts are long enough for a live viewer watching
+  a quiet page.
+- Everything else is served from the web application's build output, with an
+  unknown path falling back to the document because routing is client-side
+  (ADR-0011).
+- `/internal/*` is refused outright. That path is the browser-worker channel of
+  `docs/API.md` section 15.1, and a misconfigured network must not be able to
+  turn it into a reachable API.
+- The security headers include a content-security policy that permits `self`
+  only, plus `blob:` and `data:` images so a live frame can be decoded. The
+  policy is strict enough to be worth having precisely because ADR-0011 forbids
+  loading anything from another host.
+- The web application is built inside the gateway image, since ADR-0011 removed
+  the server-rendering process and the component that serves static files is
+  this one.
+
 ### 4.2 Server
 
 One codebase may initially run multiple process roles:
@@ -82,6 +103,20 @@ Preferred initial stack (ADR-0011):
 
 The build output is static assets served by the gateway; the web application has no server-side rendering process. All surfaces, including the live session room and annotation canvas, are client-rendered React using the HTTP API and WebSocket channels.
 
+`apps/web` exists today with two surfaces: a list of active browser sessions
+and a session's live view. Routing is code-declared TanStack Router, server
+state is TanStack Query, and the live channel is a framework-free client in
+`src/live/client.ts` so that reconnect, stall detection and the
+metadata-to-payload pairing can be tested without a browser — and so that the
+annotation overlay of a later issue has the frame's declared dimensions and
+sequence to work from.
+
+Live frames are painted into a canvas. Page-derived content is decoded as an
+image and drawn; no page-derived markup is ever inserted into the document
+(ADR-0010). `pnpm --filter @reviewplane/web build` fails when the produced
+bundle would fetch from another host, so ADR-0011's no-CDN requirement is a
+property of the artefact rather than of review.
+
 ### 4.4 MCP server
 
 Responsibilities:
@@ -94,6 +129,20 @@ Responsibilities:
 - Label browser-derived content as untrusted
 
 It may share packages and deployment image with the server but should be a separate process and route.
+
+Stage 0 implements it as `apps/mcp-server`: its own process, its own container,
+its own gateway route at `/mcp/*`, and its own image built from the same
+workspace (ADR-0020). It shares the *domain* rather than the deployment: it
+imports `@reviewplane/server/domain` and calls the same `ReviewService` and the
+same authority rules the HTTP API calls, so a rule such as "an agent may not
+finally dispose of a human-authored finding" has one implementation and two
+callers.
+
+It is the same trust zone as the server — it holds a database connection and the
+worker command credential — and a smaller one in the way that matters: it never
+reads the administrator bootstrap token, so the agent-facing process cannot
+present one. Its artefact volume is mounted read-only, because evidence is
+written by the worker through the control-plane API and only read here.
 
 ### 4.5 Browser worker
 
@@ -195,6 +244,10 @@ Stores:
 
 Artefact keys are content-addressed and must not expose user-entered names. Where the `s3` driver issues presigned URLs, they must be short-lived and scoped; the `filesystem` driver serves artefacts through the server with equivalent short-lived, scoped access tokens.
 
+Those tokens are the access grants of ADR-0019: a caller mints one for a single artefact and reads it at `/api/v1/artefact-content/:grantId`, and the grant is bound to the subject that minted it, so the identifier in the URL is not a credential on its own. No route serves an artefact from its identifier under either driver.
+
+For an image artefact the store also records the **content rectangle** — the intrinsic pixel extent the server measured from the verified bytes. Annotation geometry is normalised against it (`docs/DOMAIN_MODEL.md` section 16), so it belongs with the artefact rather than being recomputed by every renderer.
+
 ### 5.3 Ephemeral data
 
 - Live browser frames
@@ -203,6 +256,17 @@ Artefact keys are content-addressed and must not expose user-entered names. Wher
 - In-flight tunnel buffers
 
 Ephemeral data must not be persisted unless a configured recording policy converts it into an artefact.
+
+For live frames specifically, "must not be persisted" is enforced by the shape
+of the code rather than by a retention job. A frame exists as a value between
+the CDP callback and a socket write: the worker never writes one to its
+filesystem or hands one to the artefact uploader, the control plane never
+writes one to PostgreSQL or to the artefact store, and neither logs one. Stage
+0 implements no recording policy at all, so there is no configuration that can
+turn a frame into an artefact; when one arrives it must be an explicit,
+audited conversion rather than a flag on this path. `docs/TESTING.md` sections
+7 and 10 hold the tests that check the filesystem, the database and the
+artefact store after a sustained viewing session.
 
 ## 6. Browser topology
 
@@ -249,6 +313,41 @@ Use CDP screencast frames or equivalent browser-worker capture:
 - Frames are dropped rather than queued when viewers fall behind
 
 Live frames are ephemeral and delivered over authenticated WebSockets.
+
+### 6.3.1 How the rates and the drop policy are implemented
+
+The path is worker to control plane to viewer, and each hop has one job.
+
+**The worker produces.** A CDP screencast is started per browser session, at
+most one at a time. Its scheduler (`apps/browser-worker/src/session/quality.ts`)
+owns rate, encoder quality and dimensions, and never leaves the band its mode
+declares: 10 to 20 frames per second for `session_room`, 2 to 5 for
+`thumbnail`. A viewer request may lower a ceiling — a viewer that cannot
+consume the floor is better served slowly than not at all — and can never
+raise one. Chromium paints when it likes, so frames arriving faster than the
+target interval are acknowledged and declined; a declined frame never becomes
+part of the stream and never takes a sequence number, which keeps the drop rate
+a statement about the viewer rather than about the page's paint rate. Frames
+that do enter the stream sit in a buffer two frames deep; when it is full the
+oldest goes, and the count of discarded frames rides on the next delivered
+frame's metadata.
+
+**The transport between them** is an HTTP response body rather than a
+WebSocket, framed as a one-byte record kind, a four-byte big-endian length and
+the bytes. It carries the same `live_view` messages the viewer receives, so
+there is one message definition and not two. Abandoning that response is the
+only way to stop the producer: there is no "stop" message, which means a
+control plane that crashes cannot leave a worker streaming to nobody. A viewer
+quality request travels as a separate short request rather than upstream on
+this body, so nothing can interleave with a frame payload.
+
+**The control plane relays.** One worker stream per browser session is fanned
+out to every attached viewer, so a second viewer costs the worker nothing.
+Each viewer is bounded independently: a viewer with bytes still outstanding
+does not receive the current frame and its drop counter advances. That costs a
+constant amount of memory per viewer, always favours the newest frame, and
+stops one slow viewer thinning the stream for the others. When the last viewer
+detaches the worker stream is closed immediately rather than swept by a timer.
 
 ### 6.4 Human input
 
@@ -350,6 +449,12 @@ Supported connection forms:
 
 The local bridge is preferred where the CLI client handles local MCP configuration more reliably. It authenticates to the control plane using scoped device or session credentials.
 
+Stage 0 ships the remote endpoint only (ADR-0020). The connector exists, but it
+publishes development services and carries tunnelled bytes; it issues no agent
+credential, so there is nothing for a local bridge to obtain one from yet. The
+bridge, when it arrives, authenticates to the same endpoint with the same
+credentials; it is a transport in front of this interface and not a second one.
+
 ### 8.2 Agent knowledge
 
 Agents learn when to use the product through:
@@ -376,6 +481,18 @@ Agent sessions advertise capabilities such as:
 ```
 
 The control plane must degrade clearly when a client cannot consume image resources or managed notifications.
+
+Stage 0 negotiates through query parameters on the MCP endpoint URL, because
+MCP's own handshake has nowhere to carry them (`docs/MCP_SPEC.md` section 3.2),
+and reports the negotiated result back in `agent_session_status`. Degradation is
+a warning on a successful call and never a failure: a client that cannot consume
+image content still retrieves the review, still claims the finding, still
+captures the after screenshot and still submits verification, receiving resource
+links, digests and an `image_content_unsupported` warning instead of pixels
+(`docs/MCP_SPEC.md` section 14.2).
+
+`managed_messages` is `false` and `review_inbox` is `false` in Stage 0. Both are
+stated rather than left to be discovered.
 
 ## 9. Review architecture
 
@@ -442,6 +559,18 @@ The mechanism is ADR-0014: a control-plane certificate authority, generated at b
 - Agent session token bound to connector, project and capabilities
 - Short lifetime
 - Not reusable as a human token
+
+Stage 0 implements this as an administrator-issued agent credential (ADR-0020):
+a bearer token prefixed `rpa_`, stored only as a digest, bound to one
+organisation and a non-empty set of projects, carrying a non-empty capability
+set, and expiring at most 24 hours after issue. The connector binding arrives
+with the connector.
+
+"Not reusable as a human token" is symmetric and enforced in three places: the
+administrative API refuses an `rpa_` token by shape before any lookup, the agent
+credential store resolves nothing that is not an agent credential, and the
+viewer-session store resolves nothing that is not a viewer session. Neither
+principal can be presented as the other.
 
 ### Browser worker
 

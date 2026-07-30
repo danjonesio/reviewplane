@@ -46,6 +46,7 @@ export interface EventCorrelation {
   readonly artefact_id?: string;
   readonly review_id?: string;
   readonly finding_id?: string;
+  readonly annotation_id?: string;
 }
 
 export interface AppendEventInput {

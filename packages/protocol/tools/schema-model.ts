@@ -149,6 +149,14 @@ export interface ProtocolModel {
   readonly limits: ProtocolLimits;
   /** Key of `limits` that bounds an envelope frame of this protocol. */
   readonly envelopeLimit: string;
+  /**
+   * Envelope property holding the type-selected payload. It defaults to
+   * `payload`, which is what a wire protocol calls it; a source whose envelope
+   * is specified elsewhere under another name declares that name here rather
+   * than renaming the field and leaving the schema and the document disagreeing
+   * about what goes on the wire.
+   */
+  readonly envelopePayloadProperty: string;
   readonly channels: ReadonlyMap<string, string>;
   /** Sender roles a message may declare, in declaration order. */
   readonly directions: readonly string[];
@@ -210,6 +218,7 @@ const PROTOCOL_KEYS = new Set([
   "languages",
   "limits",
   "envelope_limit",
+  "envelope_payload_property",
   "channels",
   "directions",
   "messages",
@@ -637,6 +646,11 @@ export function loadProtocolModel(sourcePath: string): ProtocolModel {
   }
   const envelopeBound = limits.get(envelopeLimit) as number;
 
+  const envelopePayloadProperty =
+    protocol["envelope_payload_property"] === undefined
+      ? "payload"
+      : asString(protocol["envelope_payload_property"], "x-protocol.envelope_payload_property");
+
   const directions =
     protocol["directions"] === undefined
       ? DEFAULT_DIRECTIONS
@@ -763,6 +777,7 @@ export function loadProtocolModel(sourcePath: string): ProtocolModel {
     languages,
     limits,
     envelopeLimit,
+    envelopePayloadProperty,
     channels,
     directions,
     messages,
@@ -812,9 +827,10 @@ function assertConsistency(model: ProtocolModel): void {
 
   const envelope = model.defs.get("envelope");
   if (envelope === undefined || envelope.kind !== "object") fail("$defs.envelope", "must be an object");
-  const payloadProperty = envelope.properties.find((property) => property.name === "payload");
+  const slot = model.envelopePayloadProperty;
+  const payloadProperty = envelope.properties.find((property) => property.name === slot);
   if (payloadProperty === undefined || payloadProperty.node.kind !== "dynamic") {
-    fail("$defs.envelope.properties.payload", "must be the dynamic payload slot");
+    fail(`$defs.envelope.properties.${slot}`, "must be the dynamic payload slot");
   }
 
   for (const defName of model.defOrder) {

@@ -56,6 +56,7 @@ export async function startWorker(options: StartWorkerOptions): Promise<RunningW
   const manager = new SessionManager({
     config,
     artefacts: controlPlane,
+    logger,
     observer: {
       onStatus: (session, report) => {
         logger.info("browser session status", {

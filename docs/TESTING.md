@@ -45,6 +45,14 @@ Contract tests for a protocol run one committed fixture corpus in every language
 
 Running today: `apps/server/test/connector-integration.test.ts` (enrolment, channel, revocation, and the `ss -ltnp` evidence that the connector opens no listening socket) and `apps/server/test/route-publication.test.ts` (route publication end to end through the real connector binary and a real loopback service, including `PORT_NOT_LISTENING` after the bounded grace, `DESTINATION_NOT_ALLOWED`, `PROJECT_NOT_AUTHORISED`, `CONNECTOR_OFFLINE` and `ROUTE_EXPIRED`). Both build `services/connector` from source, so neither can drift from the binary an operator runs.
 
+The live-frame integration runs against a real listening server and a real
+WebSocket client (`apps/server/test/live.test.ts`), because the properties
+under test are properties of the handshake and of message ordering: a refusal
+before the upgrade, a text metadata message immediately followed by the binary
+message it describes, and a worker stream that closes when the last viewer
+leaves. The measured-rate half of section 12 is settled in the browser suite,
+where a real Chromium is producing the frames.
+
 ### End to end
 
 Complete user workflows in deployed Compose environment.
@@ -84,6 +92,26 @@ The same script then proves the tunnel capabilities `ARCHITECTURE.md` §7.4 make
 Steps 7 to 15 need reviews, findings, verification and export, and arrive with the issues that introduce them.
 
 This scenario is release-blocking.
+
+### 3.1 What runs automatically today
+
+| Steps | Harness | Command |
+|---|---|---|
+| 5 to 7, browser side | `apps/browser-worker/test/browser/` | `pnpm test:browser` |
+| 7, annotation UI | `apps/web/test/ui/` | `pnpm test:ui` |
+| 8 to 12 | `apps/mcp-server/test/integration/` | `pnpm --filter @reviewplane/mcp-server run test:integration` |
+
+Steps 9 to 12 — agent retrieves and claims `bugs-on-homepage`, changes the
+fixture application, captures the after screenshot and submits verification —
+run against real components: a real PostgreSQL, the real control-plane process,
+the real MCP server, a real Chromium browser worker in its own process, and the
+official MCP TypeScript SDK as the client. The suite runs in the browser
+worker's own image under the container controls of
+`deploy/compose/compose.yaml`, on an internal Docker network whose only
+reachable peer is its database, with a unique name per run.
+
+Steps 1 to 4 need the connector, and steps 13 to 15 need human acceptance and
+review export; both arrive in Stage 1.
 
 ## 4. Domain tests
 
@@ -154,6 +182,13 @@ These live in `apps/browser-worker/test/browser/` and run with `pnpm test:browse
 
 The suite drives the worker against the fixture applications in `test/browser/fixture-app.ts`, including a page whose visible content instructs the agent to change policy and exfiltrate source. Element-reference tests assert that a stale reference fails rather than targeting whatever now occupies its position, which is the failure mode a passing "it clicked something" test would hide.
 
+Live capture is exercised in the same suite. It needs a page that repaints,
+because a CDP screencast emits on paint and a static page produces one frame
+and then silence; `fixture-app.ts` therefore serves an animated page whose only
+purpose is to give the compositor work. The measured rate for each mode is
+printed by the run, so the figures `docs/TESTING.md` section 12 asks to be
+published come from the suite rather than from a separate benchmark.
+
 ## 8. MCP tests
 
 - Project resolution
@@ -167,6 +202,24 @@ The suite drives the worker against the fixture applications in `test/browser/fi
 - Capability degradation for clients without image support
 - Inbox acknowledgement semantics
 - Completion-gate missing evidence response
+
+Every item on this list except the last two is covered by
+`apps/mcp-server/test/mcp.test.ts`, which drives the endpoint with the official
+MCP TypeScript SDK client against a real database. Inbox semantics and
+completion gates arrive with the tools they test, in Stage 1.
+
+The suite also holds the properties that are specific to the Stage 0 agent
+surface: the advertised tool set equals the schema's availability set; no
+advertised status enumeration can express a final disposition; a slug from
+another project resolves as not found; an agent credential is refused by the
+administrative API; a human session cookie is refused as agent authentication; a
+credential that expires mid-session refuses the next call rather than executing
+part of it; a transport session identifier is not a credential; and no tool
+response carries a credential.
+
+`apps/mcp-server/test/unit.test.ts` holds the contract snapshot of the
+advertised tool schemas, so a breaking tool change cannot land silently
+(section 2 "Contract").
 
 ## 9. API tests
 
@@ -289,6 +342,42 @@ For each supported upgrade path:
 - Responsive layouts at 390x844 and 1440x900
 - Browser live surface reconnect
 - Before-and-after comparison
+
+Annotation alignment is proved in `apps/web/test/ui/annotation.browser.test.ts`,
+which owns the Stage 0 exit criterion "a screenshot annotation aligns after UI
+resize". Every case measures two things and requires them to agree: where the
+mark sits as a fraction of the rendered content rectangle, and what the
+screenshot itself shows at that same fraction. The fixture page paints a
+distinctly coloured region, the annotation claims exactly that region, and a
+mark that drifts by a few per cent lands on the background instead — so the
+suite cannot pass by proving only that an overlay exists somewhere. The
+conditions are 390x844 and 1440x900, device pixel ratio 1 and 2, an in-page
+container resize, a panel scroll and a zoom change. The contained-rectangle
+arithmetic is recomputed inside the test from `getBoundingClientRect` and
+`naturalWidth` rather than read from the component, so a mistake shared between
+renderer and test cannot cancel itself out.
+
+These live in `apps/web/test/ui/` and run with `pnpm test:ui`, which builds the
+bundle and drives it in a real Chromium against a stub control plane that
+speaks the generated live-view protocol. They are separate from `pnpm test` for
+the same reason the browser suite is: a Chromium and its system libraries are
+not assumed on a developer's machine, so the suite runs inside the browser
+worker's image under the same container controls.
+
+The stub is restartable, which is what makes the API-restart case of section 11
+testable end to end: the control plane is stopped mid-stream, the page is
+asserted to show `Reconnecting`, the control plane is restarted on the same
+port, and the page is asserted to return to `Live` with its painted-frame count
+still advancing. The suite also asserts that the page issues no request to any
+host but its own, which is ADR-0011's no-CDN requirement observed at run time
+rather than in the bundle.
+
+Frame-lifetime evidence is split deliberately: `apps/server/test/live.test.ts`
+proves the artefact store, the database and the event payloads hold no frame
+after a sustained viewing session, and
+`apps/browser-worker/test/browser/live.browser.test.ts` proves the same of the
+worker's own filesystem — including that the ephemeral profile directory gains
+no image file and does not survive termination.
 
 ## 16. Release gates
 

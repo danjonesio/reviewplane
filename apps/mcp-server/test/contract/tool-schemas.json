@@ -1,0 +1,720 @@
+{
+  "project_current": {
+    "title": "Current project, workspace and policy",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "Arguments of project_current.",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "refresh_source_state": {
+          "type": "boolean",
+          "description": "Re-read the workspace branch and commit before answering, for the recheck docs/MCP_SPEC.md section 7.1 recommends before verification."
+        }
+      }
+    }
+  },
+  "agent_session_status": {
+    "title": "Agent session identity and browser sessions",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "Arguments of agent_session_status.",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "include": {
+          "type": "array",
+          "description": "Optional sections to include.",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/session_include",
+            "description": "One section."
+          }
+        }
+      },
+      "$defs": {
+        "session_include": {
+          "type": "string",
+          "description": "Optional sections of an agent-session status response.",
+          "enum": [
+            "browser_sessions",
+            "capabilities"
+          ]
+        }
+      }
+    }
+  },
+  "review_get": {
+    "title": "Retrieve a review by name or identifier",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "Arguments of review_get. The review is resolved inside the current project only: a slug that exists in another project is not found, and no cross-project search happens (docs/MCP_SPEC.md section 7.6).",
+      "additionalProperties": false,
+      "required": [
+        "review"
+      ],
+      "properties": {
+        "review": {
+          "$ref": "#/$defs/review_selector",
+          "description": "Immutable identifier or project-scoped slug, for example bugs-on-homepage."
+        },
+        "include": {
+          "type": "array",
+          "description": "Optional sections to include.",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/review_include",
+            "description": "One section."
+          }
+        },
+        "findings_limit": {
+          "$ref": "#/$defs/page_limit",
+          "description": "Maximum findings in this page. Defaults to 20 and is capped at the schema maximum."
+        },
+        "findings_cursor": {
+          "$ref": "#/$defs/cursor",
+          "description": "Cursor from a previous page."
+        }
+      },
+      "$defs": {
+        "cursor": {
+          "type": "string",
+          "description": "Opaque pagination cursor (docs/API.md section 6). Its contents are an implementation detail and MUST NOT be parsed by a client.",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "page_limit": {
+          "type": "integer",
+          "description": "Maximum records in one page. Bounded here rather than by the caller's optimism, because an unbounded response is the failure mode docs/MCP_SPEC.md section 13 exists to prevent.",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "review_include": {
+          "type": "string",
+          "description": "Optional sections of a review response. staleness is deliberately absent: staleness calculation is Stage 2, and a field that would have to be guessed is omitted rather than falsely reported (docs/DOMAIN_MODEL.md section 24).",
+          "enum": [
+            "findings",
+            "artefact_links"
+          ]
+        },
+        "review_selector": {
+          "type": "string",
+          "description": "How an agent names a review: an immutable identifier or a project-scoped slug. Both resolve inside the current project only, and no cross-project search is performed.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9._-]+$"
+        }
+      }
+    }
+  },
+  "review_claim": {
+    "title": "Claim a review for this agent session",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "Arguments of review_claim.",
+      "additionalProperties": false,
+      "required": [
+        "review_id",
+        "expected_version",
+        "idempotency_key"
+      ],
+      "properties": {
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review to claim."
+        },
+        "expected_version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version the agent last read."
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/idempotency_key",
+          "description": "Key for this claim."
+        }
+      },
+      "$defs": {
+        "idempotency_key": {
+          "type": "string",
+          "description": "Caller-chosen key for a state-changing tool (docs/MCP_SPEC.md section 10). It is scoped to actor, tool and project: reuse with the same arguments returns the first result and creates no second record, and reuse with different arguments is refused with IDEMPOTENCY_CONFLICT.",
+          "minLength": 8,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:-]+$"
+        },
+        "identifier": {
+          "type": "string",
+          "description": "Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the value as opaque: the schema bounds only its length and character class and never its documented prefix.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "version_number": {
+          "type": "integer",
+          "description": "Optimistic-concurrency version. A caller presenting a stale value is refused with VERSION_CONFLICT and the current version in the details (docs/MCP_SPEC.md section 11).",
+          "minimum": 1,
+          "maximum": 2147483647
+        }
+      }
+    }
+  },
+  "review_update_status": {
+    "title": "Move a review to an agent-permitted status",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "Arguments of review_update_status.",
+      "additionalProperties": false,
+      "required": [
+        "review_id",
+        "expected_version",
+        "status",
+        "idempotency_key"
+      ],
+      "properties": {
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review to move."
+        },
+        "expected_version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version the agent last read."
+        },
+        "status": {
+          "$ref": "#/$defs/agent_review_status",
+          "description": "Requested status. ACCEPTED is not expressible."
+        },
+        "reason": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Why, recorded on the transition."
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/idempotency_key",
+          "description": "Key for this transition."
+        }
+      },
+      "$defs": {
+        "agent_review_status": {
+          "type": "string",
+          "description": "Review statuses an agent may request. ACCEPTED is absent by construction, which is the AGENTS.md authority rule expressed as a type rather than as a runtime check. The docs/MCP_SPEC.md section 7.6 list also named blocked; docs/DOMAIN_MODEL.md section 14 has no such review status and takes precedence, so a blocked agent records the block on the finding it is stuck on.",
+          "enum": [
+            "IN_PROGRESS",
+            "AWAITING_HUMAN_REVIEW"
+          ]
+        },
+        "idempotency_key": {
+          "type": "string",
+          "description": "Caller-chosen key for a state-changing tool (docs/MCP_SPEC.md section 10). It is scoped to actor, tool and project: reuse with the same arguments returns the first result and creates no second record, and reuse with different arguments is refused with IDEMPOTENCY_CONFLICT.",
+          "minLength": 8,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:-]+$"
+        },
+        "identifier": {
+          "type": "string",
+          "description": "Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the value as opaque: the schema bounds only its length and character class and never its documented prefix.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "reason_text": {
+          "type": "string",
+          "description": "Short operator-facing explanation. Never carries credentials (docs/SECURITY.md section 18).",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "version_number": {
+          "type": "integer",
+          "description": "Optimistic-concurrency version. A caller presenting a stale value is refused with VERSION_CONFLICT and the current version in the details (docs/MCP_SPEC.md section 11).",
+          "minimum": 1,
+          "maximum": 2147483647
+        }
+      }
+    }
+  },
+  "finding_get": {
+    "title": "Read one finding with its evidence and verification",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "Arguments of finding_get.",
+      "additionalProperties": false,
+      "required": [
+        "finding_id"
+      ],
+      "properties": {
+        "finding_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Finding to read."
+        },
+        "include": {
+          "type": "array",
+          "description": "Optional sections to include.",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/finding_include",
+            "description": "One section."
+          }
+        }
+      },
+      "$defs": {
+        "finding_include": {
+          "type": "string",
+          "description": "Optional sections of a finding response.",
+          "enum": [
+            "annotations",
+            "comments",
+            "verification",
+            "artefact_links"
+          ]
+        },
+        "identifier": {
+          "type": "string",
+          "description": "Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the value as opaque: the schema bounds only its length and character class and never its documented prefix.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        }
+      }
+    }
+  },
+  "finding_claim": {
+    "title": "Claim one finding with optimistic concurrency",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "Arguments of finding_claim.",
+      "additionalProperties": false,
+      "required": [
+        "finding_id",
+        "expected_version",
+        "idempotency_key"
+      ],
+      "properties": {
+        "finding_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Finding to claim."
+        },
+        "expected_version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version the agent last read. A concurrent claim is refused with VERSION_CONFLICT and the current metadata."
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/idempotency_key",
+          "description": "Key for this claim."
+        }
+      },
+      "$defs": {
+        "idempotency_key": {
+          "type": "string",
+          "description": "Caller-chosen key for a state-changing tool (docs/MCP_SPEC.md section 10). It is scoped to actor, tool and project: reuse with the same arguments returns the first result and creates no second record, and reuse with different arguments is refused with IDEMPOTENCY_CONFLICT.",
+          "minLength": 8,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:-]+$"
+        },
+        "identifier": {
+          "type": "string",
+          "description": "Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the value as opaque: the schema bounds only its length and character class and never its documented prefix.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "version_number": {
+          "type": "integer",
+          "description": "Optimistic-concurrency version. A caller presenting a stale value is refused with VERSION_CONFLICT and the current version in the details (docs/MCP_SPEC.md section 11).",
+          "minimum": 1,
+          "maximum": 2147483647
+        }
+      }
+    }
+  },
+  "finding_update_status": {
+    "title": "Move a finding through the agent transitions",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "Arguments of finding_update_status. status is the agent-permitted enumeration, so no argument exists that would ask for a final disposition of a human's finding.",
+      "additionalProperties": false,
+      "required": [
+        "finding_id",
+        "expected_version",
+        "status",
+        "idempotency_key"
+      ],
+      "properties": {
+        "finding_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Finding to move."
+        },
+        "expected_version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version the agent last read."
+        },
+        "status": {
+          "$ref": "#/$defs/agent_finding_status",
+          "description": "Requested status, from the section 7.7 list."
+        },
+        "resolution_note": {
+          "$ref": "#/$defs/body_text",
+          "description": "What was changed and how it was checked. Required to reach FIXED_UNVERIFIED: a completion claim without evidence is refused with EVIDENCE_REQUIRED."
+        },
+        "reason": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Why, recorded on the transition. Required to reach BLOCKED."
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/idempotency_key",
+          "description": "Key for this transition."
+        }
+      },
+      "$defs": {
+        "agent_finding_status": {
+          "type": "string",
+          "description": "Finding statuses an agent may request, taken from the transition list of docs/MCP_SPEC.md section 7.7. RESOLVED, WONT_FIX and DUPLICATE are absent: an agent that cannot name a final disposition cannot request one, so the refusal does not depend on a check anybody could forget.",
+          "enum": [
+            "CLAIMED",
+            "IN_PROGRESS",
+            "BLOCKED",
+            "FIXED_UNVERIFIED",
+            "AWAITING_HUMAN_REVIEW"
+          ]
+        },
+        "body_text": {
+          "type": "string",
+          "description": "Human-authored or agent-authored prose: a description, instruction, comment, resolution note or verification summary.",
+          "minLength": 1,
+          "maxLength": 4000,
+          "pattern": "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f]+$"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "description": "Caller-chosen key for a state-changing tool (docs/MCP_SPEC.md section 10). It is scoped to actor, tool and project: reuse with the same arguments returns the first result and creates no second record, and reuse with different arguments is refused with IDEMPOTENCY_CONFLICT.",
+          "minLength": 8,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:-]+$"
+        },
+        "identifier": {
+          "type": "string",
+          "description": "Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the value as opaque: the schema bounds only its length and character class and never its documented prefix.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "reason_text": {
+          "type": "string",
+          "description": "Short operator-facing explanation. Never carries credentials (docs/SECURITY.md section 18).",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "version_number": {
+          "type": "integer",
+          "description": "Optimistic-concurrency version. A caller presenting a stale value is refused with VERSION_CONFLICT and the current version in the details (docs/MCP_SPEC.md section 11).",
+          "minimum": 1,
+          "maximum": 2147483647
+        }
+      }
+    }
+  },
+  "finding_add_comment": {
+    "title": "Add an attributed agent comment to a finding",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "Arguments of finding_add_comment.",
+      "additionalProperties": false,
+      "required": [
+        "finding_id",
+        "body",
+        "idempotency_key"
+      ],
+      "properties": {
+        "finding_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Finding to comment on."
+        },
+        "body": {
+          "$ref": "#/$defs/body_text",
+          "description": "Comment text. It is stored and rendered as text."
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/idempotency_key",
+          "description": "Key for this comment, so a retried call does not produce two."
+        }
+      },
+      "$defs": {
+        "body_text": {
+          "type": "string",
+          "description": "Human-authored or agent-authored prose: a description, instruction, comment, resolution note or verification summary.",
+          "minLength": 1,
+          "maxLength": 4000,
+          "pattern": "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f]+$"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "description": "Caller-chosen key for a state-changing tool (docs/MCP_SPEC.md section 10). It is scoped to actor, tool and project: reuse with the same arguments returns the first result and creates no second record, and reuse with different arguments is refused with IDEMPOTENCY_CONFLICT.",
+          "minLength": 8,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:-]+$"
+        },
+        "identifier": {
+          "type": "string",
+          "description": "Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the value as opaque: the schema bounds only its length and character class and never its documented prefix.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        }
+      }
+    }
+  },
+  "finding_submit_verification": {
+    "title": "Submit verification evidence for a finding",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "Arguments of finding_submit_verification, in the shape of docs/MCP_SPEC.md section 7.7. The server validates evidence ownership and commit context: an artefact belonging to another project is refused, and a commit equal to the one the finding was captured at is not a fix.",
+      "additionalProperties": false,
+      "required": [
+        "finding_id",
+        "summary",
+        "branch",
+        "commit",
+        "tested_viewports",
+        "checks",
+        "artefact_ids",
+        "idempotency_key"
+      ],
+      "properties": {
+        "finding_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Finding the verification concerns."
+        },
+        "expected_version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version the agent last read, where the agent wants the submission refused if the finding moved."
+        },
+        "summary": {
+          "$ref": "#/$defs/body_text",
+          "description": "What was changed and how it was checked."
+        },
+        "branch": {
+          "$ref": "#/$defs/branch_name",
+          "description": "Branch the fix was made on. It is checked against the workspace branch where a workspace is known."
+        },
+        "commit": {
+          "$ref": "#/$defs/commit_sha",
+          "description": "Commit the fix was made in."
+        },
+        "tested_viewports": {
+          "type": "array",
+          "description": "Viewports the fix was checked at.",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/viewport",
+            "description": "One viewport."
+          }
+        },
+        "checks": {
+          "$ref": "#/$defs/verification_checks",
+          "description": "Checks performed."
+        },
+        "artefact_ids": {
+          "type": "array",
+          "description": "Evidence. At least one must be a verified screenshot in this project, captured in this project's browser-session lineage.",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier",
+            "description": "One artefact identifier."
+          }
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/idempotency_key",
+          "description": "Key for this submission. A duplicate produces one verification record."
+        }
+      },
+      "$defs": {
+        "body_text": {
+          "type": "string",
+          "description": "Human-authored or agent-authored prose: a description, instruction, comment, resolution note or verification summary.",
+          "minLength": 1,
+          "maxLength": 4000,
+          "pattern": "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f]+$"
+        },
+        "branch_name": {
+          "type": "string",
+          "description": "Version-control branch. Recorded on a verification so a human can see which branch the claim was made from.",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^[!-~]+$"
+        },
+        "commit_sha": {
+          "type": "string",
+          "description": "Version-control commit. A verification commit MUST differ from the commit the finding was captured at: a fix cannot exist at the revision the defect was recorded from.",
+          "minLength": 7,
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{7,64}$"
+        },
+        "device_scale_factor": {
+          "type": "number",
+          "description": "Device pixel ratio of the capture.",
+          "minimum": 1,
+          "maximum": 4
+        },
+        "idempotency_key": {
+          "type": "string",
+          "description": "Caller-chosen key for a state-changing tool (docs/MCP_SPEC.md section 10). It is scoped to actor, tool and project: reuse with the same arguments returns the first result and creates no second record, and reuse with different arguments is refused with IDEMPOTENCY_CONFLICT.",
+          "minLength": 8,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:-]+$"
+        },
+        "identifier": {
+          "type": "string",
+          "description": "Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the value as opaque: the schema bounds only its length and character class and never its documented prefix.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "verification_checks": {
+          "type": "object",
+          "description": "The checks a verification claims to have performed (docs/DOMAIN_MODEL.md section 19). They are recorded as claims by the agent and are never treated as proof on their own: the artefacts are the evidence.",
+          "additionalProperties": false,
+          "required": [
+            "reproduced_before",
+            "console_errors_reviewed",
+            "network_failures_reviewed"
+          ],
+          "properties": {
+            "reproduced_before": {
+              "type": "boolean",
+              "description": "Whether the agent reproduced the defect before changing anything."
+            },
+            "console_errors_reviewed": {
+              "type": "boolean",
+              "description": "Whether console output was reviewed after the change."
+            },
+            "network_failures_reviewed": {
+              "type": "boolean",
+              "description": "Whether failed network requests were reviewed after the change."
+            },
+            "accessibility_checked": {
+              "type": "boolean",
+              "description": "Whether keyboard navigation and visible focus were checked."
+            }
+          }
+        },
+        "version_number": {
+          "type": "integer",
+          "description": "Optimistic-concurrency version. A caller presenting a stale value is refused with VERSION_CONFLICT and the current version in the details (docs/MCP_SPEC.md section 11).",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "viewport": {
+          "type": "object",
+          "description": "Browser viewport in CSS pixels plus the device pixel ratio. A finding records the viewport it was seen at so it can be reproduced at that size.",
+          "additionalProperties": false,
+          "required": [
+            "width",
+            "height",
+            "device_scale_factor"
+          ],
+          "properties": {
+            "width": {
+              "type": "integer",
+              "description": "Viewport width in CSS pixels.",
+              "minimum": 240,
+              "maximum": 3840
+            },
+            "height": {
+              "type": "integer",
+              "description": "Viewport height in CSS pixels.",
+              "minimum": 240,
+              "maximum": 2160
+            },
+            "device_scale_factor": {
+              "$ref": "#/$defs/device_scale_factor",
+              "description": "Device pixel ratio the capture was taken at."
+            }
+          }
+        }
+      }
+    }
+  },
+  "browser_take_screenshot": {
+    "title": "Capture verification evidence from a browser session",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "Arguments of browser_take_screenshot. control_epoch is required by docs/MCP_SPEC.md section 7.4 for every browser tool, and a superseded epoch is refused with CONTROL_EPOCH_STALE rather than captured from a browser somebody else now controls.",
+      "additionalProperties": false,
+      "required": [
+        "browser_session_id",
+        "control_epoch",
+        "purpose",
+        "idempotency_key"
+      ],
+      "properties": {
+        "browser_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Browser session to capture from."
+        },
+        "control_epoch": {
+          "$ref": "#/$defs/control_epoch",
+          "description": "Epoch the agent believes is current."
+        },
+        "full_page": {
+          "type": "boolean",
+          "description": "Capture the whole document rather than the viewport."
+        },
+        "purpose": {
+          "$ref": "#/$defs/screenshot_purpose",
+          "description": "Why the capture is being taken. Stage 0 accepts verification only."
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/idempotency_key",
+          "description": "Key for this capture, so a retried call does not store two artefacts."
+        }
+      },
+      "$defs": {
+        "control_epoch": {
+          "type": "integer",
+          "description": "Monotonic browser-control epoch (ADR-0007). A command presenting a superseded epoch is refused with CONTROL_EPOCH_STALE rather than executed against a browser somebody else now controls.",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "idempotency_key": {
+          "type": "string",
+          "description": "Caller-chosen key for a state-changing tool (docs/MCP_SPEC.md section 10). It is scoped to actor, tool and project: reuse with the same arguments returns the first result and creates no second record, and reuse with different arguments is refused with IDEMPOTENCY_CONFLICT.",
+          "minLength": 8,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:-]+$"
+        },
+        "identifier": {
+          "type": "string",
+          "description": "Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the value as opaque: the schema bounds only its length and character class and never its documented prefix.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "screenshot_purpose": {
+          "type": "string",
+          "description": "Why a capture is being taken. Stage 0 accepts verification only: a capture is evidence, and an unclassified capture cannot be filed under a retention class.",
+          "enum": [
+            "verification"
+          ]
+        }
+      }
+    }
+  }
+}

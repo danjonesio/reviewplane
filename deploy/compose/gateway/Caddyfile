@@ -1,0 +1,104 @@
+# ReviewPlane gateway configuration (`docs/ARCHITECTURE.md` section 4.1).
+#
+# Responsibilities, in the order that document lists them:
+#
+#   * TLS termination. Stage 0 uses Caddy's internal certificate authority so a
+#     single-host install is HTTPS from the first boot; an operator who
+#     terminates TLS elsewhere points `REVIEWPLANE_GATEWAY_TLS` at their own
+#     certificate or puts their own proxy in front.
+#   * Host and path routing: `/api` and `/internal`-free surface to the control
+#     plane, everything else to the web application's static assets.
+#   * WebSocket upgrades for `/ws`.
+#   * Request-size and connection limits.
+#   * Security headers.
+#   * Web-application static asset serving.
+#
+# What it deliberately does not do: reach the browser worker, the tunnel
+# gateway or PostgreSQL. `/internal/v1/*` is the worker channel
+# (`docs/API.md` section 15.1) and is never routed from the internet.
+
+{
+	admin off
+	servers {
+		# A live viewer's WebSocket is long-lived; a short idle timeout would
+		# close a stream that is merely watching a quiet page.
+		timeouts {
+			read_body 30s
+			idle 10m
+		}
+	}
+}
+
+:8443 {
+	tls internal
+
+	log {
+		output stdout
+		format console
+		# docs/SECURITY.md section 18: no cookies, no authorization headers.
+		level INFO
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Resource-Policy "same-origin"
+		# The application loads nothing from another host, which is what makes
+		# this policy strict enough to be worth having (ADR-0011).
+		Content-Security-Policy "default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'"
+		-Server
+	}
+
+	# Liveness of the gateway itself. It answers without reaching the server, so
+	# a failing control plane is diagnosed as a failing control plane.
+	respond /healthz "ok" 200
+
+	# The worker channel is internal. Refusing it here means a misconfigured
+	# network cannot turn into an exposed worker API.
+	respond /internal/* 404
+
+	@api path /api/*
+	handle @api {
+		request_body {
+			# Artefact upload is the largest human-facing body (docs/API.md
+			# section 15); everything else is metadata.
+			max_size 24MB
+		}
+		reverse_proxy server:8080
+	}
+
+	# WebSocket upgrades. Caddy proxies the upgrade transparently; the size
+	# bound belongs to the control plane, which applies the protocol's own
+	# message limit (docs/API.md section 19).
+	@ws path /ws/*
+	handle @ws {
+		reverse_proxy server:8080
+	}
+
+	# The agent endpoint (docs/API.md section 3, docs/MCP_SPEC.md section 3.2).
+	# It is a separate route to a separate process, which is what
+	# docs/ARCHITECTURE.md section 4.4 asks for: a misconfiguration that exposed
+	# the human API cannot expose the agent one as a side effect, and the two
+	# have different bodies, different credentials and different limits.
+	@mcp path /mcp/*
+	handle @mcp {
+		request_body {
+			# An MCP request is a JSON-RPC message. Nothing an agent sends is
+			# large: evidence travels the other way, as a link.
+			max_size 1MB
+		}
+		reverse_proxy mcp-server:8081
+	}
+
+	# Everything else is the single-page application. Unknown paths fall back to
+	# the document, because routing is client-side (ADR-0011).
+	handle {
+		root * /srv/web
+		encode zstd gzip
+		try_files {path} /index.html
+		file_server
+	}
+}

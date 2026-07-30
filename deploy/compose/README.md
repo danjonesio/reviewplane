@@ -5,8 +5,14 @@ This directory contains the supported single-host deployment.
 Present today:
 
 ```text
-compose.yaml                    PostgreSQL, server and browser worker
+compose.yaml                    gateway, PostgreSQL, server, MCP server, browser
+                                worker, tunnel gateway, development fixture
+gateway/Dockerfile              builds the web application and the Caddy image
+gateway/Caddyfile               TLS, routing, WebSocket upgrades, static assets
 browser-worker-seccomp.json     seccomp profile for the browser worker
+connector-config.yaml           the development fixture's connector settings
+tls/                            the tunnel certificate authority and its leaf
+e2e/                            the end-to-end scenario and its generators
 .env.example                    non-secret settings
 secrets/                        mounted secret files, never committed
 ```
@@ -15,13 +21,45 @@ Still planned:
 
 ```text
 compose.override.example.yaml
-Caddyfile
 configure
 reviewplane
 backup
 restore
 upgrade
 ```
+
+## Gateway
+
+`gateway` is the only service that publishes a host port
+(`docs/ARCHITECTURE.md` §4.1). It serves `apps/web`'s build output, proxies
+`/api` and upgrades `/ws` to the control plane, routes `/mcp` to the MCP server,
+and refuses `/internal` outright so that a misconfigured network cannot expose
+the browser-worker channel. It holds no credential, reaches neither PostgreSQL
+nor the worker, and mounts no Docker socket.
+
+## MCP server
+
+`mcp-server` is the agent-facing process (`docs/ARCHITECTURE.md` §4.4,
+ADR-0020). It is a separate process behind a separate route, so a gateway rule
+written for the human API cannot expose the agent one as a side effect, and the
+two have different credentials, different bodies and different limits.
+
+It is the same trust zone as `server` — same database, same worker command
+credential — and deliberately narrower in two ways: it is not given the
+bootstrap token, so the agent-facing process cannot present an administrator
+credential, and its artefact volume is mounted read-only, because evidence is
+written by the worker through the control-plane API and only read here.
+
+The web application is built inside the gateway image because ADR-0011 removed
+the server-rendering process: the build output is static files, and this is the
+component that serves static files. That build fails if the bundle would fetch
+from another host, so an image cannot be produced from one that would.
+
+Stage 0 terminates TLS with Caddy's internal certificate authority, so a fresh
+install is HTTPS from first boot and the viewer session cookie can be `Secure`.
+An operator terminating TLS elsewhere replaces the `tls` directive and points
+`REVIEWPLANE_PUBLIC_ORIGIN` at their own address; that value is also the origin
+the control plane accepts a live-view WebSocket upgrade from.
 
 ## Browser-worker isolation
 
@@ -150,14 +188,15 @@ Kubernetes secrets, or pre-create the files owned by the service user.
 
 Every network is `internal: true`, so Docker attaches no gateway to any of them
 and no container can reach the internet. `docs/ARCHITECTURE.md` §6.2 permits
-"explicit network routes only", and these four are the whole set:
+"explicit network routes only", and these five are the whole set:
 
 | Network | Members | Why |
 |---|---|---|
-| `data` | postgres, server | The database is reachable by the control plane and nothing else. |
-| `browser` | server, browser-worker | The control plane commands the worker. |
-| `tunnel` | server, tunnel-gateway, browser-worker | The worker reaches published services only through the gateway; the control plane reaches the gateway's admin API. |
+| `data` | postgres, server, mcp-server | The database is reachable by the two processes that own domain state and nothing else. |
+| `browser` | server, mcp-server, browser-worker | The control plane and the agent endpoint command the worker. |
+| `tunnel` | server, tunnel-gateway, browser-worker | The worker reaches published services only through the tunnel gateway; the control plane reaches the gateway's admin API. |
 | `devnet` | server, tunnel-gateway, dev-fixture | The development environment dials out to enrol and to open its data channel. Nothing dials in. |
+| `edge` | gateway, server, mcp-server | The edge gateway is the only service with a published host port, and it reaches the two HTTP processes over this network rather than over the host. |
 
 The browser worker is on `browser` and `tunnel`. It has no route to `devnet`,
 so it cannot reach the development environment except through a route the

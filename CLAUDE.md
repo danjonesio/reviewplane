@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository status
 
-This repository is at **project-definition stage**: it contains only documentation, ADRs, deployment scaffolding (`deploy/compose/README.md`) and example agent instructions (`examples/`). There is no source code, package manifest, build system or test suite yet — do not search for one. The documents under `docs/` are the normative baseline; implementations, when they begin, must not silently diverge from them. The intended command set for future code is defined in `docs/DEVELOPMENT.md` §5 (`pnpm lint`/`test`/`typecheck` at root, `go test ./...` for Go services); none of those commands work today.
+Stage 0 implementation is under way. `packages/protocol` holds the versioned schema sources and their generated TypeScript and Go models; `apps/server` is the control plane; `apps/mcp-server` is the agent-facing MCP endpoint; `apps/browser-worker` runs Chromium; `apps/web` is the SPA; `services/connector` is the Go connector that runs on the development machine; `services/tunnel-gateway` is the Go tunnel gateway; `examples/dev-fixture` is the development-environment fixture the end-to-end scenario publishes; `deploy/compose` is the first-class deployment. The documents under `docs/` remain the normative baseline; implementations must not silently diverge from them.
+
+Root commands (`docs/DEVELOPMENT.md` §5): `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`, `pnpm protocol:check`. `pnpm typecheck` and `pnpm test` work on a fresh clone with no prior build. Container harnesses: `pnpm test:browser` (Chromium), `pnpm test:ui` (annotation UI), `pnpm test:integration` (steps 9–12 of `docs/TESTING.md` §3, with a real browser worker and a real MCP client) and `pnpm test:e2e` (steps 1–6 plus the tunnel capabilities of `docs/ARCHITECTURE.md` §7.4, over the Compose stack). `go vet ./...`, `go test ./...` and `go test -race ./...` run from a Go module directory: `packages/protocol`, `services/connector` or `services/tunnel-gateway`. `pnpm test` and the server suites need Docker for a disposable PostgreSQL.
 
 `AGENTS.md` is the authoritative repository-wide instruction source and takes precedence over chat history.
 
@@ -83,11 +85,11 @@ When documents conflict, precedence is: newest accepted ADR → `SECURITY.md` �
 
 When asked to work on a named review such as `bugs-on-homepage` and the product's MCP tools are connected:
 
-1. Call the review lookup tool scoped to the current project; confirm project, branch, commit and staleness.
+1. Call `review_get` with the name (`{"review": "bugs-on-homepage"}`); it resolves inside the current project only. Confirm project, branch and commit — Stage 0 computes no staleness and omits the field rather than guessing it.
 2. Claim one finding at a time unless parallel work is explicitly safe.
 3. Reproduce each finding in its recorded viewport and state; make the smallest change that resolves it.
 4. Re-run browser, console and network checks; submit an after screenshot and concise resolution note.
-5. Mark the finding `awaiting_human_review`, never `accepted`.
+5. Submit evidence with `finding_submit_verification`, then move the finding to `AWAITING_HUMAN_REVIEW` with `finding_update_status`. There is no agent path beyond it, and the tool arguments cannot name one.
 6. Continue until all assigned findings are resolved, blocked or explicitly deferred.
 
 Use control-plane browser tools for browser validation when available. UI-facing work is tested at 390x844 and 1440x900 minimum (see `AGENTS.md` "Browser-facing work").

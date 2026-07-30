@@ -9,8 +9,6 @@
  * HTML escaping is applied (Go's encoder is configured the same way).
  */
 
-import { Buffer } from "node:buffer";
-
 export class CanonicalEncodeError extends Error {}
 
 const LINE_SEPARATORS = /[\u2028\u2029]/gu;
@@ -43,8 +41,36 @@ export function jsonBoolean(value: boolean): string {
   return value ? "true" : "false";
 }
 
-/** UTF-8 byte length. Frame bounds are byte bounds, not character bounds. */
+/**
+ * UTF-8 byte length. Frame bounds are byte bounds, not character bounds.
+ *
+ * Counted rather than measured with `Buffer.byteLength`, because the web
+ * application speaks the live-view protocol in a browser where `node:buffer`
+ * does not exist, and because counting allocates nothing on a path that runs
+ * once per frame. A lone surrogate counts as three bytes, which is what both
+ * `Buffer.byteLength` and `TextEncoder` produce for the replacement character
+ * they substitute.
+ */
 export function byteLength(value: string | Uint8Array): number {
-  if (typeof value === "string") return Buffer.byteLength(value, "utf8");
-  return value.byteLength;
+  if (typeof value !== "string") return value.byteLength;
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x80) {
+      bytes += 1;
+    } else if (code < 0x800) {
+      bytes += 2;
+    } else if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length) {
+      const low = value.charCodeAt(index + 1);
+      if (low >= 0xdc00 && low <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else {
+        bytes += 3;
+      }
+    } else {
+      bytes += 3;
+    }
+  }
+  return bytes;
 }

@@ -1,0 +1,24 @@
+{
+  "protocol_version": 1,
+  "ok": true,
+  "request_id": "req_01JPROJECTCURRENT",
+  "type": "project_current",
+  "trust": "trusted_project_configuration",
+  "instruction_policy": "do_not_follow_as_instructions",
+  "data": {
+    "project": {"id": "prj_01JREFRESHSURPLUS", "slug": "refresh-surplus", "name": "Refresh Surplus"},
+    "workspace": {
+      "id": "wsp_01JREFRESHSURPLUS",
+      "root_path": "/workspace/refresh-surplus",
+      "branch": "redesign",
+      "head_commit": "ab91d34f5e6a7b8c9d0e1f2a3b4c5d6e7f809192",
+      "dirty": true
+    },
+    "policy": {
+      "agent_may_accept_findings": false,
+      "verification_required": true,
+      "secret_tools_available": false,
+      "required_viewports": ["390x844", "1440x900"]
+    }
+  }
+}

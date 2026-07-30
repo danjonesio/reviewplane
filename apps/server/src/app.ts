@@ -11,10 +11,16 @@
 import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
 
-import { requireBootstrapAdministrator } from "./auth.ts";
+import { bearerToken, requireBootstrapAdministrator } from "./auth.ts";
 import type { LogDestination, ServerConfig } from "./config.ts";
 import type { Pool } from "./db/pool.ts";
 import { renderError } from "./errors.ts";
+import { AgentCredentialStore } from "./modules/agents/credentials.ts";
+import { IdempotencyStore } from "./modules/agents/idempotency.ts";
+import { registerAgentRoutes } from "./modules/agents/routes.ts";
+import { AgentSessionStore } from "./modules/agents/sessions.ts";
+import { WorkspaceStore } from "./modules/agents/workspaces.ts";
+import type { AgentArtefactPrincipal } from "./modules/artefacts/routes.ts";
 import { registerArtefactRoutes } from "./modules/artefacts/routes.ts";
 import { ArtefactService } from "./modules/artefacts/service.ts";
 import { FilesystemArtefactStore } from "./modules/artefacts/store.ts";
@@ -25,6 +31,10 @@ import { BrowserWorkerClient } from "./modules/browser-sessions/worker-client.ts
 import { WorkerRegistry } from "./modules/browser-sessions/workers.ts";
 import { createConnectorModule } from "./modules/connectors/index.ts";
 import type { ConnectorModule, ConnectorModuleConfig } from "./modules/connectors/index.ts";
+import { LiveRelay } from "./modules/live/relay.ts";
+import { registerLiveRoutes, resolveViewer } from "./modules/live/routes.ts";
+import { ViewerSessionStore } from "./modules/live/viewer-sessions.ts";
+import { WorkerLiveClient } from "./modules/live/worker-live-client.ts";
 import { registerProjectRoutes } from "./modules/projects/routes.ts";
 import { STAGE_0_DESTINATION_POLICY } from "./modules/published-services/destination-policy.ts";
 import type { DestinationPolicy } from "./modules/published-services/destination-policy.ts";
@@ -36,19 +46,8 @@ import { PublishedServiceBinder } from "./modules/published-services/session-bin
 import { PublishedServiceReconciler } from "./modules/published-services/reconciliation.ts";
 import { PublishedServiceService } from "./modules/published-services/service.ts";
 import type { RoutePublisher } from "./modules/published-services/service.ts";
-
-export interface BuiltApp {
-  readonly app: FastifyInstance;
-  readonly connectors: ConnectorModule;
-  readonly publishedServices: PublishedServiceService;
-  readonly artefacts: ArtefactService;
-  readonly sessions: BrowserSessionService;
-  readonly workers: WorkerRegistry;
-  /** Starts every listener the server owns. */
-  start(): Promise<void>;
-  /** Stops every listener. The pool is owned by the caller. */
-  stop(): Promise<void>;
-}
+import { registerReviewRoutes } from "./modules/reviews/routes.ts";
+import { ReviewService } from "./modules/reviews/service.ts";
 
 export interface BuildAppOptions {
   readonly config: ServerConfig;
@@ -73,6 +72,26 @@ export interface BuildAppOptions {
    * on the records the server actually emitted.
    */
   readonly logDestination?: LogDestination;
+}
+
+export interface BuiltApp {
+  readonly app: FastifyInstance;
+  readonly connectors: ConnectorModule;
+  readonly publishedServices: PublishedServiceService;
+  readonly artefacts: ArtefactService;
+  readonly reviews: ReviewService;
+  readonly sessions: BrowserSessionService;
+  readonly workers: WorkerRegistry;
+  readonly viewers: ViewerSessionStore;
+  readonly relay: LiveRelay;
+  readonly agentCredentials: AgentCredentialStore;
+  readonly agentSessions: AgentSessionStore;
+  readonly workspaces: WorkspaceStore;
+  readonly idempotency: IdempotencyStore;
+  /** Starts every listener the server owns. */
+  start(): Promise<void>;
+  /** Stops every listener. The pool is owned by the caller. */
+  stop(): Promise<void>;
 }
 
 export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
@@ -169,6 +188,7 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
 
   const store = options.artefactStore ?? new FilesystemArtefactStore(config.artefactPath);
   const artefacts = new ArtefactService(pool, store, config.artefactMaxBytes);
+  const reviews = new ReviewService(pool, artefacts);
   const workers = new WorkerRegistry(pool, config.workerCredential);
   const workerClient = new BrowserWorkerClient({
     endpoint: config.workerEndpoint,
@@ -184,11 +204,62 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     workerClient,
     new PublishedServiceBinder(publishedServices),
   );
+  const viewers = new ViewerSessionStore(pool);
+  const liveClient = new WorkerLiveClient({
+    endpoint: config.workerEndpoint,
+    credential: config.workerCommandCredential,
+    ...(options.workerFetch === undefined ? {} : { fetchImplementation: options.workerFetch }),
+  });
+  const relay = new LiveRelay({
+    client: liveClient,
+    logger: {
+      info: (message, fields) => {
+        app.log.info(fields ?? {}, message);
+      },
+      warn: (message, fields) => {
+        app.log.warn(fields ?? {}, message);
+      },
+    },
+  });
+  const viewerAuth = async (request: Parameters<typeof resolveViewer>[0]) =>
+    resolveViewer(request, { viewers, bootstrapToken: config.bootstrapToken });
+
+  const agentCredentials = new AgentCredentialStore(pool);
+  const workspaces = new WorkspaceStore(pool);
+  const agentSessions = new AgentSessionStore(pool, workspaces);
+  const idempotency = new IdempotencyStore(pool);
+
+  /**
+   * Resolves an agent credential for the evidence-reading half of ADR-0019.
+   *
+   * It answers with the sessions the credential currently owns, so a grant
+   * minted for one agent session is redeemable only by the credential that
+   * opened it. Nothing else on this server accepts an agent credential.
+   */
+  const agentAuth = async (
+    request: Parameters<typeof resolveViewer>[0],
+  ): Promise<AgentArtefactPrincipal | null> => {
+    const credential = await agentCredentials.resolve(bearerToken(request));
+    if (credential === null) return null;
+    const rows = await pool.query<{ id: string }>(
+      "SELECT id FROM agent_sessions WHERE credential_id = $1 AND ended_at IS NULL",
+      [credential.id],
+    );
+    return {
+      credentialId: credential.id,
+      organisationId: credential.organisationId,
+      projectIds: new Set(credential.projectIds),
+      sessionIds: new Set(rows.rows.map((row) => row.id)),
+      display: credential.label,
+    };
+  };
+
 
   await registerProjectRoutes(app, {
     pool,
     bootstrapToken: config.bootstrapToken,
     workerCredential: config.workerCredential,
+    viewerAuth,
   });
   await registerArtefactRoutes(app, {
     pool,
@@ -197,12 +268,34 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     bootstrapToken: config.bootstrapToken,
     workerCredential: config.workerCredential,
     maxBytes: config.artefactMaxBytes,
+    viewerAuth,
+    agentAuth,
+  });
+  await registerReviewRoutes(app, { pool, reviews, viewerAuth });
+  await registerAgentRoutes(app, {
+    pool,
+    credentials: agentCredentials,
+    workspaces,
+    bootstrapToken: config.bootstrapToken,
+    workerCredential: config.workerCredential,
+    viewerAuth,
   });
   await registerBrowserSessionRoutes(app, {
     sessions,
     workers,
     bootstrapToken: config.bootstrapToken,
     workerCredential: config.workerCredential,
+    viewerAuth,
+  });
+  await registerLiveRoutes(app, {
+    pool,
+    sessions,
+    relay,
+    viewers,
+    bootstrapToken: config.bootstrapToken,
+    workerCredential: config.workerCredential,
+    allowedOrigins: config.allowedOrigins,
+    secureCookies: config.secureCookies,
   });
 
   return {
@@ -210,8 +303,15 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     connectors,
     publishedServices,
     artefacts,
+    reviews,
     sessions,
     workers,
+    viewers,
+    relay,
+    agentCredentials,
+    agentSessions,
+    workspaces,
+    idempotency,
     async start(): Promise<void> {
       await app.listen({ host: config.host, port: config.port });
       await connectors.start();
