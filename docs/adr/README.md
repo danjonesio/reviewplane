@@ -37,29 +37,44 @@ ADRs record decisions that materially affect architecture, security, protocols o
 
 ## Pending decisions
 
-These decisions are known to be required but are not yet recorded. They were identified while filing the Stage 0 to Stage 4 backlog in Linear (team ReviewPlane, prefix `RVP`). Deferral is deliberate: none of them is required for Stage 0. Each takes the next available number when written.
+These decisions are known to be required but are not yet recorded. They were identified while filing the Stage 0 to Stage 4 backlog in Linear (team ReviewPlane, prefix `RVP`), and the list below was re-checked against every issue in that backlog on 2026-07-30 (RVP-58).
 
-Do not implement the referenced work before its ADR is accepted.
+Each of these ADRs takes the next available number when it is written, and is written as its stage approaches rather than in advance. Each decision keeps its own context, alternatives and consequences; bundling them would produce a record that cannot be superseded cleanly later.
 
-| Topic | Needed before | Architecture-change category |
-|---|---|---|
-| Permission model and service-layer authorisation | RVP-4 | Authorisation |
-| Organisation membership as the sole source of role grants | RVP-2 | Authentication and authorisation |
-| OIDC as a human authentication mode | RVP-51 | Authentication, trust boundary |
-| SAML coexistence with OIDC and local accounts | RVP-42 | Authentication |
-| Approval gates as an authorisation precondition | RVP-26 | Authorisation, new durable authority object |
-| Policy as code, if an external engine or an authoritative policy store is adopted | RVP-31 | Operational dependency, persistence |
-| Secrets boundary and external secret-provider trust | RVP-35 | Secrets, trust boundary |
-| Legal hold making artefact deletion conditional | RVP-44 | Persistence and deletion model |
-| Air-gapped bundle supply-chain trust model | RVP-47 | Deployment topology, supply chain |
-| Worker pools as an isolation boundary | RVP-50 | Authorisation boundary |
-| Per-session browser sandboxing without Docker-socket access | RVP-52 | Browser execution trust boundary, privilege model |
+Deferral is deliberate and is currently safe: no Stage 0 or Stage 1 issue depends on any of these decisions. Every Stage 1 issue — RVP-9, RVP-12, RVP-15, RVP-20, RVP-24, RVP-30, RVP-33, RVP-37, RVP-41, RVP-45, RVP-49, RVP-53, RVP-55, RVP-56 and RVP-57 — cites accepted ADRs only, and RVP-12 leaves the `/api/v1/members*` routes reserved and unimplemented until Stage 3. The earliest pending decision is needed for Stage 2.
 
-**The largest gap:** the accepted set records no decision on authentication or authorisation at all, while much of Stage 3 and Stage 4 depends on that model. Write the permission-model ADR before Stage 3 work begins rather than alongside it.
+Entries are of two kinds:
+
+- **Required** — the issue states that an ADR must be recorded before its work lands. Do not implement the referenced work before its ADR is accepted.
+- **Conditional** — the issue requires an ADR only if the work takes the design path named in the "Kind" column, and the issue itself settles which path applies. Do not take that path before an ADR is accepted; the rest of that issue is not blocked.
+
+| Topic | Needed before | Stage | Kind | Architecture-change category |
+|---|---|---|---|---|
+| OIDC as a human authentication mode | RVP-51 | 2 | Required | Authentication, trust boundary |
+| Organisation membership as the sole source of role grants | RVP-2 | 3 | Required | Authentication and authorisation |
+| Permission model and service-layer authorisation | RVP-4 | 3 | Required | Authorisation |
+| Change to the finding transition table under concurrent editing | RVP-7 | 3 | Conditional — only if the transition table changes | Review and finding lifecycle |
+| Project policy evaluation leaving the service layer | RVP-19 | 3 | Conditional — only if evaluation moves outside the service layer or gains a submitted-program form | Authorisation and policy boundary |
+| Outbound review export to a third-party issue tracker | RVP-27 | 3 | Required | Trust boundary, third-party data flow |
+| Approval gates as an authorisation precondition | RVP-26 | 4 | Required | Authorisation, new durable authority object |
+| Policy as code | RVP-31 | 4 | Conditional — only if a third-party policy language or engine is adopted, or policy documents become the authoritative store | Operational dependency, persistence |
+| Secrets boundary and external secret-provider trust | RVP-35 | 4 | Required | Secrets, trust boundary |
+| Envelope encryption and external key custody | RVP-38 | 4 | Required | Encryption and key custody |
+| SAML coexistence with OIDC and local accounts, the authoritative source of role assignment, and the break-glass path | RVP-42 | 4 | Required | Authentication |
+| Legal hold making deletion conditional | RVP-44 | 4 | Required | Persistence and deletion model |
+| Air-gapped deployment topology and bundle supply-chain trust model | RVP-47 | 4 | Required | Deployment topology, supply chain |
+| Worker pools as an isolation boundary | RVP-50 | 4 | Conditional — only if pool membership becomes an organisation isolation boundary rather than a scheduling preference | Authorisation boundary |
+| Per-session browser sandboxing without Docker-socket access | RVP-52 | 4 | Required | Browser execution trust boundary, deployment topology, privilege model |
+
+Stage 5 candidates are governed separately: `docs/ROADMAP.md` §7 requires measured demand and an ADR for each of them, tracked in RVP-1.
+
+**The largest gap:** no accepted ADR records how authority is granted to a person. The accepted set records authentication for machine identities (ADR-0014), for the single bootstrap administrator and the viewer sessions derived from its token (ADR-0016) and for agent credentials carrying scoped capabilities (ADR-0020), plus one resource-level authorisation mechanism for artefact content (ADR-0019). None of them settles roles, permissions or membership, and much of Stage 3 and Stage 4 depends on that model. Write the permission-model ADR (RVP-4) before Stage 3 work begins rather than alongside it: organisation membership, the audit interface, review assignment, project policies and the isolation test suite all resolve against it.
+
+When one of these ADRs is written, add it to the index and remove its row from this table in the same change.
 
 ## Amendments required
 
-- **ADR-0001** describes central browser workers with no tenant-segregation concept. It must be amended when worker pools are introduced (RVP-50).
+- **ADR-0001** describes central browser workers with no segregation concept between organisations or projects. RVP-50 requires it to be amended with the worker-pool model when pools are introduced.
 
 ## Unresolved document conflict
 
