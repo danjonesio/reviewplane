@@ -82,17 +82,35 @@ limits:
 
 ```yaml
 tunnel:
-  listen_address: 0.0.0.0:8443
+  listen_address: 0.0.0.0:8443           # browser-facing; the only published listener
+  connector_listen_address: 0.0.0.0:8444 # connector data channels, mutual TLS
+  admin_listen_address: 127.0.0.1:8445   # control API and metrics
+  internal_suffix: internal.invalid
   route_ttl_max: 8h
+  max_routes_per_connector: 10
   max_streams_per_connector: 256
-  max_bytes_per_second: 100MB
+  max_streams_per_route: 64
+  max_stream_bytes: 64MB
+  stream_ttl: 60s
+  allowed_hosts:
+    - 127.0.0.1
+    - ::1
+  allowed_ports:
+    - 3000-3999
+    - 4321
+    - 5173
   allowed_protocols:
     - http
-    - https
-    - websocket
+  host_header_mode: upstream             # or original
+  forwarded_header_mode: standard        # or none
+  identity_source: subject_common_name   # or uri_san
 ```
 
-It must not contain a setting that trivially enables unrestricted proxying without an explicit high-risk mode and warning.
+Settings are supplied as `REVIEWPLANE_TUNNEL_`-prefixed environment variables, with the `_FILE` form of §7 for the control-plane token, the capability signing keys and the TLS material. Every setting is validated at startup and every problem is reported together.
+
+It must not contain a setting that trivially enables unrestricted proxying without an explicit high-risk mode and warning. Two settings widen the destination policy — `allow_non_loopback_destinations` and `allow_link_local_destinations` — and both default to false, are named for what they do and produce a startup warning naming what was widened. Neither lifts the bar on cloud metadata endpoints, which are refused ahead of the allow-list so that naming one in `allowed_hosts` cannot re-enable it.
+
+The control listener defaults to loopback: `SECURITY.md` §4 lists administrator misconfiguration exposing internal services as a primary threat, and the route-registration API is the most valuable thing the gateway exposes.
 
 ## 5. Connector configuration
 

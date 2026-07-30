@@ -87,8 +87,9 @@ type harness struct {
 	devPort     int
 	lastRequest chan recordedRequest
 
-	routes  *datachannel.RouteTable
-	session *datachannel.Session
+	routes   *datachannel.RouteTable
+	session  *datachannel.Session
+	wrapConn func(datachannel.MessageConn) datachannel.MessageConn
 
 	signingKey []byte
 }
@@ -109,6 +110,9 @@ type harnessOptions struct {
 	skipConnect  bool
 	maxRoutes    int
 	connectorTLS func(*tls.Config)
+	// wrapConn lets a test observe the data channel's frames without changing
+	// how the gateway or the connector behave.
+	wrapConn func(datachannel.MessageConn) datachannel.MessageConn
 }
 
 func newHarness(t *testing.T, options harnessOptions) *harness {
@@ -197,6 +201,7 @@ func newHarness(t *testing.T, options harnessOptions) *harness {
 	h.connector.StartTLS()
 	t.Cleanup(h.connector.Close)
 
+	h.wrapConn = options.wrapConn
 	if !options.skipConnect {
 		h.connect(testConnectorID, h.authority.ConnectorCertificate(t, testConnectorID), "")
 	}
@@ -210,8 +215,14 @@ func (h *harness) connect(connectorID string, certificate tls.Certificate, claim
 	if err != nil {
 		h.t.Fatalf("dial connector data channel: %v", err)
 	}
-	session := datachannel.NewSession(conn, datachannel.RoleConnector, datachannel.SessionConfig{Now: h.clock.Now})
-	go func() { _ = datachannel.ServeConnector(session, datachannel.ConnectorConfig{Routes: h.routes, Now: h.clock.Now}) }()
+	var transport datachannel.MessageConn = conn
+	if h.wrapConn != nil {
+		transport = h.wrapConn(transport)
+	}
+	session := datachannel.NewSession(transport, datachannel.RoleConnector, datachannel.SessionConfig{Now: h.clock.Now})
+	go func() {
+		_ = datachannel.ServeConnector(session, datachannel.ConnectorConfig{Routes: h.routes, Now: h.clock.Now})
+	}()
 	h.session = session
 	h.t.Cleanup(func() { session.Close(nil) })
 	h.waitForChannel(connectorID)

@@ -294,6 +294,8 @@ The connector must confirm:
 
 `allowed_browser_session_ids` must name at least one browser session. A route with no authorised session is not published.
 
+The same checks are applied independently by the control plane before it publishes and by the tunnel gateway before it registers a route. Three implementations of one policy is the defence in depth `SECURITY.md` §9 requires: a control plane that had been persuaded to publish an unauthorised destination must still be refused by the gateway, and a gateway that had been misconfigured must still be refused by the connector. They are held to one shared corpus so that they cannot drift apart.
+
 ## 12. Data stream protocol
 
 Each tunnelled connection is opened by a bounded header carrying exactly:
@@ -305,11 +307,46 @@ Each tunnelled connection is opened by a bounded header carrying exactly:
 - Destination protocol
 - Deadline
 
-The connector opens only the pre-authorised local destination. It does not accept a host or port supplied by the browser request. The header schema has no host or port field and rejects unknown properties, so a destination cannot be smuggled into it.
+The connector opens only the pre-authorised local destination. It does not accept a host or port supplied by the browser request. The header schema has no host or port field and rejects unknown properties, so a destination cannot be smuggled into it. The connector MUST NOT parse a destination out of the relayed request bytes either: the gateway never forwards a client-supplied destination and the connector independently ignores one, so neither side relies on the other.
 
-The session capability is a bearer credential. It is marked sensitive in the schema and is redacted in every default log, debug and JSON representation.
+The session capability is a bearer credential. It is marked sensitive in the schema and is redacted in every default log, debug and JSON representation. Its wire encoding is defined by `packages/protocol` (see that package's README, "Route capabilities"): the control plane mints, the gateway verifies, and verification checks the signature before it reads any claim.
 
-Flow control must prevent one stream from exhausting connector memory.
+### 12.1 Multiplexing
+
+The data channel is one WebSocket connection carrying binary messages, each one frame:
+
+```text
+byte 0     frame type
+bytes 1-4  stream number, big endian, never zero
+bytes 5..  payload
+```
+
+| Type | Value | Payload | Sender |
+|---|---|---|---|
+| `open` | 1 | Canonical encoding of the data-stream header | Control plane |
+| `accept` | 2 | Empty | Connector |
+| `data` | 3 | Application bytes | Both |
+| `end` | 4 | Empty; the sender's direction is complete | Both |
+| `reset` | 5 | A §21 error class, or empty | Both |
+| `window` | 6 | `uint32` bytes the receiver has consumed | Both |
+
+Only the control-plane side opens a stream: a connector that could open one would be initiating traffic into the control-plane zone, which the trust boundary of `SECURITY.md` §3 does not allow.
+
+A frame type this version does not define, a stream number of zero, a `reset` carrying anything but a §21 class, or a payload outside its bound MUST be refused and MUST end the channel. After a malformed frame the stream numbering can no longer be trusted, so best-effort recovery would be guessing.
+
+### 12.2 Flow control
+
+Flow control must prevent one stream from exhausting connector memory. Each direction of each stream starts with a credit window of 262 144 bytes. A sender MUST NOT have more unacknowledged bytes in flight than its remaining credit, and a receiver returns credit through a `window` frame only once the bytes have been consumed by the application, not when they arrive. That is what turns a slow consumer into backpressure rather than into buffering. A receiver sent more than its window MUST refuse the frame rather than honour it.
+
+Both ends use the same initial window, because a sender may spend it before any credit has been returned.
+
+### 12.3 Deadlines and limits
+
+Every stream carries an absolute deadline. A stream past its deadline, or one that has made no progress for the configured idle timeout, MUST be closed and recorded rather than left open. A stream MUST NOT outlive the route it belongs to: its deadline is the earlier of the configured stream lifetime and the route's expiry.
+
+Concurrent streams per channel, bytes per stream and the size of one data-channel message are all bounded. Exceeding a stream bound resets that stream with `STREAM_LIMIT_EXCEEDED`. Exceeding the message bound ends the channel, because the bound is applied to the declared length before anything is allocated.
+
+Route expiry and revocation both terminate streams that are already in flight, and both report `ROUTE_EXPIRED`. §21 is a closed vocabulary, so which of the two occurred is recorded in the audit trail and the metrics rather than on the wire.
 
 ## 13. WebSocket and hot-reload support
 

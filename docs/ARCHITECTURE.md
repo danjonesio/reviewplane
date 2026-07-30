@@ -121,7 +121,13 @@ Responsibilities:
 - Apply destination restrictions and expiry
 - Record bytes, errors and route lifecycle
 
-It must not become an unrestricted SOCKS or general network proxy.
+It must not become an unrestricted SOCKS or general network proxy. It therefore exposes no CONNECT method, refuses an absolute-form request target, and has no code path that takes an upstream destination from a request: the destination comes from the route registry alone.
+
+It serves three listeners, and the separation is a control rather than a convenience: the browser-facing listener is the only one a deployment publishes, the connector listener terminates mutually authenticated data channels, and the control listener carrying the route-registration API and metrics binds to loopback by default.
+
+Connector identity is derived from the verified client-certificate chain issued by the control plane's certificate authority; the gateway holds only the authority's root and never issues. Where in the certificate the identifier is read from is configuration, so that the issuing side can change without a gateway release.
+
+The gateway holds no database connection. Route registrations arrive from the control plane, and route lifecycle is emitted as structured audit records; the durable event rows of §10 belong to the control plane, which owns the project event sequence.
 
 ### 4.7 Connector
 
@@ -278,13 +284,17 @@ flowchart LR
 - Audited
 - Revocable immediately
 
-The browser should receive an internal origin such as:
+The browser receives an internal origin:
 
 ```text
-https://route-id.internal.invalid/
+https://public-alias.internal.invalid/
 ```
 
-The gateway maps this origin to the connector route. The implementation must preserve Host and origin behaviour predictably and support WebSockets for modern dev servers.
+The leftmost label is the published service's `public_alias` (`DOMAIN_MODEL.md` §10), not its identifier: a conventional `svc_` identifier is not a valid DNS label. The alias MUST be a DNS label and MUST be unique across the deployment, and it is validated at registration rather than normalised at request time, so the mapping from origin to route is total and injective.
+
+The gateway resolves an origin by dropping any port, dropping a trailing dot and lowercasing; what remains MUST be exactly one label followed by the configured suffix. Anything else resolves to no route. Host and origin handling MUST be deterministic and documented; the forwarding rules are in `CONNECTOR_PROTOCOL.md` §13.
+
+Capabilities are minted by the control plane and verified by the gateway. A capability is opaque to its bearer, binds route, project and browser session, expires, and is revocable individually as well as through its route.
 
 ### 7.4 Application compatibility
 
