@@ -46,11 +46,21 @@ async function scrypt(
 }
 
 /**
- * Work factors. `N` is the cost parameter; 32768 with `r = 8` needs 32 MiB per
- * hash, which is the widely published interactive-login setting and the point
- * where a commodity server still answers a login in about a tenth of a second.
+ * Work factors, from OWASP's current password-storage guidance: `N = 2^17`,
+ * `r = 8`, `p = 1`, which needs 128 MiB per hash.
+ *
+ * The memory is the security property — it is what an attacker has to buy per
+ * guess, and the reason a memory-hard function is used at all — so the cost is
+ * chosen against published guidance rather than against how fast a login feels.
+ * A login is rate limited (`rate-limit.ts`), so the work is bounded per subject
+ * on the serving side and unbounded only for the offline attacker it is meant
+ * to be expensive for.
+ *
+ * A verifier records the parameters it was written with, which is what makes
+ * raising these a configuration change rather than a migration: an existing row
+ * keeps verifying with its own values, and the next password set uses these.
  */
-export const SCRYPT_PARAMETERS = { N: 32_768, r: 8, p: 1 } as const;
+export const SCRYPT_PARAMETERS = { N: 131_072, r: 8, p: 1 } as const;
 
 /** Derived key length in bytes. */
 const KEY_LENGTH = 32;
@@ -59,9 +69,10 @@ const KEY_LENGTH = 32;
 const SALT_LENGTH = 16;
 
 /**
- * Node's default `maxmem` is 32 MiB, which the parameters above sit exactly on
- * top of; the allowance is doubled so the call cannot fail on an off-by-one in
- * Node's own accounting.
+ * Node's default `maxmem` is 32 MiB, far below what these parameters need, so
+ * the allowance is computed from them — `128 * N * r` is what scrypt actually
+ * allocates — and doubled so the call cannot fail on an off-by-one in Node's
+ * own accounting.
  */
 const MAX_MEMORY_BYTES = 128 * SCRYPT_PARAMETERS.N * SCRYPT_PARAMETERS.r * 2;
 
@@ -84,7 +95,14 @@ export type PasswordPolicyResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly reason: PasswordPolicyFailure; readonly message: string };
 
-/** Checks a candidate password against the policy. It never returns the value. */
+/**
+ * Checks a candidate password against the policy. It never returns the value.
+ *
+ * Length is measured **after** NFKC normalisation, because that is the form
+ * `derive` hashes. A composed twelve-character passphrase can normalise to six,
+ * and measuring before would accept a password that is then hashed as half the
+ * length the policy believed it had checked.
+ */
 export function checkPasswordPolicy(candidate: unknown): PasswordPolicyResult {
   if (typeof candidate !== "string") {
     return { ok: false, reason: "not_a_string", message: "A password must be text." };
@@ -97,14 +115,15 @@ export function checkPasswordPolicy(candidate: unknown): PasswordPolicyResult {
       message: "A password must not contain control characters.",
     };
   }
-  if (candidate.length < MINIMUM_PASSWORD_LENGTH) {
+  const measured = candidate.normalize("NFKC");
+  if (measured.length < MINIMUM_PASSWORD_LENGTH) {
     return {
       ok: false,
       reason: "too_short",
       message: `A password must be at least ${String(MINIMUM_PASSWORD_LENGTH)} characters. Length is the only rule; a passphrase satisfies it.`,
     };
   }
-  if (candidate.length > MAXIMUM_PASSWORD_LENGTH) {
+  if (measured.length > MAXIMUM_PASSWORD_LENGTH) {
     return {
       ok: false,
       reason: "too_long",

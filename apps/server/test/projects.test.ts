@@ -295,6 +295,60 @@ describe("managing projects", () => {
     assert.equal((await eventsOfType(postgres.pool, project.id, "project.repository_changed")).length, 1);
   });
 
+  test("a repository change that keeps the canonical form is still audited", async () => {
+    // The review's F3: adding a clone URL for the repository the project
+    // already points at changed the row, bumped the version and wrote no
+    // event at all, because the change list never mentioned the field and the
+    // repository event keys on the canonical form alone.
+    const project = data(
+      await createProject({
+        name: "Refresh Surplus",
+        repository_identity: "git@github.com:example/refresh-surplus.git",
+      }),
+    );
+
+    const added = await built.app.inject({
+      method: "PATCH",
+      url: `/api/v1/projects/${project.id}`,
+      headers: cookies.writeHeaders,
+      payload: {
+        repository_identity: {
+          clone_urls: [
+            "git@github.com:example/refresh-surplus.git",
+            "https://github.com/example/refresh-surplus.git",
+          ],
+        },
+      },
+    });
+    assert.equal(added.statusCode, 200, added.body);
+    assert.equal(data(added).repository_identity?.clone_urls?.length, 2);
+    assert.equal(data(added).version, project.version + 1);
+
+    const updates = await eventsOfType(postgres.pool, project.id, "project.updated");
+    assert.equal(updates.length, 1, "the change produced no event");
+    assert.deepEqual(updates[0]?.payload["changed_fields"], ["repository_identity"]);
+
+    // The canonical form did not move, so the timeline does not claim the
+    // project's history was reinterpreted.
+    assert.equal(
+      (await eventsOfType(postgres.pool, project.id, "project.repository_changed")).length,
+      0,
+    );
+  });
+
+  test("a patch that moves nothing writes no event and does not bump the version", async () => {
+    const project = data(await createProject({ name: "Refresh Surplus" }));
+    const repeated = await built.app.inject({
+      method: "PATCH",
+      url: `/api/v1/projects/${project.id}`,
+      headers: cookies.writeHeaders,
+      payload: { name: "Refresh Surplus", default_branch: "main" },
+    });
+    assert.equal(repeated.statusCode, 200, repeated.body);
+    assert.equal(data(repeated).version, project.version, "a no-op patch bumped the version");
+    assert.equal((await eventsOfType(postgres.pool, project.id, "project.updated")).length, 0);
+  });
+
   test("deleting archives, and archiving twice records one event", async () => {
     const project = data(await createProject({ name: "Refresh Surplus" }));
     const archived = await built.app.inject({

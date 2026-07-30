@@ -20,6 +20,7 @@ import {
   formatViewport,
   normaliseProjectSettings,
   normaliseRepositoryIdentity,
+  sanitiseCloneUrl,
 } from "../src/platform.ts";
 
 test("every spelling of one repository reduces to one canonical identity", () => {
@@ -65,6 +66,46 @@ test("a credential in a clone URL is dropped rather than stored", () => {
   assert.ok(
     !JSON.stringify(result.value).includes("ghp_secretvalue"),
     "the stored identity carried the credential from the URL",
+  );
+});
+
+test("a bare token in an HTTPS clone URL is dropped, and an SSH account name is not", () => {
+  // The regression this exists for: `https://<token>@host/…` is how every forge
+  // documents cloning with a personal access token, and a rule that only
+  // stripped `user:password` kept it — in a stored, API-returned field.
+  for (const url of [
+    "https://ghp_SUPERSECRETTOKEN1234567890@github.com/example/leak.git",
+    "http://glpat_SUPERSECRETTOKEN1234567890@git.example.internal/example/leak.git",
+    "HTTPS://ghp_SUPERSECRETTOKEN1234567890@github.com/example/leak.git",
+  ]) {
+    const sanitised = sanitiseCloneUrl(url);
+    assert.ok(
+      !/SUPERSECRETTOKEN/u.test(sanitised),
+      `the token survived sanitisation of ${url}: ${sanitised}`,
+    );
+
+    const stored = normaliseRepositoryIdentity(url);
+    assert.ok(stored.ok);
+    assert.ok(
+      !/SUPERSECRETTOKEN/u.test(JSON.stringify(stored.value)),
+      `the token reached the stored identity for ${url}`,
+    );
+  }
+
+  // The account name in an SSH remote is not a credential — the secret is a key
+  // on disk — and dropping it would store a URL that does not clone.
+  assert.equal(
+    sanitiseCloneUrl("git@github.com:example/api.git"),
+    "git@github.com:example/api.git",
+  );
+  assert.equal(
+    sanitiseCloneUrl("ssh://git@github.com/example/api.git"),
+    "ssh://git@github.com/example/api.git",
+  );
+  // A password in an SSH URL is still a credential.
+  assert.equal(
+    sanitiseCloneUrl("ssh://git:hunter2@github.com/example/api.git"),
+    "ssh://github.com/example/api.git",
   );
 });
 

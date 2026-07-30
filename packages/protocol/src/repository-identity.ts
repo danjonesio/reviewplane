@@ -145,22 +145,41 @@ export function canonicaliseCloneUrl(
 }
 
 /**
- * Removes a password from a clone URL without otherwise rewriting it.
+ * Removes credential material from a clone URL without otherwise rewriting it.
  *
- * A bare username is kept, because `git@github.com:…` is how the SSH form is
- * written and dropping it would leave a URL that does not clone. A `user:token`
- * pair is a credential, and the whole userinfo component goes: what is left is
- * still the same repository, and `docs/SECURITY.md` section 18 does not permit
- * the alternative.
+ * What counts as a credential depends on the transport, and getting that
+ * distinction wrong in either direction is a real fault:
+ *
+ * * Over **SSH**, `git@github.com:…` and `ssh://git@host/…` name the *account
+ *   to log in as*. The secret is a key on disk and is never in the URL, so a
+ *   bare username is kept — dropping it would store a URL that does not clone.
+ *   A `user:password` pair still goes, because a password in an SSH URL is a
+ *   credential whatever the transport.
+ * * Over **HTTP and HTTPS**, the whole `userinfo` component goes, colon or no
+ *   colon. `https://ghp_…@github.com/example/repo.git` is how every forge
+ *   documents cloning with a personal access token, so a bare userinfo here is
+ *   overwhelmingly a secret rather than an account name. Keeping it because it
+ *   held no colon is exactly the mistake that put a token in a stored,
+ *   API-returned field (RVP-12 review, F2). What is left still identifies the
+ *   same repository, and `docs/SECURITY.md` section 18 does not permit the
+ *   alternative.
+ *
+ * The rule errs towards deletion: an operator who loses a username from a URL
+ * has a URL to correct, and one who does not lose a token has a token in a
+ * database, in every backup of it, and on the screen of anyone who opens the
+ * project.
  */
 export function sanitiseCloneUrl(raw: string): string {
   const trimmed = raw.trim();
-  const withScheme = /^(?<scheme>[A-Za-z][A-Za-z0-9+.-]*:\/\/)(?<userinfo>[^/@]*@)?(?<rest>.*)$/u.exec(trimmed);
+  const withScheme = /^(?<scheme>[A-Za-z][A-Za-z0-9+.-]*):\/\/(?<userinfo>[^/@]*@)?(?<rest>.*)$/u.exec(trimmed);
   if (withScheme !== null) {
+    const scheme = (withScheme.groups?.["scheme"] ?? "").toLowerCase();
     const userinfo = withScheme.groups?.["userinfo"] ?? "";
-    const keep = userinfo === "" || !userinfo.includes(":") ? userinfo : "";
-    return `${withScheme.groups?.["scheme"] ?? ""}${keep}${withScheme.groups?.["rest"] ?? ""}`;
+    const carriesSecret = scheme === "http" || scheme === "https" || userinfo.includes(":");
+    const keep = carriesSecret ? "" : userinfo;
+    return `${scheme}://${keep}${withScheme.groups?.["rest"] ?? ""}`;
   }
+  // scp-like `user@host:path`, which Git only ever speaks over SSH.
   const scpLike = /^(?<userinfo>[^/@]*@)(?<rest>.*)$/u.exec(trimmed);
   if (scpLike !== null) {
     const userinfo = scpLike.groups?.["userinfo"] ?? "";

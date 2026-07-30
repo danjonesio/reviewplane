@@ -204,6 +204,30 @@ export function requireCsrfToken(request: FastifyRequest, principal: ViewerPrinc
   }
 }
 
+/**
+ * Enforces the CSRF token on a request that ends the caller's **own** session.
+ *
+ * The difference from {@link requireCsrfToken} is deliberate and narrow. That
+ * guard refuses a session with no CSRF token outright, which is right for every
+ * route that changes domain state: the ADR-0016 exchange must not reach one.
+ * But a session must always be able to end itself, and the exchange issues no
+ * CSRF token, so applying the strict guard to sign-out would leave those
+ * sessions with no way to end at all.
+ *
+ * So the rule here is by what the session carries. An account session always
+ * carries a CSRF token and must present it — that is the case the review
+ * proved: a password session could be ended by a cookie alone. A session that
+ * carries none is the read-only bootstrap exchange, and the worst a forged
+ * request achieves against it is signing a viewer out.
+ */
+export function requireCsrfTokenWhenSessionCarriesOne(
+  request: FastifyRequest,
+  principal: ViewerPrincipal,
+): void {
+  if (principal.csrfTokenDigest === null) return;
+  requireCsrfToken(request, principal);
+}
+
 /** A project as the authorisation layer sees it. */
 export interface AuthorisedProject {
   readonly id: string;

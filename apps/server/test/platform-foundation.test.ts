@@ -531,7 +531,14 @@ describe("event records", () => {
       // is audited by the authentication events of docs/EVENTS.md section 7 when
       // those land; an idempotency key is a request-deduplication artefact whose
       // own creation is not an occurrence anybody audits.
-      ["modules/live/viewer-sessions.ts", "viewer sessions are credentials, not domain records; their issue and revocation are audited by the authentication events that modules/identity/routes.ts writes"],
+      // A viewer session is a credential rather than a domain record, so this
+      // store writes no event of its own. Every route that calls it does:
+      // `modules/identity/routes.ts` and the ADR-0016 sign-out in
+      // `modules/live/routes.ts` both record `session.revoked`, and issuing one
+      // is recorded by the `authentication.login_succeeded` beside it. The
+      // wording matters — this exemption previously claimed an audit that one
+      // of those two routes was not in fact performing (RVP-12 review, F1).
+      ["modules/live/viewer-sessions.ts", "viewer sessions are credentials, not domain records; every route that issues or revokes one writes the matching authentication event"],
       ["modules/agents/idempotency.ts", "an idempotency key deduplicates a request; it is not a change"],
       // Throttling state. The refusal it produces is audited as
       // authentication.login_failed with reason `rate_limited`, so the fact an

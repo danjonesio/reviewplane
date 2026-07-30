@@ -31,9 +31,11 @@ import {
 import { requireAdministrator } from "../../auth.ts";
 import { inTransaction } from "../../db/pool.ts";
 import { ApiError } from "../../errors.ts";
-import { appendEvent } from "../../events/append.ts";
+import { appendEvent, recordStateChange } from "../../events/append.ts";
 import { newId } from "../../ids.ts";
 import type { BrowserSessionRecord, BrowserSessionService } from "../browser-sessions/service.ts";
+import { requireCsrfTokenWhenSessionCarriesOne } from "../identity/authorisation.ts";
+import { OrganisationStore } from "../identity/organisations.ts";
 import {
   LiveViewerLimits,
   MAX_CLIENT_MESSAGE_BYTES,
@@ -44,6 +46,7 @@ import {
   VIEWER_SESSION_COOKIE,
   VIEWER_SESSION_TTL_SECONDS,
   authorisedForProject,
+  clearedCsrfCookie,
   clearedViewerCookie,
   readCookie,
   viewerCookie,
@@ -112,6 +115,7 @@ export async function registerLiveRoutes(
   options: LiveRoutesOptions,
 ): Promise<void> {
   const limits = options.limits ?? new LiveViewerLimits();
+  const organisations = new OrganisationStore(options.pool);
   const sweeper = setInterval(() => {
     limits.sweep();
   }, 60000);
@@ -173,14 +177,70 @@ export async function registerLiveRoutes(
     });
   });
 
+  /**
+   * Ends the session the cookie names (ADR-0016).
+   *
+   * Two rules that RVP-12 made apply to this route as much as to its own
+   * sign-out, and which it originally missed:
+   *
+   *   * **A session that carries a CSRF token must present it.** The cookie
+   *     this route resolves may belong to a password-authenticated account —
+   *     the ADR-0016 exchange and a local account share one session record —
+   *     and ending one on a cookie alone would let another origin's markup sign
+   *     a person out (`docs/API.md` section 4.0). The exchange's own sessions
+   *     carry no CSRF token and may still end themselves, because a session
+   *     that cannot end is worse than one whose sign-out can be forged, and
+   *     what a forgery achieves there is a read-only viewer being logged out.
+   *   * **It records `session.revoked`.** `AGENTS.md` requires an audit record
+   *     for every meaningful state change, and a session ending is one. This
+   *     route revoking silently was the one gap in the authentication trail.
+   */
   app.delete("/api/v1/auth/viewer-sessions/current", async (request, reply) => {
+    const clear = (): FastifyReply =>
+      reply.header("set-cookie", [
+        clearedViewerCookie(options.secureCookies),
+        clearedCsrfCookie(options.secureCookies),
+      ]);
+
     const cookie = readCookie(request.headers.cookie, VIEWER_SESSION_COOKIE);
     const principal = await options.viewers.resolve(cookie);
-    if (principal !== null) await options.viewers.revoke(principal.viewerSessionId);
-    return reply
-      .header("set-cookie", clearedViewerCookie(options.secureCookies))
-      .status(204)
-      .send();
+    if (principal === null) {
+      // Nothing to revoke. Clearing is still right: a browser holding an
+      // expired or unknown session should stop sending it.
+      return clear().status(204).send();
+    }
+
+    requireCsrfTokenWhenSessionCarriesOne(request, principal);
+    const revoked = await options.viewers.revoke(principal.viewerSessionId, "sign_out");
+    if (revoked !== null) {
+      // The organisation is the event's stream. An ADR-0016 administrator
+      // session is organisation-wide and names none, so the deployment's own
+      // organisation is used: an event with nowhere to go would be the audit
+      // gap this exists to close.
+      const organisationId = revoked.organisationId ?? (await organisations.primary())?.id ?? null;
+      if (organisationId !== null) {
+        await recordStateChange(
+          options.pool,
+          {
+            type: "session.revoked",
+            organisationId,
+            actor: {
+              type: "human_user",
+              ...(principal.userId === null ? {} : { id: principal.userId }),
+              display: principal.display,
+            },
+            correlation: { request_id: request.id },
+            payload: {
+              session_id: revoked.id,
+              ...(revoked.userId === null ? {} : { user_id: revoked.userId }),
+              reason: "sign_out",
+            },
+          },
+          async () => undefined,
+        );
+      }
+    }
+    return clear().status(204).send();
   });
 
   /**

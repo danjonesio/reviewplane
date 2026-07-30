@@ -490,7 +490,7 @@
           "uniqueItems": true,
           "items": {
             "type": "string",
-            "description": "A clone URL as an operator supplied it. It never carries credentials: a userinfo component is removed during normalisation rather than stored.",
+            "description": "A clone URL as an operator supplied it, with credential material removed. Over http and https the whole userinfo component is dropped, because a bare userinfo there is a personal access token in every forge's documented clone command. Over ssh a bare username is kept — it names the account to log in as, and the secret is a key on disk — while a user:password pair is dropped.",
             "minLength": 3,
             "maxLength": 512,
             "pattern": "^[^\\s\\x00-\\x1f]+$"

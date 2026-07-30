@@ -134,6 +134,16 @@ it before the WebSocket upgrade completes.
 State-changing browser-session routes — start, command, terminate — remain
 administrative and are not reachable with a viewer session.
 
+`DELETE /api/v1/auth/viewer-sessions/current` ends the session the cookie names,
+and it ends **whatever kind** that session is: the exchange of this section and
+a local account of section 4.0 share one record. So it applies the CSRF rule by
+what the session carries. A session with a CSRF token — every account session —
+MUST present it, or the route answers `AUTHORISATION_DENIED` and revokes
+nothing. A session issued by this exchange carries none and may still end
+itself: a session that cannot be ended is worse than one whose sign-out can be
+forged, and what a forgery achieves against a read-only viewer session is
+logging it out. Either way the revocation records `session.revoked`.
+
 ### 4.2 Agent credentials
 
 Agent credentials are issued administratively and used only on `/mcp/v1`
@@ -377,8 +387,12 @@ shape is defined once in `packages/protocol/schemas/platform/v1.schema.json`:
 - `repository_identity` accepts a clone URL as a string, or an object holding
   `clone_urls`. It is normalised to the provider-agnostic canonical form before
   storage: the scheme, any `userinfo`, a default port, a `.git` suffix and
-  trailing slashes are removed and the host is lowercased. A password pasted
-  into a clone URL is dropped rather than stored. Clone URLs that reduce to
+  trailing slashes are removed and the host is lowercased. Credential material
+  in a clone URL is dropped rather than stored — over `http` and `https` the
+  whole `userinfo` component goes, because a bare userinfo there is a personal
+  access token in every forge's documented clone command; over `ssh` a bare
+  username is kept, because it names the account and the secret is a key on
+  disk, while a `user:password` pair is dropped. Clone URLs that reduce to
   different repositories are refused with `VALIDATION_FAILED` and
   `details.reason: "inconsistent_urls"`.
 - `settings.default_validation_viewports` defaults to 390x844 and 1440x900 and
@@ -396,9 +410,17 @@ shape is defined once in `packages/protocol/schemas/platform/v1.schema.json`:
   changes nothing and records nothing. `GET /api/v1/projects` omits archived
   projects unless `include_archived=true`.
 
-Events: `project.created`, `project.updated` (naming the fields that changed),
-`project.repository_changed` (carrying both canonical forms) and
+Events: `project.created`, `project.updated`, `project.repository_changed` and
 `project.archived`.
+
+`project.updated` names every attribute whose **stored value** moved, compared
+against the row rather than against which members the request carried:
+`repository_identity` appears there like any other. A `PATCH` that names
+attributes but moves none writes no event and does not bump the version, so
+repeating a request cannot manufacture history.
+`project.repository_changed` is written only when the canonical identity moves —
+adding a clone URL for the repository a project already points at is an update,
+not a change of repository.
 
 ## 9. Environment and connector endpoints
 

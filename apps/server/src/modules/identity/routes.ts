@@ -61,7 +61,7 @@ import { actorOf, requireCsrfToken, requireHuman } from "./authorisation.ts";
 import type { InstallTokenStore } from "./install-tokens.ts";
 import type { LoginRateLimiter } from "./rate-limit.ts";
 import type { OrganisationStore } from "./organisations.ts";
-import { checkPasswordPolicy, hashPassword, verifyPassword } from "./passwords.ts";
+import { SCRYPT_PARAMETERS, checkPasswordPolicy, hashPassword, verifyPassword } from "./passwords.ts";
 import { userView } from "./users.ts";
 import type { UserRecord, UserStore } from "./users.ts";
 
@@ -494,7 +494,7 @@ export async function registerIdentityRoutes(
  * — a malformed value here would be rejected without doing the work, which is
  * exactly the timing difference it exists to remove.
  */
-export const DUMMY_VERIFIER = `scrypt$N=32768,r=8,p=1$${"A".repeat(22)}$${"A".repeat(43)}`;
+export const DUMMY_VERIFIER = `scrypt$N=${String(SCRYPT_PARAMETERS.N)},r=${String(SCRYPT_PARAMETERS.r)},p=${String(SCRYPT_PARAMETERS.p)}$${"A".repeat(22)}$${"A".repeat(43)}`;
 
 /** Raised when an install token cannot be used, with the reason for the audit. */
 class InstallTokenRefused extends Error {

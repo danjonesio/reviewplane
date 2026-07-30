@@ -122,13 +122,16 @@ exchanged for a short-lived viewer session whose token lives in an HTTP-only,
 Stage 1 implements the rest, on the same session record — which is what ADR-0016
 said would survive local accounts.
 
-- **Strong password hashing.** scrypt with `N = 32768`, `r = 8`, `p = 1`, a
-  per-verifier 16-byte salt and a 32-byte derived key, stored as a
-  self-describing `scrypt$N=…,r=…,p=…$salt$digest` so the parameters can be
-  raised without a migration and existing rows keep verifying. Comparison is
-  constant time. A verifier whose parameters have been lowered below the
-  accepted range is refused rather than verified quickly, so writing to the
-  table is not a way to weaken a credential.
+- **Strong password hashing.** scrypt with `N = 131072`, `r = 8`, `p = 1` —
+  OWASP's current guidance, 128 MiB per hash — a per-verifier 16-byte salt and
+  a 32-byte derived key, stored as a self-describing
+  `scrypt$N=…,r=…,p=…$salt$digest` so the parameters can be raised without a
+  migration and existing rows keep verifying. Comparison is constant time. A
+  verifier whose parameters have been lowered below the accepted range is
+  refused rather than verified quickly, so writing to the table is not a way to
+  weaken a credential. Length is measured after NFKC normalisation, which is the
+  form that is hashed: measuring the typed form would let a composed
+  twelve-character passphrase be stored as six.
 - **Secure, HTTP-only, same-site cookies.** `reviewplane_viewer` is `HttpOnly`,
   `SameSite=Strict` and `Secure` where TLS terminates at the gateway. Only the
   SHA-256 digest of the session token is stored.

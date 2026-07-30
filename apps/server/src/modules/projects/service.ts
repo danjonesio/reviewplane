@@ -172,12 +172,25 @@ export class ProjectService {
   /**
    * Applies a partial change.
    *
-   * Repository identity is audited as its own event even though it is written
-   * in the same statement: `docs/EVENTS.md` section 7 gives it one because it
-   * is the fact a reader of the timeline needs to see on its own.
+   * Two events, deciding different things, which is why neither is derived from
+   * the other:
+   *
+   *   * `project.updated` names every attribute whose stored value moved,
+   *     including `repository_identity`. A row that changed and produced no
+   *     event would break "every meaningful state change produces an audit
+   *     record" (`AGENTS.md`), and the shape that used to do it was a
+   *     repository whose clone URLs changed while its canonical form did not
+   *     (RVP-12 review, F3).
+   *   * `project.repository_changed` fires only when the **canonical** identity
+   *     moves, because that is the fact `docs/EVENTS.md` section 7 gives its own
+   *     event: a review's captured commit is interpreted against it. Recording
+   *     an added clone URL as a repository change would make a reader think the
+   *     project's history had been reinterpreted when it had not.
+   *
+   * A patch that names attributes but moves none writes no event and does not
+   * bump the version: repeating a request must not manufacture history.
    */
   async update(input: UpdateProjectInput): Promise<ProjectRow> {
-    const changes: string[] = [];
     const name = input.name === undefined ? undefined : readName(input.name);
     const slug = input.slug === undefined ? undefined : readSlug(input.slug);
     const defaultBranch = input.defaultBranch === undefined ? undefined : readBranch(input.defaultBranch);
@@ -185,10 +198,6 @@ export class ProjectService {
     const repository =
       input.repositoryIdentity === undefined ? undefined : readRepositoryIdentity(input.repositoryIdentity);
 
-    if (name !== undefined) changes.push("name");
-    if (slug !== undefined) changes.push("slug");
-    if (defaultBranch !== undefined) changes.push("default_branch");
-    if (settings !== undefined) changes.push("settings");
     if (name === undefined && slug === undefined && defaultBranch === undefined && settings === undefined && repository === undefined) {
       throw new ApiError("VALIDATION_FAILED", "The request changes nothing.", { reason: "empty_patch" });
     }
@@ -200,6 +209,20 @@ export class ProjectService {
 
         const previousCanonical = current.repository_identity?.canonical ?? null;
         const repositoryChanged = repository !== undefined && repository.canonical !== previousCanonical;
+
+        // What actually moved, compared against the stored row rather than
+        // against which members the request happened to carry.
+        const changes: string[] = [];
+        if (name !== undefined && name !== current.name) changes.push("name");
+        if (slug !== undefined && slug !== current.slug) changes.push("slug");
+        if (defaultBranch !== undefined && defaultBranch !== current.default_branch) {
+          changes.push("default_branch");
+        }
+        if (settings !== undefined && !sameJson(settings, current.settings)) changes.push("settings");
+        if (repository !== undefined && !sameJson(repository, current.repository_identity)) {
+          changes.push("repository_identity");
+        }
+        if (changes.length === 0) return { row: current, appended: [] };
 
         const rows = await client.query<ProjectRow>(
           `UPDATE projects
@@ -225,19 +248,16 @@ export class ProjectService {
         const row = rows.rows[0];
         if (row === undefined) throw notFound("The project");
 
-        const appended = [];
-        if (changes.length > 0) {
-          appended.push(
-            await appendEvent(client, {
-              type: "project.updated",
-              organisationId: row.organisation_id,
-              projectId: row.id,
-              actor: input.actor,
-              correlation: { request_id: input.requestId },
-              payload: { changed_fields: changes },
-            }),
-          );
-        }
+        const appended = [
+          await appendEvent(client, {
+            type: "project.updated",
+            organisationId: row.organisation_id,
+            projectId: row.id,
+            actor: input.actor,
+            correlation: { request_id: input.requestId },
+            payload: { changed_fields: changes },
+          }),
+        ];
         if (repositoryChanged && repository !== undefined) {
           appended.push(
             await appendEvent(client, {
@@ -326,6 +346,28 @@ async function lockProject(
   const row = rows.rows[0];
   if (row === undefined) throw notFound("The project");
   return row;
+}
+
+/**
+ * Whether two stored JSON values are the same document.
+ *
+ * Member order is normalised before comparison, because `jsonb` does not
+ * preserve the order a value was written in: comparing the serialised forms
+ * directly would report a change every time PostgreSQL happened to return the
+ * members in a different order from the one the caller sent.
+ */
+function sameJson(left: unknown, right: unknown): boolean {
+  return stableJson(left) === stableJson(right);
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || value === undefined) return "null";
+  if (typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, member]) => member !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([key, member]) => `${JSON.stringify(key)}:${stableJson(member)}`).join(",")}}`;
 }
 
 function assertVersion(row: ProjectRow, expected: number | undefined): void {

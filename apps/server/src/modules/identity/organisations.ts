@@ -18,6 +18,9 @@
  * against the one that holds the account, not against whichever row was
  * inserted first, or a fresh deployment would authenticate against an
  * organisation with no users in it.
+ *
+ * Reconciling those two rows is RVP-63. This function is what keeps
+ * authentication correct until it lands, and it stays correct afterwards.
  */
 
 import type { Organisation } from "@reviewplane/protocol/platform";

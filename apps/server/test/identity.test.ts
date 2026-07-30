@@ -114,7 +114,10 @@ async function signIn(email: string, password: string) {
 describe("password verifiers", () => {
   test("a verifier records the documented work factors and verifies constant-time", async () => {
     const verifier = await hashPassword(PASSWORD);
-    assert.match(verifier, /^scrypt\$N=32768,r=8,p=1\$/u);
+    // OWASP's current guidance for scrypt. The literal is written out rather
+    // than built from the constant, so raising the cost has to be a deliberate
+    // edit here as well as there.
+    assert.match(verifier, /^scrypt\$N=131072,r=8,p=1\$/u);
     assert.deepEqual(verifierParameters(verifier), {
       algorithm: "scrypt",
       N: SCRYPT_PARAMETERS.N,
@@ -131,7 +134,7 @@ describe("password verifiers", () => {
 
   test("a verifier whose work factors were lowered is refused rather than accepted quickly", async () => {
     const verifier = await hashPassword(PASSWORD);
-    const weakened = verifier.replace("N=32768", "N=2");
+    const weakened = verifier.replace("N=131072", "N=2");
     assert.equal(await verifyPassword(PASSWORD, weakened), false);
     assert.equal(verifierParameters(weakened), null);
   });
@@ -150,6 +153,31 @@ describe("password verifiers", () => {
     assert.equal(checkPasswordPolicy(42).ok, false);
     // A passphrase with spaces and punctuation is exactly what should pass.
     assert.equal(checkPasswordPolicy("a rather long passphrase!").ok, true);
+  });
+
+  test("length is measured on the form that is hashed, not the form that was typed", async () => {
+    // "e" plus a combining acute accent: two code units that NFKC folds to one.
+    const pair = `e${String.fromCharCode(0x0301)}`;
+
+    // Twelve typed characters that become six. Measuring before normalisation
+    // would accept this and then hash half of what the policy checked.
+    const looksLongEnough = pair.repeat(6);
+    assert.equal(looksLongEnough.length, 12);
+    assert.equal(looksLongEnough.normalize("NFKC").length, 6);
+    const refused = checkPasswordPolicy(looksLongEnough);
+    assert.equal(refused.ok, false);
+    assert.equal(refused.ok === false && refused.reason, "too_short");
+
+    // A decomposed passphrase that really is long enough still passes.
+    const genuinelyLong = pair.repeat(12);
+    assert.equal(genuinelyLong.length, 24);
+    assert.equal(genuinelyLong.normalize("NFKC").length, 12);
+    assert.equal(checkPasswordPolicy(genuinelyLong).ok, true);
+
+    // And the two spellings of one passphrase verify against each other, which
+    // is what normalising before hashing is for.
+    const verifier = await hashPassword(genuinelyLong);
+    assert.equal(await verifyPassword(genuinelyLong.normalize("NFKC"), verifier), true);
   });
 });
 
@@ -496,6 +524,91 @@ describe("security", () => {
       payload,
     });
     assert.equal(accepted.statusCode, 201, accepted.body);
+  });
+
+  test("the ADR-0016 sign-out route cannot end an account session without the CSRF token", async () => {
+    // The review's F1: this route revoked whatever the cookie resolved to,
+    // including a password session, with no CSRF check and no event. Both
+    // halves are asserted, because either one alone would still be a defect.
+    const { account, cookies } = await claim();
+
+    const forged = await built.app.inject({
+      method: "DELETE",
+      url: "/api/v1/auth/viewer-sessions/current",
+      headers: cookies.readHeaders,
+    });
+    assert.equal(forged.statusCode, 403, forged.body);
+    assert.equal((forged.json() as { error: { code: string } }).error.code, "AUTHORISATION_DENIED");
+
+    // The session survived the attempt.
+    const alive = await built.app.inject({
+      method: "GET",
+      url: "/api/v1/auth/sessions/current",
+      headers: cookies.readHeaders,
+    });
+    assert.equal(alive.statusCode, 200, "a forged sign-out ended the session");
+
+    // With the token it works, and it leaves a record.
+    const signedOut = await built.app.inject({
+      method: "DELETE",
+      url: "/api/v1/auth/viewer-sessions/current",
+      headers: cookies.writeHeaders,
+    });
+    assert.equal(signedOut.statusCode, 204, signedOut.body);
+    const dead = await built.app.inject({
+      method: "GET",
+      url: "/api/v1/auth/sessions/current",
+      headers: cookies.readHeaders,
+    });
+    assert.equal(dead.statusCode, 401);
+
+    const revocations = await eventsOfType(
+      postgres.pool,
+      account.organisationId,
+      "session.revoked",
+    );
+    assert.ok(
+      revocations.some((event) => event.payload["reason"] === "sign_out"),
+      "the revocation left no audit record",
+    );
+  });
+
+  test("the bootstrap exchange can still end its own session, and that is audited too", async () => {
+    // It carries no CSRF token, so the strict guard would leave it unable to
+    // sign out at all. What it must not do is end silently.
+    await seedAccount(postgres.pool);
+    const exchange = await built.app.inject({
+      method: "POST",
+      url: "/api/v1/auth/viewer-sessions",
+      headers: ADMIN,
+    });
+    assert.equal(exchange.statusCode, 201);
+    const cookie = (exchange.cookies as { name: string; value: string }[]).find(
+      (candidate) => candidate.name === "reviewplane_viewer",
+    );
+    assert.ok(cookie !== undefined);
+    const headers = { cookie: `reviewplane_viewer=${cookie.value}` };
+
+    const signedOut = await built.app.inject({
+      method: "DELETE",
+      url: "/api/v1/auth/viewer-sessions/current",
+      headers,
+    });
+    assert.equal(signedOut.statusCode, 204, signedOut.body);
+
+    const replayed = await built.app.inject({
+      method: "GET",
+      url: "/api/v1/auth/viewer-sessions/current",
+      headers,
+    });
+    assert.equal(replayed.statusCode, 401);
+
+    // The session named no organisation, so the event went to the deployment's
+    // own; what matters is that it exists.
+    const revocations = await postgres.pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM events WHERE type = 'session.revoked'",
+    );
+    assert.equal(revocations.rows[0]?.count, "1");
   });
 
   test("the ADR-0016 viewer session cannot reach a state-changing route", async () => {
