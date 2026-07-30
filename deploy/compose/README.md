@@ -34,14 +34,28 @@ internal-only network and no published host port. No container mounts the
 Docker socket.
 
 `browser-worker-seccomp.json` is Docker's default seccomp profile with exactly
-one change: creating a user namespace (`clone`, `clone3`, `unshare`, `setns`)
-no longer requires `CAP_SYS_ADMIN`. Chromium's own sandbox is built on user
-namespaces, so the default profile makes it fail with "No usable sandbox" and
-pushes an operator towards the unsupported `--no-sandbox` workaround. Every
-other gate in the profile, including `CAP_SYS_ADMIN` on `mount` and
-`pivot_root`, is untouched. `SYS_CHROOT` is added back for the same reason:
+one change: `clone`, `clone3` and `unshare` no longer require `CAP_SYS_ADMIN`.
+Chromium's own sandbox is built on user namespaces, so the default profile
+makes it fail with "No usable sandbox" and pushes an operator towards the
+unsupported `--no-sandbox` workaround. Every other gate in the profile,
+including `CAP_SYS_ADMIN` on `mount`, `pivot_root` and `setns`, is untouched.
+`SYS_CHROOT` is added back for the same reason as the three syscalls:
 Chromium's sandboxed zygote chroots itself into an empty directory inside its
 new namespace.
+
+Those three are the measured minimum, not a guess. Each was removed in turn and
+the browser suite re-run under the result:
+
+| Ungated | Outcome |
+|---|---|
+| `clone` only | Node cannot start; the process aborts creating a thread |
+| `clone`, `clone3` | 22 of 23 tests fail with "No usable sandbox" — `unshare` is what creates the namespace |
+| `clone`, `unshare` | Node cannot start; modern glibc uses `clone3` for threads |
+| `clone`, `clone3`, `unshare` | 23 of 23 pass |
+| the three plus `setns` | 23 of 23 pass — `setns` joins an existing namespace and is not needed |
+
+`setns` therefore stays behind the `CAP_SYS_ADMIN` gate it has in Docker's
+default profile, and the container drops that capability.
 
 On a host that restricts unprivileged user namespaces — Ubuntu 23.10 and later
 set `kernel.apparmor_restrict_unprivileged_userns=1` — the profile alone is not

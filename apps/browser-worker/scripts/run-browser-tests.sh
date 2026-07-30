@@ -47,4 +47,4 @@ exec docker run --rm \
   --volume "${repo}:/work" \
   --workdir /work/apps/browser-worker \
   "${image}" \
-  node --test --test-concurrency=1 "test/browser/**/*.test.ts"
+  node --conditions=development --test --test-concurrency=1 "test/browser/**/*.test.ts"

@@ -6,10 +6,10 @@
   "description": "Central Chromium browser worker: isolated Playwright contexts, navigation, bounded snapshots and verified screenshot capture.",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "dev": "node src/main.ts",
+    "dev": "node --conditions=development src/main.ts",
     "start": "node src/main.ts",
-    "test": "node --test \"test/*.test.ts\"",
-    "test:browser": "node --test --test-concurrency=1 \"test/browser/**/*.test.ts\"",
+    "test": "node --conditions=development --test \"test/*.test.ts\"",
+    "test:browser": "node --conditions=development --test --test-concurrency=1 \"test/browser/**/*.test.ts\"",
     "test:browser:container": "bash scripts/run-browser-tests.sh",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

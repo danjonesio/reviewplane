@@ -6,9 +6,9 @@
   "description": "ReviewPlane control-plane server: projects, browser-session orchestration, artefacts, events.",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "dev": "node src/main.ts",
+    "dev": "node --conditions=development src/main.ts",
     "start": "node src/main.ts",
-    "test": "node --test \"test/**/*.test.ts\"",
+    "test": "node --conditions=development --test \"test/**/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

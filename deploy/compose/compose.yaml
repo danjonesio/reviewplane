@@ -128,10 +128,10 @@ services:
     cap_add: [SYS_CHROOT]
     security_opt:
       - no-new-privileges:true
-      # Docker's default profile with one change: user-namespace creation is
-      # permitted, because that is what Chromium's sandbox is built on. Every
-      # other gate, including CAP_SYS_ADMIN on mount and pivot_root, is
-      # untouched. Without it Chromium reports "No usable sandbox".
+      # Docker's default profile with one change: clone, clone3 and unshare
+      # are ungated, because that is what Chromium's sandbox is built on.
+      # Every other gate, including CAP_SYS_ADMIN on mount, pivot_root and
+      # setns, is untouched. Without it Chromium reports "No usable sandbox".
       - seccomp:./browser-worker-seccomp.json
     # Chromium's shared-memory use is heavy; the default 64 MB /dev/shm makes
     # renderers crash rather than making them safer.

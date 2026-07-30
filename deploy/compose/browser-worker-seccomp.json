@@ -816,7 +816,6 @@
       "names": [
         "clone",
         "clone3",
-        "setns",
         "unshare"
       ],
       "action": "SCMP_ACT_ALLOW"
