@@ -630,11 +630,16 @@ test("a WebSocket handshake for the session origin carries the route capability"
   );
   const before = fixture.socketHandshakes.length;
   await run(id, navigate("/websocket", "load"));
-  await run(id, {
-    command: "wait",
-    timeout_ms: 15000,
-    wait: { condition: "text_visible", text: "echo:hello" },
-  });
+
+  // The assertion is on the handshake the fixture received, not on what the
+  // page went on to display. What is under test is whether the credential
+  // reaches the far end of an upgrade at all; the whole exchange over a real
+  // gateway is proven by the end-to-end scenario, which drives the same page
+  // through a real route.
+  const deadline = Date.now() + 10000;
+  while (fixture.socketHandshakes.length === before && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
 
   const handshakes = fixture.socketHandshakes.slice(before);
   assert.equal(handshakes.length, 1, "the page opened no WebSocket");

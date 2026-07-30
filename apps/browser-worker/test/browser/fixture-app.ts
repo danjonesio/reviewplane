@@ -11,6 +11,7 @@
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import type { Duplex } from "node:stream";
 
 export interface FixtureApp {
   readonly origin: string;
@@ -94,19 +95,24 @@ const COOKIE_PAGE = `<!doctype html>
  * A page that opens a WebSocket back to its own origin.
  *
  * Hot module replacement is a WebSocket, so this is the shape of the thing the
- * session has to be able to open. The result is rendered as text because the
- * worker exposes no way to read a value out of a page other than by reading
- * what it displays.
+ * session has to be able to open. What the browser suite asserts is the
+ * handshake the fixture received and the credential on it; the whole exchange
+ * over a real gateway belongs to the end-to-end scenario, which drives an
+ * equivalent page through a real route. The page still reports every state it
+ * reaches, so a reader of a screenshot is not left guessing.
  */
 const WEBSOCKET_PAGE = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>WebSocket</title></head>
 <body><main><h1 id="ws">connecting</h1>
 <script>
   const socket = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws-echo");
+  socket.addEventListener("open", () => {
+    document.getElementById("ws").textContent = "ws-open";
+    socket.send("hello");
+  });
   socket.addEventListener("message", (event) => {
     document.getElementById("ws").textContent = event.data;
   });
-  socket.addEventListener("open", () => { socket.send("hello"); });
   socket.addEventListener("error", () => {
     document.getElementById("ws").textContent = "ws-failed";
   });
@@ -198,8 +204,15 @@ export async function startFixtureApp(): Promise<FixtureApp> {
   // server at all, with the headers the worker attached to it. Only one small
   // masked text frame is ever parsed; anything else closes the socket.
   const socketHandshakes: Record<string, string | string[] | undefined>[] = [];
+  // An upgraded socket is detached from the server's own connection tracking,
+  // so `closeAllConnections` does not reach it and `close` waits for it for
+  // ever. They are tracked here and destroyed on stop, which is the difference
+  // between a suite that ends and one that looks hung.
+  const upgraded = new Set<Duplex>();
   server.on("upgrade", (request, socket) => {
     socketHandshakes.push({ ...request.headers });
+    upgraded.add(socket);
+    socket.on("close", () => upgraded.delete(socket));
     const key = request.headers["sec-websocket-key"];
     if (new URL(request.url ?? "/", "http://fixture.invalid").pathname !== "/ws-echo" ||
         typeof key !== "string" || key === "") {
@@ -251,10 +264,12 @@ export async function startFixtureApp(): Promise<FixtureApp> {
     headers: receivedHeaders,
     socketHandshakes,
     async stop() {
-      // An upgraded socket is a connection the server keeps open by design, and
-      // `close` waits for every connection to end. Without this the suite would
-      // hang at teardown after any test that opened a WebSocket, which reads as
-      // a hung test rather than as a fixture that never let go.
+      // `close` waits for every connection to end, and a WebSocket does not end
+      // on its own. Without both of these the suite hangs at teardown after any
+      // test that opened one, which reads as a hung test rather than as a
+      // fixture that never let go.
+      for (const socket of upgraded) socket.destroy();
+      upgraded.clear();
       server.closeAllConnections();
       await new Promise<void>((resolve) => {
         server.close(() => {
