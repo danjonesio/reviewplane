@@ -130,6 +130,28 @@ The two credentials have no defaults: the worker refuses to start without them. 
 
 The control plane reads `REVIEWPLANE_LISTEN_ADDRESS`, `REVIEWPLANE_PORT`, `REVIEWPLANE_DATABASE_URL`, `REVIEWPLANE_BOOTSTRAP_TOKEN`, `REVIEWPLANE_WORKER_CREDENTIAL`, `REVIEWPLANE_WORKER_COMMAND_CREDENTIAL`, `REVIEWPLANE_WORKER_ENDPOINT`, `REVIEWPLANE_ARTEFACT_PATH` and `REVIEWPLANE_ARTEFACT_MAX_BYTES`, each with the same `*_FILE` support.
 
+### 3.1 MCP-server environment
+
+The agent-facing process (`docs/ARCHITECTURE.md` section 4.4, ADR-0020) is
+configured separately, because it is a separate process:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `REVIEWPLANE_MCP_LISTEN_ADDRESS` | `0.0.0.0` | Listener address; reached through the gateway only |
+| `REVIEWPLANE_MCP_PORT` | `8081` | Listener port |
+| `REVIEWPLANE_MCP_PATH` | `/mcp/v1` | Endpoint route. It must start with `/mcp/` (`docs/API.md` section 3) |
+| `REVIEWPLANE_DATABASE_URL` | none | Same database as the control plane |
+| `REVIEWPLANE_WORKER_COMMAND_CREDENTIAL` | none | Credential presented to the worker for a capture |
+| `REVIEWPLANE_WORKER_ENDPOINT` | `http://browser-worker:8090` | Worker's internal listener |
+| `REVIEWPLANE_ARTEFACT_PATH` | `/var/lib/reviewplane/artefacts` | Artefact store, mounted read-only |
+| `REVIEWPLANE_API_PATH_PREFIX` | `/api/v1` | Prefix used to build the evidence path an agent fetches |
+
+It deliberately does **not** read `REVIEWPLANE_BOOTSTRAP_TOKEN`. The agent-facing
+process has no administrative work to do, and a process that cannot read an
+administrator credential cannot leak one. It does not run migrations either: the
+control-plane server owns the schema, and two processes racing to migrate one
+database is a failure mode with no upside.
+
 ## 4. Tunnel-gateway configuration
 
 ```yaml

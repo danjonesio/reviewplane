@@ -85,6 +85,26 @@ Automated scenario:
 
 This scenario is release-blocking.
 
+### 3.1 What runs automatically today
+
+| Steps | Harness | Command |
+|---|---|---|
+| 5 to 7, browser side | `apps/browser-worker/test/browser/` | `pnpm test:browser` |
+| 7, annotation UI | `apps/web/test/ui/` | `pnpm test:ui` |
+| 8 to 12 | `apps/mcp-server/test/integration/` | `pnpm --filter @reviewplane/mcp-server run test:integration` |
+
+Steps 9 to 12 — agent retrieves and claims `bugs-on-homepage`, changes the
+fixture application, captures the after screenshot and submits verification —
+run against real components: a real PostgreSQL, the real control-plane process,
+the real MCP server, a real Chromium browser worker in its own process, and the
+official MCP TypeScript SDK as the client. The suite runs in the browser
+worker's own image under the container controls of
+`deploy/compose/compose.yaml`, on an internal Docker network whose only
+reachable peer is its database, with a unique name per run.
+
+Steps 1 to 4 need the connector, and steps 13 to 15 need human acceptance and
+review export; both arrive in Stage 1.
+
 ## 4. Domain tests
 
 Required transition tests:
@@ -161,6 +181,24 @@ published come from the suite rather than from a separate benchmark.
 - Capability degradation for clients without image support
 - Inbox acknowledgement semantics
 - Completion-gate missing evidence response
+
+Every item on this list except the last two is covered by
+`apps/mcp-server/test/mcp.test.ts`, which drives the endpoint with the official
+MCP TypeScript SDK client against a real database. Inbox semantics and
+completion gates arrive with the tools they test, in Stage 1.
+
+The suite also holds the properties that are specific to the Stage 0 agent
+surface: the advertised tool set equals the schema's availability set; no
+advertised status enumeration can express a final disposition; a slug from
+another project resolves as not found; an agent credential is refused by the
+administrative API; a human session cookie is refused as agent authentication; a
+credential that expires mid-session refuses the next call rather than executing
+part of it; a transport session identifier is not a credential; and no tool
+response carries a credential.
+
+`apps/mcp-server/test/unit.test.ts` holds the contract snapshot of the
+advertised tool schemas, so a breaking tool change cannot land silently
+(section 2 "Contract").
 
 ## 9. API tests
 

@@ -14,9 +14,13 @@ import type {
   ArtefactUploadStarted,
   Envelope,
   FindingAnnotated,
+  FindingClaimed,
+  FindingCommentAdded,
   FindingCreated,
   FindingStatusChanged,
+  FindingVerificationSubmitted,
   MessageType,
+  ReviewClaimed,
   ReviewCreated,
   ReviewFrame,
   ReviewNamed,
@@ -29,8 +33,12 @@ import {
   decodeArtefactUploadFailed,
   decodeArtefactUploadStarted,
   decodeFindingAnnotated,
+  decodeFindingClaimed,
+  decodeFindingCommentAdded,
   decodeFindingCreated,
   decodeFindingStatusChanged,
+  decodeFindingVerificationSubmitted,
+  decodeReviewClaimed,
   decodeReviewCreated,
   decodeReviewNamed,
   decodeReviewStatusChanged,
@@ -42,8 +50,12 @@ import {
   encodeArtefactUploadFailed,
   encodeArtefactUploadStarted,
   encodeFindingAnnotated,
+  encodeFindingClaimed,
+  encodeFindingCommentAdded,
   encodeFindingCreated,
   encodeFindingStatusChanged,
+  encodeFindingVerificationSubmitted,
+  encodeReviewClaimed,
   encodeReviewCreated,
   encodeReviewNamed,
   encodeReviewStatusChanged,
@@ -55,8 +67,12 @@ import {
   validateArtefactUploadFailed,
   validateArtefactUploadStarted,
   validateFindingAnnotated,
+  validateFindingClaimed,
+  validateFindingCommentAdded,
   validateFindingCreated,
   validateFindingStatusChanged,
+  validateFindingVerificationSubmitted,
+  validateReviewClaimed,
   validateReviewCreated,
   validateReviewNamed,
   validateReviewStatusChanged,
@@ -73,6 +89,10 @@ export type ReviewPayload =
   | FindingCreated
   | FindingAnnotated
   | FindingStatusChanged
+  | ReviewClaimed
+  | FindingClaimed
+  | FindingCommentAdded
+  | FindingVerificationSubmitted
   | ArtefactUploadStarted
   | ArtefactUploadCompleted
   | ArtefactUploadFailed
@@ -101,6 +121,18 @@ export function validatePayload(type: MessageType, value: unknown, path: string,
       return;
     case "finding.status_changed":
       validateFindingStatusChanged(value, path, out);
+      return;
+    case "review.claimed":
+      validateReviewClaimed(value, path, out);
+      return;
+    case "finding.claimed":
+      validateFindingClaimed(value, path, out);
+      return;
+    case "finding.comment_added":
+      validateFindingCommentAdded(value, path, out);
+      return;
+    case "finding.verification_submitted":
+      validateFindingVerificationSubmitted(value, path, out);
       return;
     case "artefact.upload_started":
       validateArtefactUploadStarted(value, path, out);
@@ -137,6 +169,14 @@ export function decodeFrame(envelope: Envelope, value: unknown): ReviewFrame {
       return { envelope, type: "finding.annotated", payload: decodeFindingAnnotated(value) };
     case "finding.status_changed":
       return { envelope, type: "finding.status_changed", payload: decodeFindingStatusChanged(value) };
+    case "review.claimed":
+      return { envelope, type: "review.claimed", payload: decodeReviewClaimed(value) };
+    case "finding.claimed":
+      return { envelope, type: "finding.claimed", payload: decodeFindingClaimed(value) };
+    case "finding.comment_added":
+      return { envelope, type: "finding.comment_added", payload: decodeFindingCommentAdded(value) };
+    case "finding.verification_submitted":
+      return { envelope, type: "finding.verification_submitted", payload: decodeFindingVerificationSubmitted(value) };
     case "artefact.upload_started":
       return { envelope, type: "artefact.upload_started", payload: decodeArtefactUploadStarted(value) };
     case "artefact.upload_completed":
@@ -167,6 +207,14 @@ export function encodeFramePayload(frame: ReviewFrame): string {
       return encodeFindingAnnotated(frame.payload);
     case "finding.status_changed":
       return encodeFindingStatusChanged(frame.payload);
+    case "review.claimed":
+      return encodeReviewClaimed(frame.payload);
+    case "finding.claimed":
+      return encodeFindingClaimed(frame.payload);
+    case "finding.comment_added":
+      return encodeFindingCommentAdded(frame.payload);
+    case "finding.verification_submitted":
+      return encodeFindingVerificationSubmitted(frame.payload);
     case "artefact.upload_started":
       return encodeArtefactUploadStarted(frame.payload);
     case "artefact.upload_completed":

@@ -298,6 +298,10 @@ export const MESSAGE_TYPE_VALUES = [
   "finding.created",
   "finding.annotated",
   "finding.status_changed",
+  "review.claimed",
+  "finding.claimed",
+  "finding.comment_added",
+  "finding.verification_submitted",
   "artefact.upload_started",
   "artefact.upload_completed",
   "artefact.upload_failed",
@@ -312,6 +316,10 @@ export type MessageType =
   | "finding.created"
   | "finding.annotated"
   | "finding.status_changed"
+  | "review.claimed"
+  | "finding.claimed"
+  | "finding.comment_added"
+  | "finding.verification_submitted"
   | "artefact.upload_started"
   | "artefact.upload_completed"
   | "artefact.upload_failed"
@@ -411,6 +419,10 @@ export const MESSAGE_DIRECTIONS: Readonly<Record<MessageType, "control_plane_to_
   "finding.created": "control_plane_to_client",
   "finding.annotated": "control_plane_to_client",
   "finding.status_changed": "control_plane_to_client",
+  "review.claimed": "control_plane_to_client",
+  "finding.claimed": "control_plane_to_client",
+  "finding.comment_added": "control_plane_to_client",
+  "finding.verification_submitted": "control_plane_to_client",
   "artefact.upload_started": "control_plane_to_client",
   "artefact.upload_completed": "control_plane_to_client",
   "artefact.upload_failed": "control_plane_to_client",
@@ -428,6 +440,10 @@ export const MESSAGE_CHANNELS: Readonly<Record<MessageType, Channel>> = {
   "finding.created": "finding",
   "finding.annotated": "finding",
   "finding.status_changed": "finding",
+  "review.claimed": "review",
+  "finding.claimed": "finding",
+  "finding.comment_added": "finding",
+  "finding.verification_submitted": "finding",
   "artefact.upload_started": "evidence",
   "artefact.upload_completed": "evidence",
   "artefact.upload_failed": "evidence",
@@ -446,6 +462,10 @@ export const PAYLOAD_MAX_BYTES: Readonly<Record<MessageType, number>> = {
   "finding.created": 8192,
   "finding.annotated": 4096,
   "finding.status_changed": 2048,
+  "review.claimed": 2048,
+  "finding.claimed": 2048,
+  "finding.comment_added": 6144,
+  "finding.verification_submitted": 8192,
   "artefact.upload_started": 2048,
   "artefact.upload_completed": 2048,
   "artefact.upload_failed": 2048,
@@ -549,6 +569,7 @@ export const IDENTIFIER_PREFIXES: Readonly<Record<string, string>> = {
   "annotation_id": "ann_",
   "artefact_id": "art_",
   "verification_id": "ver_",
+  "comment_id": "cmt_",
   "event_id": "evt_",
   "project_id": "prj_",
   "organisation_id": "org_",
@@ -1201,6 +1222,22 @@ export interface VerificationReference {
    */
   readonly after_artefact_id?: Identifier;
   /**
+   * Viewports the fix was checked at. AGENTS.md requires UI-facing work to be checked at
+   * 390x844 and 1440x900 at minimum, and this is where the claim to have done so is
+   * recorded.
+   */
+  readonly tested_viewports?: readonly Viewport[];
+  /**
+   * Checks the submitter claims to have performed.
+   */
+  readonly checks?: VerificationChecks;
+  /**
+   * Every artefact the submission rests on, in submission order. The server has already
+   * verified that each belongs to this project and to a browser session of this project
+   * before the event is written; evidence from elsewhere never reaches this list.
+   */
+  readonly artefact_ids?: readonly Identifier[];
+  /**
    * Submission time.
    */
   readonly submitted_at: Timestamp;
@@ -1570,6 +1607,138 @@ export interface FindingStatusChanged {
 }
 
 /**
+ * One chronological discussion item on a finding (docs/DOMAIN_MODEL.md section 18).
+ * Comments are append-only; the actor type is always explicit, because a reader must be
+ * able to tell an agent's note from a human's without inferring it from the wording.
+ */
+export interface Comment {
+  /**
+   * Comment identifier, conventionally prefixed cmt_.
+   */
+  readonly id: Identifier;
+  /**
+   * Owning organisation.
+   */
+  readonly organisation_id?: Identifier;
+  /**
+   * Owning project.
+   */
+  readonly project_id?: Identifier;
+  /**
+   * Review the finding belongs to.
+   */
+  readonly review_id?: Identifier;
+  /**
+   * Finding the comment is on.
+   */
+  readonly finding_id: Identifier;
+  /**
+   * Comment text. Rendered as text and never as markup.
+   */
+  readonly body: BodyText;
+  /**
+   * Who wrote it.
+   */
+  readonly created_by: Actor;
+  /**
+   * Revision of the comment. Editing records a new revision and retains the previous one.
+   */
+  readonly revision: VersionNumber;
+  /**
+   * When it was written.
+   */
+  readonly created_at: Timestamp;
+}
+
+/**
+ * The checks a verification claims to have performed (docs/DOMAIN_MODEL.md section 19).
+ * They are recorded as claims and are never proof on their own: the artefacts are the
+ * evidence, and a human decides.
+ */
+export interface VerificationChecks {
+  /**
+   * Whether the defect was reproduced before anything was changed.
+   */
+  readonly reproduced_before: boolean;
+  /**
+   * Whether console output was reviewed after the change.
+   */
+  readonly console_errors_reviewed: boolean;
+  /**
+   * Whether failed network requests were reviewed after the change.
+   */
+  readonly network_failures_reviewed: boolean;
+  /**
+   * Whether keyboard navigation and visible focus were checked.
+   */
+  readonly accessibility_checked?: boolean;
+}
+
+/**
+ * Payload of review.claimed.
+ */
+export interface ReviewClaimed {
+  /**
+   * Review claimed.
+   */
+  readonly review_id: Identifier;
+  /**
+   * Actor that claimed it.
+   */
+  readonly claimed_by: Actor;
+  /**
+   * Version after the claim.
+   */
+  readonly version: VersionNumber;
+  /**
+   * Actor that held the claim before, where a claim was taken over.
+   */
+  readonly previous_claimed_by?: Actor;
+}
+
+/**
+ * Payload of finding.claimed.
+ */
+export interface FindingClaimed {
+  /**
+   * Finding claimed.
+   */
+  readonly finding_id: Identifier;
+  /**
+   * Review it belongs to.
+   */
+  readonly review_id: Identifier;
+  /**
+   * Actor that claimed it.
+   */
+  readonly claimed_by: Actor;
+  /**
+   * Version after the claim.
+   */
+  readonly version: VersionNumber;
+}
+
+/**
+ * Payload of finding.comment_added.
+ */
+export interface FindingCommentAdded {
+  /**
+   * The comment as recorded.
+   */
+  readonly comment: Comment;
+}
+
+/**
+ * Payload of finding.verification_submitted.
+ */
+export interface FindingVerificationSubmitted {
+  /**
+   * The verification as submitted, with status submitted.
+   */
+  readonly verification: VerificationReference;
+}
+
+/**
  * Payload of artefact.upload_started.
  */
 export interface ArtefactUploadStarted {
@@ -1818,6 +1987,26 @@ export type ReviewFrame =
       readonly envelope: Envelope;
       readonly type: "finding.status_changed";
       readonly payload: FindingStatusChanged;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "review.claimed";
+      readonly payload: ReviewClaimed;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "finding.claimed";
+      readonly payload: FindingClaimed;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "finding.comment_added";
+      readonly payload: FindingCommentAdded;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "finding.verification_submitted";
+      readonly payload: FindingVerificationSubmitted;
     }
   | {
       readonly envelope: Envelope;

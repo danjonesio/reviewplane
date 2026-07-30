@@ -107,11 +107,13 @@ go vet ./...
 
 Prefer root orchestration commands that run the correct service-specific tooling.
 
-Working today at the repository root: `pnpm install`, `pnpm build`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm test:browser`, `pnpm test:ui`, `pnpm protocol:generate` and `pnpm protocol:check`. `go test ./...` and `go vet ./...` run from a module directory such as `packages/protocol`. The remaining scripts arrive with the surfaces they exercise.
+Working today at the repository root: `pnpm install`, `pnpm build`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm test:browser`, `pnpm test:ui`, `pnpm test:integration`, `pnpm protocol:generate` and `pnpm protocol:check`. `go test ./...` and `go vet ./...` run from a module directory such as `packages/protocol`. The remaining scripts arrive with the surfaces they exercise.
 
 `pnpm test` needs Docker: the `apps/server` suite starts a disposable PostgreSQL and removes it afterwards, because the artefact and event behaviour it covers is only meaningful against the real database.
 
 `pnpm test:browser` is separate because it needs a Chromium and its system libraries, and because `docs/SECURITY.md` section 10 requires the Chromium sandbox to be enabled. It builds the worker image and runs the suite inside it under the same container controls `deploy/compose/compose.yaml` applies — non-root, `cap-drop ALL` plus `SYS_CHROOT`, the committed seccomp profile, no network — so a green run is evidence about the deployed posture rather than about a developer's machine.
+
+`pnpm test:integration` runs steps 9 to 12 of the primary end-to-end scenario (`docs/TESTING.md` section 3.1): a real PostgreSQL, the real control-plane process, the real MCP server, a real Chromium browser worker in its own process, and the official MCP TypeScript SDK as the client. It runs in the same worker image under the same controls as `pnpm test:browser`, on an internal Docker network whose only reachable peer is its own database, with a unique name per run so two can run at once.
 
 `pnpm test:ui` runs the user-interface and accessibility suite of `docs/TESTING.md` section 15. It builds the web bundle and drives it in the same image, for the same reason: the repository has one Chromium and keeping a second in step would be a liability rather than a convenience. `pnpm build` for `apps/web` also fails when the produced bundle would reach an external host, so a green build is part of the ADR-0011 no-CDN guarantee.
 

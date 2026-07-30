@@ -7,6 +7,13 @@ import type { Pool } from "pg";
 
 import type { ServerConfig } from "./config.ts";
 import { errorHandler } from "./errors.ts";
+import { bearerToken } from "./auth.ts";
+import { AgentCredentialStore } from "./modules/agents/credentials.ts";
+import { IdempotencyStore } from "./modules/agents/idempotency.ts";
+import { registerAgentRoutes } from "./modules/agents/routes.ts";
+import { AgentSessionStore } from "./modules/agents/sessions.ts";
+import { WorkspaceStore } from "./modules/agents/workspaces.ts";
+import type { AgentArtefactPrincipal } from "./modules/artefacts/routes.ts";
 import { registerArtefactRoutes } from "./modules/artefacts/routes.ts";
 import { ArtefactService } from "./modules/artefacts/service.ts";
 import { FilesystemArtefactStore, type ArtefactStore } from "./modules/artefacts/store.ts";
@@ -40,6 +47,10 @@ export interface BuiltApp {
   readonly workers: WorkerRegistry;
   readonly viewers: ViewerSessionStore;
   readonly relay: LiveRelay;
+  readonly agentCredentials: AgentCredentialStore;
+  readonly agentSessions: AgentSessionStore;
+  readonly workspaces: WorkspaceStore;
+  readonly idempotency: IdempotencyStore;
 }
 
 export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
@@ -81,6 +92,36 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
   const viewerAuth = async (request: Parameters<typeof resolveViewer>[0]) =>
     resolveViewer(request, { viewers, bootstrapToken: config.bootstrapToken });
 
+  const agentCredentials = new AgentCredentialStore(pool);
+  const workspaces = new WorkspaceStore(pool);
+  const agentSessions = new AgentSessionStore(pool, workspaces);
+  const idempotency = new IdempotencyStore(pool);
+
+  /**
+   * Resolves an agent credential for the evidence-reading half of ADR-0019.
+   *
+   * It answers with the sessions the credential currently owns, so a grant
+   * minted for one agent session is redeemable only by the credential that
+   * opened it. Nothing else on this server accepts an agent credential.
+   */
+  const agentAuth = async (
+    request: Parameters<typeof resolveViewer>[0],
+  ): Promise<AgentArtefactPrincipal | null> => {
+    const credential = await agentCredentials.resolve(bearerToken(request));
+    if (credential === null) return null;
+    const rows = await pool.query<{ id: string }>(
+      "SELECT id FROM agent_sessions WHERE credential_id = $1 AND ended_at IS NULL",
+      [credential.id],
+    );
+    return {
+      credentialId: credential.id,
+      organisationId: credential.organisationId,
+      projectIds: new Set(credential.projectIds),
+      sessionIds: new Set(rows.rows.map((row) => row.id)),
+      display: credential.label,
+    };
+  };
+
   app.get("/health", async () => ({ status: "ok" }));
 
   await registerProjectRoutes(app, {
@@ -97,8 +138,17 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     workerCredential: config.workerCredential,
     maxBytes: config.artefactMaxBytes,
     viewerAuth,
+    agentAuth,
   });
   await registerReviewRoutes(app, { pool, reviews, viewerAuth });
+  await registerAgentRoutes(app, {
+    pool,
+    credentials: agentCredentials,
+    workspaces,
+    bootstrapToken: config.bootstrapToken,
+    workerCredential: config.workerCredential,
+    viewerAuth,
+  });
   await registerBrowserSessionRoutes(app, {
     sessions,
     workers,
@@ -117,5 +167,17 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     secureCookies: config.secureCookies,
   });
 
-  return { app, artefacts, reviews, sessions, workers, viewers, relay };
+  return {
+    app,
+    artefacts,
+    reviews,
+    sessions,
+    workers,
+    viewers,
+    relay,
+    agentCredentials,
+    agentSessions,
+    workspaces,
+    idempotency,
+  };
 }

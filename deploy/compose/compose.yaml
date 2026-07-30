@@ -69,6 +69,7 @@ services:
     networks: [edge]
     depends_on:
       - server
+      - mcp-server
     ports:
       - "${REVIEWPLANE_GATEWAY_PORT:-8443}:8443"
     volumes:
@@ -109,6 +110,48 @@ services:
     volumes:
       - artefact-data:/var/lib/reviewplane/artefacts
     # The control plane never gets the Docker socket (AGENTS.md).
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    user: "10001:10001"
+
+  # The agent-facing interface. It is a separate process and route from the
+  # control-plane API (`docs/ARCHITECTURE.md` section 4.4) and reaches the
+  # gateway on `/mcp/*` only.
+  #
+  # It joins `data` because it translates MCP tools into domain commands
+  # directly, and `browser` because `browser_take_screenshot` sends a command to
+  # the worker. It is the same trust zone as `server`, which is why it may hold
+  # the worker command credential — and it is *not* given the bootstrap token,
+  # because an agent-facing process has no administrative work to do.
+  mcp-server:
+    build:
+      context: ../..
+      dockerfile: apps/mcp-server/Dockerfile
+    restart: unless-stopped
+    networks: [data, browser, edge]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      REVIEWPLANE_MCP_LISTEN_ADDRESS: 0.0.0.0
+      REVIEWPLANE_MCP_PORT: "8081"
+      REVIEWPLANE_MCP_PATH: /mcp/v1
+      REVIEWPLANE_DATABASE_URL_FILE: /run/secrets/database_url
+      REVIEWPLANE_WORKER_COMMAND_CREDENTIAL_FILE: /run/secrets/worker_command_credential
+      REVIEWPLANE_WORKER_ENDPOINT: http://browser-worker:8090
+      REVIEWPLANE_ARTEFACT_PATH: /var/lib/reviewplane/artefacts
+      REVIEWPLANE_API_PATH_PREFIX: /api/v1
+    secrets:
+      - database_url
+      - worker_command_credential
+    volumes:
+      # Read-only: the MCP server serves evidence and never writes it. The
+      # browser worker uploads through the control-plane API (ADR-0012).
+      - artefact-data:/var/lib/reviewplane/artefacts:ro
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777

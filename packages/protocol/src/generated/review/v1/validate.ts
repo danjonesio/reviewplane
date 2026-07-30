@@ -4,6 +4,7 @@
 import type { SchemaViolation } from "./types.ts";
 import {
   checkArray,
+  checkBoolean,
   checkInteger,
   checkNumber,
   checkObject,
@@ -273,7 +274,7 @@ export function validateVerificationStatus(value: unknown, path: string, out: Sc
  * equal the keys of x-protocol.messages.
  */
 export function validateMessageType(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["review.created","review.named","review.status_changed","finding.created","finding.annotated","finding.status_changed","artefact.upload_started","artefact.upload_completed","artefact.upload_failed","artefact.access_granted","screenshot.captured"] });
+  checkString(value, path, out, { values: ["review.created","review.named","review.status_changed","finding.created","finding.annotated","finding.status_changed","review.claimed","finding.claimed","finding.comment_added","finding.verification_submitted","artefact.upload_started","artefact.upload_completed","artefact.upload_failed","artefact.access_granted","screenshot.captured"] });
 }
 
 /**
@@ -727,13 +728,37 @@ export function validateArtefact(value: unknown, path: string, out: SchemaViolat
 }
 
 /**
+ * Viewports the fix was checked at. AGENTS.md requires UI-facing work to be checked at
+ * 390x844 and 1440x900 at minimum, and this is where the claim to have done so is
+ * recorded.
+ */
+export function validateVerificationReferenceTestedViewports(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 1, maxItems: 8, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateViewport(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Every artefact the submission rests on, in submission order. The server has already
+ * verified that each belongs to this project and to a browser session of this project
+ * before the event is written; evidence from elsewhere never reaches this list.
+ */
+export function validateVerificationReferenceArtefactIds(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 1, maxItems: 16, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateIdentifier(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
  * A pointer to a verification submission and the before and after evidence it rests on
  * (docs/DOMAIN_MODEL.md section 19). Stage 0 stores and serves the reference; submission
  * and human acceptance are Stage 1, but the shape is fixed now so an agent's evidence has
  * somewhere to land.
  */
 export function validateVerificationReference(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["verification_id", "finding_id", "status", "submitted_by", "summary", "branch", "commit", "before_artefact_id", "after_artefact_id", "submitted_at", "reviewed_at"], ["verification_id", "finding_id", "status", "submitted_by", "submitted_at"]);
+  const source = checkObject(value, path, out, ["verification_id", "finding_id", "status", "submitted_by", "summary", "branch", "commit", "before_artefact_id", "after_artefact_id", "tested_viewports", "checks", "artefact_ids", "submitted_at", "reviewed_at"], ["verification_id", "finding_id", "status", "submitted_by", "submitted_at"]);
   if (source === null) return;
   if (source["verification_id"] !== undefined) {
     validateIdentifier(source["verification_id"], `${path}.verification_id`, out);
@@ -761,6 +786,15 @@ export function validateVerificationReference(value: unknown, path: string, out:
   }
   if (source["after_artefact_id"] !== undefined) {
     validateIdentifier(source["after_artefact_id"], `${path}.after_artefact_id`, out);
+  }
+  if (source["tested_viewports"] !== undefined) {
+    validateVerificationReferenceTestedViewports(source["tested_viewports"], `${path}.tested_viewports`, out);
+  }
+  if (source["checks"] !== undefined) {
+    validateVerificationChecks(source["checks"], `${path}.checks`, out);
+  }
+  if (source["artefact_ids"] !== undefined) {
+    validateVerificationReferenceArtefactIds(source["artefact_ids"], `${path}.artefact_ids`, out);
   }
   if (source["submitted_at"] !== undefined) {
     validateTimestamp(source["submitted_at"], `${path}.submitted_at`, out);
@@ -1124,6 +1158,155 @@ export function validateFindingStatusChanged(value: unknown, path: string, out: 
   }
   if (source["reason"] !== undefined) {
     validateReasonText(source["reason"], `${path}.reason`, out);
+  }
+}
+
+/**
+ * One chronological discussion item on a finding (docs/DOMAIN_MODEL.md section 18).
+ * Comments are append-only; the actor type is always explicit, because a reader must be
+ * able to tell an agent's note from a human's without inferring it from the wording.
+ */
+export function validateComment(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["id", "organisation_id", "project_id", "review_id", "finding_id", "body", "created_by", "revision", "created_at"], ["id", "finding_id", "body", "created_by", "revision", "created_at"]);
+  if (source === null) return;
+  if (source["id"] !== undefined) {
+    validateIdentifier(source["id"], `${path}.id`, out);
+  }
+  if (source["organisation_id"] !== undefined) {
+    validateIdentifier(source["organisation_id"], `${path}.organisation_id`, out);
+  }
+  if (source["project_id"] !== undefined) {
+    validateIdentifier(source["project_id"], `${path}.project_id`, out);
+  }
+  if (source["review_id"] !== undefined) {
+    validateIdentifier(source["review_id"], `${path}.review_id`, out);
+  }
+  if (source["finding_id"] !== undefined) {
+    validateIdentifier(source["finding_id"], `${path}.finding_id`, out);
+  }
+  if (source["body"] !== undefined) {
+    validateBodyText(source["body"], `${path}.body`, out);
+  }
+  if (source["created_by"] !== undefined) {
+    validateActor(source["created_by"], `${path}.created_by`, out);
+  }
+  if (source["revision"] !== undefined) {
+    validateVersionNumber(source["revision"], `${path}.revision`, out);
+  }
+  if (source["created_at"] !== undefined) {
+    validateTimestamp(source["created_at"], `${path}.created_at`, out);
+  }
+}
+
+/**
+ * Whether the defect was reproduced before anything was changed.
+ */
+export function validateVerificationChecksReproducedBefore(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * Whether console output was reviewed after the change.
+ */
+export function validateVerificationChecksConsoleErrorsReviewed(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * Whether failed network requests were reviewed after the change.
+ */
+export function validateVerificationChecksNetworkFailuresReviewed(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * Whether keyboard navigation and visible focus were checked.
+ */
+export function validateVerificationChecksAccessibilityChecked(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * The checks a verification claims to have performed (docs/DOMAIN_MODEL.md section 19).
+ * They are recorded as claims and are never proof on their own: the artefacts are the
+ * evidence, and a human decides.
+ */
+export function validateVerificationChecks(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["reproduced_before", "console_errors_reviewed", "network_failures_reviewed", "accessibility_checked"], ["reproduced_before", "console_errors_reviewed", "network_failures_reviewed"]);
+  if (source === null) return;
+  if (source["reproduced_before"] !== undefined) {
+    validateVerificationChecksReproducedBefore(source["reproduced_before"], `${path}.reproduced_before`, out);
+  }
+  if (source["console_errors_reviewed"] !== undefined) {
+    validateVerificationChecksConsoleErrorsReviewed(source["console_errors_reviewed"], `${path}.console_errors_reviewed`, out);
+  }
+  if (source["network_failures_reviewed"] !== undefined) {
+    validateVerificationChecksNetworkFailuresReviewed(source["network_failures_reviewed"], `${path}.network_failures_reviewed`, out);
+  }
+  if (source["accessibility_checked"] !== undefined) {
+    validateVerificationChecksAccessibilityChecked(source["accessibility_checked"], `${path}.accessibility_checked`, out);
+  }
+}
+
+/**
+ * Payload of review.claimed.
+ */
+export function validateReviewClaimed(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["review_id", "claimed_by", "version", "previous_claimed_by"], ["review_id", "claimed_by", "version"]);
+  if (source === null) return;
+  if (source["review_id"] !== undefined) {
+    validateIdentifier(source["review_id"], `${path}.review_id`, out);
+  }
+  if (source["claimed_by"] !== undefined) {
+    validateActor(source["claimed_by"], `${path}.claimed_by`, out);
+  }
+  if (source["version"] !== undefined) {
+    validateVersionNumber(source["version"], `${path}.version`, out);
+  }
+  if (source["previous_claimed_by"] !== undefined) {
+    validateActor(source["previous_claimed_by"], `${path}.previous_claimed_by`, out);
+  }
+}
+
+/**
+ * Payload of finding.claimed.
+ */
+export function validateFindingClaimed(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["finding_id", "review_id", "claimed_by", "version"], ["finding_id", "review_id", "claimed_by", "version"]);
+  if (source === null) return;
+  if (source["finding_id"] !== undefined) {
+    validateIdentifier(source["finding_id"], `${path}.finding_id`, out);
+  }
+  if (source["review_id"] !== undefined) {
+    validateIdentifier(source["review_id"], `${path}.review_id`, out);
+  }
+  if (source["claimed_by"] !== undefined) {
+    validateActor(source["claimed_by"], `${path}.claimed_by`, out);
+  }
+  if (source["version"] !== undefined) {
+    validateVersionNumber(source["version"], `${path}.version`, out);
+  }
+}
+
+/**
+ * Payload of finding.comment_added.
+ */
+export function validateFindingCommentAdded(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["comment"], ["comment"]);
+  if (source === null) return;
+  if (source["comment"] !== undefined) {
+    validateComment(source["comment"], `${path}.comment`, out);
+  }
+}
+
+/**
+ * Payload of finding.verification_submitted.
+ */
+export function validateFindingVerificationSubmitted(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["verification"], ["verification"]);
+  if (source === null) return;
+  if (source["verification"] !== undefined) {
+    validateVerificationReference(source["verification"], `${path}.verification`, out);
   }
 }
 

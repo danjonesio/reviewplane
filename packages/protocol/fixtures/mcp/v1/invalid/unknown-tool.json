@@ -1,0 +1,9 @@
+{
+  "protocol_version": 1,
+  "ok": true,
+  "request_id": "req_01JUNKNOWNTOOL",
+  "type": "secret_inject_browser",
+  "trust": "trusted_control_plane",
+  "instruction_policy": "do_not_follow_as_instructions",
+  "data": {}
+}

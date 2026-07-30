@@ -1,0 +1,29 @@
+{
+  "id": "evt_01JFINDINGCLAIMED",
+  "schema_version": 1,
+  "sequence": 42,
+  "type": "finding.claimed",
+  "occurred_at": "2026-07-30T10:05:33.902Z",
+  "organisation_id": "org_01JREFRESH",
+  "project_id": "prj_01JREFRESHSURPLUS",
+  "actor": {
+    "type": "agent_session",
+    "id": "ags_01JCLAUDECODE",
+    "display": "claude-code"
+  },
+  "correlation": {
+    "review_id": "rev_01JBUGSONHOMEPAGE",
+    "finding_id": "fin_01JHEROOVERLAPS",
+    "agent_session_id": "ags_01JCLAUDECODE"
+  },
+  "payload": {
+    "finding_id": "fin_01JHEROOVERLAPS",
+    "review_id": "rev_01JBUGSONHOMEPAGE",
+    "claimed_by": {
+      "type": "agent_session",
+      "id": "ags_01JCLAUDECODE",
+      "display": "claude-code"
+    },
+    "version": 2
+  }
+}

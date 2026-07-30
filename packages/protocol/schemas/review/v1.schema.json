@@ -57,6 +57,30 @@
         "payload": "finding_status_changed",
         "description": "A finding moved between the statuses of docs/DOMAIN_MODEL.md section 15. A human-authored finding reaching RESOLVED requires a human actor; the denial is a domain rule, not a presentation rule."
       },
+      "review.claimed": {
+        "channel": "review",
+        "direction": "control_plane_to_client",
+        "payload": "review_claimed",
+        "description": "An agent session took a review to work on. It is separate from review.status_changed because assignment and lifecycle are different facts: a claim says who is working, and the status says what stage the work is at."
+      },
+      "finding.claimed": {
+        "channel": "finding",
+        "direction": "control_plane_to_client",
+        "payload": "finding_claimed",
+        "description": "An agent session took one finding. Claims are recorded per finding so a human can see which unit of work an agent is on rather than only that it is busy."
+      },
+      "finding.comment_added": {
+        "channel": "finding",
+        "direction": "control_plane_to_client",
+        "payload": "finding_comment_added",
+        "description": "A comment was appended to a finding (docs/DOMAIN_MODEL.md section 18). Comments are append-only and the author type is always explicit, because a reader must be able to tell an agent's note from a human's."
+      },
+      "finding.verification_submitted": {
+        "channel": "finding",
+        "direction": "control_plane_to_client",
+        "payload": "finding_verification_submitted",
+        "description": "An agent submitted a claim with evidence that a finding is resolved (docs/DOMAIN_MODEL.md section 19). It is the event that carries the before-and-after evidence a human then judges; submitting it accepts nothing."
+      },
       "artefact.upload_started": {
         "channel": "evidence",
         "direction": "control_plane_to_client",
@@ -206,6 +230,7 @@
       "annotation_id": "ann_",
       "artefact_id": "art_",
       "verification_id": "ver_",
+      "comment_id": "cmt_",
       "event_id": "evt_",
       "project_id": "prj_",
       "organisation_id": "org_",
@@ -476,6 +501,10 @@
         "finding.created",
         "finding.annotated",
         "finding.status_changed",
+        "review.claimed",
+        "finding.claimed",
+        "finding.comment_added",
+        "finding.verification_submitted",
         "artefact.upload_started",
         "artefact.upload_completed",
         "artefact.upload_failed",
@@ -1065,6 +1094,30 @@
           "$ref": "#/$defs/identifier",
           "description": "Artefact showing the state after the fix. A completion claim without one is refused with EVIDENCE_REQUIRED."
         },
+        "tested_viewports": {
+          "type": "array",
+          "description": "Viewports the fix was checked at. AGENTS.md requires UI-facing work to be checked at 390x844 and 1440x900 at minimum, and this is where the claim to have done so is recorded.",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/viewport",
+            "description": "One viewport."
+          }
+        },
+        "checks": {
+          "$ref": "#/$defs/verification_checks",
+          "description": "Checks the submitter claims to have performed."
+        },
+        "artefact_ids": {
+          "type": "array",
+          "description": "Every artefact the submission rests on, in submission order. The server has already verified that each belongs to this project and to a browser session of this project before the event is written; evidence from elsewhere never reaches this list.",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/identifier",
+            "description": "One artefact identifier."
+          }
+        },
         "submitted_at": {
           "$ref": "#/$defs/timestamp",
           "description": "Submission time."
@@ -1489,6 +1542,151 @@
         "reason": {
           "$ref": "#/$defs/reason_text",
           "description": "Why, where the caller supplied one."
+        }
+      }
+    },
+    "comment": {
+      "type": "object",
+      "description": "One chronological discussion item on a finding (docs/DOMAIN_MODEL.md section 18). Comments are append-only; the actor type is always explicit, because a reader must be able to tell an agent's note from a human's without inferring it from the wording.",
+      "additionalProperties": false,
+      "x-max-bytes": 6144,
+      "required": ["id", "finding_id", "body", "created_by", "revision", "created_at"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Comment identifier, conventionally prefixed cmt_."
+        },
+        "organisation_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Owning organisation."
+        },
+        "project_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Owning project."
+        },
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review the finding belongs to."
+        },
+        "finding_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Finding the comment is on."
+        },
+        "body": {
+          "$ref": "#/$defs/body_text",
+          "description": "Comment text. Rendered as text and never as markup."
+        },
+        "created_by": {
+          "$ref": "#/$defs/actor",
+          "description": "Who wrote it."
+        },
+        "revision": {
+          "$ref": "#/$defs/version_number",
+          "description": "Revision of the comment. Editing records a new revision and retains the previous one."
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When it was written."
+        }
+      }
+    },
+    "verification_checks": {
+      "type": "object",
+      "description": "The checks a verification claims to have performed (docs/DOMAIN_MODEL.md section 19). They are recorded as claims and are never proof on their own: the artefacts are the evidence, and a human decides.",
+      "additionalProperties": false,
+      "required": ["reproduced_before", "console_errors_reviewed", "network_failures_reviewed"],
+      "properties": {
+        "reproduced_before": {
+          "type": "boolean",
+          "description": "Whether the defect was reproduced before anything was changed."
+        },
+        "console_errors_reviewed": {
+          "type": "boolean",
+          "description": "Whether console output was reviewed after the change."
+        },
+        "network_failures_reviewed": {
+          "type": "boolean",
+          "description": "Whether failed network requests were reviewed after the change."
+        },
+        "accessibility_checked": {
+          "type": "boolean",
+          "description": "Whether keyboard navigation and visible focus were checked."
+        }
+      }
+    },
+    "review_claimed": {
+      "type": "object",
+      "description": "Payload of review.claimed.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["review_id", "claimed_by", "version"],
+      "properties": {
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review claimed."
+        },
+        "claimed_by": {
+          "$ref": "#/$defs/actor",
+          "description": "Actor that claimed it."
+        },
+        "version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version after the claim."
+        },
+        "previous_claimed_by": {
+          "$ref": "#/$defs/actor",
+          "description": "Actor that held the claim before, where a claim was taken over."
+        }
+      }
+    },
+    "finding_claimed": {
+      "type": "object",
+      "description": "Payload of finding.claimed.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["finding_id", "review_id", "claimed_by", "version"],
+      "properties": {
+        "finding_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Finding claimed."
+        },
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review it belongs to."
+        },
+        "claimed_by": {
+          "$ref": "#/$defs/actor",
+          "description": "Actor that claimed it."
+        },
+        "version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version after the claim."
+        }
+      }
+    },
+    "finding_comment_added": {
+      "type": "object",
+      "description": "Payload of finding.comment_added.",
+      "additionalProperties": false,
+      "x-max-bytes": 6144,
+      "required": ["comment"],
+      "properties": {
+        "comment": {
+          "$ref": "#/$defs/comment",
+          "description": "The comment as recorded."
+        }
+      }
+    },
+    "finding_verification_submitted": {
+      "type": "object",
+      "description": "Payload of finding.verification_submitted.",
+      "additionalProperties": false,
+      "x-max-bytes": 8192,
+      "required": ["verification"],
+      "properties": {
+        "verification": {
+          "$ref": "#/$defs/verification_reference",
+          "description": "The verification as submitted, with status submitted."
         }
       }
     },

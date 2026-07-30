@@ -25,11 +25,15 @@ import type { Pool, PoolClient } from "pg";
 import {
   type Annotation,
   type AnnotationType,
+  type Comment,
   type Finding,
   type FindingSource,
   type FindingStatus,
   type Review,
   type ReviewStatus,
+  type VerificationChecks,
+  type VerificationReference,
+  type Viewport,
 } from "@reviewplane/protocol/review";
 
 import { inTransaction } from "../../db/pool.ts";
@@ -48,7 +52,27 @@ import {
   assertGeometry,
   assertReviewMutable,
   assertReviewTransition,
+  assertVerificationCommitContext,
 } from "./domain.ts";
+
+/** A verification record, as `docs/DOMAIN_MODEL.md` section 19 defines it. */
+export type Verification = VerificationReference;
+
+export interface SubmitVerificationInput {
+  readonly summary: string;
+  readonly branch: string;
+  readonly commit: string;
+  readonly testedViewports: readonly Viewport[];
+  readonly checks: VerificationChecks;
+  readonly artefactIds: readonly string[];
+  /**
+   * Branch the control plane believes the workspace is on, or null when no
+   * workspace is registered. The caller supplies it because resolving the
+   * workspace is the agent layer's job; the rule about what to do with it is
+   * the domain's.
+   */
+  readonly workspaceBranch: string | null;
+}
 
 /** The tenant a caller is confined to. Every read and write takes one. */
 export interface Scope {
@@ -115,7 +139,7 @@ function timestamp(value: unknown): string {
 
 function actorOf(
   row: Record<string, unknown>,
-  prefix: "created_by" | "claimed_by",
+  prefix: "created_by" | "claimed_by" | "submitted_by",
 ): EventActor | undefined {
   const type = row[`${prefix}_actor_type`] as string | null;
   if (type === null || type === undefined) return undefined;
@@ -201,6 +225,48 @@ function toAnnotation(row: Record<string, unknown>): Annotation {
     created_by: createdBy ?? { type: "system" },
     created_at: timestamp(row["created_at"]),
     ...(row["deleted_at"] === null ? {} : { deleted_at: timestamp(row["deleted_at"]) }),
+  };
+}
+
+function toComment(row: Record<string, unknown>): Comment {
+  const createdBy = actorOf(row, "created_by");
+  return {
+    id: row["id"] as string,
+    organisation_id: row["organisation_id"] as string,
+    project_id: row["project_id"] as string,
+    review_id: row["review_id"] as string,
+    finding_id: row["finding_id"] as string,
+    body: row["body"] as string,
+    created_by: createdBy ?? { type: "system" },
+    revision: Number(row["revision"]),
+    created_at: timestamp(row["created_at"]),
+  };
+}
+
+function toVerification(
+  row: Record<string, unknown>,
+  artefactIds: readonly string[],
+  beforeArtefactId: string | null,
+  afterArtefactId: string | null,
+): Verification {
+  const submittedBy = actorOf(row, "submitted_by");
+  return {
+    verification_id: row["id"] as string,
+    finding_id: row["finding_id"] as string,
+    status: row["status"] as Verification["status"],
+    submitted_by: submittedBy ?? { type: "system" },
+    summary: row["summary"] as string,
+    branch: row["branch"] as string,
+    commit: row["commit_sha"] as string,
+    ...(beforeArtefactId === null ? {} : { before_artefact_id: beforeArtefactId }),
+    ...(afterArtefactId === null ? {} : { after_artefact_id: afterArtefactId }),
+    tested_viewports: row["tested_viewports"] as readonly Viewport[],
+    checks: row["checks"] as VerificationChecks,
+    artefact_ids: [...artefactIds],
+    submitted_at: timestamp(row["submitted_at"]),
+    ...(row["reviewed_at"] === null || row["reviewed_at"] === undefined
+      ? {}
+      : { reviewed_at: timestamp(row["reviewed_at"]) }),
   };
 }
 
@@ -625,6 +691,28 @@ export class ReviewService {
         ],
       );
       const finding = toFinding(updated.rows[0] as Record<string, unknown>);
+      if (claiming) {
+        // Separate from the status change: a claim says *who* is working, and
+        // the status says what stage the work is at. A human reading the
+        // timeline needs both facts and they are not the same fact.
+        await appendEvent(client, {
+          type: "finding.claimed",
+          organisationId: scope.organisationId,
+          projectId: scope.projectId,
+          actor,
+          correlation: { review_id: finding.review_id, finding_id: findingId },
+          payload: {
+            finding_id: findingId,
+            review_id: finding.review_id,
+            claimed_by: {
+              type: actor.type,
+              ...(actor.id === undefined ? {} : { id: actor.id }),
+              ...(actor.display === undefined ? {} : { display: actor.display }),
+            },
+            version: finding.version,
+          },
+        });
+      }
       if (nextStatus !== current.status) {
         await appendEvent(client, {
           type: "finding.status_changed",
@@ -644,6 +732,379 @@ export class ReviewService {
       }
       return finding;
     });
+  }
+
+  /**
+   * Claims a review for an actor (`docs/MCP_SPEC.md` section 7.6,
+   * `docs/EVENTS.md` section 7 `review.claimed`).
+   *
+   * A claim is assignment, not a lifecycle change: a READY review becomes
+   * ASSIGNED because that is what "somebody is on it" means in
+   * `docs/DOMAIN_MODEL.md` section 14, and a review already in progress keeps
+   * its status and merely changes hands.
+   */
+  async claimReview(
+    scope: Scope,
+    reviewId: string,
+    expectedVersion: number,
+    actor: EventActor,
+  ): Promise<Review> {
+    return inTransaction(this.#pool, async (client) => {
+      const current = await this.#lockReview(client, scope, reviewId);
+      assertExpectedVersion(current.version, expectedVersion, "review");
+      assertReviewMutable(current.status, { fields: ["claimed_by"] });
+      const nextStatus = current.status === "READY" ? "ASSIGNED" : current.status;
+      if (nextStatus !== current.status) assertReviewTransition(current.status, nextStatus);
+
+      const updated = await client.query(
+        `UPDATE reviews
+            SET assigned_agent_session_id = $4,
+                status = $5,
+                version = version + 1,
+                updated_at = now()
+          WHERE id = $1 AND organisation_id = $2 AND project_id = $3
+          RETURNING *`,
+        [
+          reviewId,
+          scope.organisationId,
+          scope.projectId,
+          actor.type === "agent_session" ? (actor.id ?? null) : null,
+          nextStatus,
+        ],
+      );
+      const review = toReview(updated.rows[0] as Record<string, unknown>);
+      await appendEvent(client, {
+        type: "review.claimed",
+        organisationId: scope.organisationId,
+        projectId: scope.projectId,
+        actor,
+        correlation: {
+          review_id: reviewId,
+          ...(actor.type === "agent_session" && actor.id !== undefined
+            ? { agent_session_id: actor.id }
+            : {}),
+        },
+        payload: {
+          review_id: reviewId,
+          claimed_by: {
+            type: actor.type,
+            ...(actor.id === undefined ? {} : { id: actor.id }),
+            ...(actor.display === undefined ? {} : { display: actor.display }),
+          },
+          version: review.version,
+        },
+      });
+      if (nextStatus !== current.status) {
+        await appendEvent(client, {
+          type: "review.status_changed",
+          organisationId: scope.organisationId,
+          projectId: scope.projectId,
+          actor,
+          correlation: { review_id: reviewId },
+          payload: {
+            review_id: reviewId,
+            from: current.status,
+            to: nextStatus,
+            version: review.version,
+          },
+        });
+      }
+      return review;
+    });
+  }
+
+  /**
+   * One bounded page of findings, oldest first (`docs/MCP_SPEC.md` section 13).
+   *
+   * Oldest first because a human recorded them in an order and an agent should
+   * work them in it. The cursor is the previous page's last `(created_at, id)`,
+   * which is stable under insertion: a finding added while an agent is paging
+   * appears at the end rather than shifting the page boundaries.
+   */
+  async listFindingsPage(
+    scope: Scope,
+    reviewId: string,
+    page: { readonly limit: number; readonly cursor?: { createdAt: string; id: string } },
+  ): Promise<{ findings: Finding[]; nextCursor: { createdAt: string; id: string } | null }> {
+    await this.getReview(scope, reviewId);
+    const limit = Math.min(Math.max(page.limit, 1), 50);
+    const rows = await this.#pool.query(
+      `SELECT f.*, (SELECT count(*) FROM annotations_current a
+                     WHERE a.finding_id = f.id AND a.deleted_at IS NULL) AS annotation_count
+         FROM findings f
+        WHERE f.review_id = $1 AND f.organisation_id = $2 AND f.project_id = $3
+          AND ($4::timestamptz IS NULL OR (f.created_at, f.id) > ($4::timestamptz, $5::text))
+        ORDER BY f.created_at, f.id
+        LIMIT $6`,
+      [
+        reviewId,
+        scope.organisationId,
+        scope.projectId,
+        page.cursor?.createdAt ?? null,
+        page.cursor?.id ?? null,
+        limit + 1,
+      ],
+    );
+    const all = rows.rows.map((row) =>
+      toFinding(
+        row as Record<string, unknown>,
+        Number((row as Record<string, unknown>)["annotation_count"]),
+      ),
+    );
+    const findings = all.slice(0, limit);
+    const last = findings[findings.length - 1];
+    return {
+      findings,
+      nextCursor:
+        all.length > limit && last !== undefined
+          ? { createdAt: last.created_at, id: last.id }
+          : null,
+    };
+  }
+
+  // -----------------------------------------------------------------------
+  // Comments and verification
+  // -----------------------------------------------------------------------
+
+  /**
+   * Appends a comment to a finding (`docs/DOMAIN_MODEL.md` section 18).
+   *
+   * Comments are append-only and the actor type is always explicit, so a reader
+   * can tell an agent's note from a human's without reading the wording.
+   */
+  async addComment(
+    scope: Scope,
+    findingId: string,
+    body: string,
+    actor: EventActor,
+  ): Promise<Comment> {
+    const finding = await this.getFinding(scope, findingId);
+    const review = await this.getReview(scope, finding.review_id);
+    assertReviewMutable(review.status, { fields: ["comments"] });
+    const id = newId("cmt_");
+    return inTransaction(this.#pool, async (client) => {
+      const inserted = await client.query(
+        `INSERT INTO comments
+           (id, organisation_id, project_id, review_id, finding_id, body,
+            created_by_actor_type, created_by_actor_id, created_by_actor_display)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+         RETURNING *`,
+        [
+          id,
+          scope.organisationId,
+          scope.projectId,
+          finding.review_id,
+          findingId,
+          body,
+          actor.type,
+          actor.id ?? null,
+          actor.display ?? null,
+        ],
+      );
+      const comment = toComment(inserted.rows[0] as Record<string, unknown>);
+      await appendEvent(client, {
+        type: "finding.comment_added",
+        organisationId: scope.organisationId,
+        projectId: scope.projectId,
+        actor,
+        correlation: { review_id: finding.review_id, finding_id: findingId },
+        payload: { comment },
+      });
+      return comment;
+    });
+  }
+
+  async listComments(scope: Scope, findingId: string, limit = 20): Promise<Comment[]> {
+    await this.getFinding(scope, findingId);
+    const rows = await this.#pool.query(
+      `SELECT * FROM comments
+        WHERE finding_id = $1 AND organisation_id = $2 AND project_id = $3
+        ORDER BY created_at, id
+        LIMIT $4`,
+      [findingId, scope.organisationId, scope.projectId, Math.min(Math.max(limit, 1), 20)],
+    );
+    return rows.rows.map((row) => toComment(row as Record<string, unknown>));
+  }
+
+  /**
+   * Records a verification: a claim with evidence, never a resolution
+   * (`docs/DOMAIN_MODEL.md` section 19, `docs/MCP_SPEC.md` section 7.7).
+   *
+   * The order of the checks is the point.
+   *
+   * 1. **Evidence ownership.** Every artefact must exist, be verified, belong
+   *    to this project, and — where it came from a browser session — have come
+   *    from a browser session of this project. An artefact from another project
+   *    is refused as not found rather than as forbidden, because telling a
+   *    caller that somebody else's identifier exists is itself a disclosure
+   *    (`docs/TESTING.md` section 10).
+   * 2. **At least one after screenshot.** A verification with no screenshot is
+   *    a completion claim without evidence, which `AGENTS.md` forbids.
+   * 3. **Commit context.** Checked by the domain rule above.
+   * 4. Only then is anything written, and the finding moves to
+   *    `FIXED_UNVERIFIED` in the same transaction. It stops there: reaching
+   *    `AWAITING_HUMAN_REVIEW` is a separate, deliberate act by the agent, and
+   *    reaching anything beyond it is not available to an agent at all.
+   */
+  async submitVerification(
+    scope: Scope,
+    findingId: string,
+    input: SubmitVerificationInput,
+    actor: EventActor,
+  ): Promise<{ verification: Verification; finding: Finding; branchCorroborated: boolean }> {
+    const finding = await this.getFinding(scope, findingId);
+    const review = await this.getReview(scope, finding.review_id);
+    assertReviewMutable(review.status, { fields: ["verification"] });
+
+    const evidence = await this.#requireOwnedEvidence(scope, input.artefactIds);
+    const screenshots = evidence.filter((artefact) => artefact.kind === "screenshot");
+    if (screenshots.length === 0) {
+      throw new ApiError(
+        "EVIDENCE_REQUIRED",
+        "A verification must carry at least one verified screenshot showing the state after the change.",
+        { field: "artefact_ids", required_evidence: ["after_screenshot_artefact"] },
+      );
+    }
+    const { branchCorroborated } = assertVerificationCommitContext({
+      capturedCommit: finding.captured_commit,
+      commit: input.commit,
+      branch: input.branch,
+      workspaceBranch: input.workspaceBranch,
+    });
+
+    const id = newId("ver_");
+    const afterArtefactId = screenshots[screenshots.length - 1]?.id ?? null;
+    const result = await inTransaction(this.#pool, async (client) => {
+      const inserted = await client.query(
+        `INSERT INTO verifications
+           (id, organisation_id, project_id, review_id, finding_id, status, summary,
+            branch, commit_sha, tested_viewports, checks,
+            submitted_by_actor_type, submitted_by_actor_id, submitted_by_actor_display)
+         VALUES ($1,$2,$3,$4,$5,'submitted',$6,$7,$8,$9::jsonb,$10::jsonb,$11,$12,$13)
+         RETURNING *`,
+        [
+          id,
+          scope.organisationId,
+          scope.projectId,
+          finding.review_id,
+          findingId,
+          input.summary,
+          input.branch,
+          input.commit,
+          JSON.stringify(input.testedViewports),
+          JSON.stringify(input.checks),
+          actor.type,
+          actor.id ?? null,
+          actor.display ?? null,
+        ],
+      );
+      let position = 0;
+      for (const artefact of evidence) {
+        const role =
+          artefact.id === finding.screenshot_artefact_id
+            ? "before"
+            : artefact.id === afterArtefactId
+              ? "after"
+              : "supporting";
+        await client.query(
+          "INSERT INTO verification_artefacts (verification_id, artefact_id, role, position) VALUES ($1,$2,$3,$4)",
+          [id, artefact.id, role, position],
+        );
+        position += 1;
+      }
+
+      // The summary is the resolution note. Recording it on the finding is what
+      // lets assertCompletionEvidence pass for FIXED_UNVERIFIED without the
+      // agent having to say the same thing twice.
+      const updated = await client.query(
+        `UPDATE findings
+            SET resolution_note = $4,
+                status = CASE WHEN status = 'IN_PROGRESS' THEN 'FIXED_UNVERIFIED' ELSE status END,
+                version = version + 1,
+                updated_at = now()
+          WHERE id = $1 AND organisation_id = $2 AND project_id = $3
+          RETURNING *`,
+        [findingId, scope.organisationId, scope.projectId, input.summary],
+      );
+      const moved = toFinding(updated.rows[0] as Record<string, unknown>);
+      const verification = toVerification(
+        inserted.rows[0] as Record<string, unknown>,
+        evidence.map((artefact) => artefact.id),
+        finding.screenshot_artefact_id,
+        afterArtefactId,
+      );
+      await appendEvent(client, {
+        type: "finding.verification_submitted",
+        organisationId: scope.organisationId,
+        projectId: scope.projectId,
+        actor,
+        correlation: {
+          review_id: finding.review_id,
+          finding_id: findingId,
+          ...(afterArtefactId === null ? {} : { artefact_id: afterArtefactId }),
+          ...(actor.type === "agent_session" && actor.id !== undefined
+            ? { agent_session_id: actor.id }
+            : {}),
+        },
+        payload: { verification },
+      });
+      if (moved.status !== finding.status) {
+        await appendEvent(client, {
+          type: "finding.status_changed",
+          organisationId: scope.organisationId,
+          projectId: scope.projectId,
+          actor,
+          correlation: { review_id: finding.review_id, finding_id: findingId },
+          payload: {
+            finding_id: findingId,
+            review_id: finding.review_id,
+            from: finding.status,
+            to: moved.status,
+            version: moved.version,
+            source: finding.source,
+            reason: "Verification submitted with evidence.",
+          },
+        });
+      }
+      return { verification, finding: moved };
+    });
+    return { ...result, branchCorroborated };
+  }
+
+  /** The most recent verification for a finding, if any. */
+  async latestVerification(scope: Scope, findingId: string): Promise<Verification | null> {
+    const rows = await this.#pool.query(
+      `SELECT v.*,
+              (SELECT array_agg(va.artefact_id ORDER BY va.position)
+                 FROM verification_artefacts va WHERE va.verification_id = v.id) AS artefact_ids,
+              (SELECT va.artefact_id FROM verification_artefacts va
+                WHERE va.verification_id = v.id AND va.role = 'before' LIMIT 1) AS before_artefact_id,
+              (SELECT va.artefact_id FROM verification_artefacts va
+                WHERE va.verification_id = v.id AND va.role = 'after' LIMIT 1) AS after_artefact_id
+         FROM verifications v
+        WHERE v.finding_id = $1 AND v.organisation_id = $2 AND v.project_id = $3
+        ORDER BY v.submitted_at DESC
+        LIMIT 1`,
+      [findingId, scope.organisationId, scope.projectId],
+    );
+    const row = rows.rows[0] as Record<string, unknown> | undefined;
+    if (row === undefined) return null;
+    return toVerification(
+      row,
+      (row["artefact_ids"] as string[] | null) ?? [],
+      (row["before_artefact_id"] as string | null) ?? null,
+      (row["after_artefact_id"] as string | null) ?? null,
+    );
+  }
+
+  /** Every verification for a finding, newest first. */
+  async countVerifications(scope: Scope, findingId: string): Promise<number> {
+    const rows = await this.#pool.query<{ count: string }>(
+      `SELECT count(*) AS count FROM verifications
+        WHERE finding_id = $1 AND organisation_id = $2 AND project_id = $3`,
+      [findingId, scope.organisationId, scope.projectId],
+    );
+    return Number(rows.rows[0]?.count ?? 0);
   }
 
   // -----------------------------------------------------------------------
@@ -822,6 +1283,67 @@ export class ReviewService {
       contentWidthPx: artefact.content_width_px,
       contentHeightPx: artefact.content_height_px,
     };
+  }
+
+  /**
+   * Evidence ownership (`docs/MCP_SPEC.md` section 7.7 design note).
+   *
+   * Every artefact must be available, in this project, and — where it came from
+   * a browser session — from a browser session of this project. The last check
+   * is the "browser-session lineage" one: an artefact uploaded against a
+   * session belonging to another project would otherwise be reachable by
+   * identifier alone.
+   *
+   * An artefact from another project is reported as not found, not as
+   * forbidden. `docs/TESTING.md` section 10 requires that identifiers from
+   * another tenant are not enumerable, and a distinct refusal for "exists but
+   * is not yours" is exactly the oracle that would make them so.
+   */
+  async #requireOwnedEvidence(
+    scope: Scope,
+    artefactIds: readonly string[],
+  ): Promise<{ id: string; kind: string }[]> {
+    const unique = [...new Set(artefactIds)];
+    const rows = await this.#pool.query<{
+      id: string;
+      kind: string;
+      state: string;
+      organisation_id: string;
+      project_id: string;
+      browser_session_id: string | null;
+      session_project_id: string | null;
+    }>(
+      `SELECT a.id, a.kind, a.state, a.organisation_id, a.project_id, a.browser_session_id,
+              b.project_id AS session_project_id
+         FROM artefacts a
+         LEFT JOIN browser_sessions b ON b.id = a.browser_session_id
+        WHERE a.id = ANY($1)`,
+      [unique],
+    );
+    const found = new Map(rows.rows.map((row) => [row.id, row]));
+    const evidence: { id: string; kind: string }[] = [];
+    for (const artefactId of unique) {
+      const row = found.get(artefactId);
+      if (
+        row === undefined ||
+        row.project_id !== scope.projectId ||
+        row.organisation_id !== scope.organisationId
+      ) {
+        throw notFound(`The evidence artefact ${artefactId}`);
+      }
+      if (row.browser_session_id !== null && row.session_project_id !== scope.projectId) {
+        throw notFound(`The evidence artefact ${artefactId}`);
+      }
+      if (row.state !== "available") {
+        throw new ApiError(
+          "ARTEFACT_UPLOAD_INCOMPLETE",
+          `Artefact ${artefactId} has not been verified, so it cannot be submitted as evidence.`,
+          { field: "artefact_ids" },
+        );
+      }
+      evidence.push({ id: row.id, kind: row.kind });
+    }
+    return evidence;
   }
 
   async #requireSessionInProject(scope: Scope, browserSessionId: string): Promise<void> {

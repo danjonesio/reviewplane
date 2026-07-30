@@ -8,6 +8,7 @@
  */
 
 import {
+  jsonBoolean,
   jsonInteger,
   jsonNumber,
   jsonString,
@@ -22,6 +23,7 @@ import type {
   ArtefactUploadCompleted,
   ArtefactUploadFailed,
   ArtefactUploadStarted,
+  Comment,
   ContentRectangle,
   Correlation,
   CssPixelBox,
@@ -31,11 +33,15 @@ import type {
   ErrorDetails,
   Finding,
   FindingAnnotated,
+  FindingClaimed,
+  FindingCommentAdded,
   FindingCreateRequest,
   FindingCreated,
   FindingStatusChanged,
   FindingUpdateRequest,
+  FindingVerificationSubmitted,
   Review,
+  ReviewClaimed,
   ReviewCreateRequest,
   ReviewCreated,
   ReviewNamed,
@@ -43,6 +49,7 @@ import type {
   ReviewUpdateRequest,
   ScreenshotCaptured,
   ScrollPosition,
+  VerificationChecks,
   VerificationReference,
   Viewport,
 } from "./types.ts";
@@ -319,6 +326,15 @@ export function encodeVerificationReference(value: VerificationReference): strin
   if (value.after_artefact_id !== undefined) {
     fields.push(`"after_artefact_id":${jsonString(value.after_artefact_id)}`);
   }
+  if (value.tested_viewports !== undefined) {
+    fields.push(`"tested_viewports":${`[${value.tested_viewports.map((item) => encodeViewport(item)).join(",")}]`}`);
+  }
+  if (value.checks !== undefined) {
+    fields.push(`"checks":${encodeVerificationChecks(value.checks)}`);
+  }
+  if (value.artefact_ids !== undefined) {
+    fields.push(`"artefact_ids":${`[${value.artefact_ids.map((item) => jsonString(item)).join(",")}]`}`);
+  }
   fields.push(`"submitted_at":${jsonString(value.submitted_at)}`);
   if (value.reviewed_at !== undefined) {
     fields.push(`"reviewed_at":${jsonString(value.reviewed_at)}`);
@@ -549,6 +565,87 @@ export function encodeFindingStatusChanged(value: FindingStatusChanged): string 
   if (value.reason !== undefined) {
     fields.push(`"reason":${jsonString(value.reason)}`);
   }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a Comment.
+ */
+export function encodeComment(value: Comment): string {
+  const fields: string[] = [];
+  fields.push(`"id":${jsonString(value.id)}`);
+  if (value.organisation_id !== undefined) {
+    fields.push(`"organisation_id":${jsonString(value.organisation_id)}`);
+  }
+  if (value.project_id !== undefined) {
+    fields.push(`"project_id":${jsonString(value.project_id)}`);
+  }
+  if (value.review_id !== undefined) {
+    fields.push(`"review_id":${jsonString(value.review_id)}`);
+  }
+  fields.push(`"finding_id":${jsonString(value.finding_id)}`);
+  fields.push(`"body":${jsonString(value.body)}`);
+  fields.push(`"created_by":${encodeActor(value.created_by)}`);
+  fields.push(`"revision":${jsonInteger(value.revision)}`);
+  fields.push(`"created_at":${jsonString(value.created_at)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a VerificationChecks.
+ */
+export function encodeVerificationChecks(value: VerificationChecks): string {
+  const fields: string[] = [];
+  fields.push(`"reproduced_before":${jsonBoolean(value.reproduced_before)}`);
+  fields.push(`"console_errors_reviewed":${jsonBoolean(value.console_errors_reviewed)}`);
+  fields.push(`"network_failures_reviewed":${jsonBoolean(value.network_failures_reviewed)}`);
+  if (value.accessibility_checked !== undefined) {
+    fields.push(`"accessibility_checked":${jsonBoolean(value.accessibility_checked)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ReviewClaimed.
+ */
+export function encodeReviewClaimed(value: ReviewClaimed): string {
+  const fields: string[] = [];
+  fields.push(`"review_id":${jsonString(value.review_id)}`);
+  fields.push(`"claimed_by":${encodeActor(value.claimed_by)}`);
+  fields.push(`"version":${jsonInteger(value.version)}`);
+  if (value.previous_claimed_by !== undefined) {
+    fields.push(`"previous_claimed_by":${encodeActor(value.previous_claimed_by)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a FindingClaimed.
+ */
+export function encodeFindingClaimed(value: FindingClaimed): string {
+  const fields: string[] = [];
+  fields.push(`"finding_id":${jsonString(value.finding_id)}`);
+  fields.push(`"review_id":${jsonString(value.review_id)}`);
+  fields.push(`"claimed_by":${encodeActor(value.claimed_by)}`);
+  fields.push(`"version":${jsonInteger(value.version)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a FindingCommentAdded.
+ */
+export function encodeFindingCommentAdded(value: FindingCommentAdded): string {
+  const fields: string[] = [];
+  fields.push(`"comment":${encodeComment(value.comment)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a FindingVerificationSubmitted.
+ */
+export function encodeFindingVerificationSubmitted(value: FindingVerificationSubmitted): string {
+  const fields: string[] = [];
+  fields.push(`"verification":${encodeVerificationReference(value.verification)}`);
   return `{${fields.join(",")}}`;
 }
 

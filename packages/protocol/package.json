@@ -25,6 +25,11 @@
       "types": "./dist/review.d.ts",
       "default": "./dist/review.js"
     },
+    "./mcp": {
+      "development": "./src/mcp.ts",
+      "types": "./dist/mcp.d.ts",
+      "default": "./dist/mcp.js"
+    },
     "./schemas/*": "./schemas/*",
     "./fixtures/*": "./fixtures/*"
   },

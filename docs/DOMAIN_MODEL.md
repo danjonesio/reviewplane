@@ -283,6 +283,18 @@ CANCELLED
 - Agent identity and human identity are distinct actors
 - An agent session cannot grant itself permissions beyond its issued capability set
 - Session completion does not accept reviews automatically
+- An agent session is bound to exactly one project
+
+Stage 0 stores the session in `agent_sessions` when an MCP connection is
+initialised (ADR-0020). `project_id` is `NOT NULL`, which is the last invariant
+expressed as a column: the ambiguous binding of `docs/MCP_SPEC.md` section 4 is
+refused before a row exists, so no later code has to defend against a session
+that never resolved a project.
+
+`capabilities` is copied from the credential when the session opens and read
+from the session afterwards. A capability added to the credential later cannot
+widen a session already running, and an audit record says what the session was
+permitted to do at the time it acted.
 
 ## 12. Browser session
 
@@ -586,6 +598,17 @@ A submitted claim with evidence that a finding is resolved.
 - `accepted`
 - `rejected`
 - `superseded`
+
+An agent produces `submitted` and nothing else. The MCP layer has no argument
+that could name `accepted` or `rejected`, and the `verifications` table refuses
+either without a human reviewer, so the human decision of section 15 cannot be
+recorded by anything that is not a human (ADR-0020).
+
+A submission also carries the artefact links its claim rests on, in
+`verification_artefacts` with a `before`, `after` or `supporting` role. Deletion
+of a linked artefact is restricted for the same reason a finding restricts
+deletion of its screenshot: a claim whose evidence has been removed is an
+opinion.
 
 ### Checks example
 

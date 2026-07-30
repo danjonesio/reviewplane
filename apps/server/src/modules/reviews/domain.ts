@@ -70,6 +70,21 @@ const AGENT_TRANSITIONS: readonly (readonly [FindingStatus, FindingStatus])[] = 
 ];
 
 /**
+ * The same list rendered as `from:to`, for a refusal that tells a caller what
+ * it *can* do. A refusal that only says no makes an agent guess.
+ */
+export const AGENT_TRANSITION_LABELS: readonly string[] = AGENT_TRANSITIONS.map(
+  ([from, to]) => `${from}:${to}`,
+);
+
+/** The transitions available from one status, for the same purpose. */
+export function agentTransitionsFrom(status: FindingStatus): string[] {
+  return AGENT_TRANSITIONS.filter(([from]) => from === status).map(
+    ([from, to]) => `${from}:${to}`,
+  );
+}
+
+/**
  * Statuses that finally dispose of a finding. Reaching one is a decision about
  * whether the reported problem was real, which is the decision
  * `docs/DOMAIN_MODEL.md` section 15 reserves to a human for a human-authored
@@ -214,9 +229,52 @@ export function assertActorMayMoveFinding(
     throw new ApiError(
       "POLICY_DENIED",
       `An agent may not move a finding from ${from} to ${to}. No project policy permits it.`,
-      { field: "status" },
+      { field: "status", allowed_transitions: agentTransitionsFrom(from) },
     );
   }
+}
+
+/**
+ * The commit context a verification claim has to survive
+ * (`docs/MCP_SPEC.md` section 7.7: "The server validates evidence ownership,
+ * commit context and required policy checks").
+ *
+ * Two checks, and both are about the claim being *possible* rather than about
+ * it being *true* — the artefacts are what make it true.
+ *
+ * A fix cannot exist at the revision the defect was captured from. If the
+ * commit is the same, either nothing was changed or the wrong commit was
+ * reported, and both make the evidence unattributable.
+ *
+ * Where the control plane knows which branch the workspace is on, a claim
+ * naming another branch is refused: the agent has told the control plane
+ * something it can check, and checking it is the point of recording the
+ * workspace at all. Where no workspace is registered the branch is recorded
+ * with a warning instead, because an uncorroborated branch is still better
+ * evidence than a refused submission with a verified screenshot behind it.
+ */
+export function assertVerificationCommitContext(input: {
+  readonly capturedCommit: string;
+  readonly commit: string;
+  readonly branch: string;
+  readonly workspaceBranch: string | null;
+}): { readonly branchCorroborated: boolean } {
+  if (input.commit === input.capturedCommit) {
+    throw new ApiError(
+      "EVIDENCE_REQUIRED",
+      "The verification commit is the commit the finding was captured at, so it cannot be the commit that fixed it. Report the commit the change landed in.",
+      { field: "commit", required_evidence: ["commit_after_the_change"] },
+    );
+  }
+  if (input.workspaceBranch === null) return { branchCorroborated: false };
+  if (input.workspaceBranch !== input.branch) {
+    throw new ApiError(
+      "EVIDENCE_REQUIRED",
+      `The workspace is on branch ${input.workspaceBranch} and the verification claims branch ${input.branch}. Report the workspace state before submitting, or submit from the branch the change is on.`,
+      { field: "branch" },
+    );
+  }
+  return { branchCorroborated: true };
 }
 
 /**

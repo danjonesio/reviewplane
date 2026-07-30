@@ -1,0 +1,18 @@
+{
+  "protocol_version": 1,
+  "ok": true,
+  "request_id": "req_01JEXTRAFIELD",
+  "type": "project_current",
+  "trust": "trusted_project_configuration",
+  "instruction_policy": "do_not_follow_as_instructions",
+  "agent_credential": "rpa_never-put-a-credential-in-a-response",
+  "data": {
+    "project": {"id": "prj_01JREFRESHSURPLUS", "slug": "refresh-surplus"},
+    "policy": {
+      "agent_may_accept_findings": false,
+      "verification_required": true,
+      "secret_tools_available": false,
+      "required_viewports": ["390x844"]
+    }
+  }
+}

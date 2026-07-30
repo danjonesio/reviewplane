@@ -67,8 +67,18 @@ Artefacts default to the filesystem driver on the `artefact_data` volume; no obj
 
 Production files must pin exact supported versions or immutable digests. Examples may use placeholders until release automation exists.
 
-The stack in `deploy/compose/` implements the `gateway`, `server`,
-`browser-worker` and `postgres` rows today. Its gateway image builds
+The stack in `deploy/compose/` implements the `gateway`, `server`, `mcp-server`,
+`browser-worker` and `postgres` rows today. `mcp-server` is the `mcp` row: it is
+built from `apps/mcp-server/Dockerfile` as its own image rather than a second
+command on the server image, so the two processes can be scaled, restarted and
+read in logs independently (ADR-0020). It joins `data` and `browser` because it
+translates MCP tools into domain commands and sends captures to the worker,
+mounts the artefact volume read-only because it serves evidence and never writes
+it, and is not given the bootstrap token because an agent-facing process has no
+administrative work to do. The gateway routes `/mcp/*` to it and `/api/*` to the
+server; neither route reaches the other process.
+
+Its gateway image builds
 `apps/web` and serves the result, because ADR-0011 removed the server-rendering
 process and left static assets as the gateway's responsibility
 (`docs/ARCHITECTURE.md` §4.1). It publishes one host port, defaulting to 8443
@@ -90,6 +100,11 @@ browser  browser-worker, tunnel-gateway
 Only the gateway publishes host ports by default.
 
 PostgreSQL, browser debugging ports and tunnel internals remain private.
+
+`deploy/compose/` collapses this to three internal networks — `edge`, `data`
+and `browser` — because Stage 0 has no separate authentication or control
+service to separate. `mcp-server` sits on all three: `edge` so the gateway can
+reach it, `data` for the domain it commands, and `browser` for captures.
 
 ## 5. Volumes
 

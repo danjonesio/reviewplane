@@ -23,6 +23,7 @@ import type {
   ArtefactUploadCompleted,
   ArtefactUploadFailed,
   ArtefactUploadStarted,
+  Comment,
   ContentRectangle,
   Correlation,
   CssPixelBox,
@@ -34,6 +35,8 @@ import type {
   ErrorDetails,
   Finding,
   FindingAnnotated,
+  FindingClaimed,
+  FindingCommentAdded,
   FindingCreateRequest,
   FindingCreated,
   FindingSeverity,
@@ -41,11 +44,13 @@ import type {
   FindingStatus,
   FindingStatusChanged,
   FindingUpdateRequest,
+  FindingVerificationSubmitted,
   MediaType,
   MessageType,
   RedactionState,
   RetentionClass,
   Review,
+  ReviewClaimed,
   ReviewCreateRequest,
   ReviewCreated,
   ReviewNamed,
@@ -54,6 +59,7 @@ import type {
   ReviewUpdateRequest,
   ScreenshotCaptured,
   ScrollPosition,
+  VerificationChecks,
   VerificationReference,
   VerificationStatus,
   Viewport,
@@ -269,6 +275,9 @@ export function decodeVerificationReference(value: unknown): VerificationReferen
     ...(source["commit"] === undefined ? {} : { commit: source["commit"] as string }),
     ...(source["before_artefact_id"] === undefined ? {} : { before_artefact_id: source["before_artefact_id"] as string }),
     ...(source["after_artefact_id"] === undefined ? {} : { after_artefact_id: source["after_artefact_id"] as string }),
+    ...(source["tested_viewports"] === undefined ? {} : { tested_viewports: (source["tested_viewports"] as unknown[]).map((item) => decodeViewport(item)) }),
+    ...(source["checks"] === undefined ? {} : { checks: decodeVerificationChecks(source["checks"]) }),
+    ...(source["artefact_ids"] === undefined ? {} : { artefact_ids: (source["artefact_ids"] as unknown[]).map((item) => item as string) }),
     submitted_at: source["submitted_at"] as string,
     ...(source["reviewed_at"] === undefined ? {} : { reviewed_at: source["reviewed_at"] as string }),
   };
@@ -454,6 +463,83 @@ export function decodeFindingStatusChanged(value: unknown): FindingStatusChanged
     version: source["version"] as number,
     source: source["source"] as FindingSource,
     ...(source["reason"] === undefined ? {} : { reason: source["reason"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated Comment.
+ */
+export function decodeComment(value: unknown): Comment {
+  const source = value as Record<string, unknown>;
+  return {
+    id: source["id"] as string,
+    ...(source["organisation_id"] === undefined ? {} : { organisation_id: source["organisation_id"] as string }),
+    ...(source["project_id"] === undefined ? {} : { project_id: source["project_id"] as string }),
+    ...(source["review_id"] === undefined ? {} : { review_id: source["review_id"] as string }),
+    finding_id: source["finding_id"] as string,
+    body: source["body"] as string,
+    created_by: decodeActor(source["created_by"]),
+    revision: source["revision"] as number,
+    created_at: source["created_at"] as string,
+  };
+}
+
+/**
+ * Decodes a validated VerificationChecks.
+ */
+export function decodeVerificationChecks(value: unknown): VerificationChecks {
+  const source = value as Record<string, unknown>;
+  return {
+    reproduced_before: source["reproduced_before"] as boolean,
+    console_errors_reviewed: source["console_errors_reviewed"] as boolean,
+    network_failures_reviewed: source["network_failures_reviewed"] as boolean,
+    ...(source["accessibility_checked"] === undefined ? {} : { accessibility_checked: source["accessibility_checked"] as boolean }),
+  };
+}
+
+/**
+ * Decodes a validated ReviewClaimed.
+ */
+export function decodeReviewClaimed(value: unknown): ReviewClaimed {
+  const source = value as Record<string, unknown>;
+  return {
+    review_id: source["review_id"] as string,
+    claimed_by: decodeActor(source["claimed_by"]),
+    version: source["version"] as number,
+    ...(source["previous_claimed_by"] === undefined ? {} : { previous_claimed_by: decodeActor(source["previous_claimed_by"]) }),
+  };
+}
+
+/**
+ * Decodes a validated FindingClaimed.
+ */
+export function decodeFindingClaimed(value: unknown): FindingClaimed {
+  const source = value as Record<string, unknown>;
+  return {
+    finding_id: source["finding_id"] as string,
+    review_id: source["review_id"] as string,
+    claimed_by: decodeActor(source["claimed_by"]),
+    version: source["version"] as number,
+  };
+}
+
+/**
+ * Decodes a validated FindingCommentAdded.
+ */
+export function decodeFindingCommentAdded(value: unknown): FindingCommentAdded {
+  const source = value as Record<string, unknown>;
+  return {
+    comment: decodeComment(source["comment"]),
+  };
+}
+
+/**
+ * Decodes a validated FindingVerificationSubmitted.
+ */
+export function decodeFindingVerificationSubmitted(value: unknown): FindingVerificationSubmitted {
+  const source = value as Record<string, unknown>;
+  return {
+    verification: decodeVerificationReference(source["verification"]),
   };
 }
 

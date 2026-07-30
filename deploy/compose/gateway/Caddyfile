@@ -78,6 +78,21 @@
 		reverse_proxy server:8080
 	}
 
+	# The agent endpoint (docs/API.md section 3, docs/MCP_SPEC.md section 3.2).
+	# It is a separate route to a separate process, which is what
+	# docs/ARCHITECTURE.md section 4.4 asks for: a misconfiguration that exposed
+	# the human API cannot expose the agent one as a side effect, and the two
+	# have different bodies, different credentials and different limits.
+	@mcp path /mcp/*
+	handle @mcp {
+		request_body {
+			# An MCP request is a JSON-RPC message. Nothing an agent sends is
+			# large: evidence travels the other way, as a link.
+			max_size 1MB
+		}
+		reverse_proxy mcp-server:8081
+	}
+
 	# Everything else is the single-page application. Unknown paths fall back to
 	# the document, because routing is client-side (ADR-0011).
 	handle {

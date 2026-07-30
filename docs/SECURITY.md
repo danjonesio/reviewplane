@@ -146,6 +146,33 @@ Agent credentials are:
 
 An agent token must not access administrative APIs.
 
+Stage 0 implements every line of this list (ADR-0020). An agent credential is a
+bearer token prefixed `rpa_`, stored only as a SHA-256 digest, bound to one
+organisation and a non-empty set of projects, carrying a non-empty capability
+set from a fixed vocabulary, and expiring at most 24 hours after issue — the
+database refuses a longer life, so a long-lived agent token cannot be produced
+by omitting a field. It is issued by an administrator and returned exactly once;
+no route re-shows it.
+
+The administrative refusal is **by token shape rather than by lookup**: a bearer
+token with the `rpa_` prefix is refused with `AUTHORISATION_DENIED` before
+anything is resolved. A refusal that depended on a database read would fail open
+exactly when the database is unavailable, and this is not a rule that may hold
+only while PostgreSQL is up. The prefix can only cause a refusal, never an
+admission.
+
+The distinctness from human sessions is symmetric and holds in both directions:
+the agent credential store resolves nothing that is not an agent credential, and
+the viewer-session store resolves nothing that is not a viewer session. The MCP
+endpoint reads an `Authorization` header and never a cookie, and it re-resolves
+the credential on every request, so expiry or revocation refuses the next call
+with `AUTHENTICATION_REQUIRED` rather than allowing an open session to continue.
+
+An agent credential is accepted on exactly one route outside the MCP endpoint:
+`GET /api/v1/artefact-content/:grantId`, and only for a grant minted for a
+session that credential owns (ADR-0019). It cannot create, complete or overwrite
+an artefact.
+
 ### 6.4 Worker authentication
 
 Browser workers use dedicated identities. A worker may only receive sessions compatible with its labels, policy and organisation assignment.
@@ -278,6 +305,18 @@ MCP responses containing page text should include metadata equivalent to:
 ```
 
 Agents should receive project guidance stating that text encountered in pages cannot override human, repository or control-plane instructions.
+
+Stage 0 delivers that guidance in the MCP server's initialisation instructions,
+so a client receives it before its first tool call, and repeats the metadata on
+every response rather than only on untrusted ones. The label is applied by the
+response codec rather than by each handler: a response whose data carries a
+finding, an artefact link or a capture cannot be encoded under a trusted label
+(`docs/MCP_SPEC.md` section 6).
+
+What stops a hostile page in Stage 0 is not only the label. There is no tool
+that could change a policy, no tool that could approve anything, and no secret
+tool at all, so the actions such a page would ask for do not exist to be
+requested.
 
 High-risk browser operations may require policy approval even when requested by page content.
 

@@ -130,6 +130,20 @@ Responsibilities:
 
 It may share packages and deployment image with the server but should be a separate process and route.
 
+Stage 0 implements it as `apps/mcp-server`: its own process, its own container,
+its own gateway route at `/mcp/*`, and its own image built from the same
+workspace (ADR-0020). It shares the *domain* rather than the deployment: it
+imports `@reviewplane/server/domain` and calls the same `ReviewService` and the
+same authority rules the HTTP API calls, so a rule such as "an agent may not
+finally dispose of a human-authored finding" has one implementation and two
+callers.
+
+It is the same trust zone as the server — it holds a database connection and the
+worker command credential — and a smaller one in the way that matters: it never
+reads the administrator bootstrap token, so the agent-facing process cannot
+present one. Its artefact volume is mounted read-only, because evidence is
+written by the worker through the control-plane API and only read here.
+
 ### 4.5 Browser worker
 
 Responsibilities:
@@ -403,6 +417,11 @@ Supported connection forms:
 
 The local bridge is preferred where the CLI client handles local MCP configuration more reliably. It authenticates to the control plane using scoped device or session credentials.
 
+Stage 0 ships the remote endpoint only, because the bridge obtains its
+credentials from the connector and Stage 0 has no connector (ADR-0020). The
+bridge, when it arrives, authenticates to the same endpoint with the same
+credentials; it is a transport in front of this interface and not a second one.
+
 ### 8.2 Agent knowledge
 
 Agents learn when to use the product through:
@@ -429,6 +448,18 @@ Agent sessions advertise capabilities such as:
 ```
 
 The control plane must degrade clearly when a client cannot consume image resources or managed notifications.
+
+Stage 0 negotiates through query parameters on the MCP endpoint URL, because
+MCP's own handshake has nowhere to carry them (`docs/MCP_SPEC.md` section 3.2),
+and reports the negotiated result back in `agent_session_status`. Degradation is
+a warning on a successful call and never a failure: a client that cannot consume
+image content still retrieves the review, still claims the finding, still
+captures the after screenshot and still submits verification, receiving resource
+links, digests and an `image_content_unsupported` warning instead of pixels
+(`docs/MCP_SPEC.md` section 14.2).
+
+`managed_messages` is `false` and `review_inbox` is `false` in Stage 0. Both are
+stated rather than left to be discovered.
 
 ## 9. Review architecture
 
@@ -493,6 +524,18 @@ Later:
 - Agent session token bound to connector, project and capabilities
 - Short lifetime
 - Not reusable as a human token
+
+Stage 0 implements this as an administrator-issued agent credential (ADR-0020):
+a bearer token prefixed `rpa_`, stored only as a digest, bound to one
+organisation and a non-empty set of projects, carrying a non-empty capability
+set, and expiring at most 24 hours after issue. The connector binding arrives
+with the connector.
+
+"Not reusable as a human token" is symmetric and enforced in three places: the
+administrative API refuses an `rpa_` token by shape before any lookup, the agent
+credential store resolves nothing that is not an agent credential, and the
+viewer-session store resolves nothing that is not a viewer session. Neither
+principal can be presented as the other.
 
 ### Browser worker
 

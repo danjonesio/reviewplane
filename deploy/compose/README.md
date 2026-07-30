@@ -5,7 +5,7 @@ This directory contains the supported single-host deployment.
 Present today:
 
 ```text
-compose.yaml                    gateway, PostgreSQL, server and browser worker
+compose.yaml                    gateway, PostgreSQL, server, MCP server, browser worker
 gateway/Dockerfile              builds the web application and the Caddy image
 gateway/Caddyfile               TLS, routing, WebSocket upgrades, static assets
 browser-worker-seccomp.json     seccomp profile for the browser worker
@@ -28,10 +28,23 @@ upgrade
 
 `gateway` is the only service that publishes a host port
 (`docs/ARCHITECTURE.md` §4.1). It serves `apps/web`'s build output, proxies
-`/api` and upgrades `/ws` to the control plane, and refuses `/internal`
-outright so that a misconfigured network cannot expose the browser-worker
-channel. It holds no credential, reaches neither PostgreSQL nor the worker, and
-mounts no Docker socket.
+`/api` and upgrades `/ws` to the control plane, routes `/mcp` to the MCP server,
+and refuses `/internal` outright so that a misconfigured network cannot expose
+the browser-worker channel. It holds no credential, reaches neither PostgreSQL
+nor the worker, and mounts no Docker socket.
+
+## MCP server
+
+`mcp-server` is the agent-facing process (`docs/ARCHITECTURE.md` §4.4,
+ADR-0020). It is a separate process behind a separate route, so a gateway rule
+written for the human API cannot expose the agent one as a side effect, and the
+two have different credentials, different bodies and different limits.
+
+It is the same trust zone as `server` — same database, same worker command
+credential — and deliberately narrower in two ways: it is not given the
+bootstrap token, so the agent-facing process cannot present an administrator
+credential, and its artefact volume is mounted read-only, because evidence is
+written by the worker through the control-plane API and only read here.
 
 The web application is built inside the gateway image because ADR-0011 removed
 the server-rendering process: the build output is static files, and this is the

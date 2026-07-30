@@ -20,8 +20,13 @@ This document defines the human-facing and integration API shape. It is separate
 ```text
 /api/v1/...
 /ws/v1/...
-/mcp/...          separate agent endpoint
+/mcp/v1           separate agent endpoint, separate process (ADR-0020)
 ```
+
+`/mcp/v1` is served by `apps/mcp-server` and reached through its own gateway
+route. Nothing under `/api/v1` accepts an agent credential except
+`GET /api/v1/artefact-content/:grantId`, and nothing under `/mcp` accepts a
+human session.
 
 ## 4. Authentication
 
@@ -57,6 +62,52 @@ it before the WebSocket upgrade completes.
 
 State-changing browser-session routes — start, command, terminate — remain
 administrative and are not reachable with a viewer session.
+
+### 4.2 Agent credentials
+
+Agent credentials are issued administratively and used only on `/mcp/v1`
+(`docs/SECURITY.md` section 6.3, ADR-0020):
+
+```text
+POST   /api/v1/organisations/:organisationId/agent-credentials
+DELETE /api/v1/agent-credentials/:credentialId
+```
+
+The issuing call takes `project_ids`, `capabilities`, `label` and an optional
+`ttl_seconds` (at least 60, at most 86400) and returns the token **once**:
+
+```json
+{
+  "data": {
+    "credential_id": "agc_...",
+    "token": "rpa_...",
+    "project_ids": ["prj_..."],
+    "capabilities": ["review:read", "review:write", "finding:read", "finding:write", "verification:submit", "browser:capture"],
+    "expires_at": "2026-07-30T11:41:02Z",
+    "expires_in_seconds": 3600
+  }
+}
+```
+
+There is no route that shows a token again, and the database stores only its
+digest. Issuing one records an `agent_credential.issued` event for each project
+it is bound to.
+
+### 4.3 Workspace registration
+
+Stage 1's connector reports the checkout an agent is working in. Stage 0
+registers it administratively, because MCP session initialisation has to answer
+with a branch and a head commit and an invented value would be worse than an
+absent one (`docs/DOMAIN_MODEL.md` section 9):
+
+```text
+PUT /api/v1/projects/:projectId/workspaces
+GET /api/v1/projects/:projectId/workspaces
+```
+
+`PUT` takes `root_path`, `branch`, `head_commit` and optional `dirty`, and
+upserts on `(project_id, root_path)`. The recorded branch is what
+`finding_submit_verification` checks a claimed fix against.
 
 ## 5. Common metadata
 

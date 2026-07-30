@@ -108,12 +108,22 @@ Names are stable public integration contracts.
 
 ### Agent session
 
+- `agent_credential.issued`
 - `agent_session.started`
 - `agent_session.waiting`
 - `agent_session.blocked`
 - `agent_session.completed`
 - `agent_session.failed`
 - `agent_session.disconnected`
+
+`agent_credential.issued` is a permission change and section 16 of
+`docs/SECURITY.md` requires an audit record for one. It names the projects and
+capabilities granted and the expiry, and never the token. It is recorded once per
+project the credential is bound to, because the event stream is per project.
+
+`agent_session.started` records the client's self-reported name and version, the
+capabilities the session was granted and the client capabilities it declared.
+The client's name is description and never an authorisation input.
 
 ### Browser session
 
@@ -181,6 +191,17 @@ it to leave a record.
 - `finding.status_changed`
 - `finding.comment_added`
 - `finding.verification_submitted`
+
+`review.claimed` and `finding.claimed` are separate from the status change
+beside them, because assignment and lifecycle are different facts: a claim says
+who is working, and the status says what stage the work is at. A human reading
+the timeline needs both.
+
+`finding.verification_submitted` carries the whole claim — summary, branch,
+commit, tested viewports, checks and every artefact identifier — with status
+`submitted`. The control plane has already verified that each artefact belongs
+to this project and to a browser session of this project before the event is
+written, so evidence from elsewhere never reaches the audit trail.
 - `finding.verification_accepted`
 - `finding.verification_rejected`
 - `finding.resolved`

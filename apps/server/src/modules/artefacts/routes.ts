@@ -33,6 +33,23 @@ import {
   type ViewerPrincipal,
 } from "../live/viewer-sessions.ts";
 
+/**
+ * An agent credential presenting itself to read evidence back.
+ *
+ * ADR-0019 states the flow: "an agent session mints a grant scoped to itself
+ * and fetches with its own credential". The grant names the session, and the
+ * credential is what proves the caller is entitled to act as it — so the
+ * principal carries the sessions the credential currently owns, and a grant is
+ * redeemable only by a credential that owns the session it was minted for.
+ */
+export interface AgentArtefactPrincipal {
+  readonly credentialId: string;
+  readonly organisationId: string;
+  readonly projectIds: ReadonlySet<string>;
+  readonly sessionIds: ReadonlySet<string>;
+  readonly display: string;
+}
+
 export interface ArtefactRoutesOptions {
   readonly pool: Pool;
   readonly artefacts: ArtefactService;
@@ -42,6 +59,13 @@ export interface ArtefactRoutesOptions {
   readonly maxBytes: number;
   /** Resolves a human viewer (ADR-0016). Humans read evidence; workers write it. */
   readonly viewerAuth?: (request: FastifyRequest) => Promise<ViewerPrincipal>;
+  /**
+   * Resolves an agent credential (`docs/SECURITY.md` §6.3). It admits an agent
+   * to **reading** evidence it already holds a grant for, and to nothing else
+   * here: the upload routes below never consult it, so an agent cannot create,
+   * overwrite or complete an artefact.
+   */
+  readonly agentAuth?: (request: FastifyRequest) => Promise<AgentArtefactPrincipal | null>;
 }
 
 function actorFor(principal: Principal): EventActor {
@@ -209,11 +233,34 @@ export async function registerArtefactRoutes(
     });
   });
 
+  /**
+   * The agent principal for this request, where the caller presented an agent
+   * credential authorised for the artefact's project.
+   */
+  const resolveAgent = async (
+    request: FastifyRequest,
+    record: ArtefactRecord,
+  ): Promise<AgentArtefactPrincipal | null> => {
+    if (options.agentAuth === undefined) return null;
+    const agent = await options.agentAuth(request).catch(() => null);
+    if (agent === null) return null;
+    if (agent.organisationId !== record.organisation_id || !agent.projectIds.has(record.project_id)) {
+      // Cross-project reads are refused before anything about the artefact is
+      // returned (`docs/TESTING.md` section 10).
+      throw new ApiError(
+        "PROJECT_CONTEXT_MISMATCH",
+        "This agent credential is not bound to the project that owns this artefact.",
+      );
+    }
+    return agent;
+  };
+
   app.get("/api/v1/artefacts/:artefactId", async (request, reply) => {
     const { artefactId } = request.params as { artefactId: string };
     const record = await options.artefacts.get(artefactId);
     // A read of metadata is authorised the same way a read of bytes is.
-    await resolveGrantSubject(request, record);
+    const agent = await resolveAgent(request, record);
+    if (agent === null) await resolveGrantSubject(request, record);
     return reply.send({ data: publicArtefact(record), meta: { request_id: request.id } });
   });
 
@@ -260,12 +307,27 @@ export async function registerArtefactRoutes(
       );
     }
     const record = await options.artefacts.get(grant.artefact_id);
-    const subject = await resolveGrantSubject(request, record);
-    if (subject.type !== grant.subject_type || subject.id !== grant.subject_id) {
-      throw new ApiError(
-        "AUTHORISATION_DENIED",
-        "This artefact grant was issued to a different principal.",
-      );
+    if (grant.subject_type === "agent_session") {
+      // ADR-0019's agent flow. The grant names one agent session; the caller
+      // proves it may act as that session by presenting the credential the
+      // session was opened with. A credential that no longer owns the session —
+      // because it expired, was revoked, or never owned it — is refused exactly
+      // as an unknown grant is.
+      const agent = await resolveAgent(request, record);
+      if (agent === null || !agent.sessionIds.has(grant.subject_id)) {
+        throw new ApiError(
+          "AUTHORISATION_DENIED",
+          "This artefact grant was issued to a different principal.",
+        );
+      }
+    } else {
+      const subject = await resolveGrantSubject(request, record);
+      if (subject.type !== grant.subject_type || subject.id !== grant.subject_id) {
+        throw new ApiError(
+          "AUTHORISATION_DENIED",
+          "This artefact grant was issued to a different principal.",
+        );
+      }
     }
 
     const { bytes } = await options.artefacts.readContent(grant.artefact_id);

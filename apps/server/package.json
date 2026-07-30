@@ -4,6 +4,35 @@
   "private": true,
   "type": "module",
   "description": "ReviewPlane control-plane server: projects, browser-session orchestration, artefacts, events.",
+  "exports": {
+    "./domain": {
+      "development": "./src/domain.ts",
+      "types": "./dist/domain.d.ts",
+      "default": "./dist/domain.js"
+    },
+    "./app": {
+      "development": "./src/app.ts",
+      "types": "./dist/app.d.ts",
+      "default": "./dist/app.js"
+    },
+    "./config": {
+      "development": "./src/config.ts",
+      "types": "./dist/config.d.ts",
+      "default": "./dist/config.js"
+    },
+    "./testing": {
+      "//": "Test infrastructure only, and deliberately reachable only under the development condition: a disposable PostgreSQL belongs in a test run and never in a build output. apps/mcp-server runs against the same database as apps/server, so a second copy of this helper would be a second thing to keep in step with the migrations.",
+      "development": "./test/helpers/postgres.ts"
+    },
+    "./testing/png": {
+      "development": "./test/helpers/png.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "migrations"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "dev": "node --conditions=development src/main.ts",

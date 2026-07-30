@@ -3,7 +3,7 @@
 The single versioned source for ReviewPlane protocol schemas, with generated
 TypeScript and Go models.
 
-At Stage 0 it covers four protocols:
+At Stage 0 it covers five protocols:
 
 - the version 1 **connector protocol** of `docs/CONNECTOR_PROTOCOL.md`, spoken
   between the Go connector, the Go tunnel gateway and the TypeScript control
@@ -24,11 +24,18 @@ At Stage 0 it covers four protocols:
   the shared vocabulary of the HTTP API, the MCP tools of `docs/MCP_SPEC.md`
   §§7.6–7.7 and the event stream, which is exactly why it belongs in one place.
   `annotation-geometry.ts` beside it holds the coordinate contract those three
-  surfaces share.
+  surfaces share;
+- the version 1 **MCP interface** of `docs/MCP_SPEC.md`: the Stage 0 tool
+  arguments and results, the response envelope of §5, the trust labels of §6,
+  the resource URI forms of §8 and the stable error codes of §12. Its
+  `x-protocol.messages` is keyed by **tool name**, so the generated
+  `MESSAGE_TYPE_VALUES` *is* the Stage 0 tool availability set of §14 and
+  `PAYLOAD_MAX_BYTES` *is* the per-tool response bound of §13. A tool cannot be
+  advertised without a result schema and a bound, because the generator refuses
+  a message without one.
 
-The remaining API and MCP schemas (`docs/DEVELOPMENT.md` §3) are added by the
-issues that introduce those surfaces; they belong in this package, not in a
-service.
+The remaining API schemas (`docs/DEVELOPMENT.md` §3) are added by the issues
+that introduce those surfaces; they belong in this package, not in a service.
 
 ## Layout
 
@@ -53,9 +60,10 @@ import { decodeControlFrame } from "@reviewplane/protocol";
 import { decodeBrowserFrame } from "@reviewplane/protocol/browser";
 import { decodeLiveViewFrame } from "@reviewplane/protocol/live-view";
 import { decodeReviewEvent, checkGeometryForType } from "@reviewplane/protocol/review";
+import { encodeMcpToolResponse, MESSAGE_TYPE_VALUES } from "@reviewplane/protocol/mcp";
 ```
 
-Each protocol is a separate subpath export because all four declare an
+Each protocol is a separate subpath export because all five declare an
 `Envelope`, a `MessageType` and a `LIMITS` block; a single namespace would make
 them indistinguishable at a call site.
 
@@ -80,11 +88,34 @@ the rule has to live in TypeScript, but its content still has exactly one
 source. A type added to the schema without its members throws at import rather
 than validating against an empty rule.
 
-## Why the browser, live-view and review sources render TypeScript only
+## The MCP envelope names its payload slot `data`
+
+Every other source calls the type-selected slot `payload`, which is what a wire
+protocol calls it. `docs/MCP_SPEC.md` §5 calls it `data`, and renaming it here
+would leave the schema and the normative document disagreeing about what goes on
+the wire — exactly the drift this package exists to prevent. So a source may
+declare `x-protocol.envelope_payload_property`, defaulting to `payload`, and the
+MCP source declares `data`.
+
+## The MCP trust rule is in the codec, not the schema
+
+`browser_command_result` holds its trust rule in the schema, because the label
+and the content it constrains are siblings in one object. The MCP envelope
+cannot: its `trust` has to be conditioned on what the type-selected `data`
+turned out to contain, and the generator's conditional rules see only siblings.
+
+`mcp-response.ts` therefore refuses a response whose `data` carries a finding, an
+artefact link or a capture under a trusted label — on the way out as well as on
+the way in, with the violation reason `untrusted_content_mislabelled` and the
+wire code `POLICY_DENIED`. The server encodes every response through that
+function, so a handler cannot ship page-derived content under a trusted label
+even by mistake (ADR-0010, `docs/MCP_SPEC.md` §6).
+
+## Why the browser, live-view, review and MCP sources render TypeScript only
 
 `x-protocol.languages` in `schemas/browser/v1.schema.json`,
-`schemas/live_view/v1.schema.json` and `schemas/review/v1.schema.json` is
-`["typescript"]`. Every party to them — `apps/server`, `apps/browser-worker`
+`schemas/live_view/v1.schema.json`, `schemas/review/v1.schema.json` and
+`schemas/mcp/v1.schema.json` is `["typescript"]`. Every party to them — `apps/server`, `apps/browser-worker`
 and `apps/web` — is TypeScript, so a Go rendering would have no consumer, and producing one would
 mean extracting the hand-written Go runtime in `connectorv1/` into a shared
 package and regenerating every committed Go file to call it through exported

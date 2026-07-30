@@ -26,12 +26,14 @@ import {
   BROWSER_CORPUS,
   CONNECTOR_CORPUS,
   LIVE_VIEW_CORPUS,
+  MCP_CORPUS,
   REVIEW_CORPUS,
   loadCanonicalEncodings,
   loadFixtureManifest,
   readFixture,
   type FixtureCorpus,
 } from "../src/fixtures.ts";
+import { decodeMcpToolResponse, encodeMcpToolResponse } from "../src/mcp-response.ts";
 import { decodeLiveViewFrame, encodeLiveViewFrame } from "../src/live-view-frame.ts";
 import { decodeReviewEvent, encodeReviewEvent } from "../src/review-event.ts";
 import {
@@ -148,6 +150,17 @@ const CODECS: Readonly<Record<string, Codec>> = {
       return result.ok ? null : { reason: result.error.reason, errorClass: result.error.errorClass };
     },
   },
+  mcp_tool_response: {
+    roundTrip(raw) {
+      const decoded = decodeMcpToolResponse(raw);
+      if (!decoded.ok) return { ok: false, message: `${decoded.error.reason}: ${decoded.error.message}` };
+      return { ok: true, encoded: encodeMcpToolResponse(decoded.value) };
+    },
+    refusal(raw) {
+      const result = decodeMcpToolResponse(raw);
+      return result.ok ? null : { reason: result.error.reason, errorClass: result.error.errorClass };
+    },
+  },
 };
 
 function codecFor(kind: string): Codec {
@@ -256,6 +269,7 @@ checkFixtures(CONNECTOR_CORPUS, "connector");
 checkFixtures(BROWSER_CORPUS, "browser");
 checkFixtures(LIVE_VIEW_CORPUS, "live view");
 checkFixtures(REVIEW_CORPUS, "review");
+checkFixtures(MCP_CORPUS, "mcp");
 checkGo();
 
 if (failures.length > 0) {

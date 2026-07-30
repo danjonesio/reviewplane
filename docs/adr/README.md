@@ -29,6 +29,7 @@ ADRs record decisions that materially affect architecture, security, protocols o
 | [0013](0013-generated-protocol-models.md) | Generate protocol models from one bounded JSON Schema source | Accepted |
 | [0016](0016-viewer-sessions-from-bootstrap-token.md) | Exchange the bootstrap administrator token for a scoped viewer session | Accepted |
 | [0019](0019-artefact-access-grants.md) | Reach artefact content through subject-bound access grants | Accepted |
+| [0020](0020-remote-mcp-endpoint-and-agent-credentials.md) | Serve the agent interface as a remote authenticated MCP endpoint with scoped agent credentials | Accepted |
 
 ## Pending decisions
 
