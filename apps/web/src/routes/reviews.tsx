@@ -12,6 +12,7 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 import type { ReactElement } from "react";
 
 import { api, type Review } from "../api/client.ts";
+import { useSession } from "../auth/session.ts";
 import { StatusBadge, type Tone } from "../components/StatusBadge.tsx";
 import { rootRoute } from "./root.tsx";
 
@@ -75,11 +76,11 @@ function ReviewRow({ review }: { readonly review: Review }): ReactElement {
 }
 
 function Reviews(): ReactElement {
-  const viewer = useQuery({ queryKey: ["viewer"], queryFn: () => api.currentViewer(), retry: false });
+  const session = useSession();
   const projects = useQuery({
     queryKey: ["projects"],
     queryFn: () => api.projects(),
-    enabled: viewer.data !== undefined,
+    enabled: session.data !== undefined,
   });
   const reviewQueries = useQueries({
     queries: (projects.data ?? []).map((project) => ({
@@ -88,17 +89,7 @@ function Reviews(): ReactElement {
     })),
   });
 
-  if (viewer.isPending) return <p role="status">Loading.</p>;
-  if (viewer.isError) {
-    return (
-      <section aria-labelledby="reviews-heading">
-        <h1 id="reviews-heading" className="text-xl font-semibold">
-          Reviews
-        </h1>
-        <p className="mt-2 text-sm">Sign in from the live sessions page to read reviews.</p>
-      </section>
-    );
-  }
+  if (session.isPending) return <p role="status">Loading.</p>;
 
   const reviews = reviewQueries
     .flatMap((query) => query.data ?? [])

@@ -1,0 +1,22 @@
+{
+  "id": "evt_2000000000000000000000000000000c",
+  "schema_version": 1,
+  "sequence": 3,
+  "type": "authentication.login_succeeded",
+  "occurred_at": "2026-07-30T11:21:44.900Z",
+  "recorded_at": "2026-07-30T11:21:44.912Z",
+  "organisation_id": "org_2f1c8ba0d9e34a7f8b6c5d4e3f2a1b09",
+  "actor": {
+    "type": "human_user",
+    "id": "usr_1111222233334444555566667777888",
+    "display": "Administrator"
+  },
+  "correlation": {
+    "request_id": "req_abcdef0123456789"
+  },
+  "payload": {
+    "session_id": "vwr_5a4b3c2d1e0f98877665544332211009",
+    "user_id": "usr_1111222233334444555566667777888",
+    "method": "password"
+  }
+}

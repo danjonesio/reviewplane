@@ -39,11 +39,47 @@
         "payload": "project_updated_payload",
         "description": "A project's mutable attributes changed. The payload names the fields that changed rather than restating the record, because the record is queryable and the audit question is what moved."
       },
+      "project.repository_changed": {
+        "channel": "organisation",
+        "direction": "control_plane_to_subscriber",
+        "payload": "project_repository_changed_payload",
+        "description": "A project's repository association changed. docs/DOMAIN_MODEL.md section 6 makes this its own event rather than a project.updated field, because the repository is what every review's captured commit is interpreted against: moving it silently would reinterpret history."
+      },
       "project.archived": {
         "channel": "organisation",
         "direction": "control_plane_to_subscriber",
         "payload": "project_archived_payload",
         "description": "A project was archived. Archival is a status change, not a deletion; the audit trail and its artefacts survive it."
+      },
+      "user.invited": {
+        "channel": "organisation",
+        "direction": "control_plane_to_subscriber",
+        "payload": "user_invited_payload",
+        "description": "A one-time credential-establishing token was issued for a user. Stage 1's only form is the install token an operator mints for the administrator; the record names the user and the expiry and never the token."
+      },
+      "user.credentials_set": {
+        "channel": "organisation",
+        "direction": "control_plane_to_subscriber",
+        "payload": "user_credentials_set_payload",
+        "description": "A user's local password was established or replaced. It records that the credential changed and never any part of the credential itself (docs/SECURITY.md section 18)."
+      },
+      "authentication.login_succeeded": {
+        "channel": "organisation",
+        "direction": "control_plane_to_subscriber",
+        "payload": "authentication_login_succeeded_payload",
+        "description": "A human authenticated and a session was issued. It names the session so that a later session.revoked can be matched to the login that created it."
+      },
+      "authentication.login_failed": {
+        "channel": "organisation",
+        "direction": "control_plane_to_subscriber",
+        "payload": "authentication_login_failed_payload",
+        "description": "An authentication attempt was refused. It carries a stable reason and never the submitted credential — not the password, and not the identifier that was typed beside it, because a mistyped password lands in an email field often enough that recording the field would put credentials in an append-only table."
+      },
+      "session.revoked": {
+        "channel": "organisation",
+        "direction": "control_plane_to_subscriber",
+        "payload": "session_revoked_payload",
+        "description": "A human session stopped being usable. Sign-out, rotation on privilege change and administrative revocation are the same fact to a reader of the audit trail, distinguished by reason."
       },
       "job.enqueued": {
         "channel": "jobs",
@@ -176,6 +212,7 @@
         "values": [
           "organisation.created",
           "user.invited",
+          "user.credentials_set",
           "authentication.login_succeeded",
           "authentication.login_failed",
           "session.revoked",
@@ -274,6 +311,8 @@
     "identifier_prefixes": {
       "organisation": "org_",
       "user": "usr_",
+      "install_token": "ins_",
+      "human_session": "vwr_",
       "project": "prj_",
       "environment": "env_",
       "connector": "con_",
@@ -331,7 +370,13 @@
         "organisation.created",
         "project.created",
         "project.updated",
+        "project.repository_changed",
         "project.archived",
+        "user.invited",
+        "user.credentials_set",
+        "authentication.login_succeeded",
+        "authentication.login_failed",
+        "session.revoked",
         "job.enqueued",
         "job.succeeded",
         "job.failed"
@@ -385,6 +430,241 @@
       "type": "string",
       "description": "Project lifecycle status (docs/DOMAIN_MODEL.md section 5).",
       "enum": ["active", "archived"]
+    },
+    "organisation_status": {
+      "type": "string",
+      "description": "Organisation lifecycle status (docs/DOMAIN_MODEL.md section 4).",
+      "enum": ["active", "suspended"]
+    },
+    "user_status": {
+      "type": "string",
+      "description": "User lifecycle status (docs/DOMAIN_MODEL.md section 5). A suspended user keeps every record they authored and can no longer authenticate.",
+      "enum": ["active", "suspended"]
+    },
+    "slug": {
+      "type": "string",
+      "description": "Human-friendly alias, unique inside its parent. Mutable, and never a substitute for the identifier (docs/DOMAIN_MODEL.md section 3).",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "display_name": {
+      "type": "string",
+      "description": "Name a human reads. It is description and never an authorisation input.",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^[^\\x00-\\x1f]+$"
+    },
+    "email_address": {
+      "type": "string",
+      "description": "Address a human is known by. It is an alias for a user, never an identity: the identifier is what every other record references. The bound is the RFC 5321 maximum path length. The pattern is deliberately permissive — one at-sign, no whitespace and no control characters — because a stricter one rejects addresses that work: a dotless host such as administrator@localhost is what a fresh self-hosted installation is seeded with, and deliverability is not something a schema can decide.",
+      "minLength": 3,
+      "maxLength": 254,
+      "pattern": "^[^\\s@\\x00-\\x1f]+@[^\\s@\\x00-\\x1f]+$"
+    },
+    "git_ref_name": {
+      "type": "string",
+      "description": "Git branch name. Bounded and restricted to the characters a ref may hold, so a value stored here cannot become an argument to something else.",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$"
+    },
+    "repository_identity": {
+      "type": "object",
+      "description": "Provider-agnostic repository identity (docs/DOMAIN_MODEL.md section 6). canonical is the normalised host-and-path form that two clone URLs for the same repository both reduce to, which is what lets an SSH remote and an HTTPS remote be recognised as one repository. clone_urls records the forms actually seen, for display and for a connector to match a checkout against.",
+      "additionalProperties": false,
+      "required": ["canonical"],
+      "properties": {
+        "canonical": {
+          "type": "string",
+          "description": "Normalised host and path, lowercase host, no scheme, no credentials, no .git suffix and no trailing slash, for example github.com/example/refresh-surplus.",
+          "minLength": 3,
+          "maxLength": 255,
+          "pattern": "^[a-z0-9][a-z0-9.-]*(:[0-9]{1,5})?(/[A-Za-z0-9._~-]+)+$"
+        },
+        "clone_urls": {
+          "type": "array",
+          "description": "Clone URLs that reduce to canonical, in the order they were supplied. Duplicates are removed by the control plane before storage.",
+          "minItems": 0,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "description": "A clone URL as an operator supplied it. It never carries credentials: a userinfo component is removed during normalisation rather than stored.",
+            "minLength": 3,
+            "maxLength": 512,
+            "pattern": "^[^\\s\\x00-\\x1f]+$"
+          }
+        }
+      }
+    },
+    "validation_viewport": {
+      "type": "object",
+      "description": "A viewport the project validates at (docs/UX_FLOWS.md section 4). The bounds are the browser protocol's, because a viewport stored here is one a browser session is later asked to adopt; a value the worker would refuse must not be storable.",
+      "additionalProperties": false,
+      "required": ["width", "height"],
+      "properties": {
+        "width": {
+          "type": "integer",
+          "description": "Viewport width in CSS pixels.",
+          "minimum": 240,
+          "maximum": 3840
+        },
+        "height": {
+          "type": "integer",
+          "description": "Viewport height in CSS pixels.",
+          "minimum": 240,
+          "maximum": 2160
+        },
+        "device_scale_factor": {
+          "type": "number",
+          "description": "Device pixel ratio. Absent means 1, which is what a browser session adopts when the project does not say otherwise.",
+          "minimum": 1,
+          "maximum": 4
+        }
+      }
+    },
+    "project_settings": {
+      "type": "object",
+      "description": "Project settings (docs/DOMAIN_MODEL.md section 6). Stage 1 holds the default validation viewports and nothing else; the object refuses unknown members so a setting cannot be introduced in one service without being defined here first.",
+      "additionalProperties": false,
+      "required": ["default_validation_viewports"],
+      "properties": {
+        "default_validation_viewports": {
+          "type": "array",
+          "description": "Viewports a finding is expected to be validated at. It defaults to 390x844 and 1440x900, which AGENTS.md requires of browser-facing work and the Stage 1 completion gate checks against.",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/validation_viewport", "description": "One default viewport." }
+        }
+      }
+    },
+    "organisation": {
+      "type": "object",
+      "description": "The top-level administrative and data-isolation boundary (docs/DOMAIN_MODEL.md section 4).",
+      "additionalProperties": false,
+      "required": ["id", "name", "slug", "status", "created_at", "updated_at"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier", "description": "Organisation identity, conventionally prefixed org_." },
+        "name": { "$ref": "#/$defs/display_name", "description": "Display name." },
+        "slug": { "$ref": "#/$defs/slug", "description": "Mutable alias." },
+        "status": { "$ref": "#/$defs/organisation_status", "description": "Lifecycle status." },
+        "created_at": { "$ref": "#/$defs/timestamp", "description": "When the organisation was created." },
+        "updated_at": { "$ref": "#/$defs/timestamp", "description": "When it last changed." }
+      }
+    },
+    "user": {
+      "type": "object",
+      "description": "A human identity (docs/DOMAIN_MODEL.md section 5). It never carries credential material: whether a password exists is stated, and the hash is not part of any representation that leaves the database.",
+      "additionalProperties": false,
+      "required": ["id", "organisation_id", "email", "display_name", "status", "created_at", "updated_at"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier", "description": "User identity, conventionally prefixed usr_." },
+        "organisation_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Owning organisation, carried for defence-in-depth filtering (docs/DOMAIN_MODEL.md section 3)."
+        },
+        "email": { "$ref": "#/$defs/email_address", "description": "Address the human is known by." },
+        "display_name": { "$ref": "#/$defs/display_name", "description": "Name shown in a timeline." },
+        "status": { "$ref": "#/$defs/user_status", "description": "Lifecycle status." },
+        "local_credential_set": {
+          "type": "boolean",
+          "description": "Whether this user can authenticate locally. It is the fact a first-run screen needs, and it says nothing about the credential itself. The name avoids the word the schema checker forbids in a field, which exists so that no protocol field can ever carry a credential."
+        },
+        "created_at": { "$ref": "#/$defs/timestamp", "description": "When the user record was created." },
+        "updated_at": { "$ref": "#/$defs/timestamp", "description": "When it last changed." }
+      }
+    },
+    "project": {
+      "type": "object",
+      "description": "The principal working boundary (docs/DOMAIN_MODEL.md section 6). A review belongs to exactly one project, and a browser session may only route to services authorised for the same project.",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "organisation_id",
+        "name",
+        "slug",
+        "default_branch",
+        "status",
+        "settings",
+        "version",
+        "created_at",
+        "updated_at"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier", "description": "Project identity, conventionally prefixed prj_." },
+        "organisation_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Owning organisation, carried for defence-in-depth filtering."
+        },
+        "name": { "$ref": "#/$defs/display_name", "description": "Display name." },
+        "slug": { "$ref": "#/$defs/slug", "description": "Alias, unique within the organisation." },
+        "repository_identity": {
+          "$ref": "#/$defs/repository_identity",
+          "description": "Repository the project's work lands in. Absent until an operator supplies one; a change to it is audited as project.repository_changed."
+        },
+        "default_branch": { "$ref": "#/$defs/git_ref_name", "description": "Branch reviews are captured against by default." },
+        "status": { "$ref": "#/$defs/project_status", "description": "Lifecycle status. Deleting a project archives it." },
+        "settings": { "$ref": "#/$defs/project_settings", "description": "Project settings." },
+        "version": {
+          "type": "integer",
+          "description": "Optimistic-concurrency version (docs/API.md section 5.2). A write carrying a different expected_version is refused with VERSION_CONFLICT rather than silently overwriting.",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "created_at": { "$ref": "#/$defs/timestamp", "description": "When the project was created." },
+        "updated_at": { "$ref": "#/$defs/timestamp", "description": "When it last changed." }
+      }
+    },
+    "human_session": {
+      "type": "object",
+      "description": "What a human session tells its own holder (docs/API.md section 4). The session token lives in an HTTP-only cookie and is never part of this representation; project_ids absent means organisation-wide scope, and a list means exactly those projects.",
+      "additionalProperties": false,
+      "required": ["session_id", "display", "expires_at"],
+      "properties": {
+        "session_id": { "$ref": "#/$defs/identifier", "description": "Session identity, conventionally prefixed vwr_." },
+        "user_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "The authenticated user. Absent for a session issued from the bootstrap administrator token, which has no user record behind it (ADR-0016)."
+        },
+        "organisation_id": { "$ref": "#/$defs/identifier", "description": "Organisation the session acts in." },
+        "email": { "$ref": "#/$defs/email_address", "description": "Address of the authenticated user, when there is one." },
+        "display": { "$ref": "#/$defs/display_name", "description": "Name shown in the application shell." },
+        "project_ids": {
+          "type": "array",
+          "description": "Projects the session may reach. Absent means every project in the organisation.",
+          "minItems": 0,
+          "maxItems": 200,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier", "description": "One project the session is scoped to." }
+        },
+        "expires_at": { "$ref": "#/$defs/timestamp", "description": "When the session stops being usable without revocation." }
+      }
+    },
+    "login_method": {
+      "type": "string",
+      "description": "How a human authenticated. bootstrap_token is the ADR-0016 exchange, install_token is the one-time administrator bootstrap, and password is a local account.",
+      "enum": ["password", "bootstrap_token", "install_token"]
+    },
+    "login_failure_reason": {
+      "type": "string",
+      "description": "Why an authentication attempt was refused. Stable, so a run of failures can be classified from the audit trail alone without any record of what was submitted.",
+      "enum": [
+        "unknown_user",
+        "invalid_password",
+        "password_not_set",
+        "user_suspended",
+        "rate_limited",
+        "install_token_invalid",
+        "install_token_expired",
+        "install_token_consumed"
+      ]
+    },
+    "session_revocation_reason": {
+      "type": "string",
+      "description": "Why a session stopped being usable.",
+      "enum": ["sign_out", "rotated", "revoked_by_user", "revoked_by_administrator"]
     },
     "actor": {
       "type": "object",
@@ -532,7 +812,106 @@
           "minLength": 1,
           "maxLength": 200,
           "pattern": "^[^\\x00-\\x1f]+$"
+        },
+        "default_branch": {
+          "$ref": "#/$defs/git_ref_name",
+          "description": "Branch the project captures reviews against. Absent on a project created before the field existed."
+        },
+        "repository_canonical": {
+          "type": "string",
+          "description": "Normalised repository identity the project was created with, when one was supplied. The canonical form alone: the clone URLs are queryable on the record and add nothing an auditor needs.",
+          "minLength": 3,
+          "maxLength": 255,
+          "pattern": "^[a-z0-9][a-z0-9.-]*(:[0-9]{1,5})?(/[A-Za-z0-9._~-]+)+$"
         }
+      }
+    },
+    "project_repository_changed_payload": {
+      "type": "object",
+      "description": "Payload of project.repository_changed. It carries both sides of the move, because a review captured before it was interpreted against the previous repository (docs/DOMAIN_MODEL.md section 6).",
+      "additionalProperties": false,
+      "x-max-bytes": 1024,
+      "required": ["new_canonical"],
+      "properties": {
+        "previous_canonical": {
+          "type": "string",
+          "description": "Normalised identity before the change. Absent when the project had no repository association.",
+          "minLength": 3,
+          "maxLength": 255,
+          "pattern": "^[a-z0-9][a-z0-9.-]*(:[0-9]{1,5})?(/[A-Za-z0-9._~-]+)+$"
+        },
+        "new_canonical": {
+          "type": "string",
+          "description": "Normalised identity after the change.",
+          "minLength": 3,
+          "maxLength": 255,
+          "pattern": "^[a-z0-9][a-z0-9.-]*(:[0-9]{1,5})?(/[A-Za-z0-9._~-]+)+$"
+        }
+      }
+    },
+    "user_invited_payload": {
+      "type": "object",
+      "description": "Payload of user.invited. Issuing a credential-establishing token is a permission change, and docs/SECURITY.md section 16 requires an audit record for one. It never carries the token: a reader learns that a way in exists and when it closes, not what it is.",
+      "additionalProperties": false,
+      "x-max-bytes": 512,
+      "required": ["user_id", "method", "expires_at"],
+      "properties": {
+        "user_id": { "$ref": "#/$defs/identifier", "description": "User the token establishes credentials for." },
+        "method": { "$ref": "#/$defs/login_method", "description": "Kind of token that was issued." },
+        "expires_at": { "$ref": "#/$defs/timestamp", "description": "When the token stops being usable, whether or not it was used." }
+      }
+    },
+    "user_credentials_set_payload": {
+      "type": "object",
+      "description": "Payload of user.credentials_set. Setting a password is a permission change and docs/SECURITY.md section 16 requires an audit record for one; the record names the user and the route the credential arrived by, and nothing else.",
+      "additionalProperties": false,
+      "x-max-bytes": 512,
+      "required": ["user_id", "method"],
+      "properties": {
+        "user_id": { "$ref": "#/$defs/identifier", "description": "User whose password changed." },
+        "method": { "$ref": "#/$defs/login_method", "description": "How the credential was established." }
+      }
+    },
+    "authentication_login_succeeded_payload": {
+      "type": "object",
+      "description": "Payload of authentication.login_succeeded.",
+      "additionalProperties": false,
+      "x-max-bytes": 512,
+      "required": ["session_id", "method"],
+      "properties": {
+        "session_id": { "$ref": "#/$defs/identifier", "description": "Session that was issued." },
+        "user_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "User that authenticated. Absent for the bootstrap-token exchange, which has no user record behind it."
+        },
+        "method": { "$ref": "#/$defs/login_method", "description": "How the human authenticated." }
+      }
+    },
+    "authentication_login_failed_payload": {
+      "type": "object",
+      "description": "Payload of authentication.login_failed. It never carries the submitted credential, and never the identifier that was typed beside it: a password mistyped into an email field would otherwise be written to an append-only table (docs/SECURITY.md section 18).",
+      "additionalProperties": false,
+      "x-max-bytes": 512,
+      "required": ["reason", "method"],
+      "properties": {
+        "reason": { "$ref": "#/$defs/login_failure_reason", "description": "Stable failure class." },
+        "method": { "$ref": "#/$defs/login_method", "description": "Route the attempt arrived by." },
+        "user_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "User the attempt named, when it named one that exists. Absent for an unknown address, which is what stops the audit trail confirming which addresses have accounts."
+        }
+      }
+    },
+    "session_revoked_payload": {
+      "type": "object",
+      "description": "Payload of session.revoked.",
+      "additionalProperties": false,
+      "x-max-bytes": 512,
+      "required": ["session_id", "reason"],
+      "properties": {
+        "session_id": { "$ref": "#/$defs/identifier", "description": "Session that was revoked." },
+        "user_id": { "$ref": "#/$defs/identifier", "description": "User the session belonged to, when it belonged to one." },
+        "reason": { "$ref": "#/$defs/session_revocation_reason", "description": "Why it was revoked." }
       }
     },
     "project_updated_payload": {

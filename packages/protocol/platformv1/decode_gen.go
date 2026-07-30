@@ -7,6 +7,115 @@ package platformv1
 // on a value that has not passed its validator is a programming error; the frame entry
 // points in frame.go always validate first.
 
+// DecodeRepositoryIdentity builds a RepositoryIdentity from a validated tree.
+func DecodeRepositoryIdentity(value any) RepositoryIdentity {
+	source, _ := value.(map[string]any)
+	var out RepositoryIdentity
+	out.Canonical = decodeString(source["canonical"])
+	if field, present := source["clone_urls"]; present {
+		out.CloneURLs = decodeSlice(field, func(item any) string { return decodeString(item) })
+	}
+	return out
+}
+
+// DecodeValidationViewport builds a ValidationViewport from a validated tree.
+func DecodeValidationViewport(value any) ValidationViewport {
+	source, _ := value.(map[string]any)
+	var out ValidationViewport
+	out.Width = decodeInt(source["width"])
+	out.Height = decodeInt(source["height"])
+	if field, present := source["device_scale_factor"]; present {
+		decoded := decodeFloat(field)
+		out.DeviceScaleFactor = &decoded
+	}
+	return out
+}
+
+// DecodeProjectSettings builds a ProjectSettings from a validated tree.
+func DecodeProjectSettings(value any) ProjectSettings {
+	source, _ := value.(map[string]any)
+	var out ProjectSettings
+	out.DefaultValidationViewports = decodeSlice(source["default_validation_viewports"], func(item any) ValidationViewport { return DecodeValidationViewport(item) })
+	return out
+}
+
+// DecodeOrganisation builds a Organisation from a validated tree.
+func DecodeOrganisation(value any) Organisation {
+	source, _ := value.(map[string]any)
+	var out Organisation
+	out.ID = decodeString(source["id"])
+	out.Name = decodeString(source["name"])
+	out.Slug = decodeString(source["slug"])
+	out.Status = OrganisationStatus(decodeString(source["status"]))
+	out.CreatedAt = decodeString(source["created_at"])
+	out.UpdatedAt = decodeString(source["updated_at"])
+	return out
+}
+
+// DecodeUser builds a User from a validated tree.
+func DecodeUser(value any) User {
+	source, _ := value.(map[string]any)
+	var out User
+	out.ID = decodeString(source["id"])
+	out.OrganisationID = decodeString(source["organisation_id"])
+	out.Email = decodeString(source["email"])
+	out.DisplayName = decodeString(source["display_name"])
+	out.Status = UserStatus(decodeString(source["status"]))
+	if field, present := source["local_credential_set"]; present {
+		decoded := decodeBool(field)
+		out.LocalCredentialSet = &decoded
+	}
+	out.CreatedAt = decodeString(source["created_at"])
+	out.UpdatedAt = decodeString(source["updated_at"])
+	return out
+}
+
+// DecodeProject builds a Project from a validated tree.
+func DecodeProject(value any) Project {
+	source, _ := value.(map[string]any)
+	var out Project
+	out.ID = decodeString(source["id"])
+	out.OrganisationID = decodeString(source["organisation_id"])
+	out.Name = decodeString(source["name"])
+	out.Slug = decodeString(source["slug"])
+	if field, present := source["repository_identity"]; present {
+		decoded := DecodeRepositoryIdentity(field)
+		out.RepositoryIdentity = &decoded
+	}
+	out.DefaultBranch = decodeString(source["default_branch"])
+	out.Status = ProjectStatus(decodeString(source["status"]))
+	out.Settings = DecodeProjectSettings(source["settings"])
+	out.Version = decodeInt(source["version"])
+	out.CreatedAt = decodeString(source["created_at"])
+	out.UpdatedAt = decodeString(source["updated_at"])
+	return out
+}
+
+// DecodeHumanSession builds a HumanSession from a validated tree.
+func DecodeHumanSession(value any) HumanSession {
+	source, _ := value.(map[string]any)
+	var out HumanSession
+	out.SessionID = decodeString(source["session_id"])
+	if field, present := source["user_id"]; present {
+		decoded := decodeString(field)
+		out.UserID = &decoded
+	}
+	if field, present := source["organisation_id"]; present {
+		decoded := decodeString(field)
+		out.OrganisationID = &decoded
+	}
+	if field, present := source["email"]; present {
+		decoded := decodeString(field)
+		out.Email = &decoded
+	}
+	out.Display = decodeString(source["display"])
+	if field, present := source["project_ids"]; present {
+		out.ProjectIDs = decodeSlice(field, func(item any) string { return decodeString(item) })
+	}
+	out.ExpiresAt = decodeString(source["expires_at"])
+	return out
+}
+
 // DecodeActor builds a Actor from a validated tree.
 func DecodeActor(value any) Actor {
 	source, _ := value.(map[string]any)
@@ -125,6 +234,88 @@ func DecodeProjectCreatedPayload(value any) ProjectCreatedPayload {
 	var out ProjectCreatedPayload
 	out.Slug = decodeString(source["slug"])
 	out.Name = decodeString(source["name"])
+	if field, present := source["default_branch"]; present {
+		decoded := decodeString(field)
+		out.DefaultBranch = &decoded
+	}
+	if field, present := source["repository_canonical"]; present {
+		decoded := decodeString(field)
+		out.RepositoryCanonical = &decoded
+	}
+	return out
+}
+
+// DecodeProjectRepositoryChangedPayload builds a ProjectRepositoryChangedPayload from
+// a validated tree.
+func DecodeProjectRepositoryChangedPayload(value any) ProjectRepositoryChangedPayload {
+	source, _ := value.(map[string]any)
+	var out ProjectRepositoryChangedPayload
+	if field, present := source["previous_canonical"]; present {
+		decoded := decodeString(field)
+		out.PreviousCanonical = &decoded
+	}
+	out.NewCanonical = decodeString(source["new_canonical"])
+	return out
+}
+
+// DecodeUserInvitedPayload builds a UserInvitedPayload from a validated tree.
+func DecodeUserInvitedPayload(value any) UserInvitedPayload {
+	source, _ := value.(map[string]any)
+	var out UserInvitedPayload
+	out.UserID = decodeString(source["user_id"])
+	out.Method = LoginMethod(decodeString(source["method"]))
+	out.ExpiresAt = decodeString(source["expires_at"])
+	return out
+}
+
+// DecodeUserCredentialsSetPayload builds a UserCredentialsSetPayload from a validated
+// tree.
+func DecodeUserCredentialsSetPayload(value any) UserCredentialsSetPayload {
+	source, _ := value.(map[string]any)
+	var out UserCredentialsSetPayload
+	out.UserID = decodeString(source["user_id"])
+	out.Method = LoginMethod(decodeString(source["method"]))
+	return out
+}
+
+// DecodeAuthenticationLoginSucceededPayload builds a
+// AuthenticationLoginSucceededPayload from a validated tree.
+func DecodeAuthenticationLoginSucceededPayload(value any) AuthenticationLoginSucceededPayload {
+	source, _ := value.(map[string]any)
+	var out AuthenticationLoginSucceededPayload
+	out.SessionID = decodeString(source["session_id"])
+	if field, present := source["user_id"]; present {
+		decoded := decodeString(field)
+		out.UserID = &decoded
+	}
+	out.Method = LoginMethod(decodeString(source["method"]))
+	return out
+}
+
+// DecodeAuthenticationLoginFailedPayload builds a AuthenticationLoginFailedPayload
+// from a validated tree.
+func DecodeAuthenticationLoginFailedPayload(value any) AuthenticationLoginFailedPayload {
+	source, _ := value.(map[string]any)
+	var out AuthenticationLoginFailedPayload
+	out.Reason = LoginFailureReason(decodeString(source["reason"]))
+	out.Method = LoginMethod(decodeString(source["method"]))
+	if field, present := source["user_id"]; present {
+		decoded := decodeString(field)
+		out.UserID = &decoded
+	}
+	return out
+}
+
+// DecodeSessionRevokedPayload builds a SessionRevokedPayload from a validated tree.
+func DecodeSessionRevokedPayload(value any) SessionRevokedPayload {
+	source, _ := value.(map[string]any)
+	var out SessionRevokedPayload
+	out.SessionID = decodeString(source["session_id"])
+	if field, present := source["user_id"]; present {
+		decoded := decodeString(field)
+		out.UserID = &decoded
+	}
+	out.Reason = SessionRevocationReason(decodeString(source["reason"]))
 	return out
 }
 

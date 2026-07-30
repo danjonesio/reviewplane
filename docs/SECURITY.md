@@ -114,13 +114,53 @@ Initial local authentication must provide:
 
 OIDC support should be added before team production use.
 
-Stage 0 implements the cookie half of this list through ADR-0016: the bootstrap
+Stage 0 implemented the cookie half of this list through ADR-0016: the bootstrap
 administrator token is presented once, in an `Authorization` header, and is
 exchanged for a short-lived viewer session whose token lives in an HTTP-only,
-`SameSite=Strict` cookie. Only the token's digest is stored, sessions expire
-and can be revoked, and the administrator token itself never reaches the
-browser. Password hashing, login rate limiting and session rotation arrive with
-local accounts, which this exchange is deliberately shaped to be replaced by.
+`SameSite=Strict` cookie.
+
+Stage 1 implements the rest, on the same session record — which is what ADR-0016
+said would survive local accounts.
+
+- **Strong password hashing.** scrypt with `N = 32768`, `r = 8`, `p = 1`, a
+  per-verifier 16-byte salt and a 32-byte derived key, stored as a
+  self-describing `scrypt$N=…,r=…,p=…$salt$digest` so the parameters can be
+  raised without a migration and existing rows keep verifying. Comparison is
+  constant time. A verifier whose parameters have been lowered below the
+  accepted range is refused rather than verified quickly, so writing to the
+  table is not a way to weaken a credential.
+- **Secure, HTTP-only, same-site cookies.** `reviewplane_viewer` is `HttpOnly`,
+  `SameSite=Strict` and `Secure` where TLS terminates at the gateway. Only the
+  SHA-256 digest of the session token is stored.
+- **CSRF protection.** A session issued to a user carries a CSRF token, stored
+  as a digest and delivered in a readable `reviewplane_csrf` cookie. Every
+  state-changing request authenticated by cookie MUST echo it in
+  `X-CSRF-Token`. A session with no CSRF token cannot satisfy the check and is
+  refused, so the ADR-0016 exchange remains a read-only credential.
+- **Session rotation on privilege change.** Signing in revokes the session the
+  request arrived with and issues a new one that names it; claiming the
+  installation revokes every session the account held. Each revocation records
+  `session.revoked`.
+- **Login rate limiting.** Per subject, in the database so it survives a restart
+  and is not divided by the number of replicas. Once engaged, a correct password
+  is refused too. The limiter keys on a digest of the subject rather than the
+  subject, so it does not become a stored list of the addresses people have
+  tried.
+- **Administrator bootstrap through a one-time token.** `reviewplane
+  install-token` mints one, prints it once and stores only its digest. It
+  expires whether or not it is used, and consumption is a conditional `UPDATE`
+  so that two callers racing it produce one administrator and one refusal.
+  Consumption and the credential change commit together.
+- **Revocation of active sessions.** Per session, and per account: an
+  administrator can revoke every session their account holds, including the one
+  making the request.
+
+Two disclosure rules hold throughout. An unknown address and a wrong password
+produce the same refusal after the same work, because the difference is an
+account-enumeration oracle (section 5); and `authentication.login_failed`
+records the reason but never the submitted password and never the address
+submitted beside it, because a password mistyped into an email field would
+otherwise be written to an append-only table (section 18).
 
 ### 6.2 Connector authentication
 
@@ -191,6 +231,28 @@ Every request must be authorised using:
 - Policy decision
 
 Do not rely on UI visibility for enforcement.
+
+### How this is enforced
+
+The control plane resolves the actor for every `/api/` request in one place and
+attaches it, so no handler re-reads a credential and two handlers cannot
+disagree about what one means. Resolution refuses nothing; the guards a handler
+calls do, and each names the rule it enforces.
+
+- A machine credential is refused on a human route **by token shape, before any
+  lookup**. A refusal that needed a database read would fail open exactly when
+  the database is unavailable, and section 6.3 is not a rule that may hold only
+  while PostgreSQL is up.
+- Stage 1 has no roles (`docs/DOMAIN_MODEL.md` section 5 defers them to Stage
+  3), so administration is decided by scope: an organisation-wide session
+  administers; a session scoped to a project does not. Adding roles replaces
+  that one predicate and nothing else.
+- Project-scoped reads carry the identifier, the session's project scope and the
+  session's organisation in the same `WHERE` clause, so a row that satisfies one
+  and not the others is never returned and then rejected by a later branch.
+- A foreign identifier is answered `RESOURCE_NOT_FOUND`, byte for byte as an
+  unknown one is. `AUTHORISATION_DENIED` would confirm that the resource exists,
+  which is the enumeration a cross-project attacker wants.
 
 ### Live-view authorisation
 

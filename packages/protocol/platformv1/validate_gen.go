@@ -7,13 +7,17 @@ import "regexp"
 
 var pattern0 = regexp.MustCompile("^[A-Za-z0-9_-]+$")
 var pattern1 = regexp.MustCompile("^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$")
-var pattern2 = regexp.MustCompile("^[^\\x00-\\x1f]+$")
-var pattern3 = regexp.MustCompile("^[a-z0-9][a-z0-9-]*$")
-var pattern4 = regexp.MustCompile("^[a-z][a-z0-9_]*$")
-var pattern5 = regexp.MustCompile("^[^\\x00]+$")
-var pattern6 = regexp.MustCompile("^[A-Za-z0-9_.-]+$")
-var pattern7 = regexp.MustCompile("^[a-z][a-z0-9_.]*$")
-var pattern8 = regexp.MustCompile("^[a-z][a-z0-9_.\\[\\]]*$")
+var pattern2 = regexp.MustCompile("^[a-z0-9][a-z0-9-]*$")
+var pattern3 = regexp.MustCompile("^[^\\x00-\\x1f]+$")
+var pattern4 = regexp.MustCompile("^[^\\s@\\x00-\\x1f]+@[^\\s@\\x00-\\x1f]+$")
+var pattern5 = regexp.MustCompile("^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+var pattern6 = regexp.MustCompile("^[a-z0-9][a-z0-9.-]*(:[0-9]{1,5})?(/[A-Za-z0-9._~-]+)+$")
+var pattern7 = regexp.MustCompile("^[^\\s\\x00-\\x1f]+$")
+var pattern8 = regexp.MustCompile("^[a-z][a-z0-9_]*$")
+var pattern9 = regexp.MustCompile("^[^\\x00]+$")
+var pattern10 = regexp.MustCompile("^[A-Za-z0-9_.-]+$")
+var pattern11 = regexp.MustCompile("^[a-z][a-z0-9_.]*$")
+var pattern12 = regexp.MustCompile("^[a-z][a-z0-9_.\\[\\]]*$")
 
 // validateIdentifier checks opaque durable identifier (docs/DOMAIN_MODEL.md section
 // 3). Consumers MUST treat the value as opaque: the schema bounds only its length and
@@ -47,7 +51,7 @@ func validateCursor(value any, path string, out *[]SchemaViolation) {
 // x-protocol.messages, and is a subset of the event_types vocabulary: an event type
 // defined in another schema source is decoded by that source.
 func validateMessageType(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{values: []string{"organisation.created", "project.created", "project.updated", "project.archived", "job.enqueued", "job.succeeded", "job.failed"}})
+	checkString(value, path, out, stringOpts{values: []string{"organisation.created", "project.created", "project.updated", "project.repository_changed", "project.archived", "user.invited", "user.credentials_set", "authentication.login_succeeded", "authentication.login_failed", "session.revoked", "job.enqueued", "job.succeeded", "job.failed"}})
 }
 
 // validateErrorClass checks stable API error code (docs/API.md section 5,
@@ -83,10 +87,321 @@ func validateProjectStatus(value any, path string, out *[]SchemaViolation) {
 	checkString(value, path, out, stringOpts{values: []string{"active", "archived"}})
 }
 
+// validateOrganisationStatus checks organisation lifecycle status
+// (docs/DOMAIN_MODEL.md section 4).
+func validateOrganisationStatus(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"active", "suspended"}})
+}
+
+// validateUserStatus checks user lifecycle status (docs/DOMAIN_MODEL.md section 5). A
+// suspended user keeps every record they authored and can no longer authenticate.
+func validateUserStatus(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"active", "suspended"}})
+}
+
+// validateSlug checks human-friendly alias, unique inside its parent. Mutable, and
+// never a substitute for the identifier (docs/DOMAIN_MODEL.md section 3).
+func validateSlug(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 63, pattern: pattern2})
+}
+
+// validateDisplayName checks name a human reads. It is description and never an
+// authorisation input.
+func validateDisplayName(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 200, pattern: pattern3})
+}
+
+// validateEmailAddress checks address a human is known by. It is an alias for a user,
+// never an identity: the identifier is what every other record references. The bound
+// is the RFC 5321 maximum path length. The pattern is deliberately permissive — one
+// at-sign, no whitespace and no control characters — because a stricter one rejects
+// addresses that work: a dotless host such as administrator@localhost is what a fresh
+// self-hosted installation is seeded with, and deliverability is not something a
+// schema can decide.
+func validateEmailAddress(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 3, maxLength: 254, pattern: pattern4})
+}
+
+// validateGitRefName checks git branch name. Bounded and restricted to the characters
+// a ref may hold, so a value stored here cannot become an argument to something else.
+func validateGitRefName(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 255, pattern: pattern5})
+}
+
+// validateLoginMethod checks how a human authenticated. bootstrap_token is the
+// ADR-0016 exchange, install_token is the one-time administrator bootstrap, and
+// password is a local account.
+func validateLoginMethod(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"password", "bootstrap_token", "install_token"}})
+}
+
+// validateLoginFailureReason checks why an authentication attempt was refused. Stable,
+// so a run of failures can be classified from the audit trail alone without any record
+// of what was submitted.
+func validateLoginFailureReason(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"unknown_user", "invalid_password", "password_not_set", "user_suspended", "rate_limited", "install_token_invalid", "install_token_expired", "install_token_consumed"}})
+}
+
+// validateSessionRevocationReason checks why a session stopped being usable.
+func validateSessionRevocationReason(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"sign_out", "rotated", "revoked_by_user", "revoked_by_administrator"}})
+}
+
+// validateRepositoryIdentityCanonical checks normalised host and path, lowercase host,
+// no scheme, no credentials, no .git suffix and no trailing slash, for example
+// github.com/example/refresh-surplus.
+func validateRepositoryIdentityCanonical(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 3, maxLength: 255, pattern: pattern6})
+}
+
+// validateRepositoryIdentityCloneURLsItem checks a generated schema node.
+func validateRepositoryIdentityCloneURLsItem(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 3, maxLength: 512, pattern: pattern7})
+}
+
+// validateRepositoryIdentityCloneURLs checks clone URLs that reduce to canonical, in
+// the order they were supplied. Duplicates are removed by the control plane before
+// storage.
+func validateRepositoryIdentityCloneURLs(value any, path string, out *[]SchemaViolation) {
+	items, ok := checkArray(value, path, out, 0, 8, true)
+	if !ok {
+		return
+	}
+	for index, item := range items {
+		validateRepositoryIdentityCloneURLsItem(item, indexPath(path, index), out)
+	}
+}
+
+// validateRepositoryIdentity checks a RepositoryIdentity value.
+func validateRepositoryIdentity(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"canonical", "clone_urls"}, []string{"canonical"})
+	if !ok {
+		return
+	}
+	if field, present := source["canonical"]; present {
+		validateRepositoryIdentityCanonical(field, path+".canonical", out)
+	}
+	if field, present := source["clone_urls"]; present {
+		validateRepositoryIdentityCloneURLs(field, path+".clone_urls", out)
+	}
+}
+
+// validateValidationViewportWidth checks viewport width in CSS pixels.
+func validateValidationViewportWidth(value any, path string, out *[]SchemaViolation) {
+	checkInteger(value, path, out, 240, 3840)
+}
+
+// validateValidationViewportHeight checks viewport height in CSS pixels.
+func validateValidationViewportHeight(value any, path string, out *[]SchemaViolation) {
+	checkInteger(value, path, out, 240, 2160)
+}
+
+// validateValidationViewportDeviceScaleFactor checks device pixel ratio. Absent means
+// 1, which is what a browser session adopts when the project does not say otherwise.
+func validateValidationViewportDeviceScaleFactor(value any, path string, out *[]SchemaViolation) {
+	checkNumber(value, path, out, 1, 4)
+}
+
+// validateValidationViewport checks a ValidationViewport value.
+func validateValidationViewport(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"width", "height", "device_scale_factor"}, []string{"width", "height"})
+	if !ok {
+		return
+	}
+	if field, present := source["width"]; present {
+		validateValidationViewportWidth(field, path+".width", out)
+	}
+	if field, present := source["height"]; present {
+		validateValidationViewportHeight(field, path+".height", out)
+	}
+	if field, present := source["device_scale_factor"]; present {
+		validateValidationViewportDeviceScaleFactor(field, path+".device_scale_factor", out)
+	}
+}
+
+// validateProjectSettingsDefaultValidationViewports checks viewports a finding is
+// expected to be validated at. It defaults to 390x844 and 1440x900, which AGENTS.md
+// requires of browser-facing work and the Stage 1 completion gate checks against.
+func validateProjectSettingsDefaultValidationViewports(value any, path string, out *[]SchemaViolation) {
+	items, ok := checkArray(value, path, out, 1, 8, true)
+	if !ok {
+		return
+	}
+	for index, item := range items {
+		validateValidationViewport(item, indexPath(path, index), out)
+	}
+}
+
+// validateProjectSettings checks a ProjectSettings value.
+func validateProjectSettings(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"default_validation_viewports"}, []string{"default_validation_viewports"})
+	if !ok {
+		return
+	}
+	if field, present := source["default_validation_viewports"]; present {
+		validateProjectSettingsDefaultValidationViewports(field, path+".default_validation_viewports", out)
+	}
+}
+
+// validateOrganisation checks a Organisation value.
+func validateOrganisation(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"id", "name", "slug", "status", "created_at", "updated_at"}, []string{"id", "name", "slug", "status", "created_at", "updated_at"})
+	if !ok {
+		return
+	}
+	if field, present := source["id"]; present {
+		validateIdentifier(field, path+".id", out)
+	}
+	if field, present := source["name"]; present {
+		validateDisplayName(field, path+".name", out)
+	}
+	if field, present := source["slug"]; present {
+		validateSlug(field, path+".slug", out)
+	}
+	if field, present := source["status"]; present {
+		validateOrganisationStatus(field, path+".status", out)
+	}
+	if field, present := source["created_at"]; present {
+		validateTimestamp(field, path+".created_at", out)
+	}
+	if field, present := source["updated_at"]; present {
+		validateTimestamp(field, path+".updated_at", out)
+	}
+}
+
+// validateUserLocalCredentialSet checks whether this user can authenticate locally. It
+// is the fact a first-run screen needs, and it says nothing about the credential
+// itself. The name avoids the word the schema checker forbids in a field, which exists
+// so that no protocol field can ever carry a credential.
+func validateUserLocalCredentialSet(value any, path string, out *[]SchemaViolation) {
+	checkBoolean(value, path, out)
+}
+
+// validateUser checks a User value.
+func validateUser(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"id", "organisation_id", "email", "display_name", "status", "local_credential_set", "created_at", "updated_at"}, []string{"id", "organisation_id", "email", "display_name", "status", "created_at", "updated_at"})
+	if !ok {
+		return
+	}
+	if field, present := source["id"]; present {
+		validateIdentifier(field, path+".id", out)
+	}
+	if field, present := source["organisation_id"]; present {
+		validateIdentifier(field, path+".organisation_id", out)
+	}
+	if field, present := source["email"]; present {
+		validateEmailAddress(field, path+".email", out)
+	}
+	if field, present := source["display_name"]; present {
+		validateDisplayName(field, path+".display_name", out)
+	}
+	if field, present := source["status"]; present {
+		validateUserStatus(field, path+".status", out)
+	}
+	if field, present := source["local_credential_set"]; present {
+		validateUserLocalCredentialSet(field, path+".local_credential_set", out)
+	}
+	if field, present := source["created_at"]; present {
+		validateTimestamp(field, path+".created_at", out)
+	}
+	if field, present := source["updated_at"]; present {
+		validateTimestamp(field, path+".updated_at", out)
+	}
+}
+
+// validateProjectVersion checks optimistic-concurrency version (docs/API.md section
+// 5.2). A write carrying a different expected_version is refused with VERSION_CONFLICT
+// rather than silently overwriting.
+func validateProjectVersion(value any, path string, out *[]SchemaViolation) {
+	checkInteger(value, path, out, 1, 9007199254740991)
+}
+
+// validateProject checks a Project value.
+func validateProject(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"id", "organisation_id", "name", "slug", "repository_identity", "default_branch", "status", "settings", "version", "created_at", "updated_at"}, []string{"id", "organisation_id", "name", "slug", "default_branch", "status", "settings", "version", "created_at", "updated_at"})
+	if !ok {
+		return
+	}
+	if field, present := source["id"]; present {
+		validateIdentifier(field, path+".id", out)
+	}
+	if field, present := source["organisation_id"]; present {
+		validateIdentifier(field, path+".organisation_id", out)
+	}
+	if field, present := source["name"]; present {
+		validateDisplayName(field, path+".name", out)
+	}
+	if field, present := source["slug"]; present {
+		validateSlug(field, path+".slug", out)
+	}
+	if field, present := source["repository_identity"]; present {
+		validateRepositoryIdentity(field, path+".repository_identity", out)
+	}
+	if field, present := source["default_branch"]; present {
+		validateGitRefName(field, path+".default_branch", out)
+	}
+	if field, present := source["status"]; present {
+		validateProjectStatus(field, path+".status", out)
+	}
+	if field, present := source["settings"]; present {
+		validateProjectSettings(field, path+".settings", out)
+	}
+	if field, present := source["version"]; present {
+		validateProjectVersion(field, path+".version", out)
+	}
+	if field, present := source["created_at"]; present {
+		validateTimestamp(field, path+".created_at", out)
+	}
+	if field, present := source["updated_at"]; present {
+		validateTimestamp(field, path+".updated_at", out)
+	}
+}
+
+// validateHumanSessionProjectIDs checks projects the session may reach. Absent means
+// every project in the organisation.
+func validateHumanSessionProjectIDs(value any, path string, out *[]SchemaViolation) {
+	items, ok := checkArray(value, path, out, 0, 200, true)
+	if !ok {
+		return
+	}
+	for index, item := range items {
+		validateIdentifier(item, indexPath(path, index), out)
+	}
+}
+
+// validateHumanSession checks a HumanSession value.
+func validateHumanSession(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"session_id", "user_id", "organisation_id", "email", "display", "project_ids", "expires_at"}, []string{"session_id", "display", "expires_at"})
+	if !ok {
+		return
+	}
+	if field, present := source["session_id"]; present {
+		validateIdentifier(field, path+".session_id", out)
+	}
+	if field, present := source["user_id"]; present {
+		validateIdentifier(field, path+".user_id", out)
+	}
+	if field, present := source["organisation_id"]; present {
+		validateIdentifier(field, path+".organisation_id", out)
+	}
+	if field, present := source["email"]; present {
+		validateEmailAddress(field, path+".email", out)
+	}
+	if field, present := source["display"]; present {
+		validateDisplayName(field, path+".display", out)
+	}
+	if field, present := source["project_ids"]; present {
+		validateHumanSessionProjectIDs(field, path+".project_ids", out)
+	}
+	if field, present := source["expires_at"]; present {
+		validateTimestamp(field, path+".expires_at", out)
+	}
+}
+
 // validateActorDisplay checks human-readable label for a timeline. It is description
 // and never an authorisation input.
 func validateActorDisplay(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 200, pattern: pattern2})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 200, pattern: pattern3})
 }
 
 // validateActor checks a Actor value.
@@ -214,12 +529,12 @@ func validateEnvelope(value any, path string, out *[]SchemaViolation) {
 // validateOrganisationCreatedPayloadSlug checks mutable human-friendly alias. The
 // identifier is authoritative; this is not.
 func validateOrganisationCreatedPayloadSlug(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 63, pattern: pattern3})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 63, pattern: pattern2})
 }
 
 // validateOrganisationCreatedPayloadName checks display name.
 func validateOrganisationCreatedPayloadName(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 200, pattern: pattern2})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 200, pattern: pattern3})
 }
 
 // validateOrganisationCreatedPayload checks a OrganisationCreatedPayload value.
@@ -239,17 +554,24 @@ func validateOrganisationCreatedPayload(value any, path string, out *[]SchemaVio
 // validateProjectCreatedPayloadSlug checks project-scoped alias. Mutable, and never a
 // substitute for the identifier.
 func validateProjectCreatedPayloadSlug(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 63, pattern: pattern3})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 63, pattern: pattern2})
 }
 
 // validateProjectCreatedPayloadName checks display name.
 func validateProjectCreatedPayloadName(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 200, pattern: pattern2})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 200, pattern: pattern3})
+}
+
+// validateProjectCreatedPayloadRepositoryCanonical checks normalised repository
+// identity the project was created with, when one was supplied. The canonical form
+// alone: the clone URLs are queryable on the record and add nothing an auditor needs.
+func validateProjectCreatedPayloadRepositoryCanonical(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 3, maxLength: 255, pattern: pattern6})
 }
 
 // validateProjectCreatedPayload checks a ProjectCreatedPayload value.
 func validateProjectCreatedPayload(value any, path string, out *[]SchemaViolation) {
-	source, ok := checkObject(value, path, out, []string{"slug", "name"}, []string{"slug", "name"})
+	source, ok := checkObject(value, path, out, []string{"slug", "name", "default_branch", "repository_canonical"}, []string{"slug", "name"})
 	if !ok {
 		return
 	}
@@ -259,11 +581,128 @@ func validateProjectCreatedPayload(value any, path string, out *[]SchemaViolatio
 	if field, present := source["name"]; present {
 		validateProjectCreatedPayloadName(field, path+".name", out)
 	}
+	if field, present := source["default_branch"]; present {
+		validateGitRefName(field, path+".default_branch", out)
+	}
+	if field, present := source["repository_canonical"]; present {
+		validateProjectCreatedPayloadRepositoryCanonical(field, path+".repository_canonical", out)
+	}
+}
+
+// validateProjectRepositoryChangedPayloadPreviousCanonical checks normalised identity
+// before the change. Absent when the project had no repository association.
+func validateProjectRepositoryChangedPayloadPreviousCanonical(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 3, maxLength: 255, pattern: pattern6})
+}
+
+// validateProjectRepositoryChangedPayloadNewCanonical checks normalised identity after
+// the change.
+func validateProjectRepositoryChangedPayloadNewCanonical(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 3, maxLength: 255, pattern: pattern6})
+}
+
+// validateProjectRepositoryChangedPayload checks a ProjectRepositoryChangedPayload
+// value.
+func validateProjectRepositoryChangedPayload(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"previous_canonical", "new_canonical"}, []string{"new_canonical"})
+	if !ok {
+		return
+	}
+	if field, present := source["previous_canonical"]; present {
+		validateProjectRepositoryChangedPayloadPreviousCanonical(field, path+".previous_canonical", out)
+	}
+	if field, present := source["new_canonical"]; present {
+		validateProjectRepositoryChangedPayloadNewCanonical(field, path+".new_canonical", out)
+	}
+}
+
+// validateUserInvitedPayload checks a UserInvitedPayload value.
+func validateUserInvitedPayload(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"user_id", "method", "expires_at"}, []string{"user_id", "method", "expires_at"})
+	if !ok {
+		return
+	}
+	if field, present := source["user_id"]; present {
+		validateIdentifier(field, path+".user_id", out)
+	}
+	if field, present := source["method"]; present {
+		validateLoginMethod(field, path+".method", out)
+	}
+	if field, present := source["expires_at"]; present {
+		validateTimestamp(field, path+".expires_at", out)
+	}
+}
+
+// validateUserCredentialsSetPayload checks a UserCredentialsSetPayload value.
+func validateUserCredentialsSetPayload(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"user_id", "method"}, []string{"user_id", "method"})
+	if !ok {
+		return
+	}
+	if field, present := source["user_id"]; present {
+		validateIdentifier(field, path+".user_id", out)
+	}
+	if field, present := source["method"]; present {
+		validateLoginMethod(field, path+".method", out)
+	}
+}
+
+// validateAuthenticationLoginSucceededPayload checks a
+// AuthenticationLoginSucceededPayload value.
+func validateAuthenticationLoginSucceededPayload(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"session_id", "user_id", "method"}, []string{"session_id", "method"})
+	if !ok {
+		return
+	}
+	if field, present := source["session_id"]; present {
+		validateIdentifier(field, path+".session_id", out)
+	}
+	if field, present := source["user_id"]; present {
+		validateIdentifier(field, path+".user_id", out)
+	}
+	if field, present := source["method"]; present {
+		validateLoginMethod(field, path+".method", out)
+	}
+}
+
+// validateAuthenticationLoginFailedPayload checks a AuthenticationLoginFailedPayload
+// value.
+func validateAuthenticationLoginFailedPayload(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"reason", "method", "user_id"}, []string{"reason", "method"})
+	if !ok {
+		return
+	}
+	if field, present := source["reason"]; present {
+		validateLoginFailureReason(field, path+".reason", out)
+	}
+	if field, present := source["method"]; present {
+		validateLoginMethod(field, path+".method", out)
+	}
+	if field, present := source["user_id"]; present {
+		validateIdentifier(field, path+".user_id", out)
+	}
+}
+
+// validateSessionRevokedPayload checks a SessionRevokedPayload value.
+func validateSessionRevokedPayload(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"session_id", "user_id", "reason"}, []string{"session_id", "reason"})
+	if !ok {
+		return
+	}
+	if field, present := source["session_id"]; present {
+		validateIdentifier(field, path+".session_id", out)
+	}
+	if field, present := source["user_id"]; present {
+		validateIdentifier(field, path+".user_id", out)
+	}
+	if field, present := source["reason"]; present {
+		validateSessionRevocationReason(field, path+".reason", out)
+	}
 }
 
 // validateProjectUpdatedPayloadChangedFieldsItem checks a generated schema node.
 func validateProjectUpdatedPayloadChangedFieldsItem(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern4})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern8})
 }
 
 // validateProjectUpdatedPayloadChangedFields checks attribute names that changed, in
@@ -552,7 +991,7 @@ func validateStreamErrorType(value any, path string, out *[]SchemaViolation) {
 // validateStreamErrorMessage checks human-readable explanation. It never carries
 // request data, a credential or a stack trace.
 func validateStreamErrorMessage(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 1024, pattern: pattern5})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 1024, pattern: pattern9})
 }
 
 // validateStreamErrorRetryable checks whether repeating the subscription verbatim can
@@ -615,7 +1054,7 @@ func validateApiErrorDetailsCandidates(value any, path string, out *[]SchemaViol
 
 // validateApiErrorDetailsAllowedTransitionsItem checks a generated schema node.
 func validateApiErrorDetailsAllowedTransitionsItem(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern6})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern10})
 }
 
 // validateApiErrorDetailsAllowedTransitions checks transitions that are legal from the
@@ -632,7 +1071,7 @@ func validateApiErrorDetailsAllowedTransitions(value any, path string, out *[]Sc
 
 // validateApiErrorDetailsRequiredEvidenceItem checks a generated schema node.
 func validateApiErrorDetailsRequiredEvidenceItem(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern4})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern8})
 }
 
 // validateApiErrorDetailsRequiredEvidence checks evidence the operation needs before
@@ -649,7 +1088,7 @@ func validateApiErrorDetailsRequiredEvidence(value any, path string, out *[]Sche
 
 // validateApiErrorDetailsMissingContextItem checks a generated schema node.
 func validateApiErrorDetailsMissingContextItem(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern7})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern11})
 }
 
 // validateApiErrorDetailsMissingContext checks captured context the request omitted.
@@ -673,13 +1112,13 @@ func validateApiErrorDetailsRetryAfterMs(value any, path string, out *[]SchemaVi
 
 // validateApiErrorDetailsField checks the request member the refusal is about.
 func validateApiErrorDetailsField(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 128, pattern: pattern8})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 128, pattern: pattern12})
 }
 
 // validateApiErrorDetailsReason checks stable sub-reason where one code covers several
 // causes.
 func validateApiErrorDetailsReason(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern4})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern8})
 }
 
 // validateAPIErrorDetails checks a ApiErrorDetails value.
@@ -723,7 +1162,7 @@ func validateAPIErrorDetails(value any, path string, out *[]SchemaViolation) {
 // validateApiErrorMessage checks human-readable explanation. It never carries a
 // credential, request data or a stack trace (docs/SECURITY.md section 18).
 func validateApiErrorMessage(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 1024, pattern: pattern5})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 1024, pattern: pattern9})
 }
 
 // validateAPIError checks a ApiError value.
@@ -780,7 +1219,7 @@ func validateCursorClaimsVersion(value any, path string, out *[]SchemaViolation)
 // validateCursorClaimsSortKey checks value of the collection's sort column at the last
 // row of the previous page.
 func validateCursorClaimsSortKey(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 128, pattern: pattern5})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 128, pattern: pattern9})
 }
 
 // validateCursorClaims checks a CursorClaims value.

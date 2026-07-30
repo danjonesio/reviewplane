@@ -36,11 +36,18 @@ import { BrowserWorkerClient } from "./modules/browser-sessions/worker-client.ts
 import { WorkerRegistry } from "./modules/browser-sessions/workers.ts";
 import { createConnectorModule } from "./modules/connectors/index.ts";
 import type { ConnectorModule, ConnectorModuleConfig } from "./modules/connectors/index.ts";
+import { registerAuthorisation } from "./modules/identity/authorisation.ts";
+import { InstallTokenStore } from "./modules/identity/install-tokens.ts";
+import { OrganisationStore } from "./modules/identity/organisations.ts";
+import { LoginRateLimiter } from "./modules/identity/rate-limit.ts";
+import { registerIdentityRoutes } from "./modules/identity/routes.ts";
+import { UserStore } from "./modules/identity/users.ts";
 import { LiveRelay } from "./modules/live/relay.ts";
 import { registerLiveRoutes, resolveViewer } from "./modules/live/routes.ts";
 import { ViewerSessionStore } from "./modules/live/viewer-sessions.ts";
 import { WorkerLiveClient } from "./modules/live/worker-live-client.ts";
 import { registerProjectRoutes } from "./modules/projects/routes.ts";
+import { ProjectService } from "./modules/projects/service.ts";
 import { STAGE_0_DESTINATION_POLICY } from "./modules/published-services/destination-policy.ts";
 import type { DestinationPolicy } from "./modules/published-services/destination-policy.ts";
 import { HttpTunnelGateway } from "./modules/published-services/gateway-client.ts";
@@ -104,6 +111,11 @@ export interface BuiltApp {
   readonly relay: LiveRelay;
   readonly agentCredentials: AgentCredentialStore;
   readonly agentSessions: AgentSessionStore;
+  /** Local accounts and the one-time administrator bootstrap (RVP-12). */
+  readonly users: UserStore;
+  readonly organisations: OrganisationStore;
+  readonly installTokens: InstallTokenStore;
+  readonly projects: ProjectService;
   readonly workspaces: WorkspaceStore;
   readonly idempotency: IdempotencyStore;
   /** In-process fan-out of committed events (`docs/EVENTS.md` §10). */
@@ -304,11 +316,39 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
   };
 
 
-  await registerProjectRoutes(app, {
+  // Actor resolution for every `/api/` request (`docs/SECURITY.md` section 7).
+  // It is registered before any route so that a handler can read the actor the
+  // hook resolved rather than re-reading a header for itself.
+  const users = new UserStore(pool);
+  const organisations = new OrganisationStore(pool);
+  const installTokens = new InstallTokenStore(pool);
+  const rateLimiter = new LoginRateLimiter(pool);
+  const projects = new ProjectService(pool, outbox);
+
+  registerAuthorisation(app, {
     pool,
+    viewers,
     bootstrapToken: config.bootstrapToken,
     workerCredential: config.workerCredential,
-    viewerAuth,
+  });
+
+  await registerIdentityRoutes(app, {
+    pool,
+    users,
+    organisations,
+    installTokens,
+    sessions: viewers,
+    rateLimiter,
+    secureCookies: config.secureCookies,
+    allowedOrigins: config.allowedOrigins,
+    events: outbox,
+  });
+  await registerProjectRoutes(app, {
+    pool,
+    projects,
+    organisations,
+    bootstrapToken: config.bootstrapToken,
+    workerCredential: config.workerCredential,
   });
   await registerArtefactRoutes(app, {
     pool,
@@ -385,6 +425,10 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     relay,
     agentCredentials,
     agentSessions,
+    users,
+    organisations,
+    installTokens,
+    projects,
     workspaces,
     idempotency,
     events,

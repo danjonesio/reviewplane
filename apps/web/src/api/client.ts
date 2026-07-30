@@ -30,13 +30,40 @@ export class ApiFailure extends Error {
   }
 }
 
+/** Cookie the control plane puts the CSRF token in (`docs/API.md` section 4). */
+const CSRF_COOKIE = "reviewplane_csrf";
+
+/**
+ * Reads the CSRF token the control plane issued with this session.
+ *
+ * It is deliberately readable — the session cookie is not — because the whole
+ * mechanism is that the application echoes it in a header that no cross-site
+ * form can set.
+ */
+export function csrfToken(): string | null {
+  for (const part of document.cookie.split(";")) {
+    const index = part.indexOf("=");
+    if (index === -1) continue;
+    if (part.slice(0, index).trim() !== CSRF_COOKIE) continue;
+    const value = part.slice(index + 1).trim();
+    return value === "" ? null : decodeURIComponent(value);
+  }
+  return null;
+}
+
+/** Methods that change state and therefore carry the CSRF token. */
+const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const method = (init.method ?? "GET").toUpperCase();
+  const token = UNSAFE_METHODS.has(method) ? csrfToken() : null;
   const response = await fetch(path, {
     ...init,
     credentials: "same-origin",
     headers: {
       accept: "application/json",
       ...(init.body === undefined ? {} : { "content-type": "application/json" }),
+      ...(token === null ? {} : { "x-csrf-token": token }),
       ...init.headers,
     },
   });
@@ -57,12 +84,83 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return (JSON.parse(text) as { data: T }).data;
 }
 
+export interface ValidationViewport {
+  readonly width: number;
+  readonly height: number;
+  readonly device_scale_factor?: number;
+}
+
+export interface RepositoryIdentity {
+  readonly canonical: string;
+  readonly clone_urls?: readonly string[];
+}
+
+export interface ProjectSettings {
+  readonly default_validation_viewports: readonly ValidationViewport[];
+}
+
 export interface Project {
   readonly id: string;
   readonly organisation_id: string;
   readonly name: string;
   readonly slug: string;
   readonly status: string;
+  readonly repository_identity?: RepositoryIdentity;
+  readonly default_branch: string;
+  readonly settings: ProjectSettings;
+  readonly version: number;
+  readonly created_at?: string;
+  readonly updated_at?: string;
+}
+
+/** What a project's creation form sends (`docs/UX_FLOWS.md` section 4). */
+export interface ProjectDraft {
+  readonly name: string;
+  readonly slug?: string;
+  readonly repository_identity?: string;
+  readonly default_branch?: string;
+  readonly settings?: ProjectSettings;
+}
+
+/** The current human session (`docs/API.md` section 4). */
+export interface HumanSession {
+  readonly session_id: string;
+  readonly user_id?: string;
+  readonly organisation_id?: string;
+  readonly email?: string;
+  readonly display: string;
+  readonly project_ids?: readonly string[];
+  readonly expires_at: string;
+}
+
+export interface SessionUser {
+  readonly id: string;
+  readonly email: string;
+  readonly display_name: string;
+  readonly status: string;
+  readonly local_credential_set?: boolean;
+}
+
+export interface CurrentSession {
+  readonly session: HumanSession;
+  readonly user: SessionUser | null;
+}
+
+/** What the first-run screen needs before anybody can sign in. */
+export interface BootstrapStatus {
+  readonly bootstrap_required: boolean;
+  readonly install_token_outstanding: boolean;
+  readonly organisation: { readonly id: string; readonly name: string; readonly slug: string } | null;
+}
+
+/** One event of a project's activity timeline (`docs/EVENTS.md` section 2). */
+export interface ActivityEvent {
+  readonly id: string;
+  readonly sequence: number;
+  readonly type: string;
+  readonly occurred_at: string;
+  readonly actor: { readonly type: string; readonly display?: string };
+  readonly payload: Record<string, unknown>;
 }
 
 export interface Viewport {
@@ -128,23 +226,73 @@ export interface ArtefactGrant {
 }
 
 export const api = {
-  async currentViewer(): Promise<ViewerSession> {
-    return request<ViewerSession>("/api/v1/auth/viewer-sessions/current");
+  /** Whether this installation still has to be claimed. */
+  async bootstrapStatus(): Promise<BootstrapStatus> {
+    return request<BootstrapStatus>("/api/v1/auth/bootstrap");
   },
 
-  async signIn(bootstrapToken: string): Promise<void> {
-    await request("/api/v1/auth/viewer-sessions", {
+  /** Claims the installation with the one-time token the operator minted. */
+  async bootstrap(input: {
+    readonly token: string;
+    readonly email: string;
+    readonly password: string;
+  }): Promise<CurrentSession> {
+    return request<CurrentSession>("/api/v1/auth/bootstrap", {
       method: "POST",
-      headers: { authorization: `Bearer ${bootstrapToken}` },
+      body: JSON.stringify(input),
+    });
+  },
+
+  async currentSession(): Promise<CurrentSession> {
+    return request<CurrentSession>("/api/v1/auth/sessions/current");
+  },
+
+  async signIn(input: { readonly email: string; readonly password: string }): Promise<CurrentSession> {
+    return request<CurrentSession>("/api/v1/auth/sessions", {
+      method: "POST",
+      body: JSON.stringify(input),
     });
   },
 
   async signOut(): Promise<void> {
-    await request("/api/v1/auth/viewer-sessions/current", { method: "DELETE" });
+    await request("/api/v1/auth/sessions/current", { method: "DELETE" });
   },
 
   async projects(): Promise<Project[]> {
     return request<Project[]>("/api/v1/projects");
+  },
+
+  async project(projectId: string): Promise<Project> {
+    return request<Project>(`/api/v1/projects/${encodeURIComponent(projectId)}`);
+  },
+
+  async createProject(draft: ProjectDraft): Promise<Project> {
+    return request<Project>("/api/v1/projects", {
+      method: "POST",
+      body: JSON.stringify(draft),
+    });
+  },
+
+  async updateProject(
+    projectId: string,
+    change: Partial<ProjectDraft> & { readonly expected_version?: number },
+  ): Promise<Project> {
+    return request<Project>(`/api/v1/projects/${encodeURIComponent(projectId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(change),
+    });
+  },
+
+  async archiveProject(projectId: string): Promise<Project> {
+    return request<Project>(`/api/v1/projects/${encodeURIComponent(projectId)}`, {
+      method: "DELETE",
+    });
+  },
+
+  async activity(projectId: string, limit = 20): Promise<ActivityEvent[]> {
+    return request<ActivityEvent[]>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/activity?limit=${String(limit)}`,
+    );
   },
 
   async browserSessions(projectId: string): Promise<BrowserSession[]> {

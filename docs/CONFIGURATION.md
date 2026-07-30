@@ -107,7 +107,15 @@ credential:
 | `REVIEWPLANE_ARTEFACT_MAX_BYTES` | `20971520` | Largest artefact accepted |
 | `REVIEWPLANE_WORKER_REQUEST_TIMEOUT_MS` | `150000` | Bound on one worker request |
 | `REVIEWPLANE_ALLOWED_ORIGINS` | empty | Comma-separated origins a browser may open the live WebSocket from (ADR-0016). Empty accepts a request with no `Origin`, which is a non-browser client |
-| `REVIEWPLANE_SECURE_COOKIES` | `true` | Whether the viewer session cookie is marked `Secure`. Set to `false` only for plain-HTTP local development |
+| `REVIEWPLANE_SECURE_COOKIES` | `true` | Whether the session and CSRF cookies are marked `Secure`. Set to `false` only for plain-HTTP local development |
+
+Local accounts need no configuration. `authentication.mode: local` above describes
+what the deployment does, and the administrator's credential is established once
+from a token an operator mints with `reviewplane install-token`
+(`docs/DEPLOYMENT.md` section 11) rather than from a setting: a password in an
+environment variable would be a password in a process listing, a shell history
+and every `docker inspect`. `authentication.session_ttl` is twelve hours and is
+not yet configurable.
 
 ## 3. Browser-worker configuration
 

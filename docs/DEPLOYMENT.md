@@ -253,8 +253,34 @@ reviewplane migrate            # apply every pending migration
 reviewplane migrate --status   # report the schema version and what is pending
 reviewplane serve              # the api role
 reviewplane jobs [--once]      # the jobs role
+reviewplane install-token      # mint the one-time administrator bootstrap token
 reviewplane version            # the build this image carries
 ```
+
+### First run: claiming the installation
+
+An installation cannot ship with a password, and it cannot ask a human to invent
+one before the software exists to ask. So the operator mints a one-time token at
+the console and the first-run screen exchanges it for an account:
+
+```bash
+reviewplane install-token [--ttl-seconds 86400]
+```
+
+It prints the token **once** — the control plane stores only its digest — and
+the token expires whether or not it is used, because a token that waited
+indefinitely on a console scrollback would be a permanent way in. Opening the
+web application then presents "Set up this installation", which takes the token,
+an email address and a password, and signs the administrator in
+(`docs/API.md` section 4.0).
+
+The command refuses to mint a second token for an account that already has a
+credential. Re-bootstrapping is a password reset, and it takes an explicit
+`--force` so that it is a decision rather than an accident.
+
+The token never appears in a log line: `docs/SECURITY.md` section 18 forbids
+credential material in logs, which is why the token is printed by a command an
+operator runs rather than emitted by the server at startup.
 
 `reviewplane jobs` serves `/health/live`, `/health/ready` and `/version` on
 `REVIEWPLANE_JOBS_HEALTH_PORT` (default `8081`, bound to

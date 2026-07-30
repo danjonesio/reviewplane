@@ -531,8 +531,14 @@ describe("event records", () => {
       // is audited by the authentication events of docs/EVENTS.md section 7 when
       // those land; an idempotency key is a request-deduplication artefact whose
       // own creation is not an occurrence anybody audits.
-      ["modules/live/viewer-sessions.ts", "viewer sessions are credentials, not domain records"],
+      ["modules/live/viewer-sessions.ts", "viewer sessions are credentials, not domain records; their issue and revocation are audited by the authentication events that modules/identity/routes.ts writes"],
       ["modules/agents/idempotency.ts", "an idempotency key deduplicates a request; it is not a change"],
+      // Throttling state. The refusal it produces is audited as
+      // authentication.login_failed with reason `rate_limited`, so the fact an
+      // operator needs — that the limiter engaged — is in the event stream; the
+      // counter itself is bookkeeping, and an event per failed guess would let
+      // an attacker fill the audit trail.
+      ["modules/identity/rate-limit.ts", "login throttling state; the refusal it produces is evented as authentication.login_failed"],
       // Registry and liveness bookkeeping. A worker heartbeat every few seconds
       // is exactly the high-frequency signal docs/EVENTS.md section 7 says must
       // be sampled or summarised rather than emitted as durable events.

@@ -264,6 +264,29 @@ advertised tool schemas, so a breaking tool change cannot land silently
 - Worker session credentials cannot call admin API
 - Connector token cannot become human session
 
+### Human authentication
+
+`apps/server/test/identity.test.ts` and `apps/server/test/projects.test.ts`
+cover these against a real database:
+
+- The install token creates exactly one administrator and is refused on reuse,
+  after expiry, and when it was never issued
+- A state-changing request with a missing, wrong or borrowed CSRF token is
+  refused; the ADR-0016 viewer session, which carries none, cannot reach one
+- The login rate limit engages, carries a retry hint, and refuses the correct
+  password while it holds
+- A connector enrolment token cannot become a human session as a bearer
+  credential, as a password, or as an install token
+- An agent credential and a worker credential can call neither a human session
+  route nor project administration
+- A session scoped to project A cannot read project B, cannot enumerate it, and
+  is answered byte for byte as it is for an identifier that does not exist
+- No credential material reaches a log line or an event payload
+- A revoked or rotated session cookie is refused when it is replayed
+- With the database unavailable, a sign-in fails clearly and issues no session
+- Two concurrent creations of one project slug produce one project and one
+  stable refusal
+
 ### Prompt injection
 
 Fixture pages include malicious instructions. Tests verify:

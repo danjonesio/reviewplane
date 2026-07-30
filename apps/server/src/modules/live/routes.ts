@@ -84,9 +84,15 @@ export async function resolveViewer(
       return {
         type: "human_viewer",
         viewerSessionId: "bootstrap",
+        userId: null,
         organisationId: null,
         projectIds: null,
         display: "bootstrap administrator",
+        // A bearer token is never sent by a browser on a cross-site request,
+        // so this principal needs no CSRF token and has none to check.
+        credential: "bootstrap_token",
+        csrfTokenDigest: null,
+        expiresAt: null,
       };
     }
   }

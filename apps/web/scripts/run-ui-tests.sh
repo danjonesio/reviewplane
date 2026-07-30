@@ -14,12 +14,17 @@
 # opens the page.
 #
 # Usage: pnpm --filter @reviewplane/web run test:ui:container
+#        pnpm --filter @reviewplane/web run test:ui:container test/ui/one.test.ts
+#
+# A path argument runs one file, which is what a failing case wants; with no
+# argument every file under test/ui runs.
 
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "${here}/../../.." && pwd)"
 image="reviewplane/browser-worker-test:local"
+pattern="${1:-test/ui/*.test.ts}"
 
 echo "==> building the web bundle"
 (cd "${repo}" && pnpm --filter @reviewplane/web run build)
@@ -45,4 +50,4 @@ exec docker run --rm \
   --volume "${repo}:/work" \
   --workdir /work/apps/web \
   "${image}" \
-  node --conditions=development --test --test-concurrency=1 "test/ui/*.test.ts"
+  node --conditions=development --test --test-concurrency=1 "${pattern}"

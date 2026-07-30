@@ -15,8 +15,20 @@ func validatePayload(messageType MessageType, value any, path string, out *[]Sch
 		validateProjectCreatedPayload(value, path, out)
 	case MessageTypeProjectUpdated:
 		validateProjectUpdatedPayload(value, path, out)
+	case MessageTypeProjectRepositoryChanged:
+		validateProjectRepositoryChangedPayload(value, path, out)
 	case MessageTypeProjectArchived:
 		validateProjectArchivedPayload(value, path, out)
+	case MessageTypeUserInvited:
+		validateUserInvitedPayload(value, path, out)
+	case MessageTypeUserCredentialsSet:
+		validateUserCredentialsSetPayload(value, path, out)
+	case MessageTypeAuthenticationLoginSucceeded:
+		validateAuthenticationLoginSucceededPayload(value, path, out)
+	case MessageTypeAuthenticationLoginFailed:
+		validateAuthenticationLoginFailedPayload(value, path, out)
+	case MessageTypeSessionRevoked:
+		validateSessionRevokedPayload(value, path, out)
 	case MessageTypeJobEnqueued:
 		validateJobEnqueuedPayload(value, path, out)
 	case MessageTypeJobSucceeded:
@@ -35,8 +47,20 @@ func decodePayload(messageType MessageType, value any) Payload {
 		return DecodeProjectCreatedPayload(value)
 	case MessageTypeProjectUpdated:
 		return DecodeProjectUpdatedPayload(value)
+	case MessageTypeProjectRepositoryChanged:
+		return DecodeProjectRepositoryChangedPayload(value)
 	case MessageTypeProjectArchived:
 		return DecodeProjectArchivedPayload(value)
+	case MessageTypeUserInvited:
+		return DecodeUserInvitedPayload(value)
+	case MessageTypeUserCredentialsSet:
+		return DecodeUserCredentialsSetPayload(value)
+	case MessageTypeAuthenticationLoginSucceeded:
+		return DecodeAuthenticationLoginSucceededPayload(value)
+	case MessageTypeAuthenticationLoginFailed:
+		return DecodeAuthenticationLoginFailedPayload(value)
+	case MessageTypeSessionRevoked:
+		return DecodeSessionRevokedPayload(value)
 	case MessageTypeJobEnqueued:
 		return DecodeJobEnqueuedPayload(value)
 	case MessageTypeJobSucceeded:
@@ -56,8 +80,20 @@ func EncodePayload(payload Payload) ([]byte, error) {
 		return EncodeProjectCreatedPayload(value)
 	case ProjectUpdatedPayload:
 		return EncodeProjectUpdatedPayload(value)
+	case ProjectRepositoryChangedPayload:
+		return EncodeProjectRepositoryChangedPayload(value)
 	case ProjectArchivedPayload:
 		return EncodeProjectArchivedPayload(value)
+	case UserInvitedPayload:
+		return EncodeUserInvitedPayload(value)
+	case UserCredentialsSetPayload:
+		return EncodeUserCredentialsSetPayload(value)
+	case AuthenticationLoginSucceededPayload:
+		return EncodeAuthenticationLoginSucceededPayload(value)
+	case AuthenticationLoginFailedPayload:
+		return EncodeAuthenticationLoginFailedPayload(value)
+	case SessionRevokedPayload:
+		return EncodeSessionRevokedPayload(value)
 	case JobEnqueuedPayload:
 		return EncodeJobEnqueuedPayload(value)
 	case JobSucceededPayload:
@@ -71,7 +107,7 @@ func EncodePayload(payload Payload) ([]byte, error) {
 // IsKnownMessageType reports whether a value names a version 1 message type.
 func IsKnownMessageType(value string) bool {
 	switch MessageType(value) {
-	case MessageTypeOrganisationCreated, MessageTypeProjectCreated, MessageTypeProjectUpdated, MessageTypeProjectArchived, MessageTypeJobEnqueued, MessageTypeJobSucceeded, MessageTypeJobFailed:
+	case MessageTypeOrganisationCreated, MessageTypeProjectCreated, MessageTypeProjectUpdated, MessageTypeProjectRepositoryChanged, MessageTypeProjectArchived, MessageTypeUserInvited, MessageTypeUserCredentialsSet, MessageTypeAuthenticationLoginSucceeded, MessageTypeAuthenticationLoginFailed, MessageTypeSessionRevoked, MessageTypeJobEnqueued, MessageTypeJobSucceeded, MessageTypeJobFailed:
 		return true
 	}
 	return false

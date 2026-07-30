@@ -53,7 +53,13 @@ export const MESSAGE_TYPE_VALUES = [
   "organisation.created",
   "project.created",
   "project.updated",
+  "project.repository_changed",
   "project.archived",
+  "user.invited",
+  "user.credentials_set",
+  "authentication.login_succeeded",
+  "authentication.login_failed",
+  "session.revoked",
   "job.enqueued",
   "job.succeeded",
   "job.failed",
@@ -63,7 +69,13 @@ export type MessageType =
   | "organisation.created"
   | "project.created"
   | "project.updated"
+  | "project.repository_changed"
   | "project.archived"
+  | "user.invited"
+  | "user.credentials_set"
+  | "authentication.login_succeeded"
+  | "authentication.login_failed"
+  | "session.revoked"
   | "job.enqueued"
   | "job.succeeded"
   | "job.failed";
@@ -191,6 +203,87 @@ export type ProjectStatus =
   | "archived";
 
 /**
+ * Organisation lifecycle status (docs/DOMAIN_MODEL.md section 4).
+ */
+export const ORGANISATION_STATUS_VALUES = [
+  "active",
+  "suspended",
+] as const;
+
+export type OrganisationStatus =
+  | "active"
+  | "suspended";
+
+/**
+ * User lifecycle status (docs/DOMAIN_MODEL.md section 5). A suspended user keeps every
+ * record they authored and can no longer authenticate.
+ */
+export const USER_STATUS_VALUES = [
+  "active",
+  "suspended",
+] as const;
+
+export type UserStatus =
+  | "active"
+  | "suspended";
+
+/**
+ * How a human authenticated. bootstrap_token is the ADR-0016 exchange, install_token is
+ * the one-time administrator bootstrap, and password is a local account.
+ */
+export const LOGIN_METHOD_VALUES = [
+  "password",
+  "bootstrap_token",
+  "install_token",
+] as const;
+
+export type LoginMethod =
+  | "password"
+  | "bootstrap_token"
+  | "install_token";
+
+/**
+ * Why an authentication attempt was refused. Stable, so a run of failures can be
+ * classified from the audit trail alone without any record of what was submitted.
+ */
+export const LOGIN_FAILURE_REASON_VALUES = [
+  "unknown_user",
+  "invalid_password",
+  "password_not_set",
+  "user_suspended",
+  "rate_limited",
+  "install_token_invalid",
+  "install_token_expired",
+  "install_token_consumed",
+] as const;
+
+export type LoginFailureReason =
+  | "unknown_user"
+  | "invalid_password"
+  | "password_not_set"
+  | "user_suspended"
+  | "rate_limited"
+  | "install_token_invalid"
+  | "install_token_expired"
+  | "install_token_consumed";
+
+/**
+ * Why a session stopped being usable.
+ */
+export const SESSION_REVOCATION_REASON_VALUES = [
+  "sign_out",
+  "rotated",
+  "revoked_by_user",
+  "revoked_by_administrator",
+] as const;
+
+export type SessionRevocationReason =
+  | "sign_out"
+  | "rotated"
+  | "revoked_by_user"
+  | "revoked_by_administrator";
+
+/**
  * Message discriminator.
  */
 export const STREAM_SUBSCRIBE_TYPE_VALUES = [
@@ -261,7 +354,13 @@ export const MESSAGE_DIRECTIONS: Readonly<Record<MessageType, "control_plane_to_
   "organisation.created": "control_plane_to_subscriber",
   "project.created": "control_plane_to_subscriber",
   "project.updated": "control_plane_to_subscriber",
+  "project.repository_changed": "control_plane_to_subscriber",
   "project.archived": "control_plane_to_subscriber",
+  "user.invited": "control_plane_to_subscriber",
+  "user.credentials_set": "control_plane_to_subscriber",
+  "authentication.login_succeeded": "control_plane_to_subscriber",
+  "authentication.login_failed": "control_plane_to_subscriber",
+  "session.revoked": "control_plane_to_subscriber",
   "job.enqueued": "control_plane_to_subscriber",
   "job.succeeded": "control_plane_to_subscriber",
   "job.failed": "control_plane_to_subscriber",
@@ -274,7 +373,13 @@ export const MESSAGE_CHANNELS: Readonly<Record<MessageType, Channel>> = {
   "organisation.created": "organisation",
   "project.created": "organisation",
   "project.updated": "organisation",
+  "project.repository_changed": "organisation",
   "project.archived": "organisation",
+  "user.invited": "organisation",
+  "user.credentials_set": "organisation",
+  "authentication.login_succeeded": "organisation",
+  "authentication.login_failed": "organisation",
+  "session.revoked": "organisation",
   "job.enqueued": "jobs",
   "job.succeeded": "jobs",
   "job.failed": "jobs",
@@ -288,7 +393,13 @@ export const PAYLOAD_MAX_BYTES: Readonly<Record<MessageType, number>> = {
   "organisation.created": 1024,
   "project.created": 1024,
   "project.updated": 1024,
+  "project.repository_changed": 1024,
   "project.archived": 512,
+  "user.invited": 512,
+  "user.credentials_set": 512,
+  "authentication.login_succeeded": 512,
+  "authentication.login_failed": 512,
+  "session.revoked": 512,
   "job.enqueued": 1024,
   "job.succeeded": 1024,
   "job.failed": 1024,
@@ -362,6 +473,7 @@ export interface SchemaViolation {
 export const EVENT_TYPES = [
   "organisation.created",
   "user.invited",
+  "user.credentials_set",
   "authentication.login_succeeded",
   "authentication.login_failed",
   "session.revoked",
@@ -482,6 +594,8 @@ export const PAGINATION_PARAMETERS = [
 export const IDENTIFIER_PREFIXES: Readonly<Record<string, string>> = {
   "organisation": "org_",
   "user": "usr_",
+  "install_token": "ins_",
+  "human_session": "vwr_",
   "project": "prj_",
   "environment": "env_",
   "connector": "con_",
@@ -530,6 +644,254 @@ export type SequenceNumber = number;
  * one.
  */
 export type Cursor = string;
+
+/**
+ * Human-friendly alias, unique inside its parent. Mutable, and never a substitute for the
+ * identifier (docs/DOMAIN_MODEL.md section 3).
+ */
+export type Slug = string;
+
+/**
+ * Name a human reads. It is description and never an authorisation input.
+ */
+export type DisplayName = string;
+
+/**
+ * Address a human is known by. It is an alias for a user, never an identity: the
+ * identifier is what every other record references. The bound is the RFC 5321 maximum path
+ * length. The pattern is deliberately permissive — one at-sign, no whitespace and no
+ * control characters — because a stricter one rejects addresses that work: a dotless host
+ * such as administrator@localhost is what a fresh self-hosted installation is seeded with,
+ * and deliverability is not something a schema can decide.
+ */
+export type EmailAddress = string;
+
+/**
+ * Git branch name. Bounded and restricted to the characters a ref may hold, so a value
+ * stored here cannot become an argument to something else.
+ */
+export type GitRefName = string;
+
+/**
+ * Provider-agnostic repository identity (docs/DOMAIN_MODEL.md section 6). canonical is the
+ * normalised host-and-path form that two clone URLs for the same repository both reduce
+ * to, which is what lets an SSH remote and an HTTPS remote be recognised as one
+ * repository. clone_urls records the forms actually seen, for display and for a connector
+ * to match a checkout against.
+ */
+export interface RepositoryIdentity {
+  /**
+   * Normalised host and path, lowercase host, no scheme, no credentials, no .git suffix
+   * and no trailing slash, for example github.com/example/refresh-surplus.
+   */
+  readonly canonical: string;
+  /**
+   * Clone URLs that reduce to canonical, in the order they were supplied. Duplicates are
+   * removed by the control plane before storage.
+   */
+  readonly clone_urls?: readonly string[];
+}
+
+/**
+ * A viewport the project validates at (docs/UX_FLOWS.md section 4). The bounds are the
+ * browser protocol's, because a viewport stored here is one a browser session is later
+ * asked to adopt; a value the worker would refuse must not be storable.
+ */
+export interface ValidationViewport {
+  /**
+   * Viewport width in CSS pixels.
+   */
+  readonly width: number;
+  /**
+   * Viewport height in CSS pixels.
+   */
+  readonly height: number;
+  /**
+   * Device pixel ratio. Absent means 1, which is what a browser session adopts when the
+   * project does not say otherwise.
+   */
+  readonly device_scale_factor?: number;
+}
+
+/**
+ * Project settings (docs/DOMAIN_MODEL.md section 6). Stage 1 holds the default validation
+ * viewports and nothing else; the object refuses unknown members so a setting cannot be
+ * introduced in one service without being defined here first.
+ */
+export interface ProjectSettings {
+  /**
+   * Viewports a finding is expected to be validated at. It defaults to 390x844 and
+   * 1440x900, which AGENTS.md requires of browser-facing work and the Stage 1 completion
+   * gate checks against.
+   */
+  readonly default_validation_viewports: readonly ValidationViewport[];
+}
+
+/**
+ * The top-level administrative and data-isolation boundary (docs/DOMAIN_MODEL.md section
+ * 4).
+ */
+export interface Organisation {
+  /**
+   * Organisation identity, conventionally prefixed org_.
+   */
+  readonly id: Identifier;
+  /**
+   * Display name.
+   */
+  readonly name: DisplayName;
+  /**
+   * Mutable alias.
+   */
+  readonly slug: Slug;
+  /**
+   * Lifecycle status.
+   */
+  readonly status: OrganisationStatus;
+  /**
+   * When the organisation was created.
+   */
+  readonly created_at: Timestamp;
+  /**
+   * When it last changed.
+   */
+  readonly updated_at: Timestamp;
+}
+
+/**
+ * A human identity (docs/DOMAIN_MODEL.md section 5). It never carries credential material:
+ * whether a password exists is stated, and the hash is not part of any representation that
+ * leaves the database.
+ */
+export interface User {
+  /**
+   * User identity, conventionally prefixed usr_.
+   */
+  readonly id: Identifier;
+  /**
+   * Owning organisation, carried for defence-in-depth filtering (docs/DOMAIN_MODEL.md
+   * section 3).
+   */
+  readonly organisation_id: Identifier;
+  /**
+   * Address the human is known by.
+   */
+  readonly email: EmailAddress;
+  /**
+   * Name shown in a timeline.
+   */
+  readonly display_name: DisplayName;
+  /**
+   * Lifecycle status.
+   */
+  readonly status: UserStatus;
+  /**
+   * Whether this user can authenticate locally. It is the fact a first-run screen needs,
+   * and it says nothing about the credential itself. The name avoids the word the schema
+   * checker forbids in a field, which exists so that no protocol field can ever carry a
+   * credential.
+   */
+  readonly local_credential_set?: boolean;
+  /**
+   * When the user record was created.
+   */
+  readonly created_at: Timestamp;
+  /**
+   * When it last changed.
+   */
+  readonly updated_at: Timestamp;
+}
+
+/**
+ * The principal working boundary (docs/DOMAIN_MODEL.md section 6). A review belongs to
+ * exactly one project, and a browser session may only route to services authorised for the
+ * same project.
+ */
+export interface Project {
+  /**
+   * Project identity, conventionally prefixed prj_.
+   */
+  readonly id: Identifier;
+  /**
+   * Owning organisation, carried for defence-in-depth filtering.
+   */
+  readonly organisation_id: Identifier;
+  /**
+   * Display name.
+   */
+  readonly name: DisplayName;
+  /**
+   * Alias, unique within the organisation.
+   */
+  readonly slug: Slug;
+  /**
+   * Repository the project's work lands in. Absent until an operator supplies one; a
+   * change to it is audited as project.repository_changed.
+   */
+  readonly repository_identity?: RepositoryIdentity;
+  /**
+   * Branch reviews are captured against by default.
+   */
+  readonly default_branch: GitRefName;
+  /**
+   * Lifecycle status. Deleting a project archives it.
+   */
+  readonly status: ProjectStatus;
+  /**
+   * Project settings.
+   */
+  readonly settings: ProjectSettings;
+  /**
+   * Optimistic-concurrency version (docs/API.md section 5.2). A write carrying a different
+   * expected_version is refused with VERSION_CONFLICT rather than silently overwriting.
+   */
+  readonly version: number;
+  /**
+   * When the project was created.
+   */
+  readonly created_at: Timestamp;
+  /**
+   * When it last changed.
+   */
+  readonly updated_at: Timestamp;
+}
+
+/**
+ * What a human session tells its own holder (docs/API.md section 4). The session token
+ * lives in an HTTP-only cookie and is never part of this representation; project_ids
+ * absent means organisation-wide scope, and a list means exactly those projects.
+ */
+export interface HumanSession {
+  /**
+   * Session identity, conventionally prefixed vwr_.
+   */
+  readonly session_id: Identifier;
+  /**
+   * The authenticated user. Absent for a session issued from the bootstrap administrator
+   * token, which has no user record behind it (ADR-0016).
+   */
+  readonly user_id?: Identifier;
+  /**
+   * Organisation the session acts in.
+   */
+  readonly organisation_id?: Identifier;
+  /**
+   * Address of the authenticated user, when there is one.
+   */
+  readonly email?: EmailAddress;
+  /**
+   * Name shown in the application shell.
+   */
+  readonly display: DisplayName;
+  /**
+   * Projects the session may reach. Absent means every project in the organisation.
+   */
+  readonly project_ids?: readonly Identifier[];
+  /**
+   * When the session stops being usable without revocation.
+   */
+  readonly expires_at: Timestamp;
+}
 
 /**
  * The principal an event is attributed to (docs/EVENTS.md section 2).
@@ -693,6 +1055,128 @@ export interface ProjectCreatedPayload {
    * Display name.
    */
   readonly name: string;
+  /**
+   * Branch the project captures reviews against. Absent on a project created before the
+   * field existed.
+   */
+  readonly default_branch?: GitRefName;
+  /**
+   * Normalised repository identity the project was created with, when one was supplied.
+   * The canonical form alone: the clone URLs are queryable on the record and add nothing
+   * an auditor needs.
+   */
+  readonly repository_canonical?: string;
+}
+
+/**
+ * Payload of project.repository_changed. It carries both sides of the move, because a
+ * review captured before it was interpreted against the previous repository
+ * (docs/DOMAIN_MODEL.md section 6).
+ */
+export interface ProjectRepositoryChangedPayload {
+  /**
+   * Normalised identity before the change. Absent when the project had no repository
+   * association.
+   */
+  readonly previous_canonical?: string;
+  /**
+   * Normalised identity after the change.
+   */
+  readonly new_canonical: string;
+}
+
+/**
+ * Payload of user.invited. Issuing a credential-establishing token is a permission change,
+ * and docs/SECURITY.md section 16 requires an audit record for one. It never carries the
+ * token: a reader learns that a way in exists and when it closes, not what it is.
+ */
+export interface UserInvitedPayload {
+  /**
+   * User the token establishes credentials for.
+   */
+  readonly user_id: Identifier;
+  /**
+   * Kind of token that was issued.
+   */
+  readonly method: LoginMethod;
+  /**
+   * When the token stops being usable, whether or not it was used.
+   */
+  readonly expires_at: Timestamp;
+}
+
+/**
+ * Payload of user.credentials_set. Setting a password is a permission change and
+ * docs/SECURITY.md section 16 requires an audit record for one; the record names the user
+ * and the route the credential arrived by, and nothing else.
+ */
+export interface UserCredentialsSetPayload {
+  /**
+   * User whose password changed.
+   */
+  readonly user_id: Identifier;
+  /**
+   * How the credential was established.
+   */
+  readonly method: LoginMethod;
+}
+
+/**
+ * Payload of authentication.login_succeeded.
+ */
+export interface AuthenticationLoginSucceededPayload {
+  /**
+   * Session that was issued.
+   */
+  readonly session_id: Identifier;
+  /**
+   * User that authenticated. Absent for the bootstrap-token exchange, which has no user
+   * record behind it.
+   */
+  readonly user_id?: Identifier;
+  /**
+   * How the human authenticated.
+   */
+  readonly method: LoginMethod;
+}
+
+/**
+ * Payload of authentication.login_failed. It never carries the submitted credential, and
+ * never the identifier that was typed beside it: a password mistyped into an email field
+ * would otherwise be written to an append-only table (docs/SECURITY.md section 18).
+ */
+export interface AuthenticationLoginFailedPayload {
+  /**
+   * Stable failure class.
+   */
+  readonly reason: LoginFailureReason;
+  /**
+   * Route the attempt arrived by.
+   */
+  readonly method: LoginMethod;
+  /**
+   * User the attempt named, when it named one that exists. Absent for an unknown address,
+   * which is what stops the audit trail confirming which addresses have accounts.
+   */
+  readonly user_id?: Identifier;
+}
+
+/**
+ * Payload of session.revoked.
+ */
+export interface SessionRevokedPayload {
+  /**
+   * Session that was revoked.
+   */
+  readonly session_id: Identifier;
+  /**
+   * User the session belonged to, when it belonged to one.
+   */
+  readonly user_id?: Identifier;
+  /**
+   * Why it was revoked.
+   */
+  readonly reason: SessionRevocationReason;
 }
 
 /**
@@ -1054,8 +1538,38 @@ export type PlatformFrame =
     }
   | {
       readonly envelope: Envelope;
+      readonly type: "project.repository_changed";
+      readonly payload: ProjectRepositoryChangedPayload;
+    }
+  | {
+      readonly envelope: Envelope;
       readonly type: "project.archived";
       readonly payload: ProjectArchivedPayload;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "user.invited";
+      readonly payload: UserInvitedPayload;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "user.credentials_set";
+      readonly payload: UserCredentialsSetPayload;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "authentication.login_succeeded";
+      readonly payload: AuthenticationLoginSucceededPayload;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "authentication.login_failed";
+      readonly payload: AuthenticationLoginFailedPayload;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "session.revoked";
+      readonly payload: SessionRevokedPayload;
     }
   | {
       readonly envelope: Envelope;

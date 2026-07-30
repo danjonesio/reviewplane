@@ -14,21 +14,34 @@ import type {
   ApiErrorDetails,
   ApiErrorResponse,
   ApiMeta,
+  AuthenticationLoginFailedPayload,
+  AuthenticationLoginSucceededPayload,
   Correlation,
   CursorClaims,
   Envelope,
   ErrorClass,
+  HumanSession,
   JobEnqueuedPayload,
   JobFailedPayload,
   JobFailureReason,
   JobKind,
   JobSucceededPayload,
+  LoginFailureReason,
+  LoginMethod,
   MessageType,
+  Organisation,
   OrganisationCreatedPayload,
+  OrganisationStatus,
+  Project,
   ProjectArchivedPayload,
   ProjectCreatedPayload,
+  ProjectRepositoryChangedPayload,
+  ProjectSettings,
   ProjectStatus,
   ProjectUpdatedPayload,
+  RepositoryIdentity,
+  SessionRevocationReason,
+  SessionRevokedPayload,
   StreamError,
   StreamErrorType,
   StreamHeartbeat,
@@ -40,7 +53,113 @@ import type {
   StreamSubscribeType,
   StreamSubscribed,
   StreamSubscribedType,
+  User,
+  UserCredentialsSetPayload,
+  UserInvitedPayload,
+  UserStatus,
+  ValidationViewport,
 } from "./types.ts";
+
+/**
+ * Decodes a validated RepositoryIdentity.
+ */
+export function decodeRepositoryIdentity(value: unknown): RepositoryIdentity {
+  const source = value as Record<string, unknown>;
+  return {
+    canonical: source["canonical"] as string,
+    ...(source["clone_urls"] === undefined ? {} : { clone_urls: (source["clone_urls"] as unknown[]).map((item) => item as string) }),
+  };
+}
+
+/**
+ * Decodes a validated ValidationViewport.
+ */
+export function decodeValidationViewport(value: unknown): ValidationViewport {
+  const source = value as Record<string, unknown>;
+  return {
+    width: source["width"] as number,
+    height: source["height"] as number,
+    ...(source["device_scale_factor"] === undefined ? {} : { device_scale_factor: source["device_scale_factor"] as number }),
+  };
+}
+
+/**
+ * Decodes a validated ProjectSettings.
+ */
+export function decodeProjectSettings(value: unknown): ProjectSettings {
+  const source = value as Record<string, unknown>;
+  return {
+    default_validation_viewports: (source["default_validation_viewports"] as unknown[]).map((item) => decodeValidationViewport(item)),
+  };
+}
+
+/**
+ * Decodes a validated Organisation.
+ */
+export function decodeOrganisation(value: unknown): Organisation {
+  const source = value as Record<string, unknown>;
+  return {
+    id: source["id"] as string,
+    name: source["name"] as string,
+    slug: source["slug"] as string,
+    status: source["status"] as OrganisationStatus,
+    created_at: source["created_at"] as string,
+    updated_at: source["updated_at"] as string,
+  };
+}
+
+/**
+ * Decodes a validated User.
+ */
+export function decodeUser(value: unknown): User {
+  const source = value as Record<string, unknown>;
+  return {
+    id: source["id"] as string,
+    organisation_id: source["organisation_id"] as string,
+    email: source["email"] as string,
+    display_name: source["display_name"] as string,
+    status: source["status"] as UserStatus,
+    ...(source["local_credential_set"] === undefined ? {} : { local_credential_set: source["local_credential_set"] as boolean }),
+    created_at: source["created_at"] as string,
+    updated_at: source["updated_at"] as string,
+  };
+}
+
+/**
+ * Decodes a validated Project.
+ */
+export function decodeProject(value: unknown): Project {
+  const source = value as Record<string, unknown>;
+  return {
+    id: source["id"] as string,
+    organisation_id: source["organisation_id"] as string,
+    name: source["name"] as string,
+    slug: source["slug"] as string,
+    ...(source["repository_identity"] === undefined ? {} : { repository_identity: decodeRepositoryIdentity(source["repository_identity"]) }),
+    default_branch: source["default_branch"] as string,
+    status: source["status"] as ProjectStatus,
+    settings: decodeProjectSettings(source["settings"]),
+    version: source["version"] as number,
+    created_at: source["created_at"] as string,
+    updated_at: source["updated_at"] as string,
+  };
+}
+
+/**
+ * Decodes a validated HumanSession.
+ */
+export function decodeHumanSession(value: unknown): HumanSession {
+  const source = value as Record<string, unknown>;
+  return {
+    session_id: source["session_id"] as string,
+    ...(source["user_id"] === undefined ? {} : { user_id: source["user_id"] as string }),
+    ...(source["organisation_id"] === undefined ? {} : { organisation_id: source["organisation_id"] as string }),
+    ...(source["email"] === undefined ? {} : { email: source["email"] as string }),
+    display: source["display"] as string,
+    ...(source["project_ids"] === undefined ? {} : { project_ids: (source["project_ids"] as unknown[]).map((item) => item as string) }),
+    expires_at: source["expires_at"] as string,
+  };
+}
 
 /**
  * Decodes a validated Actor.
@@ -115,6 +234,78 @@ export function decodeProjectCreatedPayload(value: unknown): ProjectCreatedPaylo
   return {
     slug: source["slug"] as string,
     name: source["name"] as string,
+    ...(source["default_branch"] === undefined ? {} : { default_branch: source["default_branch"] as string }),
+    ...(source["repository_canonical"] === undefined ? {} : { repository_canonical: source["repository_canonical"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated ProjectRepositoryChangedPayload.
+ */
+export function decodeProjectRepositoryChangedPayload(value: unknown): ProjectRepositoryChangedPayload {
+  const source = value as Record<string, unknown>;
+  return {
+    ...(source["previous_canonical"] === undefined ? {} : { previous_canonical: source["previous_canonical"] as string }),
+    new_canonical: source["new_canonical"] as string,
+  };
+}
+
+/**
+ * Decodes a validated UserInvitedPayload.
+ */
+export function decodeUserInvitedPayload(value: unknown): UserInvitedPayload {
+  const source = value as Record<string, unknown>;
+  return {
+    user_id: source["user_id"] as string,
+    method: source["method"] as LoginMethod,
+    expires_at: source["expires_at"] as string,
+  };
+}
+
+/**
+ * Decodes a validated UserCredentialsSetPayload.
+ */
+export function decodeUserCredentialsSetPayload(value: unknown): UserCredentialsSetPayload {
+  const source = value as Record<string, unknown>;
+  return {
+    user_id: source["user_id"] as string,
+    method: source["method"] as LoginMethod,
+  };
+}
+
+/**
+ * Decodes a validated AuthenticationLoginSucceededPayload.
+ */
+export function decodeAuthenticationLoginSucceededPayload(value: unknown): AuthenticationLoginSucceededPayload {
+  const source = value as Record<string, unknown>;
+  return {
+    session_id: source["session_id"] as string,
+    ...(source["user_id"] === undefined ? {} : { user_id: source["user_id"] as string }),
+    method: source["method"] as LoginMethod,
+  };
+}
+
+/**
+ * Decodes a validated AuthenticationLoginFailedPayload.
+ */
+export function decodeAuthenticationLoginFailedPayload(value: unknown): AuthenticationLoginFailedPayload {
+  const source = value as Record<string, unknown>;
+  return {
+    reason: source["reason"] as LoginFailureReason,
+    method: source["method"] as LoginMethod,
+    ...(source["user_id"] === undefined ? {} : { user_id: source["user_id"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated SessionRevokedPayload.
+ */
+export function decodeSessionRevokedPayload(value: unknown): SessionRevokedPayload {
+  const source = value as Record<string, unknown>;
+  return {
+    session_id: source["session_id"] as string,
+    ...(source["user_id"] === undefined ? {} : { user_id: source["user_id"] as string }),
+    reason: source["reason"] as SessionRevocationReason,
   };
 }
 

@@ -2,11 +2,24 @@
  * Route table (ADR-0011: TanStack Router).
  *
  * Routes are declared in code rather than generated from the file system, so
- * the tree is one readable value and a build needs no code generator.
+ * the tree is one readable value and a build needs no code generator. The tree
+ * mirrors the information architecture of `docs/UX_FLOWS.md` section 2: the
+ * primary surfaces at the top level, and the within-project surfaces as
+ * children of the project they belong to.
  */
 
 import { createRouter } from "@tanstack/react-router";
 
+import {
+  projectEnvironmentsRoute,
+  projectLiveRoute,
+  projectOverviewRoute,
+  projectReviewsRoute,
+  projectRoute,
+  projectSettingsRoute,
+} from "./routes/project.tsx";
+import { projectNewRoute } from "./routes/project-new.tsx";
+import { projectsRoute } from "./routes/projects.tsx";
 import { reviewRoute } from "./routes/review.tsx";
 import { reviewsRoute } from "./routes/reviews.tsx";
 import { rootRoute } from "./routes/root.tsx";
@@ -18,6 +31,15 @@ const routeTree = rootRoute.addChildren([
   sessionRoute,
   reviewsRoute,
   reviewRoute,
+  projectsRoute,
+  projectNewRoute,
+  projectRoute.addChildren([
+    projectOverviewRoute,
+    projectLiveRoute,
+    projectReviewsRoute,
+    projectEnvironmentsRoute,
+    projectSettingsRoute,
+  ]),
 ]);
 
 export const router = createRouter({
