@@ -127,6 +127,14 @@ Each run takes its own Compose project name, so two runs on one machine do not s
 
 `pnpm test:ui` runs the user-interface and accessibility suite of `docs/TESTING.md` section 15. It builds the web bundle and drives it in the same image, for the same reason: the repository has one Chromium and keeping a second in step would be a liability rather than a convenience. `pnpm build` for `apps/web` also fails when the produced bundle would reach an external host, so a green build is part of the ADR-0011 no-CDN guarantee.
 
+### 5.1 Continuous integration
+
+`.github/workflows/ci.yml` runs the root gates above on every pull request and on every push to `main`: `pnpm lint`, `pnpm typecheck`, `pnpm build`, `pnpm protocol:check`, `pnpm test`, and `go vet ./...`, `go test ./...` and `go test -race ./...` in each of `packages/protocol`, `services/connector` and `services/tunnel-gateway`. Each gate is its own job so that a failure names itself, and the `CI gates` job is green only when all of them are; it is the status check to require on `main`. A change MUST NOT be merged with a failing gate, and a workflow MUST NOT add a build or generation step the commands do not need — `pnpm typecheck` and `pnpm test` work on a fresh clone, and a workflow that hid that would stop reporting when it stopped being true.
+
+The container harnesses cost minutes rather than seconds, so `.github/workflows/container-harnesses.yml` runs `pnpm test:browser`, `pnpm test:ui`, `pnpm test:integration`, `pnpm test:e2e` and `pnpm test:edge` nightly and on demand rather than on every pull request. A pull request whose change touches the browser worker, the annotation UI, the MCP integration path, the Compose stack or the edge gateway SHOULD carry the `ci:harnesses` label, which runs them for that pull request. Turning `docs/TESTING.md` section 16 into a release pipeline is RVP-57; these two workflows are the part of it that can run on every change today.
+
+Every action is pinned to a commit rather than a tag, because a tag is mutable and `docs/SECURITY.md` section 19 requires a pinned supply chain. Tool versions come from the files that declare them rather than from the workflow: pnpm from `packageManager` in `package.json` and Go from `go.work`. Node is the exception and names its major, because `engines.node` is the open range `>=24.0.0` and a workflow that resolved it would adopt the next major on its release day.
+
 ## 6. Configuration
 
 - Commit `.env.example`, never real secrets

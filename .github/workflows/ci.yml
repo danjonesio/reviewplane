@@ -1,0 +1,220 @@
+name: CI
+
+# The gates `docs/DEVELOPMENT.md` section 5 records as working at the repository
+# root, run on every pull request and on `main`.
+#
+# The container harnesses — `pnpm test:browser`, `test:ui`, `test:integration`,
+# `test:e2e` and `test:edge` — are deliberately not here. They build images and
+# take minutes rather than seconds, so they run in
+# `.github/workflows/container-harnesses.yml` on a schedule, on demand, and on a
+# labelled pull request. Turning the whole of `docs/TESTING.md` section 16 into
+# a release pipeline is RVP-57; this workflow is the part of it that can run on
+# every change today.
+#
+# Every action is pinned to a commit, not a tag, because a tag is mutable and
+# `docs/SECURITY.md` section 19 requires a pinned supply chain. The version each
+# commit corresponds to is in the trailing comment.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A superseded run tells nobody anything, and the runners are shared.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: nothing in this workflow writes to the repository.
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  lint:
+    name: pnpm lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # No version is given: the action reads `packageManager` from
+      # package.json, which is the repository's single declaration of it.
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          # package.json `engines.node` is ">=24.0.0". The major is named rather
+          # than the range so that a future major cannot arrive unannounced on
+          # the day it is published.
+          node-version: "24"
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+
+  typecheck:
+    name: pnpm typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      # `docs/DEVELOPMENT.md` section 5: this works on a fresh clone with no
+      # prior build, so no build step is added here. A build step would hide a
+      # regression in that property rather than report it.
+      - run: pnpm typecheck
+
+  build:
+    name: pnpm build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      # Building `apps/web` also runs its self-contained check, which is part of
+      # the ADR-0011 no-CDN guarantee.
+      - run: pnpm build
+
+  protocol-check:
+    name: pnpm protocol:check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: pnpm
+
+      # The generator formats its Go output with `gofmt` and the check runs the
+      # Go suite, so the Go toolchain is required here as well
+      # (`docs/DEVELOPMENT.md` section 3).
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # go.work carries the toolchain version every module shares.
+          go-version-file: go.work
+          # Restored below under a key this job owns, so that two jobs running
+          # at once do not race to write one entry.
+          cache: false
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          # The key deliberately ignores the Go source. Every module here
+          # depends on the standard library and on this repository alone, so the
+          # expensive part of the cache is the compiled standard library, which
+          # changes with the toolchain rather than with a commit; recompiling
+          # this repository's own packages costs seconds.
+          key: go-${{ runner.os }}-protocol-check-${{ hashFiles('go.work', '**/go.mod') }}
+          restore-keys: |
+            go-${{ runner.os }}-protocol-check-
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm protocol:check
+
+  test:
+    name: pnpm test
+    runs-on: ubuntu-latest
+    # The `apps/server` suite starts a disposable PostgreSQL, so this job is the
+    # slowest of the pure-gate jobs.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: pnpm
+
+      # The connector integration test builds `services/connector` from source
+      # (`docs/DEVELOPMENT.md` section 5). That single build is seconds, so this
+      # job takes the toolchain without taking a Go cache with it.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.work
+          cache: false
+
+      - run: pnpm install --frozen-lockfile
+      # Docker is present on the hosted runner; `docs/DEVELOPMENT.md` section 5
+      # explains why the suite wants a real database rather than a double.
+      - run: pnpm test
+
+  go:
+    name: go (${{ matrix.module.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      # One module failing should not hide the state of the other two.
+      fail-fast: false
+      matrix:
+        module:
+          - { name: protocol, path: packages/protocol }
+          - { name: connector, path: services/connector }
+          - { name: tunnel-gateway, path: services/tunnel-gateway }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.work
+          cache: false
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ runner.os }}-${{ matrix.module.name }}-${{ hashFiles('go.work', '**/go.mod') }}
+          restore-keys: |
+            go-${{ runner.os }}-${{ matrix.module.name }}-
+
+      # `docs/DEVELOPMENT.md` section 5: these run from a module directory.
+      - run: go vet ./...
+        working-directory: ${{ matrix.module.path }}
+
+      - run: go test ./...
+        working-directory: ${{ matrix.module.path }}
+
+      # The race detector is run as well as, not instead of, the plain suite:
+      # `-race` changes scheduling, and a failure under one and not the other is
+      # itself the finding.
+      - run: go test -race ./...
+        working-directory: ${{ matrix.module.path }}
+
+  gates:
+    # One check that is green only when every gate above is green. It is the
+    # status check to require on `main` once continuous integration reports one
+    # (AGENTS.md, "Change delivery"), so that adding a gate does not mean
+    # editing the branch-protection rule.
+    name: CI gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: always()
+    needs: [lint, typecheck, build, protocol-check, test, go]
+    steps:
+      - name: Refuse a run in which a gate did not succeed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')
+        run: |
+          echo "At least one gate did not succeed:" >&2
+          echo '${{ toJSON(needs) }}' >&2
+          exit 1
