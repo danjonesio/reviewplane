@@ -24,7 +24,7 @@ export interface ProjectRoutesOptions {
   readonly bootstrapToken: string;
   readonly workerCredential: string;
   /**
-   * Resolves a human viewer (ADR-0014). Reads are available to a viewer
+   * Resolves a human viewer (ADR-0016). Reads are available to a viewer
    * session; writes stay administrative.
    */
   readonly viewerAuth?: (request: FastifyRequest) => Promise<ViewerPrincipal>;

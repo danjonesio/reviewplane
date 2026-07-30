@@ -1,5 +1,5 @@
 /**
- * Human viewer sessions (ADR-0014).
+ * Human viewer sessions (ADR-0016).
  *
  * Stage 0 has one human: the holder of the bootstrap administrator token
  * (`docs/ARCHITECTURE.md` section 11). That token is a long-lived credential

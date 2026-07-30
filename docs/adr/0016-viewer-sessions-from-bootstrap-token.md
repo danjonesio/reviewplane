@@ -1,4 +1,4 @@
-# ADR-0014: Exchange the bootstrap administrator token for a scoped viewer session
+# ADR-0016: Exchange the bootstrap administrator token for a scoped viewer session
 
 - Status: Accepted
 - Date: 2026-07-30

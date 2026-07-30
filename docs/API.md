@@ -35,7 +35,7 @@ Connector, worker and agent authentication use separate endpoints and credential
 
 ### 4.1 Viewer sessions
 
-Stage 0 implements the session cookie above through the exchange of ADR-0014:
+Stage 0 implements the session cookie above through the exchange of ADR-0016:
 
 ```text
 POST   /api/v1/auth/viewer-sessions

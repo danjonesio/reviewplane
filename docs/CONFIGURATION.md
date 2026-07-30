@@ -73,7 +73,7 @@ credential:
 | `REVIEWPLANE_ARTEFACT_PATH` | `/var/lib/reviewplane/artefacts` | Filesystem artefact-store root (ADR-0012) |
 | `REVIEWPLANE_ARTEFACT_MAX_BYTES` | `20971520` | Largest artefact accepted |
 | `REVIEWPLANE_WORKER_REQUEST_TIMEOUT_MS` | `150000` | Bound on one worker request |
-| `REVIEWPLANE_ALLOWED_ORIGINS` | empty | Comma-separated origins a browser may open the live WebSocket from (ADR-0014). Empty accepts a request with no `Origin`, which is a non-browser client |
+| `REVIEWPLANE_ALLOWED_ORIGINS` | empty | Comma-separated origins a browser may open the live WebSocket from (ADR-0016). Empty accepts a request with no `Origin`, which is a non-browser client |
 | `REVIEWPLANE_SECURE_COOKIES` | `true` | Whether the viewer session cookie is marked `Secure`. Set to `false` only for plain-HTTP local development |
 
 ## 3. Browser-worker configuration

@@ -34,7 +34,7 @@ export interface BrowserSessionRoutesOptions {
   readonly workerCredential: string;
   readonly defaultHeartbeatSeconds?: number;
   /**
-   * Resolves a human viewer (ADR-0014). Reading a browser session is available
+   * Resolves a human viewer (ADR-0016). Reading a browser session is available
    * to a viewer session scoped to its project; starting, commanding and
    * terminating one stay administrative.
    */

@@ -27,6 +27,7 @@ ADRs record decisions that materially affect architecture, security, protocols o
 | [0011](0011-vite-react-spa.md) | Vite React SPA for the web application | Accepted |
 | [0012](0012-pluggable-artefact-store.md) | Pluggable artefact store with filesystem default | Accepted |
 | [0013](0013-generated-protocol-models.md) | Generate protocol models from one bounded JSON Schema source | Accepted |
+| [0016](0016-viewer-sessions-from-bootstrap-token.md) | Exchange the bootstrap administrator token for a scoped viewer session | Accepted |
 
 ## Pending decisions
 

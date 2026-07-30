@@ -114,7 +114,7 @@ Initial local authentication must provide:
 
 OIDC support should be added before team production use.
 
-Stage 0 implements the cookie half of this list through ADR-0014: the bootstrap
+Stage 0 implements the cookie half of this list through ADR-0016: the bootstrap
 administrator token is presented once, in an `Authorization` header, and is
 exchanged for a short-lived viewer session whose token lives in an HTTP-only,
 `SameSite=Strict` cookie. Only the token's digest is stored, sessions expire

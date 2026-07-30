@@ -29,7 +29,7 @@ export interface ServerConfig {
    * Empty means same-origin only, which is what a gateway deployment has.
    */
   readonly allowedOrigins: readonly string[];
-  /** Whether the viewer session cookie is marked `Secure` (ADR-0014). */
+  /** Whether the viewer session cookie is marked `Secure` (ADR-0016). */
   readonly secureCookies: boolean;
 }
 

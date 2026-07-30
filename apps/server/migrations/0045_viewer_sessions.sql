@@ -1,5 +1,5 @@
 -- Human viewer sessions (docs/API.md section 4, docs/SECURITY.md section 6.1,
--- ADR-0014).
+-- ADR-0016).
 --
 -- A browser cannot set an Authorization header on a WebSocket handshake, and
 -- docs/SECURITY.md section 18 forbids a credential in a URL, so the live
