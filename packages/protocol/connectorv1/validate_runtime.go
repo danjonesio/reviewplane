@@ -1,0 +1,254 @@
+package connectorv1
+
+import (
+	"encoding/json"
+	"math"
+	"regexp"
+	"slices"
+	"strconv"
+	"unicode/utf8"
+)
+
+// Validation primitives used by the generated validators.
+//
+// Every bound applied here is supplied by the generated caller as a literal
+// taken from the schema, so the schema remains the only place a bound is
+// declared. The TypeScript package mirrors this file function for function;
+// contract tests assert that both reject the same corpus for the same reasons.
+
+type stringOpts struct {
+	minLength int
+	maxLength int
+	pattern   *regexp.Regexp
+	values    []string
+}
+
+func report(out *[]SchemaViolation, path string, code SchemaViolationCode, message string) {
+	*out = append(*out, SchemaViolation{Path: path, Code: code, Message: message})
+}
+
+func indexPath(path string, index int) string {
+	return path + "[" + strconv.Itoa(index) + "]"
+}
+
+func checkString(value any, path string, out *[]SchemaViolation, opts stringOpts) bool {
+	text, ok := value.(string)
+	if !ok {
+		report(out, path, SchemaViolationType, "expected a string")
+		return false
+	}
+	if opts.values != nil {
+		if !slices.Contains(opts.values, text) {
+			report(out, path, SchemaViolationEnum, "expected one of "+joinValues(opts.values))
+			return false
+		}
+		return true
+	}
+	// String bounds are counted in Unicode code points, matching JSON Schema's
+	// definition of string length and the TypeScript implementation.
+	length := utf8.RuneCountInString(text)
+	if opts.maxLength > 0 && length > opts.maxLength {
+		report(out, path, SchemaViolationTooLong, "longer than "+strconv.Itoa(opts.maxLength)+" characters")
+		return false
+	}
+	if opts.minLength > 0 && length < opts.minLength {
+		report(out, path, SchemaViolationTooShort, "shorter than "+strconv.Itoa(opts.minLength)+" characters")
+		return false
+	}
+	if opts.pattern != nil && !opts.pattern.MatchString(text) {
+		report(out, path, SchemaViolationPattern, "does not match the permitted character class")
+		return false
+	}
+	return true
+}
+
+func checkInteger(value any, path string, out *[]SchemaViolation, minimum, maximum int64) bool {
+	number, ok := asInt64(value)
+	if !ok {
+		if _, isNumber := asFloat64(value); isNumber {
+			report(out, path, SchemaViolationNotInteger, "expected an integer, not a fractional number")
+			return false
+		}
+		report(out, path, SchemaViolationType, "expected an integer")
+		return false
+	}
+	if number < minimum {
+		report(out, path, SchemaViolationTooSmall, "below the minimum of "+strconv.FormatInt(minimum, 10))
+		return false
+	}
+	if number > maximum {
+		report(out, path, SchemaViolationTooLarge, "above the maximum of "+strconv.FormatInt(maximum, 10))
+		return false
+	}
+	return true
+}
+
+func checkNumber(value any, path string, out *[]SchemaViolation, minimum, maximum float64) bool {
+	number, ok := asFloat64(value)
+	if !ok || math.IsNaN(number) || math.IsInf(number, 0) {
+		report(out, path, SchemaViolationType, "expected a finite number")
+		return false
+	}
+	if number < minimum {
+		report(out, path, SchemaViolationTooSmall, "below the minimum of "+formatECMANumber(minimum))
+		return false
+	}
+	if number > maximum {
+		report(out, path, SchemaViolationTooLarge, "above the maximum of "+formatECMANumber(maximum))
+		return false
+	}
+	return true
+}
+
+func checkBoolean(value any, path string, out *[]SchemaViolation) bool {
+	if _, ok := value.(bool); !ok {
+		report(out, path, SchemaViolationType, "expected a boolean")
+		return false
+	}
+	return true
+}
+
+func checkArray(value any, path string, out *[]SchemaViolation, minItems, maxItems int, uniqueItems bool) ([]any, bool) {
+	items, ok := value.([]any)
+	if !ok {
+		report(out, path, SchemaViolationType, "expected an array")
+		return nil, false
+	}
+	if len(items) > maxItems {
+		report(out, path, SchemaViolationTooManyItems, "more than "+strconv.Itoa(maxItems)+" items")
+		return nil, false
+	}
+	if len(items) < minItems {
+		report(out, path, SchemaViolationTooFewItems, "fewer than "+strconv.Itoa(minItems)+" items")
+		return nil, false
+	}
+	if uniqueItems {
+		seen := make(map[string]struct{}, len(items))
+		for _, item := range items {
+			key := uniquenessKey(item)
+			if _, duplicate := seen[key]; duplicate {
+				report(out, path, SchemaViolationDuplicateItems, "items must be unique")
+				return nil, false
+			}
+			seen[key] = struct{}{}
+		}
+	}
+	return items, true
+}
+
+func checkPlainObject(value any, path string, out *[]SchemaViolation) bool {
+	if _, ok := value.(map[string]any); !ok {
+		report(out, path, SchemaViolationType, "expected an object")
+		return false
+	}
+	return true
+}
+
+// checkObject checks object shape: it rejects unknown properties, because every
+// schema object declares additionalProperties false, and reports missing
+// required ones.
+func checkObject(value any, path string, out *[]SchemaViolation, allowed, required []string) (map[string]any, bool) {
+	source, ok := value.(map[string]any)
+	if !ok {
+		report(out, path, SchemaViolationType, "expected an object")
+		return nil, false
+	}
+	for _, key := range sortedKeys(source) {
+		if !slices.Contains(allowed, key) {
+			report(out, path+"."+key, SchemaViolationUnknownProperty, "unknown property")
+		}
+	}
+	for _, key := range required {
+		if _, present := source[key]; !present {
+			report(out, path+"."+key, SchemaViolationRequired, "required property is missing")
+		}
+	}
+	return source, true
+}
+
+func matchesCondition(value any, values []string) bool {
+	text, ok := value.(string)
+	return ok && slices.Contains(values, text)
+}
+
+func requireProperty(source map[string]any, path, name, detail string, out *[]SchemaViolation) {
+	if _, present := source[name]; !present {
+		report(out, path+"."+name, SchemaViolationRequired, "required here because "+detail)
+	}
+}
+
+func forbidProperty(source map[string]any, path, name, detail string, out *[]SchemaViolation) {
+	if _, present := source[name]; present {
+		report(out, path+"."+name, SchemaViolationForbidden, "not permitted here because "+detail)
+	}
+}
+
+func asInt64(value any) (int64, bool) {
+	switch typed := value.(type) {
+	case json.Number:
+		number, err := typed.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return number, true
+	case float64:
+		if typed != math.Trunc(typed) || math.Abs(typed) > 1<<53 {
+			return 0, false
+		}
+		return int64(typed), true
+	case int64:
+		return typed, true
+	case int:
+		return int64(typed), true
+	}
+	return 0, false
+}
+
+func asFloat64(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case json.Number:
+		number, err := typed.Float64()
+		if err != nil {
+			return 0, false
+		}
+		return number, true
+	case float64:
+		return typed, true
+	case int64:
+		return float64(typed), true
+	case int:
+		return float64(typed), true
+	}
+	return 0, false
+}
+
+func uniquenessKey(item any) string {
+	if text, ok := item.(string); ok {
+		return "s:" + text
+	}
+	encoded, err := json.Marshal(item)
+	if err != nil {
+		return "?"
+	}
+	return "j:" + string(encoded)
+}
+
+func sortedKeys(source map[string]any) []string {
+	keys := make([]string, 0, len(source))
+	for key := range source {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+func joinValues(values []string) string {
+	result := ""
+	for index, value := range values {
+		if index > 0 {
+			result += ", "
+		}
+		result += value
+	}
+	return result
+}

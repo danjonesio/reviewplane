@@ -1,0 +1,31 @@
+{
+  "name": "@reviewplane/protocol",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Single versioned source for ReviewPlane protocol schemas, with generated TypeScript and Go models.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./schemas/*": "./schemas/*",
+    "./fixtures/*": "./fixtures/*"
+  },
+  "files": [
+    "dist",
+    "schemas",
+    "fixtures"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "generate": "node tools/generate.ts",
+    "check": "node tools/check.ts",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "test:go": "go test ./...",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2"
+  }
+}
