@@ -64,10 +64,12 @@ const (
 	MessageTypeHeartbeat                     MessageType = "heartbeat"
 	MessageTypeRoutePublish                  MessageType = "route.publish"
 	MessageTypeRoutePublishAck               MessageType = "route.publish.ack"
+	MessageTypeConnectorReconnectRequest     MessageType = "connector.reconnect.request"
+	MessageTypeConnectorReconnectResponse    MessageType = "connector.reconnect.response"
 )
 
 // MessageTypeValues lists every value in declaration order.
-var MessageTypeValues = []MessageType{MessageTypeConnectorRegistrationRequest, MessageTypeConnectorRegistrationResponse, MessageTypeHeartbeat, MessageTypeRoutePublish, MessageTypeRoutePublishAck}
+var MessageTypeValues = []MessageType{MessageTypeConnectorRegistrationRequest, MessageTypeConnectorRegistrationResponse, MessageTypeHeartbeat, MessageTypeRoutePublish, MessageTypeRoutePublishAck, MessageTypeConnectorReconnectRequest, MessageTypeConnectorReconnectResponse}
 
 // ErrorClass is defined by the connector protocol schema.
 //
@@ -120,6 +122,88 @@ const (
 // RoutePublishAckStatusValues lists every value in declaration order.
 var RoutePublishAckStatusValues = []RoutePublishAckStatus{RoutePublishAckStatusReady, RoutePublishAckStatusRejected}
 
+// UpgradeClassification is defined by the connector protocol schema.
+//
+// Control-plane classification of the connector build (docs/CONNECTOR_PROTOCOL.md
+// section 19). upgrade_required and unsupported are terminal: the connector reports
+// the classification and stops rather than retrying with a build the control plane has
+// just refused (section 5.3).
+type UpgradeClassification string
+
+const (
+	UpgradeClassificationCompatible         UpgradeClassification = "compatible"
+	UpgradeClassificationUpgradeRecommended UpgradeClassification = "upgrade_recommended"
+	UpgradeClassificationUpgradeRequired    UpgradeClassification = "upgrade_required"
+	UpgradeClassificationUnsupported        UpgradeClassification = "unsupported"
+)
+
+// UpgradeClassificationValues lists every value in declaration order.
+var UpgradeClassificationValues = []UpgradeClassification{UpgradeClassificationCompatible, UpgradeClassificationUpgradeRecommended, UpgradeClassificationUpgradeRequired, UpgradeClassificationUnsupported}
+
+// RouteReconciliationDecision is defined by the connector protocol schema.
+//
+// The control plane's authoritative answer for one route on reconnect
+// (docs/CONNECTOR_PROTOCOL.md section 17). continue resumes the route under the same
+// route_id without re-publication; revoke closes it.
+type RouteReconciliationDecision string
+
+const (
+	RouteReconciliationDecisionContinue RouteReconciliationDecision = "continue"
+	RouteReconciliationDecisionRevoke   RouteReconciliationDecision = "revoke"
+)
+
+// RouteReconciliationDecisionValues lists every value in declaration order.
+var RouteReconciliationDecisionValues = []RouteReconciliationDecision{RouteReconciliationDecisionContinue, RouteReconciliationDecisionRevoke}
+
+// RouteReconciliationReason is defined by the connector protocol schema.
+//
+// Why a route was continued or closed. It is a closed vocabulary so that every
+// decision is loggable and auditable without free text (docs/SECURITY.md section 18).
+type RouteReconciliationReason string
+
+const (
+	RouteReconciliationReasonAuthorised          RouteReconciliationReason = "authorised"
+	RouteReconciliationReasonUnknownRoute        RouteReconciliationReason = "unknown_route"
+	RouteReconciliationReasonExpired             RouteReconciliationReason = "expired"
+	RouteReconciliationReasonRevoked             RouteReconciliationReason = "revoked"
+	RouteReconciliationReasonNotAuthorised       RouteReconciliationReason = "not_authorised"
+	RouteReconciliationReasonDestinationMismatch RouteReconciliationReason = "destination_mismatch"
+)
+
+// RouteReconciliationReasonValues lists every value in declaration order.
+var RouteReconciliationReasonValues = []RouteReconciliationReason{RouteReconciliationReasonAuthorised, RouteReconciliationReasonUnknownRoute, RouteReconciliationReasonExpired, RouteReconciliationReasonRevoked, RouteReconciliationReasonNotAuthorised, RouteReconciliationReasonDestinationMismatch}
+
+// SessionReconciliationDecision is defined by the connector protocol schema.
+//
+// The control plane's authoritative answer for one browser session on reconnect
+// (docs/CONNECTOR_PROTOCOL.md section 17). re_establish rebuilds the session's data
+// path; end closes what the connector still holds for it.
+type SessionReconciliationDecision string
+
+const (
+	SessionReconciliationDecisionReEstablish SessionReconciliationDecision = "re_establish"
+	SessionReconciliationDecisionEnd         SessionReconciliationDecision = "end"
+)
+
+// SessionReconciliationDecisionValues lists every value in declaration order.
+var SessionReconciliationDecisionValues = []SessionReconciliationDecision{SessionReconciliationDecisionReEstablish, SessionReconciliationDecisionEnd}
+
+// SessionReconciliationReason is defined by the connector protocol schema.
+//
+// Why a session was re-established or ended. A closed vocabulary, for the same reason
+// as route_reconciliation_reason.
+type SessionReconciliationReason string
+
+const (
+	SessionReconciliationReasonRouteResumed         SessionReconciliationReason = "route_resumed"
+	SessionReconciliationReasonRouteRevoked         SessionReconciliationReason = "route_revoked"
+	SessionReconciliationReasonSessionEnded         SessionReconciliationReason = "session_ended"
+	SessionReconciliationReasonConnectorReconnected SessionReconciliationReason = "connector_reconnected"
+)
+
+// SessionReconciliationReasonValues lists every value in declaration order.
+var SessionReconciliationReasonValues = []SessionReconciliationReason{SessionReconciliationReasonRouteResumed, SessionReconciliationReasonRouteRevoked, SessionReconciliationReasonSessionEnded, SessionReconciliationReasonConnectorReconnected}
+
 // MessageDirection states which side of the trust boundary sends a message.
 type MessageDirection string
 
@@ -135,6 +219,8 @@ var MessageDirections = map[MessageType]MessageDirection{
 	MessageTypeHeartbeat:                     DirectionConnectorToControlPlane,
 	MessageTypeRoutePublish:                  DirectionControlPlaneToConnector,
 	MessageTypeRoutePublishAck:               DirectionConnectorToControlPlane,
+	MessageTypeConnectorReconnectRequest:     DirectionConnectorToControlPlane,
+	MessageTypeConnectorReconnectResponse:    DirectionControlPlaneToConnector,
 }
 
 // MessageChannels records the channel each message type travels on.
@@ -144,6 +230,8 @@ var MessageChannels = map[MessageType]Channel{
 	MessageTypeHeartbeat:                     ChannelHeartbeat,
 	MessageTypeRoutePublish:                  ChannelRoutes,
 	MessageTypeRoutePublishAck:               ChannelRoutes,
+	MessageTypeConnectorReconnectRequest:     ChannelControl,
+	MessageTypeConnectorReconnectResponse:    ChannelControl,
 }
 
 // PayloadMaxBytes records the maximum canonical payload size for each message type. A
@@ -154,6 +242,8 @@ var PayloadMaxBytes = map[MessageType]int{
 	MessageTypeHeartbeat:                     1024,
 	MessageTypeRoutePublish:                  2048,
 	MessageTypeRoutePublishAck:               1024,
+	MessageTypeConnectorReconnectRequest:     32768,
+	MessageTypeConnectorReconnectResponse:    57344,
 }
 
 // ViolationReason classifies a refused frame. Only some reasons map to a wire error
@@ -501,6 +591,135 @@ type DataStreamHeader struct {
 	Deadline string `json:"deadline"`
 }
 
+// ReconnectRoute is defined by the connector protocol schema.
+//
+// One route the connector believes it is still serving (docs/CONNECTOR_PROTOCOL.md
+// section 17). It is a claim, not an authorisation: the control plane decides whether
+// the route continues.
+type ReconnectRoute struct {
+	// Published-service identity the connector holds.
+	RouteID string `json:"route_id"`
+	// Project the connector believes the route belongs to.
+	ProjectID string `json:"project_id"`
+	// Workspace the connector believes the route belongs to.
+	WorkspaceID string `json:"workspace_id"`
+	// Destination the connector is opening for this route, as host:port. A destination
+	// that differs from the authoritative record is closed rather than continued, because
+	// docs/ARCHITECTURE.md section 14 forbids silently redirecting traffic to a different
+	// environment.
+	ObservedDestination string `json:"observed_destination"`
+	// Expiry the connector recorded at publication.
+	ExpiresAt string `json:"expires_at"`
+}
+
+// ReconnectStream is defined by the connector protocol schema.
+//
+// One data stream the connector still holds open (docs/CONNECTOR_PROTOCOL.md section
+// 17). A stream whose route is revoked is closed with the route.
+type ReconnectStream struct {
+	// Application-level stream identifier from the data-stream header.
+	StreamID string `json:"stream_id"`
+	// Route the stream belongs to.
+	RouteID string `json:"route_id"`
+	// Browser session the stream was opened for.
+	BrowserSessionID string `json:"browser_session_id"`
+	// Absolute deadline the stream carries.
+	Deadline string `json:"deadline"`
+}
+
+// WorkspaceHead is defined by the connector protocol schema.
+//
+// Head state of one workspace (docs/CONNECTOR_PROTOCOL.md section 9). Stage 0 reports
+// no workspace head state; the field exists so that Stage 1 Git context does not
+// change the message shape. Source file contents are never reported and this object
+// has no field capable of carrying them.
+type WorkspaceHead struct {
+	// Workspace this head state describes.
+	WorkspaceID string `json:"workspace_id"`
+	// Checked-out branch.
+	Branch string `json:"branch"`
+	// HEAD commit identifier.
+	HeadCommit string `json:"head_commit"`
+	// Whether the working tree has uncommitted changes.
+	Dirty bool `json:"dirty"`
+}
+
+// ReconnectRequest is defined by the connector protocol schema.
+//
+// What the connector believes it holds, sent on every control-channel establishment
+// (docs/CONNECTOR_PROTOCOL.md section 17). All six fields are always present; Stage 0
+// sends empty collections for known_agent_sessions and workspace_head_state, which are
+// Stage 1 capabilities. The payload carries no credential: the identity is the
+// mutually authenticated client certificate the channel already presented.
+type ReconnectRequest struct {
+	// Connector release version, which the control plane classifies per section 19.
+	ConnectorVersion string `json:"connector_version"`
+	// Capabilities this connector build supports.
+	Capabilities []string `json:"capabilities"`
+	// Routes the connector believes it is still serving.
+	ActiveRoutes []ReconnectRoute `json:"active_routes"`
+	// Data streams the connector still holds open.
+	ActiveStreams []ReconnectStream `json:"active_streams"`
+	// Agent sessions the connector has observed locally, conventionally prefixed ags_.
+	// Stage 0 sends an empty array; agent-session re-establishment is Stage 1.
+	KnownAgentSessions []string `json:"known_agent_sessions"`
+	// Head state of the workspaces this connector serves. Stage 0 sends an empty array;
+	// workspace discovery is Stage 1 (section 9).
+	WorkspaceHeadState []WorkspaceHead `json:"workspace_head_state"`
+}
+
+// RouteDecision is defined by the connector protocol schema.
+//
+// The control plane's authoritative answer for one route (docs/CONNECTOR_PROTOCOL.md
+// section 17). A continued route restates the whole publication, so a connector that
+// lost its route table to a restart resumes the same route_id and the same destination
+// without re-publication; the connector still applies its own section 11 validation,
+// because schema acceptance is not authorisation.
+type RouteDecision struct {
+	// Route this decision answers for.
+	RouteID string `json:"route_id"`
+	// Continue or revoke. The control plane's answer wins in every disagreement.
+	Decision RouteReconciliationDecision `json:"decision"`
+	// Why the decision was reached, for the connector's log and the control plane's audit
+	// trail.
+	Reason RouteReconciliationReason `json:"reason"`
+	// The authoritative publication to resume. Present only when the decision is
+	// continue.
+	Route *RoutePublish `json:"route,omitempty"`
+}
+
+// SessionDecision is defined by the connector protocol schema.
+//
+// The control plane's authoritative answer for one browser session
+// (docs/CONNECTOR_PROTOCOL.md section 17).
+type SessionDecision struct {
+	// Browser session this decision answers for, conventionally prefixed brs_.
+	BrowserSessionID string `json:"browser_session_id"`
+	// Re-establish the session's data path, or end what the connector still holds for it.
+	Decision SessionReconciliationDecision `json:"decision"`
+	// Why the decision was reached.
+	Reason SessionReconciliationReason `json:"reason"`
+}
+
+// ReconnectResponse is defined by the connector protocol schema.
+//
+// The control plane's authoritative desired state (docs/CONNECTOR_PROTOCOL.md section
+// 17). It is the answer to exactly one connector.reconnect.request, correlated by the
+// envelope's correlation_id. A route the control plane does not name is not
+// authorised: the connector closes anything the response does not continue.
+type ReconnectResponse struct {
+	// The instant the control plane reconciled. It is authoritative for expiry
+	// arithmetic, so that clock skew on the development machine cannot extend a route.
+	ReconciledAt string `json:"reconciled_at"`
+	// Section 19 classification of the reported connector version.
+	Upgrade UpgradeClassification `json:"upgrade"`
+	// One decision per route, covering both the routes the connector claimed and the
+	// routes the control plane holds for it.
+	Routes []RouteDecision `json:"routes"`
+	// One decision per affected browser session.
+	Sessions []SessionDecision `json:"sessions"`
+}
+
 // Payload is implemented by every version 1 message payload. The interface is closed:
 // only payloads generated from the schema can satisfy it.
 type Payload interface {
@@ -535,6 +754,16 @@ func (RoutePublish) isConnectorPayload() {}
 func (RoutePublishAck) MessageType() MessageType { return MessageTypeRoutePublishAck }
 
 func (RoutePublishAck) isConnectorPayload() {}
+
+// MessageType reports the envelope type carrying a ReconnectRequest.
+func (ReconnectRequest) MessageType() MessageType { return MessageTypeConnectorReconnectRequest }
+
+func (ReconnectRequest) isConnectorPayload() {}
+
+// MessageType reports the envelope type carrying a ReconnectResponse.
+func (ReconnectResponse) MessageType() MessageType { return MessageTypeConnectorReconnectResponse }
+
+func (ReconnectResponse) isConnectorPayload() {}
 
 // Frame is a decoded control frame: envelope header plus its typed payload.
 type Frame struct {

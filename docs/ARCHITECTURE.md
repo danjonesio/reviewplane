@@ -511,6 +511,12 @@ Kubernetes is not an MVP requirement.
 - Attempt bounded reconnect
 - Do not redirect traffic to a different environment silently
 
+Unavailable is not revoked. The published-service record survives the outage, and a route that has not expired and is still authorised resumes under the same identifier when the connector returns (`CONNECTOR_PROTOCOL.md` §17), so an outage costs a pause rather than a re-publication. A request made while the connector is gone fails with `CONNECTOR_OFFLINE` or `PUBLISHED_SERVICE_UNAVAILABLE` (`MCP_SPEC.md` §12) — including a request that was already in flight when the channel dropped, which fails with the same code rather than a generic upstream error and never hangs. Affected browser sessions become `DEGRADED` (`DOMAIN_MODEL.md` §12) and return to a usable status when reconciliation continues their route; they are never terminated by a connector outage.
+
+"Do not redirect traffic to a different environment silently" is enforced at the reconciliation, not only at publication: a connector that reconnects claiming a destination the record does not name has that route closed rather than continued, and a connector that reconnects under a different identity inherits no routes at all.
+
+The reconnect is bounded and jittered (`DEVELOPMENT.md` §10). The attempt counter that grows the backoff bounds *consecutive* failures rather than the connector's lifetime: a channel that stayed up longer than the longest backoff delay ends the incident, so a connector connected for hours does not retry its next unrelated drop at the maximum delay. A channel that is accepted and immediately dropped does not reset it, so a flapping peer is still backed off from.
+
 ### Browser worker crash
 
 - Mark session degraded or failed

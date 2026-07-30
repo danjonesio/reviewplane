@@ -305,3 +305,191 @@ func EncodeDataStreamHeader(value DataStreamHeader) ([]byte, error) {
 	encodeDataStreamHeaderInto(&w, value)
 	return w.result()
 }
+
+// encodeReconnectRouteInto writes the canonical encoding of a ReconnectRoute.
+func encodeReconnectRouteInto(w *canonicalWriter, value ReconnectRoute) {
+	w.beginObject()
+	w.key("route_id")
+	w.string(value.RouteID)
+	w.key("project_id")
+	w.string(value.ProjectID)
+	w.key("workspace_id")
+	w.string(value.WorkspaceID)
+	w.key("observed_destination")
+	w.string(value.ObservedDestination)
+	w.key("expires_at")
+	w.string(value.ExpiresAt)
+	w.endObject()
+}
+
+// EncodeReconnectRoute returns the canonical encoding of a ReconnectRoute.
+func EncodeReconnectRoute(value ReconnectRoute) ([]byte, error) {
+	var w canonicalWriter
+	encodeReconnectRouteInto(&w, value)
+	return w.result()
+}
+
+// encodeReconnectStreamInto writes the canonical encoding of a ReconnectStream.
+func encodeReconnectStreamInto(w *canonicalWriter, value ReconnectStream) {
+	w.beginObject()
+	w.key("stream_id")
+	w.string(value.StreamID)
+	w.key("route_id")
+	w.string(value.RouteID)
+	w.key("browser_session_id")
+	w.string(value.BrowserSessionID)
+	w.key("deadline")
+	w.string(value.Deadline)
+	w.endObject()
+}
+
+// EncodeReconnectStream returns the canonical encoding of a ReconnectStream.
+func EncodeReconnectStream(value ReconnectStream) ([]byte, error) {
+	var w canonicalWriter
+	encodeReconnectStreamInto(&w, value)
+	return w.result()
+}
+
+// encodeWorkspaceHeadInto writes the canonical encoding of a WorkspaceHead.
+func encodeWorkspaceHeadInto(w *canonicalWriter, value WorkspaceHead) {
+	w.beginObject()
+	w.key("workspace_id")
+	w.string(value.WorkspaceID)
+	w.key("branch")
+	w.string(value.Branch)
+	w.key("head_commit")
+	w.string(value.HeadCommit)
+	w.key("dirty")
+	w.boolean(value.Dirty)
+	w.endObject()
+}
+
+// EncodeWorkspaceHead returns the canonical encoding of a WorkspaceHead.
+func EncodeWorkspaceHead(value WorkspaceHead) ([]byte, error) {
+	var w canonicalWriter
+	encodeWorkspaceHeadInto(&w, value)
+	return w.result()
+}
+
+// encodeReconnectRequestInto writes the canonical encoding of a ReconnectRequest.
+func encodeReconnectRequestInto(w *canonicalWriter, value ReconnectRequest) {
+	w.beginObject()
+	w.key("connector_version")
+	w.string(value.ConnectorVersion)
+	w.key("capabilities")
+	w.beginArray()
+	for _, item := range value.Capabilities {
+		w.item()
+		w.string(item)
+	}
+	w.endArray()
+	w.key("active_routes")
+	w.beginArray()
+	for _, item := range value.ActiveRoutes {
+		w.item()
+		encodeReconnectRouteInto(w, item)
+	}
+	w.endArray()
+	w.key("active_streams")
+	w.beginArray()
+	for _, item := range value.ActiveStreams {
+		w.item()
+		encodeReconnectStreamInto(w, item)
+	}
+	w.endArray()
+	w.key("known_agent_sessions")
+	w.beginArray()
+	for _, item := range value.KnownAgentSessions {
+		w.item()
+		w.string(item)
+	}
+	w.endArray()
+	w.key("workspace_head_state")
+	w.beginArray()
+	for _, item := range value.WorkspaceHeadState {
+		w.item()
+		encodeWorkspaceHeadInto(w, item)
+	}
+	w.endArray()
+	w.endObject()
+}
+
+// EncodeReconnectRequest returns the canonical encoding of a ReconnectRequest.
+func EncodeReconnectRequest(value ReconnectRequest) ([]byte, error) {
+	var w canonicalWriter
+	encodeReconnectRequestInto(&w, value)
+	return w.result()
+}
+
+// encodeRouteDecisionInto writes the canonical encoding of a RouteDecision.
+func encodeRouteDecisionInto(w *canonicalWriter, value RouteDecision) {
+	w.beginObject()
+	w.key("route_id")
+	w.string(value.RouteID)
+	w.key("decision")
+	w.string(string(value.Decision))
+	w.key("reason")
+	w.string(string(value.Reason))
+	if value.Route != nil {
+		w.key("route")
+		encodeRoutePublishInto(w, (*value.Route))
+	}
+	w.endObject()
+}
+
+// EncodeRouteDecision returns the canonical encoding of a RouteDecision.
+func EncodeRouteDecision(value RouteDecision) ([]byte, error) {
+	var w canonicalWriter
+	encodeRouteDecisionInto(&w, value)
+	return w.result()
+}
+
+// encodeSessionDecisionInto writes the canonical encoding of a SessionDecision.
+func encodeSessionDecisionInto(w *canonicalWriter, value SessionDecision) {
+	w.beginObject()
+	w.key("browser_session_id")
+	w.string(value.BrowserSessionID)
+	w.key("decision")
+	w.string(string(value.Decision))
+	w.key("reason")
+	w.string(string(value.Reason))
+	w.endObject()
+}
+
+// EncodeSessionDecision returns the canonical encoding of a SessionDecision.
+func EncodeSessionDecision(value SessionDecision) ([]byte, error) {
+	var w canonicalWriter
+	encodeSessionDecisionInto(&w, value)
+	return w.result()
+}
+
+// encodeReconnectResponseInto writes the canonical encoding of a ReconnectResponse.
+func encodeReconnectResponseInto(w *canonicalWriter, value ReconnectResponse) {
+	w.beginObject()
+	w.key("reconciled_at")
+	w.string(value.ReconciledAt)
+	w.key("upgrade")
+	w.string(string(value.Upgrade))
+	w.key("routes")
+	w.beginArray()
+	for _, item := range value.Routes {
+		w.item()
+		encodeRouteDecisionInto(w, item)
+	}
+	w.endArray()
+	w.key("sessions")
+	w.beginArray()
+	for _, item := range value.Sessions {
+		w.item()
+		encodeSessionDecisionInto(w, item)
+	}
+	w.endArray()
+	w.endObject()
+}
+
+// EncodeReconnectResponse returns the canonical encoding of a ReconnectResponse.
+func EncodeReconnectResponse(value ReconnectResponse) ([]byte, error) {
+	var w canonicalWriter
+	encodeReconnectResponseInto(&w, value)
+	return w.result()
+}

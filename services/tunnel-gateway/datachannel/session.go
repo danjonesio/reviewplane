@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -105,6 +106,37 @@ func (e *StreamError) Error() string {
 	return "datachannel: stream reset " + string(e.Class) + ": " + e.Msg
 }
 
+// SessionClosedError reports a stream that ended because its session did — the
+// connector's data channel dropped, was replaced by a reconnect, or was closed
+// on revocation.
+//
+// It is distinct from StreamError because the two mean different things to a
+// caller: a StreamError carries a docs/CONNECTOR_PROTOCOL.md section 21 class
+// the far end chose, whereas this one means there is no far end. The request
+// path turns it into CONNECTOR_OFFLINE (docs/MCP_SPEC.md section 12) rather than
+// into a generic upstream failure, which docs/ARCHITECTURE.md section 14
+// requires: a disconnect must fail clearly and must never hang.
+type SessionClosedError struct {
+	Cause error
+}
+
+func (e *SessionClosedError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	if e.Cause == nil {
+		return "datachannel: the connector data channel closed"
+	}
+	return "datachannel: the connector data channel closed: " + e.Cause.Error()
+}
+
+func (e *SessionClosedError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
 // Session multiplexes streams over one connection.
 type Session struct {
 	conn   MessageConn
@@ -157,6 +189,70 @@ func (s *Session) ActiveStreams() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.streams)
+}
+
+// StreamHeaders lists the header of every stream open now, ordered by stream
+// number so that two reads of an unchanged session agree.
+//
+// It is what fills the active_streams field of the reconnect payload
+// (docs/CONNECTOR_PROTOCOL.md section 17). The header carries a session
+// capability, which is a bearer credential; callers copy the identifiers out and
+// never the credential, and the generated models redact it in every default
+// representation regardless.
+func (s *Session) StreamHeaders() []connectorv1.DataStreamHeader {
+	s.mu.Lock()
+	numbers := make([]uint32, 0, len(s.streams))
+	for id := range s.streams {
+		numbers = append(numbers, id)
+	}
+	headers := make([]connectorv1.DataStreamHeader, 0, len(s.streams))
+	sort.Slice(numbers, func(i, j int) bool { return numbers[i] < numbers[j] })
+	for _, id := range numbers {
+		headers = append(headers, s.streams[id].header)
+	}
+	s.mu.Unlock()
+	return headers
+}
+
+// ResetRoute ends every stream belonging to routeID with a stable error class
+// and reports how many it ended.
+//
+// Reconciliation uses it: a route the control plane has just revoked must stop
+// carrying the transfer that is already moving, not only the next one
+// (docs/CONNECTOR_PROTOCOL.md section 12.3, docs/SECURITY.md section 9).
+func (s *Session) ResetRoute(routeID string, class connectorv1.ErrorClass) int {
+	s.mu.Lock()
+	doomed := make([]*Stream, 0)
+	for id, stream := range s.streams {
+		if stream.header.RouteID == routeID {
+			doomed = append(doomed, stream)
+			delete(s.streams, id)
+		}
+	}
+	s.mu.Unlock()
+	for _, stream := range doomed {
+		_ = stream.Reset(class)
+	}
+	return len(doomed)
+}
+
+// ResetSession ends every stream opened for browserSessionID and reports how
+// many it ended. It is the session half of reconciliation
+// (docs/CONNECTOR_PROTOCOL.md section 17, "re-establish session").
+func (s *Session) ResetSession(browserSessionID string, class connectorv1.ErrorClass) int {
+	s.mu.Lock()
+	doomed := make([]*Stream, 0)
+	for id, stream := range s.streams {
+		if stream.header.BrowserSessionID == browserSessionID {
+			doomed = append(doomed, stream)
+			delete(s.streams, id)
+		}
+	}
+	s.mu.Unlock()
+	for _, stream := range doomed {
+		_ = stream.Reset(class)
+	}
+	return len(doomed)
 }
 
 // Open starts a stream. Only the gateway role may call it: a connector that
@@ -230,6 +326,10 @@ func (s *Session) Close(cause error) {
 			cause = io.EOF
 		}
 		s.closeErr = cause
+		// Streams die of the channel dying, and the request path must be able to
+		// say so: docs/MCP_SPEC.md section 12 requires CONNECTOR_OFFLINE rather
+		// than a generic failure when a connector goes away mid-request.
+		streamCause := error(&SessionClosedError{Cause: cause})
 		streams := make([]*Stream, 0, len(s.streams))
 		for _, stream := range s.streams {
 			streams = append(streams, stream)
@@ -242,7 +342,7 @@ func (s *Session) Close(cause error) {
 		s.mu.Unlock()
 
 		for _, stream := range streams {
-			stream.terminate(cause)
+			stream.terminate(streamCause)
 		}
 		_ = s.conn.Close(1000, "")
 		close(s.done)

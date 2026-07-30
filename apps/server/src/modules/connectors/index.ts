@@ -18,6 +18,7 @@ import { ensureCertificateAuthority, ensureListenerCertificate, type TlsMaterial
 import { MAX_INBOUND_MESSAGE_BYTES, registerConnectorChannels } from "./channel.ts";
 import { loadConnectorModuleConfig, type ConnectorModuleConfig } from "./config.ts";
 import { ControlChannelRegistry } from "./publication.ts";
+import type { ConnectorReconciler } from "./reconciliation.ts";
 import { startHeartbeatMonitor, type HeartbeatMonitor } from "./monitor.ts";
 import { ensureOrganisation } from "./repository.ts";
 import { registerConnectorRoutes } from "./routes.ts";
@@ -25,6 +26,7 @@ import { registerConnectorRoutes } from "./routes.ts";
 export { loadConnectorModuleConfig } from "./config.ts";
 export type { ConnectorModuleConfig } from "./config.ts";
 export { ControlChannelRegistry } from "./publication.ts";
+export type { ConnectorReconciler } from "./reconciliation.ts";
 
 export interface ConnectorModule {
   readonly config: ConnectorModuleConfig;
@@ -35,6 +37,16 @@ export interface ConnectorModule {
    * (`docs/CONNECTOR_PROTOCOL.md` §11).
    */
   readonly channels: ControlChannelRegistry;
+  /**
+   * Supplies the reconnect reconciler (`docs/CONNECTOR_PROTOCOL.md` §17).
+   *
+   * It arrives after the module is built because reconciliation decides the
+   * fate of published services, and the published-service module needs the
+   * connector channels to exist first. Until it is supplied the channel
+   * continues no route, which is the fail-closed answer rather than an
+   * unreconciled one.
+   */
+  useReconciler(reconciler: ConnectorReconciler): void;
   /** The address the connector listener bound to, once started. */
   listenerAddress(): string | null;
   start(): Promise<void>;
@@ -95,11 +107,15 @@ export async function createConnectorModule(
   // connector disconnecting as the server stops still records its event.
   const inFlight = new Set<Promise<unknown>>();
   const channels = new ControlChannelRegistry();
+  const reconcilerHolder: { current: ConnectorReconciler | undefined } = { current: undefined };
   registerConnectorChannels(listener, {
     pool: options.pool,
     config,
     authority,
     channels,
+    get reconciler(): ConnectorReconciler | undefined {
+      return reconcilerHolder.current;
+    },
     track: (work) => {
       inFlight.add(work);
       void work.finally(() => inFlight.delete(work));
@@ -113,6 +129,9 @@ export async function createConnectorModule(
     authority,
     listener,
     channels,
+    useReconciler(reconciler: ConnectorReconciler): void {
+      reconcilerHolder.current = reconciler;
+    },
     listenerAddress(): string | null {
       const address = listener.server.address();
       if (address === null || typeof address === "string") return null;

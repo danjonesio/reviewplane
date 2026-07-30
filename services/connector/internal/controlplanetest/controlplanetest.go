@@ -59,6 +59,14 @@ type Options struct {
 	// DropFirstConnections closes this many control connections immediately
 	// after accepting them, which simulates a control-plane restart.
 	DropFirstConnections int
+	// Reconcile answers the section 17 reconnect request. A nil function answers
+	// with a compatible classification and no routes, which is the authoritative
+	// "this control plane holds nothing for you" reply: the connector then serves
+	// nothing, because it withdrew everything before asking.
+	Reconcile func(connectorID string, request connectorv1.ReconnectRequest) connectorv1.ReconnectResponse
+	// WithholdDesiredState accepts the reconnect request and never answers it,
+	// which is the timeout case of section 17.
+	WithholdDesiredState bool
 }
 
 // Server is a running control-plane double.
@@ -79,9 +87,13 @@ type Server struct {
 	tokenUses      int
 	registrations  []connectorv1.RegistrationRequest
 	heartbeats     []connectorv1.Heartbeat
+	reconnects     []connectorv1.ReconnectRequest
+	acknowledged   []connectorv1.RoutePublishAck
 	connections    int
 	revoked        map[string]bool
 	nextConnectorN int
+	live           map[*ws.Conn]struct{}
+	dataURL        string
 	// LastPeerFingerprint records the client certificate the control endpoint
 	// last authenticated.
 	LastPeerFingerprint string
@@ -141,7 +153,13 @@ func Start(t *testing.T, options Options) *Server {
 	pool := x509.NewCertPool()
 	pool.AddCert(caCertificate)
 
-	server := &Server{options: options, caCertificate: caCertificate, caKey: caKey, revoked: map[string]bool{}}
+	server := &Server{
+		options:       options,
+		caCertificate: caCertificate,
+		caKey:         caKey,
+		revoked:       map[string]bool{},
+		live:          map[*ws.Conn]struct{}{},
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/connector/v1/enrol", server.handleEnrol)
@@ -172,6 +190,59 @@ func Start(t *testing.T, options Options) *Server {
 // Close stops the double.
 func (s *Server) Close() { s.http.Close() }
 
+// SetDataURL overrides the data endpoint the registration response advertises.
+//
+// A real deployment terminates the data channel on the tunnel gateway rather
+// than on the control plane (docs/ARCHITECTURE.md section 4.6), so a test that
+// runs a real gateway points the connector at it here.
+func (s *Server) SetDataURL(dataURL string) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.dataURL = dataURL
+}
+
+// CAPool is the double's certificate authority, for a verifier that must accept
+// the client certificates it issues.
+func (s *Server) CAPool() *x509.CertPool {
+	pool := x509.NewCertPool()
+	pool.AddCert(s.caCertificate)
+	return pool
+}
+
+// IssueServerCertificate signs a server certificate for hosts with the double's
+// authority, so that another listener in the same test is trusted by the
+// connector's single --ca-file.
+func (s *Server) IssueServerCertificate(hosts []string) (tls.Certificate, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	template := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: "reviewplane-test-listener"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	for _, host := range hosts {
+		if ip := net.ParseIP(host); ip != nil {
+			template.IPAddresses = append(template.IPAddresses, ip)
+			continue
+		}
+		template.DNSNames = append(template.DNSNames, host)
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, s.caCertificate, key.Public(), s.caKey)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, nil
+}
+
 // Registrations returns the registration requests received so far.
 func (s *Server) Registrations() []connectorv1.RegistrationRequest {
 	s.mutex.Lock()
@@ -191,6 +262,37 @@ func (s *Server) Connections() int {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	return s.connections
+}
+
+// ReconnectRequests returns the section 17 reconnect payloads received so far.
+func (s *Server) ReconnectRequests() []connectorv1.ReconnectRequest {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return append([]connectorv1.ReconnectRequest(nil), s.reconnects...)
+}
+
+// Acknowledgements returns the route acknowledgements received so far.
+func (s *Server) Acknowledgements() []connectorv1.RoutePublishAck {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return append([]connectorv1.RoutePublishAck(nil), s.acknowledged...)
+}
+
+// Sever drops every live control connection without a close frame, the way a
+// network partition does: the process is still running and the socket simply
+// stops. It reports how many connections it ended.
+func (s *Server) Sever() int {
+	s.mutex.Lock()
+	connections := make([]*ws.Conn, 0, len(s.live))
+	for conn := range s.live {
+		connections = append(connections, conn)
+	}
+	s.live = map[*ws.Conn]struct{}{}
+	s.mutex.Unlock()
+	for _, conn := range connections {
+		_ = conn.CloseNow()
+	}
+	return len(connections)
 }
 
 // Revoke marks a certificate fingerprint revoked, so that the next control
@@ -252,6 +354,12 @@ func (s *Server) handleEnrol(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	host := s.http.Listener.Addr().String()
+	s.mutex.Lock()
+	dataURL := s.dataURL
+	s.mutex.Unlock()
+	if dataURL == "" {
+		dataURL = "wss://" + host + "/connector/v1/data"
+	}
 	response := connectorv1.RegistrationResponse{
 		ConnectorID: connectorID,
 		SignedIdentity: connectorv1.SignedIdentity{
@@ -261,7 +369,7 @@ func (s *Server) handleEnrol(w http.ResponseWriter, r *http.Request) {
 		},
 		ControlPlaneEndpoints: connectorv1.ControlPlaneEndpoints{
 			ControlURL: "wss://" + host + "/connector/v1/control",
-			DataURL:    "wss://" + host + "/connector/v1/data",
+			DataURL:    dataURL,
 		},
 		PolicyDigest: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
 	}
@@ -353,6 +461,15 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.mutex.Lock()
+	s.live[conn] = struct{}{}
+	s.mutex.Unlock()
+	defer func() {
+		s.mutex.Lock()
+		delete(s.live, conn)
+		s.mutex.Unlock()
+	}()
+
 	if len(s.options.SendOnConnect) > 0 {
 		_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		_ = conn.WriteText(s.options.SendOnConnect)
@@ -369,12 +486,59 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 			_ = conn.Close(ws.CloseInvalidPayload, string(protocolErr.ErrorClass))
 			return
 		}
-		if heartbeat, ok := frame.Payload.(connectorv1.Heartbeat); ok {
+		switch message := frame.Payload.(type) {
+		case connectorv1.Heartbeat:
 			s.mutex.Lock()
-			s.heartbeats = append(s.heartbeats, heartbeat)
+			s.heartbeats = append(s.heartbeats, message)
 			s.mutex.Unlock()
+		case connectorv1.RoutePublishAck:
+			s.mutex.Lock()
+			s.acknowledged = append(s.acknowledged, message)
+			s.mutex.Unlock()
+		case connectorv1.ReconnectRequest:
+			s.mutex.Lock()
+			s.reconnects = append(s.reconnects, message)
+			s.mutex.Unlock()
+			if s.options.WithholdDesiredState {
+				continue
+			}
+			connectorID := ""
+			if frame.Envelope.ConnectorID != nil {
+				connectorID = *frame.Envelope.ConnectorID
+			}
+			response := connectorv1.ReconnectResponse{
+				ReconciledAt: protocolio.Timestamp(time.Now()),
+				Upgrade:      connectorv1.UpgradeClassificationCompatible,
+				Routes:       []connectorv1.RouteDecision{},
+				Sessions:     []connectorv1.SessionDecision{},
+			}
+			if s.options.Reconcile != nil {
+				response = s.options.Reconcile(connectorID, message)
+			}
+			if err := s.answerReconnect(conn, connectorID, frame.Envelope.MessageID, response); err != nil {
+				return
+			}
 		}
 	}
+}
+
+// answerReconnect writes the desired state, correlated to the request.
+func (s *Server) answerReconnect(
+	conn *ws.Conn,
+	connectorID, correlationID string,
+	response connectorv1.ReconnectResponse,
+) error {
+	frame, err := protocolio.NewFrame(response, connectorID, time.Now())
+	if err != nil {
+		return err
+	}
+	frame.Envelope.CorrelationID = &correlationID
+	encoded, err := protocolio.Encode(frame)
+	if err != nil {
+		return err
+	}
+	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	return conn.WriteText(encoded)
 }
 
 func itoa(value int) string {

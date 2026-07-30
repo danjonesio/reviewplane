@@ -238,6 +238,9 @@ type DataChannelOptions struct {
 	Session datachannel.SessionConfig
 	// Dial bounds one loopback dial to the development service.
 	DialTimeout time.Duration
+	// OnEstablished is called once the channel is open, so that a supervisor can
+	// tell a failed dial from a channel that worked and then dropped.
+	OnEstablished func()
 }
 
 // ErrNoDataEndpoint reports an identity record with no data URL.
@@ -287,6 +290,9 @@ func (m *Manager) ServeDataChannel(ctx context.Context, options DataChannelOptio
 	}()
 
 	m.logger.Info("data channel established", slog.String("data_url", options.Endpoint))
+	if options.OnEstablished != nil {
+		options.OnEstablished()
+	}
 
 	served := make(chan error, 1)
 	go func() {

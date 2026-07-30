@@ -19,13 +19,16 @@
 
 import type { TLSSocket } from "node:tls";
 
-import { decodeControlFrame, MESSAGE_DIRECTIONS } from "@reviewplane/protocol";
+import { decodeControlFrame, encodeControlFrame, MESSAGE_DIRECTIONS } from "@reviewplane/protocol";
+import type { ReconnectRequest, ReconnectResponse } from "@reviewplane/protocol";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { WebSocket } from "@fastify/websocket";
 
 import type { Pool } from "../../db/pool.ts";
 import type { TlsMaterial } from "./certificate-authority.ts";
+import { newMessageId } from "./identifiers.ts";
 import type { ControlChannelRegistry } from "./publication.ts";
+import type { ConnectorReconciler } from "./reconciliation.ts";
 import { CONTROL_PATH, ENROLMENT_PATH, type ConnectorModuleConfig } from "./config.ts";
 import { enrol, EnrolmentRefused } from "./enrolment.ts";
 import { certificateFingerprint } from "./x509.ts";
@@ -84,6 +87,13 @@ export interface ChannelContext {
    * reach it (`docs/CONNECTOR_PROTOCOL.md` §11).
    */
   readonly channels?: ControlChannelRegistry;
+  /**
+   * Reconnect reconciliation (`docs/CONNECTOR_PROTOCOL.md` §17). A channel
+   * without one answers every reconnect by continuing nothing, which is the
+   * safe default: a route this control plane cannot vouch for is not one the
+   * connector may keep serving.
+   */
+  readonly reconciler?: ConnectorReconciler | undefined;
 }
 
 /** The verified peer identity of a control connection, or null. */
@@ -370,6 +380,10 @@ async function handleControlSocket(
         );
         break;
       }
+      case "connector.reconnect.request": {
+        await handleReconnect(context, socket, connector, frame.envelope.message_id, frame.payload, log);
+        break;
+      }
       case "route.publish.ack": {
         // The acknowledgement carries a stable class and no free text, so it
         // is safe to log whole (docs/SECURITY.md section 18).
@@ -404,7 +418,76 @@ async function handleControlSocket(
     eventType: "connector.disconnected",
     payload: { trigger: "channel_closed" },
   });
+  // `docs/ARCHITECTURE.md` §14: the routes become unavailable, the affected
+  // browser sessions are paused rather than terminated, and their metadata is
+  // retained. The route records are deliberately left alone — an unexpired,
+  // still authorised route resumes under the same identifier on reconnect.
+  try {
+    await context.reconciler?.handleDisconnect({
+      connectorId: connector.id,
+      requestId: String(request.id),
+    });
+  } catch (error) {
+    log.error({ err: error }, "could not record the effect of a connector disconnect");
+  }
   log.info({ event_recorded: event !== null }, "connector control channel closed");
+}
+
+/**
+ * Answers a reconnect with the control plane's authoritative desired state
+ * (`docs/CONNECTOR_PROTOCOL.md` §17).
+ *
+ * The reply is correlated to the request, because the connector accepts a
+ * desired state only as the answer to the one it sent. A control plane with no
+ * reconciler continues nothing, which is the fail-closed answer: the connector
+ * has already withdrawn every route by the time it asks, so a response that
+ * names none leaves none being served.
+ */
+async function handleReconnect(
+  context: ChannelContext,
+  socket: WebSocket,
+  connector: ConnectorRecord,
+  messageId: string,
+  payload: ReconnectRequest,
+  log: FastifyRequest["log"],
+): Promise<void> {
+  let response: ReconnectResponse;
+  if (context.reconciler === undefined) {
+    response = {
+      reconciled_at: new Date().toISOString(),
+      upgrade: "compatible",
+      routes: [],
+      sessions: [],
+    };
+  } else {
+    try {
+      response = await context.reconciler.reconcile({
+        connectorId: connector.id,
+        request: payload,
+        requestId: messageId,
+      });
+    } catch (error) {
+      // A reconciliation that failed must not become a reconciliation that
+      // continued everything. The connector is left with no route and retries.
+      log.error({ err: error, connector_id: connector.id }, "reconciliation failed");
+      socket.close(CLOSE.internalError, "");
+      return;
+    }
+  }
+  socket.send(
+    encodeControlFrame({
+      envelope: {
+        protocol_version: 1,
+        message_id: newMessageId(),
+        type: "connector.reconnect.response",
+        sent_at: new Date().toISOString(),
+        connector_id: connector.id,
+        correlation_id: messageId,
+      },
+      type: "connector.reconnect.response",
+      payload: response,
+    }),
+  );
 }
 
 async function markConnected(

@@ -164,3 +164,85 @@ func DecodeDataStreamHeader(value any) DataStreamHeader {
 	out.Deadline = decodeString(source["deadline"])
 	return out
 }
+
+// DecodeReconnectRoute builds a ReconnectRoute from a validated tree.
+func DecodeReconnectRoute(value any) ReconnectRoute {
+	source, _ := value.(map[string]any)
+	var out ReconnectRoute
+	out.RouteID = decodeString(source["route_id"])
+	out.ProjectID = decodeString(source["project_id"])
+	out.WorkspaceID = decodeString(source["workspace_id"])
+	out.ObservedDestination = decodeString(source["observed_destination"])
+	out.ExpiresAt = decodeString(source["expires_at"])
+	return out
+}
+
+// DecodeReconnectStream builds a ReconnectStream from a validated tree.
+func DecodeReconnectStream(value any) ReconnectStream {
+	source, _ := value.(map[string]any)
+	var out ReconnectStream
+	out.StreamID = decodeString(source["stream_id"])
+	out.RouteID = decodeString(source["route_id"])
+	out.BrowserSessionID = decodeString(source["browser_session_id"])
+	out.Deadline = decodeString(source["deadline"])
+	return out
+}
+
+// DecodeWorkspaceHead builds a WorkspaceHead from a validated tree.
+func DecodeWorkspaceHead(value any) WorkspaceHead {
+	source, _ := value.(map[string]any)
+	var out WorkspaceHead
+	out.WorkspaceID = decodeString(source["workspace_id"])
+	out.Branch = decodeString(source["branch"])
+	out.HeadCommit = decodeString(source["head_commit"])
+	out.Dirty = decodeBool(source["dirty"])
+	return out
+}
+
+// DecodeReconnectRequest builds a ReconnectRequest from a validated tree.
+func DecodeReconnectRequest(value any) ReconnectRequest {
+	source, _ := value.(map[string]any)
+	var out ReconnectRequest
+	out.ConnectorVersion = decodeString(source["connector_version"])
+	out.Capabilities = decodeSlice(source["capabilities"], func(item any) string { return decodeString(item) })
+	out.ActiveRoutes = decodeSlice(source["active_routes"], func(item any) ReconnectRoute { return DecodeReconnectRoute(item) })
+	out.ActiveStreams = decodeSlice(source["active_streams"], func(item any) ReconnectStream { return DecodeReconnectStream(item) })
+	out.KnownAgentSessions = decodeSlice(source["known_agent_sessions"], func(item any) string { return decodeString(item) })
+	out.WorkspaceHeadState = decodeSlice(source["workspace_head_state"], func(item any) WorkspaceHead { return DecodeWorkspaceHead(item) })
+	return out
+}
+
+// DecodeRouteDecision builds a RouteDecision from a validated tree.
+func DecodeRouteDecision(value any) RouteDecision {
+	source, _ := value.(map[string]any)
+	var out RouteDecision
+	out.RouteID = decodeString(source["route_id"])
+	out.Decision = RouteReconciliationDecision(decodeString(source["decision"]))
+	out.Reason = RouteReconciliationReason(decodeString(source["reason"]))
+	if field, present := source["route"]; present {
+		decoded := DecodeRoutePublish(field)
+		out.Route = &decoded
+	}
+	return out
+}
+
+// DecodeSessionDecision builds a SessionDecision from a validated tree.
+func DecodeSessionDecision(value any) SessionDecision {
+	source, _ := value.(map[string]any)
+	var out SessionDecision
+	out.BrowserSessionID = decodeString(source["browser_session_id"])
+	out.Decision = SessionReconciliationDecision(decodeString(source["decision"]))
+	out.Reason = SessionReconciliationReason(decodeString(source["reason"]))
+	return out
+}
+
+// DecodeReconnectResponse builds a ReconnectResponse from a validated tree.
+func DecodeReconnectResponse(value any) ReconnectResponse {
+	source, _ := value.(map[string]any)
+	var out ReconnectResponse
+	out.ReconciledAt = decodeString(source["reconciled_at"])
+	out.Upgrade = UpgradeClassification(decodeString(source["upgrade"]))
+	out.Routes = decodeSlice(source["routes"], func(item any) RouteDecision { return DecodeRouteDecision(item) })
+	out.Sessions = decodeSlice(source["sessions"], func(item any) SessionDecision { return DecodeSessionDecision(item) })
+	return out
+}

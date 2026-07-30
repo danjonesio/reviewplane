@@ -19,6 +19,10 @@ func validatePayload(messageType MessageType, value any, path string, out *[]Sch
 		validateRoutePublish(value, path, out)
 	case MessageTypeRoutePublishAck:
 		validateRoutePublishAck(value, path, out)
+	case MessageTypeConnectorReconnectRequest:
+		validateReconnectRequest(value, path, out)
+	case MessageTypeConnectorReconnectResponse:
+		validateReconnectResponse(value, path, out)
 	}
 }
 
@@ -35,6 +39,10 @@ func decodePayload(messageType MessageType, value any) Payload {
 		return DecodeRoutePublish(value)
 	case MessageTypeRoutePublishAck:
 		return DecodeRoutePublishAck(value)
+	case MessageTypeConnectorReconnectRequest:
+		return DecodeReconnectRequest(value)
+	case MessageTypeConnectorReconnectResponse:
+		return DecodeReconnectResponse(value)
 	}
 	return nil
 }
@@ -52,6 +60,10 @@ func EncodePayload(payload Payload) ([]byte, error) {
 		return EncodeRoutePublish(value)
 	case RoutePublishAck:
 		return EncodeRoutePublishAck(value)
+	case ReconnectRequest:
+		return EncodeReconnectRequest(value)
+	case ReconnectResponse:
+		return EncodeReconnectResponse(value)
 	}
 	return nil, errUnknownPayload
 }
@@ -59,7 +71,7 @@ func EncodePayload(payload Payload) ([]byte, error) {
 // IsKnownMessageType reports whether a value names a version 1 message type.
 func IsKnownMessageType(value string) bool {
 	switch MessageType(value) {
-	case MessageTypeConnectorRegistrationRequest, MessageTypeConnectorRegistrationResponse, MessageTypeHeartbeat, MessageTypeRoutePublish, MessageTypeRoutePublishAck:
+	case MessageTypeConnectorRegistrationRequest, MessageTypeConnectorRegistrationResponse, MessageTypeHeartbeat, MessageTypeRoutePublish, MessageTypeRoutePublishAck, MessageTypeConnectorReconnectRequest, MessageTypeConnectorReconnectResponse:
 		return true
 	}
 	return false

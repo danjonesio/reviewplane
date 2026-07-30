@@ -33,6 +33,7 @@ import type { TunnelGateway } from "./modules/published-services/gateway-client.
 import { ConnectorRoutePublisher } from "./modules/published-services/connector-publisher.ts";
 import { registerPublishedServiceRoutes } from "./modules/published-services/routes.ts";
 import { PublishedServiceBinder } from "./modules/published-services/session-binder.ts";
+import { PublishedServiceReconciler } from "./modules/published-services/reconciliation.ts";
 import { PublishedServiceService } from "./modules/published-services/service.ts";
 import type { RoutePublisher } from "./modules/published-services/service.ts";
 
@@ -145,6 +146,26 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     service: publishedServices,
     authenticate: requireBootstrapAdministrator(config.bootstrapToken),
   });
+
+  // Reconnect reconciliation (`docs/CONNECTOR_PROTOCOL.md` §17). It is supplied
+  // to the connector module rather than constructed inside it, because deciding
+  // the fate of a route needs the gateway and the published-service records,
+  // and the connector module owns neither.
+  connectors.useReconciler(
+    new PublishedServiceReconciler(
+      pool,
+      gateway,
+      {
+        organisationId: connectors.config.organisationId,
+        upgrade: {
+          minimumVersion: connectors.config.minimumConnectorVersion,
+          recommendedVersion: connectors.config.recommendedConnectorVersion,
+        },
+      },
+      connectors.listener.log,
+      options.now ?? ((): Date => new Date()),
+    ),
+  );
 
   const store = options.artefactStore ?? new FilesystemArtefactStore(config.artefactPath);
   const artefacts = new ArtefactService(pool, store, config.artefactMaxBytes);

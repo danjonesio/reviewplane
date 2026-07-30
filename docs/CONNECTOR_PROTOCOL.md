@@ -178,8 +178,12 @@ Version 1 defines these message types, each bound to one channel:
 | `heartbeat` | `heartbeat` | connector to control plane |
 | `route.publish` | `routes` | control plane to connector |
 | `route.publish.ack` | `routes` | connector to control plane |
+| `connector.reconnect.request` | `control` | connector to control plane |
+| `connector.reconnect.response` | `control` | control plane to connector |
 
-The data-stream header of §12 travels on the `data` channel and is not carried in a control envelope. The `events` and `upgrade` channels are reserved at version 1: no message type is defined for them yet.
+The data-stream header of §12 travels on the `data` channel and is not carried in a control envelope. The `events` and `upgrade` channels are reserved at version 1: no message type is defined for them yet. The reconnect exchange of §17 travels on `control` rather than on `upgrade`, because it reconciles state and only reports a version classification as part of doing so.
+
+Version 1 defines no message by which the control plane withdraws a single route from a connector that is still connected. Revocation reaches the tunnel through the gateway (§18, `ARCHITECTURE.md` §7.3) and reaches the connector's own route table at the next reconnection (§17). A `route.revoke` message would remove that gap and is a protocol change requiring an ADR.
 
 ## 7. Message envelope
 
@@ -214,6 +218,8 @@ Version 1 bounds, all enforced by the schema:
 | `heartbeat` payload | 1 024 bytes |
 | `route.publish` payload | 2 048 bytes |
 | `route.publish.ack` payload | 1 024 bytes |
+| `connector.reconnect.request` payload | 32 768 bytes |
+| `connector.reconnect.response` payload | 57 344 bytes |
 
 Every string, array and numeric field additionally carries its own explicit bound in the schema. The frame bound MUST be applied to the raw bytes before deserialisation; the payload bound is measured on the canonical encoding.
 
@@ -261,6 +267,8 @@ State guidance:
 - Missing a small number of heartbeats: delayed
 - Exceeding disconnect threshold: disconnected
 - Reconnection with valid identity: resume and reconcile
+
+"Resume and reconcile" is one thing, not two: a channel is established and then §17 runs before the connector serves anything on it. The connector's first frame on every established control channel is `connector.reconnect.request`, including the first channel after a start, because a restarted process and a restarted network are indistinguishable from the control plane's side and both need the same answer.
 
 The thresholds are the control plane's, not the connector's: `DEGRADED` and `DISCONNECTED` are conclusions drawn from silence, so a connector cannot report them about itself. Stage 0 defaults are a 15-second heartbeat interval, `ACTIVE` to `DEGRADED` after 45 seconds of silence, and `DEGRADED` to `DISCONNECTED` after 90 seconds; all three are configurable. A heartbeat arriving in either degraded state returns the connector to `ACTIVE`. Every transition produces an event (`EVENTS.md` §7), so a connector that goes quiet leaves an audit trail rather than merely ceasing to appear.
 
@@ -515,22 +523,57 @@ The connector must not inject text into an active terminal or pseudo-terminal in
 
 ## 17. Reconnection and reconciliation
 
-On reconnect, the connector sends:
+On reconnect, the connector sends `connector.reconnect.request`, whose payload carries six fields, all of them always present:
 
-- Connector version and capabilities
-- Active local routes
-- Active streams
-- Known agent sessions
-- Workspace head state
+- `connector_version`
+- `capabilities`
+- `active_routes`
+- `active_streams`
+- `known_agent_sessions`
+- `workspace_head_state`
 
-The control plane responds with authoritative desired state:
+Stage 0 sends `known_agent_sessions` and `workspace_head_state` as empty arrays, because agent-session re-establishment and workspace discovery (§9) are Stage 1. They are sent empty rather than omitted, so that the message shape does not change when those capabilities arrive; a payload omitting one is refused by the schema.
 
-- Continue route
-- Revoke route
-- Re-establish session
-- Upgrade required
+The claim is a claim, never an authorisation. The payload carries no credential: the identity is the mutually authenticated client certificate the channel already presented (§5.2).
 
-Unknown or expired routes are closed.
+The control plane responds with `connector.reconnect.response`, correlated to the request by the envelope's `correlation_id`, carrying its authoritative desired state:
+
+- `routes`, one decision each: **continue route** or **revoke route**
+- `sessions`, one decision each: **re-establish session** or end it
+- `upgrade`, the §19 classification, of which **upgrade required** is one value
+- `reconciled_at`, the control plane's own instant, which is authoritative for expiry arithmetic so that clock skew on the development machine cannot extend a route
+
+Reconciliation is a three-way comparison: what the connector believes it is serving, what the control plane has authorised, and what has expired in the meantime. **The control plane's answer wins in every disagreement.** Where the two disagree about a route that is still within its TTL, is still authorised for this connector and still points at the destination the record names, the answer is continue; in every other case it is revoke.
+
+| Connector's claim | Control-plane record | Decision | `reason` |
+|---|---|---|---|
+| claimed | no such route | revoke | `unknown_route` |
+| claimed | belongs to another connector | revoke | `not_authorised` |
+| claimed | project or workspace differs from the record | revoke | `not_authorised` |
+| claimed | already revoked or failed | revoke | `revoked` |
+| claimed | expiry has passed | revoke | `expired` |
+| claimed | destination differs from the record | revoke | `destination_mismatch` |
+| claimed | ready, unexpired, same destination | continue | `authorised` |
+| not claimed | ready and unexpired | continue | `authorised` |
+| not claimed | expiry has passed | revoke | `expired` |
+
+The last two rows are what makes a connector restart survivable: the route table is in memory, a restarted connector claims nothing, and the control plane restores what it still authorises. A continued decision therefore restates the whole publication, so the route resumes under the **same `route_id` and the same destination without a second publication exchange**. The connector still applies its own §11 validation to that restatement — schema acceptance is not authorisation, and a control plane that had been persuaded to name a destination this connector does not allow is still refused. It does not re-run the §11 startup probe: the control plane has already decided the route is worth carrying, and a destination that has gone away is reported per stream as `PORT_NOT_LISTENING`, which is a diagnosis rather than a silent disappearance.
+
+Unknown or expired routes are closed. The connector enforces that by withdrawing **every** route from service before it sends the request, and serving again only what the response continues. Three consequences follow, and each is a requirement:
+
+- a route the response does not name is not served, so a truncated or partial answer fails closed;
+- a reconciliation that times out leaves the connector serving nothing, rather than serving traffic nobody has re-authorised — the connector reports the timeout, drops the channel and retries under the backoff of §5;
+- reconnecting is never a way to extend an authorisation that had lapsed.
+
+The connector MUST accept a desired state only as the answer to the request it sent, matched on `correlation_id`. An unsolicited or duplicate response is refused, because reinstating a route outside the exchange would be a way to grant one without a claim to answer.
+
+Identity survives a reconnect; routes do not automatically. A reconnect with a valid mutually authenticated identity resumes and reconciles (§8), and each individual route is re-authorised explicitly. A reconnect from a different identity inherits no routes: a claim on a route another connector owns is answered `revoke` with `not_authorised`, and that other connector's record is left exactly as it was. A revoked identity never reaches this exchange at all — it is refused before the channel is established (§18).
+
+Every reconnect and every reconciliation decision produces a log line carrying the connector ID and the route IDs affected (`ARCHITECTURE.md` §15), on both sides. Decisions are audited (`SECURITY.md` §16); the payloads carry no credential, and the reasons above are a closed vocabulary, so an audit record needs no free text.
+
+Closing a route on reconciliation produces the lifecycle event its cause names (`EVENTS.md` §7): `published_service.expired` where the expiry had passed, `published_service.revoked` otherwise. Both carry the reason and the trigger `reconnect_reconciliation`.
+
+Streams do not survive the channel that carried them. A revoked route's in-flight streams are reset by the connector as the decision is applied, so revocation reaches traffic that is already moving (§12.3).
 
 ## 18. Revocation
 
@@ -552,6 +595,12 @@ The connector reports version and protocol range. The control plane classifies:
 - Upgrade recommended
 - Upgrade required
 - Blocked as unsupported
+
+The classification is carried by the `upgrade` field of the §17 desired state, which is the one exchange in which the connector states its version on an established channel. `compatible` and `upgrade_recommended` continue; the connector logs the recommendation and keeps running. `upgrade_required` and `unsupported` are terminal: the connector reports the classification, stops, and MUST NOT retry with the refused build (§5.3). Stage 0 does not self-update.
+
+A build that cannot speak this protocol version never reaches the classification, because the frame decoder refuses it as `PROTOCOL_UNSUPPORTED` first (§7 "Rejection"). The classification is therefore about the release, not about the wire format.
+
+Stage 0 defaults are permissive: `REVIEWPLANE_CONNECTOR_MINIMUM_VERSION` and `REVIEWPLANE_CONNECTOR_RECOMMENDED_VERSION` both default to `0.0.0`, so every build is `compatible` until an administrator says otherwise. Refusing a connector is an operator decision, not a default (`CONFIGURATION.md` §4).
 
 Automatic self-update is deferred. Signed packages and explicit administrator action are preferred initially.
 

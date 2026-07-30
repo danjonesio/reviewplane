@@ -81,6 +81,10 @@ A local connector instance publishes a fixture application bound to loopback.
 
 Test harness simulates connector and worker clients for failure cases without launching a full browser.
 
+Running today: `services/connector/internal/protocolsim` assembles a control plane, the gateway role of the data channel, a real connector and two loopback development services in one process, and severs the channels deterministically. It exists because a distributed protocol that has never been interrupted in a test has not been tested, and because the three-part round-trip assertion of `TESTING.md` §6 needs a request before an interruption, one during it and one after it, against a route whose destination is known — a browser adds nothing to that and makes it slow. It runs under `go test ./...` in `services/connector` and needs no Docker.
+
+Set `REVIEWPLANE_EVIDENCE_DIR` when running it to have the transcript, the reconciliation log and the reconnect-time distribution written out as files rather than only logged.
+
 ## 5. Recommended commands
 
 Future root scripts should converge on:

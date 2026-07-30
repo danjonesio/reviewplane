@@ -205,6 +205,8 @@ The record enters `PENDING_ENROLMENT` when the registration exchange issues its 
 
 A revoked connector cannot reuse its prior credentials. Revocation is terminal: the connector is refused before the channel is established and MUST NOT retry with the refused identity. Re-enrolment creates a new connector record with a new identity.
 
+Returning to `ACTIVE` is not the whole of a reconnect. Every established channel reconciles before the connector serves anything on it (`CONNECTOR_PROTOCOL.md` §17), and the routes it carries afterwards are the ones this control plane has just re-authorised, never the ones it happened to be holding. Identity survives a reconnect; routes do not automatically.
+
 ## 9. Workspace
 
 A repository checkout detected by a connector.
@@ -258,6 +260,8 @@ A temporary route from an authorised browser worker to a local development servi
 - The destination is fixed at publication and cannot be changed by request data on either side of the tunnel
 - Expiry and revocation both close streams that are already in flight
 - The capability token is never persisted; its identifier is, so that one capability can be revoked and audited without storing the credential
+- A connector disconnect makes a route unavailable, not revoked: the record survives, and a route still within its lifetime resumes under the same identifier when the connector reconnects and the control plane re-authorises it (`CONNECTOR_PROTOCOL.md` §17)
+- A route the control plane will not continue on reconnect is closed there, so a reconnect can never extend an authorisation that had lapsed
 
 ## 11. Agent session
 
@@ -337,6 +341,7 @@ FAILED
 - Browser profiles are ephemeral unless persistence is explicitly enabled
 - Each command is authorised against project, session and control epoch
 - Live frames are not durable by default
+- A connector outage moves a session to `DEGRADED`, never to `TERMINATED` or `FAILED`: the session and its metadata are retained and remain diagnosable, and the session returns to `READY` when reconciliation continues the route it was allocated against (`ARCHITECTURE.md` §14, `CONNECTOR_PROTOCOL.md` §17)
 
 ## 13. Control lease
 

@@ -71,6 +71,8 @@ export const MESSAGE_TYPE_VALUES = [
   "heartbeat",
   "route.publish",
   "route.publish.ack",
+  "connector.reconnect.request",
+  "connector.reconnect.response",
 ] as const;
 
 export type MessageType =
@@ -78,7 +80,9 @@ export type MessageType =
   | "connector.registration.response"
   | "heartbeat"
   | "route.publish"
-  | "route.publish.ack";
+  | "route.publish.ack"
+  | "connector.reconnect.request"
+  | "connector.reconnect.response";
 
 /**
  * Stable connector error class (docs/CONNECTOR_PROTOCOL.md section 21). This enumeration
@@ -139,6 +143,91 @@ export type RoutePublishAckStatus =
   | "rejected";
 
 /**
+ * Control-plane classification of the connector build (docs/CONNECTOR_PROTOCOL.md section
+ * 19). upgrade_required and unsupported are terminal: the connector reports the
+ * classification and stops rather than retrying with a build the control plane has just
+ * refused (section 5.3).
+ */
+export const UPGRADE_CLASSIFICATION_VALUES = [
+  "compatible",
+  "upgrade_recommended",
+  "upgrade_required",
+  "unsupported",
+] as const;
+
+export type UpgradeClassification =
+  | "compatible"
+  | "upgrade_recommended"
+  | "upgrade_required"
+  | "unsupported";
+
+/**
+ * The control plane's authoritative answer for one route on reconnect
+ * (docs/CONNECTOR_PROTOCOL.md section 17). continue resumes the route under the same
+ * route_id without re-publication; revoke closes it.
+ */
+export const ROUTE_RECONCILIATION_DECISION_VALUES = [
+  "continue",
+  "revoke",
+] as const;
+
+export type RouteReconciliationDecision =
+  | "continue"
+  | "revoke";
+
+/**
+ * Why a route was continued or closed. It is a closed vocabulary so that every decision is
+ * loggable and auditable without free text (docs/SECURITY.md section 18).
+ */
+export const ROUTE_RECONCILIATION_REASON_VALUES = [
+  "authorised",
+  "unknown_route",
+  "expired",
+  "revoked",
+  "not_authorised",
+  "destination_mismatch",
+] as const;
+
+export type RouteReconciliationReason =
+  | "authorised"
+  | "unknown_route"
+  | "expired"
+  | "revoked"
+  | "not_authorised"
+  | "destination_mismatch";
+
+/**
+ * The control plane's authoritative answer for one browser session on reconnect
+ * (docs/CONNECTOR_PROTOCOL.md section 17). re_establish rebuilds the session's data path;
+ * end closes what the connector still holds for it.
+ */
+export const SESSION_RECONCILIATION_DECISION_VALUES = [
+  "re_establish",
+  "end",
+] as const;
+
+export type SessionReconciliationDecision =
+  | "re_establish"
+  | "end";
+
+/**
+ * Why a session was re-established or ended. A closed vocabulary, for the same reason as
+ * route_reconciliation_reason.
+ */
+export const SESSION_RECONCILIATION_REASON_VALUES = [
+  "route_resumed",
+  "route_revoked",
+  "session_ended",
+  "connector_reconnected",
+] as const;
+
+export type SessionReconciliationReason =
+  | "route_resumed"
+  | "route_revoked"
+  | "session_ended"
+  | "connector_reconnected";
+
+/**
  * Which side of the trust boundary sends each message type.
  */
 export const MESSAGE_DIRECTIONS: Readonly<Record<MessageType, "connector_to_control_plane" | "control_plane_to_connector">> = {
@@ -147,6 +236,8 @@ export const MESSAGE_DIRECTIONS: Readonly<Record<MessageType, "connector_to_cont
   "heartbeat": "connector_to_control_plane",
   "route.publish": "control_plane_to_connector",
   "route.publish.ack": "connector_to_control_plane",
+  "connector.reconnect.request": "connector_to_control_plane",
+  "connector.reconnect.response": "control_plane_to_connector",
 };
 
 /**
@@ -158,6 +249,8 @@ export const MESSAGE_CHANNELS: Readonly<Record<MessageType, Channel>> = {
   "heartbeat": "heartbeat",
   "route.publish": "routes",
   "route.publish.ack": "routes",
+  "connector.reconnect.request": "control",
+  "connector.reconnect.response": "control",
 };
 
 /**
@@ -170,6 +263,8 @@ export const PAYLOAD_MAX_BYTES: Readonly<Record<MessageType, number>> = {
   "heartbeat": 1024,
   "route.publish": 2048,
   "route.publish.ack": 1024,
+  "connector.reconnect.request": 32768,
+  "connector.reconnect.response": 57344,
 };
 
 /**
@@ -634,6 +729,194 @@ export interface DataStreamHeader {
 }
 
 /**
+ * One route the connector believes it is still serving (docs/CONNECTOR_PROTOCOL.md section
+ * 17). It is a claim, not an authorisation: the control plane decides whether the route
+ * continues.
+ */
+export interface ReconnectRoute {
+  /**
+   * Published-service identity the connector holds.
+   */
+  readonly route_id: Identifier;
+  /**
+   * Project the connector believes the route belongs to.
+   */
+  readonly project_id: Identifier;
+  /**
+   * Workspace the connector believes the route belongs to.
+   */
+  readonly workspace_id: Identifier;
+  /**
+   * Destination the connector is opening for this route, as host:port. A destination that
+   * differs from the authoritative record is closed rather than continued, because
+   * docs/ARCHITECTURE.md section 14 forbids silently redirecting traffic to a different
+   * environment.
+   */
+  readonly observed_destination: string;
+  /**
+   * Expiry the connector recorded at publication.
+   */
+  readonly expires_at: Timestamp;
+}
+
+/**
+ * One data stream the connector still holds open (docs/CONNECTOR_PROTOCOL.md section 17).
+ * A stream whose route is revoked is closed with the route.
+ */
+export interface ReconnectStream {
+  /**
+   * Application-level stream identifier from the data-stream header.
+   */
+  readonly stream_id: Identifier;
+  /**
+   * Route the stream belongs to.
+   */
+  readonly route_id: Identifier;
+  /**
+   * Browser session the stream was opened for.
+   */
+  readonly browser_session_id: Identifier;
+  /**
+   * Absolute deadline the stream carries.
+   */
+  readonly deadline: Timestamp;
+}
+
+/**
+ * Head state of one workspace (docs/CONNECTOR_PROTOCOL.md section 9). Stage 0 reports no
+ * workspace head state; the field exists so that Stage 1 Git context does not change the
+ * message shape. Source file contents are never reported and this object has no field
+ * capable of carrying them.
+ */
+export interface WorkspaceHead {
+  /**
+   * Workspace this head state describes.
+   */
+  readonly workspace_id: Identifier;
+  /**
+   * Checked-out branch.
+   */
+  readonly branch: string;
+  /**
+   * HEAD commit identifier.
+   */
+  readonly head_commit: string;
+  /**
+   * Whether the working tree has uncommitted changes.
+   */
+  readonly dirty: boolean;
+}
+
+/**
+ * What the connector believes it holds, sent on every control-channel establishment
+ * (docs/CONNECTOR_PROTOCOL.md section 17). All six fields are always present; Stage 0
+ * sends empty collections for known_agent_sessions and workspace_head_state, which are
+ * Stage 1 capabilities. The payload carries no credential: the identity is the mutually
+ * authenticated client certificate the channel already presented.
+ */
+export interface ReconnectRequest {
+  /**
+   * Connector release version, which the control plane classifies per section 19.
+   */
+  readonly connector_version: SemanticVersion;
+  /**
+   * Capabilities this connector build supports.
+   */
+  readonly capabilities: readonly ConnectorCapability[];
+  /**
+   * Routes the connector believes it is still serving.
+   */
+  readonly active_routes: readonly ReconnectRoute[];
+  /**
+   * Data streams the connector still holds open.
+   */
+  readonly active_streams: readonly ReconnectStream[];
+  /**
+   * Agent sessions the connector has observed locally, conventionally prefixed ags_. Stage
+   * 0 sends an empty array; agent-session re-establishment is Stage 1.
+   */
+  readonly known_agent_sessions: readonly Identifier[];
+  /**
+   * Head state of the workspaces this connector serves. Stage 0 sends an empty array;
+   * workspace discovery is Stage 1 (section 9).
+   */
+  readonly workspace_head_state: readonly WorkspaceHead[];
+}
+
+/**
+ * The control plane's authoritative answer for one route (docs/CONNECTOR_PROTOCOL.md
+ * section 17). A continued route restates the whole publication, so a connector that lost
+ * its route table to a restart resumes the same route_id and the same destination without
+ * re-publication; the connector still applies its own section 11 validation, because
+ * schema acceptance is not authorisation.
+ */
+export interface RouteDecision {
+  /**
+   * Route this decision answers for.
+   */
+  readonly route_id: Identifier;
+  /**
+   * Continue or revoke. The control plane's answer wins in every disagreement.
+   */
+  readonly decision: RouteReconciliationDecision;
+  /**
+   * Why the decision was reached, for the connector's log and the control plane's audit
+   * trail.
+   */
+  readonly reason: RouteReconciliationReason;
+  /**
+   * The authoritative publication to resume. Present only when the decision is continue.
+   */
+  readonly route?: RoutePublish;
+}
+
+/**
+ * The control plane's authoritative answer for one browser session
+ * (docs/CONNECTOR_PROTOCOL.md section 17).
+ */
+export interface SessionDecision {
+  /**
+   * Browser session this decision answers for, conventionally prefixed brs_.
+   */
+  readonly browser_session_id: Identifier;
+  /**
+   * Re-establish the session's data path, or end what the connector still holds for it.
+   */
+  readonly decision: SessionReconciliationDecision;
+  /**
+   * Why the decision was reached.
+   */
+  readonly reason: SessionReconciliationReason;
+}
+
+/**
+ * The control plane's authoritative desired state (docs/CONNECTOR_PROTOCOL.md section 17).
+ * It is the answer to exactly one connector.reconnect.request, correlated by the
+ * envelope's correlation_id. A route the control plane does not name is not authorised:
+ * the connector closes anything the response does not continue.
+ */
+export interface ReconnectResponse {
+  /**
+   * The instant the control plane reconciled. It is authoritative for expiry arithmetic,
+   * so that clock skew on the development machine cannot extend a route.
+   */
+  readonly reconciled_at: Timestamp;
+  /**
+   * Section 19 classification of the reported connector version.
+   */
+  readonly upgrade: UpgradeClassification;
+  /**
+   * One decision per route, covering both the routes the connector claimed and the routes
+   * the control plane holds for it.
+   */
+  readonly routes: readonly RouteDecision[];
+  /**
+   * One decision per affected browser session.
+   */
+  readonly sessions: readonly SessionDecision[];
+}
+
+/**
  * A decoded control frame: envelope header plus the payload selected by its type.
  */
 export type ConnectorFrame =
@@ -661,5 +944,15 @@ export type ConnectorFrame =
       readonly envelope: Envelope;
       readonly type: "route.publish.ack";
       readonly payload: RoutePublishAck;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "connector.reconnect.request";
+      readonly payload: ReconnectRequest;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "connector.reconnect.response";
+      readonly payload: ReconnectResponse;
     }
 ;

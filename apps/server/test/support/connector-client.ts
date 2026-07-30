@@ -12,10 +12,13 @@ import { generateKeyPairSync, X509Certificate } from "node:crypto";
 import { randomUUID } from "node:crypto";
 
 import {
+  decodeControlFrame,
   encodeControlFrame,
   SensitiveString,
   type ConnectorFrame,
   type Heartbeat,
+  type ReconnectRequest,
+  type ReconnectResponse,
   type RegistrationResponse,
 } from "@reviewplane/protocol";
 import { WebSocket, type ClientOptions } from "ws";
@@ -146,6 +149,15 @@ export interface ControlChannel {
   readonly socket: WebSocket;
   send(payload: string | Buffer): void;
   sendHeartbeat(overrides?: Partial<Heartbeat>): void;
+  /**
+   * Sends the `docs/CONNECTOR_PROTOCOL.md` §17 reconnect payload and resolves
+   * with the desired state that answers it.
+   *
+   * A double is what makes the hostile cases testable: a real connector will not
+   * claim another connector's route on demand, and that is exactly the claim
+   * reconciliation has to refuse.
+   */
+  reconnect(overrides?: Partial<ReconnectRequest>, timeoutMs?: number): Promise<ReconnectResponse>;
   closed(): Promise<{ code: number; reason: string }>;
   close(): void;
 }
@@ -242,6 +254,46 @@ export function openControlChannel(
           payload,
         };
         socket.send(encodeControlFrame(frame));
+      },
+      reconnect(overrides = {}, timeoutMs = 15_000) {
+        const payload: ReconnectRequest = {
+          connector_version: "0.1.0",
+          capabilities: ["http-tunnel"],
+          active_routes: [],
+          active_streams: [],
+          known_agent_sessions: [],
+          workspace_head_state: [],
+          ...overrides,
+        };
+        const id = messageId();
+        const frame: ConnectorFrame = {
+          envelope: {
+            protocol_version: 1,
+            message_id: id,
+            type: "connector.reconnect.request",
+            sent_at: rfc3339(),
+            connector_id: identity.connectorId,
+          },
+          type: "connector.reconnect.request",
+          payload,
+        };
+        return new Promise<ReconnectResponse>((resolveDesired, rejectDesired) => {
+          const timer = setTimeout(() => {
+            socket.off("message", onMessage);
+            rejectDesired(new Error("the control plane sent no desired state"));
+          }, timeoutMs);
+          function onMessage(data: Buffer): void {
+            const decoded = decodeControlFrame(Buffer.isBuffer(data) ? data : Buffer.from(data));
+            if (!decoded.ok) return;
+            if (decoded.value.type !== "connector.reconnect.response") return;
+            if (decoded.value.envelope.correlation_id !== id) return;
+            clearTimeout(timer);
+            socket.off("message", onMessage);
+            resolveDesired(decoded.value.payload);
+          }
+          socket.on("message", onMessage);
+          socket.send(encodeControlFrame(frame));
+        });
       },
       closed: () => closedPromise,
       close() {

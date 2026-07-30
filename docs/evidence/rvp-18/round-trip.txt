@@ -1,0 +1,3 @@
+pre-disconnect   route=svc_protocolsim status=200 environment=authorised body="environment=authorised path=/before"
+mid-disconnect   route=svc_protocolsim code=CONNECTOR_OFFLINE elapsed=0s
+post-reconnect   route=svc_protocolsim status=200 environment=authorised body="environment=authorised path=/after"

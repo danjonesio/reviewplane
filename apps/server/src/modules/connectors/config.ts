@@ -59,6 +59,32 @@ export interface ConnectorModuleConfig {
   readonly disconnectedAfterSeconds: number;
   /** How often the heartbeat monitor sweeps. */
   readonly monitorIntervalSeconds: number;
+  /**
+   * Connector release below which a reconnect is classified `upgrade_required`
+   * (`docs/CONNECTOR_PROTOCOL.md` §19). The connector reports the classification
+   * and stops; Stage 0 does not self-update. The default accepts every build,
+   * because refusing a connector is an operator decision rather than a default.
+   */
+  readonly minimumConnectorVersion: string;
+  /**
+   * Connector release below which an upgrade is recommended. The connector logs
+   * the recommendation and keeps running.
+   */
+  readonly recommendedConnectorVersion: string;
+}
+
+/** Accepts the schema's `semantic_version` shape and nothing looser. */
+const VERSION_PATTERN = /^[0-9A-Za-z][0-9A-Za-z.+-]*$/u;
+
+function readVersion(environment: Environment, name: string, fallback: string): string {
+  const value = optionalString(environment, name);
+  if (value === undefined) return fallback;
+  if (!VERSION_PATTERN.test(value)) {
+    throw new ConfigurationError(
+      `${name} must be a connector release version such as 0.1.0, found ${JSON.stringify(value)}`,
+    );
+  }
+  return value;
 }
 
 export function loadConnectorModuleConfig(environment: Environment = process.env): ConnectorModuleConfig {
@@ -140,5 +166,11 @@ export function loadConnectorModuleConfig(environment: Environment = process.env
       minimum: 1,
       maximum: 3600,
     }),
+    minimumConnectorVersion: readVersion(environment, "REVIEWPLANE_CONNECTOR_MINIMUM_VERSION", "0.0.0"),
+    recommendedConnectorVersion: readVersion(
+      environment,
+      "REVIEWPLANE_CONNECTOR_RECOMMENDED_VERSION",
+      "0.0.0",
+    ),
   };
 }

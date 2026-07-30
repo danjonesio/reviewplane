@@ -4,6 +4,7 @@
 import type { SchemaViolation } from "./types.ts";
 import {
   checkArray,
+  checkBoolean,
   checkInteger,
   checkNumber,
   checkObject,
@@ -28,6 +29,7 @@ const PATTERN_10 = new RegExp("^[a-z0-9]+$", "u");
 const PATTERN_11 = new RegExp("^[a-z0-9_]+$", "u");
 const PATTERN_12 = new RegExp("^[A-Za-z0-9.:_-]+$", "u");
 const PATTERN_13 = new RegExp("^[A-Za-z0-9.:_\\[\\]-]+:[0-9]{1,5}$", "u");
+const PATTERN_14 = new RegExp("^[0-9a-f]+$", "u");
 
 /**
  * Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the
@@ -130,7 +132,7 @@ export function validateDestinationProtocol(value: unknown, path: string, out: S
  * equal the keys of x-protocol.messages.
  */
 export function validateMessageType(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["connector.registration.request","connector.registration.response","heartbeat","route.publish","route.publish.ack"] });
+  checkString(value, path, out, { values: ["connector.registration.request","connector.registration.response","heartbeat","route.publish","route.publish.ack","connector.reconnect.request","connector.reconnect.response"] });
 }
 
 /**
@@ -139,6 +141,50 @@ export function validateMessageType(value: unknown, path: string, out: SchemaVio
  */
 export function validateErrorClass(value: unknown, path: string, out: SchemaViolation[]): void {
   checkString(value, path, out, { values: ["ENROLMENT_TOKEN_INVALID","IDENTITY_REVOKED","PROTOCOL_UNSUPPORTED","PROJECT_NOT_AUTHORISED","WORKSPACE_NOT_FOUND","DESTINATION_NOT_ALLOWED","PORT_NOT_LISTENING","ROUTE_LIMIT_EXCEEDED","ROUTE_EXPIRED","STREAM_LIMIT_EXCEEDED","CONTROL_PLANE_UNAVAILABLE","UPGRADE_REQUIRED"] });
+}
+
+/**
+ * Control-plane classification of the connector build (docs/CONNECTOR_PROTOCOL.md section
+ * 19). upgrade_required and unsupported are terminal: the connector reports the
+ * classification and stops rather than retrying with a build the control plane has just
+ * refused (section 5.3).
+ */
+export function validateUpgradeClassification(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["compatible","upgrade_recommended","upgrade_required","unsupported"] });
+}
+
+/**
+ * The control plane's authoritative answer for one route on reconnect
+ * (docs/CONNECTOR_PROTOCOL.md section 17). continue resumes the route under the same
+ * route_id without re-publication; revoke closes it.
+ */
+export function validateRouteReconciliationDecision(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["continue","revoke"] });
+}
+
+/**
+ * Why a route was continued or closed. It is a closed vocabulary so that every decision is
+ * loggable and auditable without free text (docs/SECURITY.md section 18).
+ */
+export function validateRouteReconciliationReason(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["authorised","unknown_route","expired","revoked","not_authorised","destination_mismatch"] });
+}
+
+/**
+ * The control plane's authoritative answer for one browser session on reconnect
+ * (docs/CONNECTOR_PROTOCOL.md section 17). re_establish rebuilds the session's data path;
+ * end closes what the connector still holds for it.
+ */
+export function validateSessionReconciliationDecision(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["re_establish","end"] });
+}
+
+/**
+ * Why a session was re-established or ended. A closed vocabulary, for the same reason as
+ * route_reconciliation_reason.
+ */
+export function validateSessionReconciliationReason(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["route_resumed","route_revoked","session_ended","connector_reconnected"] });
 }
 
 /**
@@ -188,7 +234,7 @@ export function validateEnvelope(value: unknown, path: string, out: SchemaViolat
   if (matchesCondition(source["type"], ["connector.registration.request", "connector.registration.response"])) {
     forbidProperty(source, path, "connector_id", "the registration exchange precedes connector identity assignment", out);
   }
-  if (matchesCondition(source["type"], ["heartbeat", "route.publish", "route.publish.ack"])) {
+  if (matchesCondition(source["type"], ["heartbeat", "route.publish", "route.publish.ack", "connector.reconnect.request", "connector.reconnect.response"])) {
     requireProperty(source, path, "connector_id", "every post-enrolment message is attributed to a connector identity", out);
   }
 }
@@ -555,5 +601,279 @@ export function validateDataStreamHeader(value: unknown, path: string, out: Sche
   }
   if (source["deadline"] !== undefined) {
     validateTimestamp(source["deadline"], `${path}.deadline`, out);
+  }
+}
+
+/**
+ * Destination the connector is opening for this route, as host:port. A destination that
+ * differs from the authoritative record is closed rather than continued, because
+ * docs/ARCHITECTURE.md section 14 forbids silently redirecting traffic to a different
+ * environment.
+ */
+export function validateReconnectRouteObservedDestination(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 3, maxLength: 262, pattern: PATTERN_13 });
+}
+
+/**
+ * One route the connector believes it is still serving (docs/CONNECTOR_PROTOCOL.md section
+ * 17). It is a claim, not an authorisation: the control plane decides whether the route
+ * continues.
+ */
+export function validateReconnectRoute(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["route_id", "project_id", "workspace_id", "observed_destination", "expires_at"], ["route_id", "project_id", "workspace_id", "observed_destination", "expires_at"]);
+  if (source === null) return;
+  if (source["route_id"] !== undefined) {
+    validateIdentifier(source["route_id"], `${path}.route_id`, out);
+  }
+  if (source["project_id"] !== undefined) {
+    validateIdentifier(source["project_id"], `${path}.project_id`, out);
+  }
+  if (source["workspace_id"] !== undefined) {
+    validateIdentifier(source["workspace_id"], `${path}.workspace_id`, out);
+  }
+  if (source["observed_destination"] !== undefined) {
+    validateReconnectRouteObservedDestination(source["observed_destination"], `${path}.observed_destination`, out);
+  }
+  if (source["expires_at"] !== undefined) {
+    validateTimestamp(source["expires_at"], `${path}.expires_at`, out);
+  }
+}
+
+/**
+ * One data stream the connector still holds open (docs/CONNECTOR_PROTOCOL.md section 17).
+ * A stream whose route is revoked is closed with the route.
+ */
+export function validateReconnectStream(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["stream_id", "route_id", "browser_session_id", "deadline"], ["stream_id", "route_id", "browser_session_id", "deadline"]);
+  if (source === null) return;
+  if (source["stream_id"] !== undefined) {
+    validateIdentifier(source["stream_id"], `${path}.stream_id`, out);
+  }
+  if (source["route_id"] !== undefined) {
+    validateIdentifier(source["route_id"], `${path}.route_id`, out);
+  }
+  if (source["browser_session_id"] !== undefined) {
+    validateIdentifier(source["browser_session_id"], `${path}.browser_session_id`, out);
+  }
+  if (source["deadline"] !== undefined) {
+    validateTimestamp(source["deadline"], `${path}.deadline`, out);
+  }
+}
+
+/**
+ * Checked-out branch.
+ */
+export function validateWorkspaceHeadBranch(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 255, pattern: PATTERN_9 });
+}
+
+/**
+ * HEAD commit identifier.
+ */
+export function validateWorkspaceHeadHeadCommit(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 7, maxLength: 64, pattern: PATTERN_14 });
+}
+
+/**
+ * Whether the working tree has uncommitted changes.
+ */
+export function validateWorkspaceHeadDirty(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * Head state of one workspace (docs/CONNECTOR_PROTOCOL.md section 9). Stage 0 reports no
+ * workspace head state; the field exists so that Stage 1 Git context does not change the
+ * message shape. Source file contents are never reported and this object has no field
+ * capable of carrying them.
+ */
+export function validateWorkspaceHead(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["workspace_id", "branch", "head_commit", "dirty"], ["workspace_id", "branch", "head_commit", "dirty"]);
+  if (source === null) return;
+  if (source["workspace_id"] !== undefined) {
+    validateIdentifier(source["workspace_id"], `${path}.workspace_id`, out);
+  }
+  if (source["branch"] !== undefined) {
+    validateWorkspaceHeadBranch(source["branch"], `${path}.branch`, out);
+  }
+  if (source["head_commit"] !== undefined) {
+    validateWorkspaceHeadHeadCommit(source["head_commit"], `${path}.head_commit`, out);
+  }
+  if (source["dirty"] !== undefined) {
+    validateWorkspaceHeadDirty(source["dirty"], `${path}.dirty`, out);
+  }
+}
+
+/**
+ * Capabilities this connector build supports.
+ */
+export function validateReconnectRequestCapabilities(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 32, uniqueItems: true })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateConnectorCapability(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Routes the connector believes it is still serving.
+ */
+export function validateReconnectRequestActiveRoutes(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 16, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateReconnectRoute(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Data streams the connector still holds open.
+ */
+export function validateReconnectRequestActiveStreams(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 32, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateReconnectStream(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Agent sessions the connector has observed locally, conventionally prefixed ags_. Stage 0
+ * sends an empty array; agent-session re-establishment is Stage 1.
+ */
+export function validateReconnectRequestKnownAgentSessions(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 32, uniqueItems: true })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateIdentifier(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Head state of the workspaces this connector serves. Stage 0 sends an empty array;
+ * workspace discovery is Stage 1 (section 9).
+ */
+export function validateReconnectRequestWorkspaceHeadState(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 8, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateWorkspaceHead(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * What the connector believes it holds, sent on every control-channel establishment
+ * (docs/CONNECTOR_PROTOCOL.md section 17). All six fields are always present; Stage 0
+ * sends empty collections for known_agent_sessions and workspace_head_state, which are
+ * Stage 1 capabilities. The payload carries no credential: the identity is the mutually
+ * authenticated client certificate the channel already presented.
+ */
+export function validateReconnectRequest(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["connector_version", "capabilities", "active_routes", "active_streams", "known_agent_sessions", "workspace_head_state"], ["connector_version", "capabilities", "active_routes", "active_streams", "known_agent_sessions", "workspace_head_state"]);
+  if (source === null) return;
+  if (source["connector_version"] !== undefined) {
+    validateSemanticVersion(source["connector_version"], `${path}.connector_version`, out);
+  }
+  if (source["capabilities"] !== undefined) {
+    validateReconnectRequestCapabilities(source["capabilities"], `${path}.capabilities`, out);
+  }
+  if (source["active_routes"] !== undefined) {
+    validateReconnectRequestActiveRoutes(source["active_routes"], `${path}.active_routes`, out);
+  }
+  if (source["active_streams"] !== undefined) {
+    validateReconnectRequestActiveStreams(source["active_streams"], `${path}.active_streams`, out);
+  }
+  if (source["known_agent_sessions"] !== undefined) {
+    validateReconnectRequestKnownAgentSessions(source["known_agent_sessions"], `${path}.known_agent_sessions`, out);
+  }
+  if (source["workspace_head_state"] !== undefined) {
+    validateReconnectRequestWorkspaceHeadState(source["workspace_head_state"], `${path}.workspace_head_state`, out);
+  }
+}
+
+/**
+ * The control plane's authoritative answer for one route (docs/CONNECTOR_PROTOCOL.md
+ * section 17). A continued route restates the whole publication, so a connector that lost
+ * its route table to a restart resumes the same route_id and the same destination without
+ * re-publication; the connector still applies its own section 11 validation, because
+ * schema acceptance is not authorisation.
+ */
+export function validateRouteDecision(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["route_id", "decision", "reason", "route"], ["route_id", "decision", "reason"]);
+  if (source === null) return;
+  if (source["route_id"] !== undefined) {
+    validateIdentifier(source["route_id"], `${path}.route_id`, out);
+  }
+  if (source["decision"] !== undefined) {
+    validateRouteReconciliationDecision(source["decision"], `${path}.decision`, out);
+  }
+  if (source["reason"] !== undefined) {
+    validateRouteReconciliationReason(source["reason"], `${path}.reason`, out);
+  }
+  if (source["route"] !== undefined) {
+    validateRoutePublish(source["route"], `${path}.route`, out);
+  }
+  if (matchesCondition(source["decision"], ["continue"])) {
+    requireProperty(source, path, "route", "a continued route restates its publication so that it can be resumed without re-publication", out);
+  }
+  if (matchesCondition(source["decision"], ["revoke"])) {
+    forbidProperty(source, path, "route", "a revoked route is closed and carries no publication to resume", out);
+  }
+}
+
+/**
+ * The control plane's authoritative answer for one browser session
+ * (docs/CONNECTOR_PROTOCOL.md section 17).
+ */
+export function validateSessionDecision(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["browser_session_id", "decision", "reason"], ["browser_session_id", "decision", "reason"]);
+  if (source === null) return;
+  if (source["browser_session_id"] !== undefined) {
+    validateIdentifier(source["browser_session_id"], `${path}.browser_session_id`, out);
+  }
+  if (source["decision"] !== undefined) {
+    validateSessionReconciliationDecision(source["decision"], `${path}.decision`, out);
+  }
+  if (source["reason"] !== undefined) {
+    validateSessionReconciliationReason(source["reason"], `${path}.reason`, out);
+  }
+}
+
+/**
+ * One decision per route, covering both the routes the connector claimed and the routes
+ * the control plane holds for it.
+ */
+export function validateReconnectResponseRoutes(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 16, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateRouteDecision(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * One decision per affected browser session.
+ */
+export function validateReconnectResponseSessions(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 16, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateSessionDecision(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * The control plane's authoritative desired state (docs/CONNECTOR_PROTOCOL.md section 17).
+ * It is the answer to exactly one connector.reconnect.request, correlated by the
+ * envelope's correlation_id. A route the control plane does not name is not authorised:
+ * the connector closes anything the response does not continue.
+ */
+export function validateReconnectResponse(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["reconciled_at", "upgrade", "routes", "sessions"], ["reconciled_at", "upgrade", "routes", "sessions"]);
+  if (source === null) return;
+  if (source["reconciled_at"] !== undefined) {
+    validateTimestamp(source["reconciled_at"], `${path}.reconciled_at`, out);
+  }
+  if (source["upgrade"] !== undefined) {
+    validateUpgradeClassification(source["upgrade"], `${path}.upgrade`, out);
+  }
+  if (source["routes"] !== undefined) {
+    validateReconnectResponseRoutes(source["routes"], `${path}.routes`, out);
+  }
+  if (source["sessions"] !== undefined) {
+    validateReconnectResponseSessions(source["sessions"], `${path}.sessions`, out);
   }
 }

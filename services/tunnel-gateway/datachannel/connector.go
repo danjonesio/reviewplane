@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -90,6 +91,39 @@ func (t *RouteTable) Len() int {
 	return len(t.routes)
 }
 
+// List returns every admitted route, ordered by route identifier so that two
+// reads of an unchanged table produce the same reconnect payload
+// (docs/CONNECTOR_PROTOCOL.md section 17).
+func (t *RouteTable) List() []LocalRoute {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	routes := make([]LocalRoute, 0, len(t.routes))
+	for _, route := range t.routes {
+		routes = append(routes, route)
+	}
+	sort.Slice(routes, func(i, j int) bool { return routes[i].RouteID < routes[j].RouteID })
+	return routes
+}
+
+// Drain removes every route and returns what was removed.
+//
+// It is how a connector enters the closed-route safe state of
+// docs/CONNECTOR_PROTOCOL.md section 17 while it waits for the control plane's
+// desired state: an unreconciled route serves nothing, so a reconciliation that
+// times out cannot leave traffic flowing to a destination nobody has
+// re-authorised.
+func (t *RouteTable) Drain() []LocalRoute {
+	t.mu.Lock()
+	routes := make([]LocalRoute, 0, len(t.routes))
+	for _, route := range t.routes {
+		routes = append(routes, route)
+	}
+	t.routes = map[string]LocalRoute{}
+	t.mu.Unlock()
+	sort.Slice(routes, func(i, j int) bool { return routes[i].RouteID < routes[j].RouteID })
+	return routes
+}
+
 // PublicationConfig is the connector's own publication policy, the
 // configuration of docs/CONNECTOR_PROTOCOL.md section 20.
 type PublicationConfig struct {
@@ -158,6 +192,37 @@ func ValidatePublication(
 	publish connectorv1.RoutePublish,
 	config PublicationConfig,
 ) connectorv1.RoutePublishAck {
+	return validate(table, publish, config, true)
+}
+
+// ValidateResumption runs the same checks for a route the control plane has
+// told the connector to continue after a reconnect
+// (docs/CONNECTOR_PROTOCOL.md section 17).
+//
+// It differs from ValidatePublication in exactly one way: it does not wait for
+// the destination to be listening. The startup grace of section 11 answers a
+// publication — "is this worth publishing yet?" — and the control plane has
+// already answered that; on a resumption the same wait would make reconciliation
+// take a bounded-but-real amount of time per route and would silently drop a
+// route the control plane believes is live. A destination that has gone away is
+// reported per stream as PORT_NOT_LISTENING, which is the diagnosis an operator
+// can act on. Every authorisation check still runs, so the connector's own
+// allow-list still refuses a destination the control plane should not have
+// named.
+func ValidateResumption(
+	table *RouteTable,
+	publish connectorv1.RoutePublish,
+	config PublicationConfig,
+) connectorv1.RoutePublishAck {
+	return validate(table, publish, config, false)
+}
+
+func validate(
+	table *RouteTable,
+	publish connectorv1.RoutePublish,
+	config PublicationConfig,
+	probeDestination bool,
+) connectorv1.RoutePublishAck {
 	config = config.withDefaults()
 	reject := func(class connectorv1.ErrorClass) connectorv1.RoutePublishAck {
 		return connectorv1.RoutePublishAck{
@@ -207,7 +272,7 @@ func ValidatePublication(
 		ExpiresAt:                expiresAt,
 		AllowedBrowserSessionIDs: append([]string(nil), publish.AllowedBrowserSessionIDs...),
 	}
-	if !config.Probe(route.Destination(), config.StartupGrace) {
+	if probeDestination && !config.Probe(route.Destination(), config.StartupGrace) {
 		return reject(connectorv1.ErrorClassPortNotListening)
 	}
 

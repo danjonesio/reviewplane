@@ -55,8 +55,15 @@ func (m *Manager) SuperviseDataChannel(ctx context.Context, options SupervisorOp
 		Jitter:  options.Reconnect.Jitter,
 	}
 
-	for attempt := 1; ctx.Err() == nil; attempt++ {
-		err := m.serveOnce(ctx, options, logger)
+	// The attempt counter bounds consecutive failures rather than the connector's
+	// lifetime: a channel that stayed up longer than the longest backoff delay
+	// ends the incident, and the next failure starts a new one. The window is the
+	// maximum delay rather than "it connected at all", so a gateway that accepts
+	// a channel and drops it immediately is still backed off from.
+	attempt := 0
+	for ctx.Err() == nil {
+		attempt++
+		uptime, err := m.serveOnce(ctx, options, logger)
 		if err == nil || ctx.Err() != nil {
 			return
 		}
@@ -67,6 +74,9 @@ func (m *Manager) SuperviseDataChannel(ctx context.Context, options SupervisorOp
 				slog.String("error", failure.Err.Error()),
 			)
 			return
+		}
+		if policy.Max > 0 && uptime >= policy.Max {
+			attempt = 1
 		}
 		delay, sleepErr := policy.Sleep(ctx, attempt)
 		logger.Warn("data channel lost; reconnecting",
@@ -81,30 +91,43 @@ func (m *Manager) SuperviseDataChannel(ctx context.Context, options SupervisorOp
 	}
 }
 
-func (m *Manager) serveOnce(ctx context.Context, options SupervisorOptions, logger *slog.Logger) error {
+// serveOnce runs one data channel and reports how long it was up, so that the
+// supervisor can tell a failed dial from a channel that worked for a while and
+// then dropped.
+func (m *Manager) serveOnce(
+	ctx context.Context,
+	options SupervisorOptions,
+	_ *slog.Logger,
+) (time.Duration, error) {
 	if !options.Store.Enrolled() {
-		return errors.New("routes: this environment holds no connector identity")
+		return 0, errors.New("routes: this environment holds no connector identity")
 	}
 	record, err := options.Store.LoadRecord()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	clientCertificate, _, err := options.Store.ClientCertificate()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	tlsConfig, err := transport.NewTLSConfig(transport.TLSOptions{
 		CAFile:            options.Config.ControlPlane.TLS.CAFile,
 		ClientCertificate: &clientCertificate,
 	})
 	if err != nil {
-		return err
+		return 0, err
 	}
-	return m.ServeDataChannel(ctx, DataChannelOptions{
+	var establishedAt time.Time
+	err = m.ServeDataChannel(ctx, DataChannelOptions{
 		Endpoint:         record.DataURL,
 		ConnectorID:      record.ConnectorID,
 		TLSConfig:        tlsConfig,
 		HandshakeTimeout: options.HandshakeTimeout,
 		DialTimeout:      options.DialTimeout,
+		OnEstablished:    func() { establishedAt = time.Now() },
 	})
+	if establishedAt.IsZero() {
+		return 0, err
+	}
+	return time.Since(establishedAt), err
 }

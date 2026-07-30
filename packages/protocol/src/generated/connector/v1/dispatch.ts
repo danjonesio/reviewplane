@@ -12,6 +12,8 @@ import type {
   Envelope,
   Heartbeat,
   MessageType,
+  ReconnectRequest,
+  ReconnectResponse,
   RegistrationRequest,
   RegistrationResponse,
   RoutePublish,
@@ -19,6 +21,8 @@ import type {
 } from "./types.ts";
 import {
   decodeHeartbeat,
+  decodeReconnectRequest,
+  decodeReconnectResponse,
   decodeRegistrationRequest,
   decodeRegistrationResponse,
   decodeRoutePublish,
@@ -26,6 +30,8 @@ import {
 } from "./decode.ts";
 import {
   encodeHeartbeat,
+  encodeReconnectRequest,
+  encodeReconnectResponse,
   encodeRegistrationRequest,
   encodeRegistrationResponse,
   encodeRoutePublish,
@@ -33,6 +39,8 @@ import {
 } from "./encode.ts";
 import {
   validateHeartbeat,
+  validateReconnectRequest,
+  validateReconnectResponse,
   validateRegistrationRequest,
   validateRegistrationResponse,
   validateRoutePublish,
@@ -47,7 +55,9 @@ export type ConnectorPayload =
   | RegistrationResponse
   | Heartbeat
   | RoutePublish
-  | RoutePublishAck;
+  | RoutePublishAck
+  | ReconnectRequest
+  | ReconnectResponse;
 
 /**
  * Validates a payload against the schema selected by message type.
@@ -69,6 +79,12 @@ export function validatePayload(type: MessageType, value: unknown, path: string,
     case "route.publish.ack":
       validateRoutePublishAck(value, path, out);
       return;
+    case "connector.reconnect.request":
+      validateReconnectRequest(value, path, out);
+      return;
+    case "connector.reconnect.response":
+      validateReconnectResponse(value, path, out);
+      return;
   }
 }
 
@@ -87,6 +103,10 @@ export function decodeFrame(envelope: Envelope, value: unknown): ConnectorFrame 
       return { envelope, type: "route.publish", payload: decodeRoutePublish(value) };
     case "route.publish.ack":
       return { envelope, type: "route.publish.ack", payload: decodeRoutePublishAck(value) };
+    case "connector.reconnect.request":
+      return { envelope, type: "connector.reconnect.request", payload: decodeReconnectRequest(value) };
+    case "connector.reconnect.response":
+      return { envelope, type: "connector.reconnect.response", payload: decodeReconnectResponse(value) };
   }
 }
 
@@ -105,5 +125,9 @@ export function encodeFramePayload(frame: ConnectorFrame): string {
       return encodeRoutePublish(frame.payload);
     case "route.publish.ack":
       return encodeRoutePublishAck(frame.payload);
+    case "connector.reconnect.request":
+      return encodeReconnectRequest(frame.payload);
+    case "connector.reconnect.response":
+      return encodeReconnectResponse(frame.payload);
   }
 }

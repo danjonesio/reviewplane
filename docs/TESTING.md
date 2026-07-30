@@ -121,6 +121,10 @@ Required transition tests:
 - Malformed frames
 - Slow consumer and backpressure
 
+Connector reconnect is the Stage 0 exit criterion "Protocol round trip survives connector reconnect", and it is a three-part assertion rather than a single one: a request issued before the interruption succeeds, a request issued during it fails with `CONNECTOR_OFFLINE` or `PUBLISHED_SERVICE_UNAVAILABLE` and does not hang, and an equivalent request issued afterwards succeeds over the same `route_id` against the same destination with no operator action. A test making it MUST also show that no request was served by a different environment, which needs a second environment to be wrong about.
+
+Running today: `services/connector/internal/protocolsim` (the Protocol simulation mode of `DEVELOPMENT.md` §4 — the three-part round trip, the six-field reconnect payload, routes closed on reconciliation, the desired-state timeout, flapping reconnects, the terminal upgrade classification, and the measured reconnect-time distribution over ten forced disconnects), `apps/server/test/connector-reconnect.test.ts` (a real connector process killed and restarted, a control-plane restart, claims on another connector's route, an expired route, a revoked identity, and browser sessions degraded and resumed) and `apps/server/test/reconciliation.test.ts` (the decision table).
+
 ## 7. Browser tests
 
 - Launch and termination
@@ -208,6 +212,12 @@ Verify persisted artefacts and logs are redacted according to policy.
 | Failure | Expected behaviour |
 |---|---|
 | Connector disconnect during navigation | Action fails clearly, route unavailable, session remains diagnosable |
+| Connector process killed and restarted | Route resumes under the same `route_id` and destination, no operator action |
+| Network partition with the connector process alive | Bounded jittered reconnect; requests fail with a stable code meanwhile |
+| Control-plane restart while a connector is connected | Connector reconnects and reconciles; unexpired authorised routes continue |
+| Connector disconnect during an open data stream | Stream fails with `CONNECTOR_OFFLINE`, never a generic error and never a hang |
+| Repeated flapping reconnects | No duplicate routes, no leaked streams |
+| Timeout awaiting the reconnect desired state | Connector serves no route rather than serving an unreconciled one |
 | Worker crash after screenshot upload | Uploaded evidence remains, session marked failed |
 | API restart during live view | Client reconnects and refreshes state |
 | Database unavailable | State changes denied; no unaudited continuation |

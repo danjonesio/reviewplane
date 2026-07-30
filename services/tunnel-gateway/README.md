@@ -94,6 +94,14 @@ Expiry and revocation share `ROUTE_EXPIRED`. `docs/CONNECTOR_PROTOCOL.md` §21 i
 a closed vocabulary and adding a class needs an ADR; which of the two occurred
 is recorded in the audit trail and the metrics, not on the wire.
 
+Check 10 also applies after the request has started. A connector whose data
+channel drops mid-request ends every stream on it with a cause the request path
+recognises, so the caller receives `CONNECTOR_OFFLINE` with 503 rather than a
+generic upstream failure, and never a hang (`docs/MCP_SPEC.md` §12,
+`docs/ARCHITECTURE.md` §14). The route stays registered: it is unavailable, not
+gone, and it resumes when the connector reconnects and the control plane
+re-authorises it (`docs/CONNECTOR_PROTOCOL.md` §17).
+
 ## Connector identity
 
 The data channel is mutually authenticated TLS 1.3 with

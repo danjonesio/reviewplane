@@ -49,6 +49,18 @@
         "direction": "connector_to_control_plane",
         "payload": "route_publish_ack",
         "description": "Connector acknowledgement of a route publication request (docs/CONNECTOR_PROTOCOL.md section 11)."
+      },
+      "connector.reconnect.request": {
+        "channel": "control",
+        "direction": "connector_to_control_plane",
+        "payload": "reconnect_request",
+        "description": "What the connector believes it is serving when a control channel is established, offered for reconciliation against the control plane's authoritative view (docs/CONNECTOR_PROTOCOL.md section 17)."
+      },
+      "connector.reconnect.response": {
+        "channel": "control",
+        "direction": "control_plane_to_connector",
+        "payload": "reconnect_response",
+        "description": "The control plane's authoritative desired state: continue route, revoke route, re-establish session and the upgrade classification (docs/CONNECTOR_PROTOCOL.md sections 17 and 19). The connector obeys it; it never assumes its own view is correct."
       }
     },
     "standalone": {
@@ -237,7 +249,9 @@
         "connector.registration.response",
         "heartbeat",
         "route.publish",
-        "route.publish.ack"
+        "route.publish.ack",
+        "connector.reconnect.request",
+        "connector.reconnect.response"
       ]
     },
     "error_class": {
@@ -310,7 +324,13 @@
         {
           "when": {
             "property": "type",
-            "in": ["heartbeat", "route.publish", "route.publish.ack"]
+            "in": [
+              "heartbeat",
+              "route.publish",
+              "route.publish.ack",
+              "connector.reconnect.request",
+              "connector.reconnect.response"
+            ]
           },
           "required": ["connector_id"],
           "detail": "every post-enrolment message is attributed to a connector identity"
@@ -670,6 +690,273 @@
         "deadline": {
           "$ref": "#/$defs/timestamp",
           "description": "Absolute deadline after which the stream is closed."
+        }
+      }
+    },
+    "upgrade_classification": {
+      "type": "string",
+      "description": "Control-plane classification of the connector build (docs/CONNECTOR_PROTOCOL.md section 19). upgrade_required and unsupported are terminal: the connector reports the classification and stops rather than retrying with a build the control plane has just refused (section 5.3).",
+      "enum": ["compatible", "upgrade_recommended", "upgrade_required", "unsupported"]
+    },
+    "route_reconciliation_decision": {
+      "type": "string",
+      "description": "The control plane's authoritative answer for one route on reconnect (docs/CONNECTOR_PROTOCOL.md section 17). continue resumes the route under the same route_id without re-publication; revoke closes it.",
+      "enum": ["continue", "revoke"]
+    },
+    "route_reconciliation_reason": {
+      "type": "string",
+      "description": "Why a route was continued or closed. It is a closed vocabulary so that every decision is loggable and auditable without free text (docs/SECURITY.md section 18).",
+      "enum": [
+        "authorised",
+        "unknown_route",
+        "expired",
+        "revoked",
+        "not_authorised",
+        "destination_mismatch"
+      ]
+    },
+    "session_reconciliation_decision": {
+      "type": "string",
+      "description": "The control plane's authoritative answer for one browser session on reconnect (docs/CONNECTOR_PROTOCOL.md section 17). re_establish rebuilds the session's data path; end closes what the connector still holds for it.",
+      "enum": ["re_establish", "end"]
+    },
+    "session_reconciliation_reason": {
+      "type": "string",
+      "description": "Why a session was re-established or ended. A closed vocabulary, for the same reason as route_reconciliation_reason.",
+      "enum": ["route_resumed", "route_revoked", "session_ended", "connector_reconnected"]
+    },
+    "reconnect_route": {
+      "type": "object",
+      "description": "One route the connector believes it is still serving (docs/CONNECTOR_PROTOCOL.md section 17). It is a claim, not an authorisation: the control plane decides whether the route continues.",
+      "additionalProperties": false,
+      "required": [
+        "route_id",
+        "project_id",
+        "workspace_id",
+        "observed_destination",
+        "expires_at"
+      ],
+      "properties": {
+        "route_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Published-service identity the connector holds."
+        },
+        "project_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Project the connector believes the route belongs to."
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Workspace the connector believes the route belongs to."
+        },
+        "observed_destination": {
+          "type": "string",
+          "description": "Destination the connector is opening for this route, as host:port. A destination that differs from the authoritative record is closed rather than continued, because docs/ARCHITECTURE.md section 14 forbids silently redirecting traffic to a different environment.",
+          "minLength": 3,
+          "maxLength": 262,
+          "pattern": "^[A-Za-z0-9.:_\\[\\]-]+:[0-9]{1,5}$"
+        },
+        "expires_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "Expiry the connector recorded at publication."
+        }
+      }
+    },
+    "reconnect_stream": {
+      "type": "object",
+      "description": "One data stream the connector still holds open (docs/CONNECTOR_PROTOCOL.md section 17). A stream whose route is revoked is closed with the route.",
+      "additionalProperties": false,
+      "required": ["stream_id", "route_id", "browser_session_id", "deadline"],
+      "properties": {
+        "stream_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Application-level stream identifier from the data-stream header."
+        },
+        "route_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Route the stream belongs to."
+        },
+        "browser_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Browser session the stream was opened for."
+        },
+        "deadline": {
+          "$ref": "#/$defs/timestamp",
+          "description": "Absolute deadline the stream carries."
+        }
+      }
+    },
+    "workspace_head": {
+      "type": "object",
+      "description": "Head state of one workspace (docs/CONNECTOR_PROTOCOL.md section 9). Stage 0 reports no workspace head state; the field exists so that Stage 1 Git context does not change the message shape. Source file contents are never reported and this object has no field capable of carrying them.",
+      "additionalProperties": false,
+      "required": ["workspace_id", "branch", "head_commit", "dirty"],
+      "properties": {
+        "workspace_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Workspace this head state describes."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Checked-out branch.",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+        },
+        "head_commit": {
+          "type": "string",
+          "description": "HEAD commit identifier.",
+          "minLength": 7,
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]+$"
+        },
+        "dirty": {
+          "type": "boolean",
+          "description": "Whether the working tree has uncommitted changes."
+        }
+      }
+    },
+    "reconnect_request": {
+      "type": "object",
+      "description": "What the connector believes it holds, sent on every control-channel establishment (docs/CONNECTOR_PROTOCOL.md section 17). All six fields are always present; Stage 0 sends empty collections for known_agent_sessions and workspace_head_state, which are Stage 1 capabilities. The payload carries no credential: the identity is the mutually authenticated client certificate the channel already presented.",
+      "additionalProperties": false,
+      "x-max-bytes": 32768,
+      "required": [
+        "connector_version",
+        "capabilities",
+        "active_routes",
+        "active_streams",
+        "known_agent_sessions",
+        "workspace_head_state"
+      ],
+      "properties": {
+        "connector_version": {
+          "$ref": "#/$defs/semantic_version",
+          "description": "Connector release version, which the control plane classifies per section 19."
+        },
+        "capabilities": {
+          "type": "array",
+          "description": "Capabilities this connector build supports.",
+          "items": { "$ref": "#/$defs/connector_capability" },
+          "minItems": 0,
+          "maxItems": 32,
+          "uniqueItems": true
+        },
+        "active_routes": {
+          "type": "array",
+          "description": "Routes the connector believes it is still serving.",
+          "items": { "$ref": "#/$defs/reconnect_route" },
+          "minItems": 0,
+          "maxItems": 16
+        },
+        "active_streams": {
+          "type": "array",
+          "description": "Data streams the connector still holds open.",
+          "items": { "$ref": "#/$defs/reconnect_stream" },
+          "minItems": 0,
+          "maxItems": 32
+        },
+        "known_agent_sessions": {
+          "type": "array",
+          "description": "Agent sessions the connector has observed locally, conventionally prefixed ags_. Stage 0 sends an empty array; agent-session re-establishment is Stage 1.",
+          "items": { "$ref": "#/$defs/identifier" },
+          "minItems": 0,
+          "maxItems": 32,
+          "uniqueItems": true
+        },
+        "workspace_head_state": {
+          "type": "array",
+          "description": "Head state of the workspaces this connector serves. Stage 0 sends an empty array; workspace discovery is Stage 1 (section 9).",
+          "items": { "$ref": "#/$defs/workspace_head" },
+          "minItems": 0,
+          "maxItems": 8
+        }
+      }
+    },
+    "route_decision": {
+      "type": "object",
+      "description": "The control plane's authoritative answer for one route (docs/CONNECTOR_PROTOCOL.md section 17). A continued route restates the whole publication, so a connector that lost its route table to a restart resumes the same route_id and the same destination without re-publication; the connector still applies its own section 11 validation, because schema acceptance is not authorisation.",
+      "additionalProperties": false,
+      "required": ["route_id", "decision", "reason"],
+      "properties": {
+        "route_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Route this decision answers for."
+        },
+        "decision": {
+          "$ref": "#/$defs/route_reconciliation_decision",
+          "description": "Continue or revoke. The control plane's answer wins in every disagreement."
+        },
+        "reason": {
+          "$ref": "#/$defs/route_reconciliation_reason",
+          "description": "Why the decision was reached, for the connector's log and the control plane's audit trail."
+        },
+        "route": {
+          "$ref": "#/$defs/route_publish",
+          "description": "The authoritative publication to resume. Present only when the decision is continue."
+        }
+      },
+      "x-requires": [
+        {
+          "when": { "property": "decision", "equals": "continue" },
+          "required": ["route"],
+          "detail": "a continued route restates its publication so that it can be resumed without re-publication"
+        },
+        {
+          "when": { "property": "decision", "equals": "revoke" },
+          "forbidden": ["route"],
+          "detail": "a revoked route is closed and carries no publication to resume"
+        }
+      ]
+    },
+    "session_decision": {
+      "type": "object",
+      "description": "The control plane's authoritative answer for one browser session (docs/CONNECTOR_PROTOCOL.md section 17).",
+      "additionalProperties": false,
+      "required": ["browser_session_id", "decision", "reason"],
+      "properties": {
+        "browser_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Browser session this decision answers for, conventionally prefixed brs_."
+        },
+        "decision": {
+          "$ref": "#/$defs/session_reconciliation_decision",
+          "description": "Re-establish the session's data path, or end what the connector still holds for it."
+        },
+        "reason": {
+          "$ref": "#/$defs/session_reconciliation_reason",
+          "description": "Why the decision was reached."
+        }
+      }
+    },
+    "reconnect_response": {
+      "type": "object",
+      "description": "The control plane's authoritative desired state (docs/CONNECTOR_PROTOCOL.md section 17). It is the answer to exactly one connector.reconnect.request, correlated by the envelope's correlation_id. A route the control plane does not name is not authorised: the connector closes anything the response does not continue.",
+      "additionalProperties": false,
+      "x-max-bytes": 57344,
+      "required": ["reconciled_at", "upgrade", "routes", "sessions"],
+      "properties": {
+        "reconciled_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "The instant the control plane reconciled. It is authoritative for expiry arithmetic, so that clock skew on the development machine cannot extend a route."
+        },
+        "upgrade": {
+          "$ref": "#/$defs/upgrade_classification",
+          "description": "Section 19 classification of the reported connector version."
+        },
+        "routes": {
+          "type": "array",
+          "description": "One decision per route, covering both the routes the connector claimed and the routes the control plane holds for it.",
+          "items": { "$ref": "#/$defs/route_decision" },
+          "minItems": 0,
+          "maxItems": 16
+        },
+        "sessions": {
+          "type": "array",
+          "description": "One decision per affected browser session.",
+          "items": { "$ref": "#/$defs/session_decision" },
+          "minItems": 0,
+          "maxItems": 16
         }
       }
     }

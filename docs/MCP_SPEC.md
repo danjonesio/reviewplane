@@ -631,6 +631,8 @@ Adding a code is additive within a protocol version, and clients MUST tolerate a
 
 `RESOURCE_STALE` is the code for an element reference from a superseded snapshot and for a replayed command sequence. Acting on a stale reference MUST fail with it rather than target whatever now occupies that position.
 
+`CONNECTOR_OFFLINE` covers a connector that is not connected and a connector that disappears mid-request: a request already in flight when the data channel drops MUST report it rather than a generic failure, and MUST NOT hang (`ARCHITECTURE.md` §14, `TESTING.md` §11). `PUBLISHED_SERVICE_UNAVAILABLE` is the code when the route itself is not one the deployment carries. The two are distinguishable on purpose: the first says come back, the second says publish again.
+
 ## 13. Bounded context
 
 Tools must avoid returning unbounded page text, logs or histories.

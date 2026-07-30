@@ -179,6 +179,118 @@ export async function findDueForExpiry(
   return result.rows;
 }
 
+/**
+ * Every route a connector holds in a live status, for reconnect reconciliation
+ * (`docs/CONNECTOR_PROTOCOL.md` §17).
+ *
+ * `requested` is included so that a publication interrupted by the disconnect
+ * is visible to the decision table rather than invisible to it.
+ */
+export async function findLiveForConnector(
+  client: PoolClient,
+  connectorId: string,
+  limit: number,
+): Promise<PublishedService[]> {
+  const result = await client.query<PublishedService>(
+    `SELECT ${COLUMNS}
+       FROM published_services
+      WHERE connector_id = $1 AND status IN ('requested', 'ready')
+      ORDER BY id
+      LIMIT $2`,
+    [connectorId, limit],
+  );
+  return result.rows;
+}
+
+/**
+ * Resolves route identifiers a connector claimed, whoever owns them.
+ *
+ * The ownership check is the point: a claim on another connector's route has to
+ * be refused, and refusing it needs the record it names, not only the records
+ * the claiming connector owns.
+ */
+export async function findByIds(
+  client: PoolClient,
+  ids: readonly string[],
+): Promise<PublishedService[]> {
+  if (ids.length === 0) return [];
+  const result = await client.query<PublishedService>(
+    `SELECT ${COLUMNS} FROM published_services WHERE id = ANY($1::text[]) ORDER BY id`,
+    [[...ids]],
+  );
+  return result.rows;
+}
+
+/** A browser session bound to one of a connector's routes. */
+export interface BoundBrowserSession {
+  readonly id: string;
+  readonly organisation_id: string;
+  readonly project_id: string;
+  readonly status: string;
+  readonly published_service_id: string | null;
+  readonly worker_id: string | null;
+}
+
+/**
+ * Live browser sessions bound to a connector's routes.
+ *
+ * A disconnect makes those sessions degraded rather than terminated
+ * (`docs/ARCHITECTURE.md` §14: retain review and session metadata), so this is
+ * scoped to sessions that have not already ended.
+ */
+export async function findLiveSessionsForConnector(
+  client: PoolClient,
+  connectorId: string,
+): Promise<BoundBrowserSession[]> {
+  const result = await client.query<BoundBrowserSession>(
+    `SELECT s.id, s.organisation_id, s.project_id, s.status, s.published_service_id, s.worker_id
+       FROM browser_sessions s
+       JOIN published_services p ON p.id = s.published_service_id
+      WHERE p.connector_id = $1
+        AND s.ended_at IS NULL
+        AND s.status NOT IN ('TERMINATED', 'FAILED', 'TERMINATING')
+      ORDER BY s.id`,
+    [connectorId],
+  );
+  return result.rows;
+}
+
+/** Reads live browser sessions by identifier, for reconciliation. */
+export async function findLiveSessionsByIds(
+  client: PoolClient,
+  ids: readonly string[],
+): Promise<BoundBrowserSession[]> {
+  if (ids.length === 0) return [];
+  const result = await client.query<BoundBrowserSession>(
+    `SELECT id, organisation_id, project_id, status, published_service_id, worker_id
+       FROM browser_sessions
+      WHERE id = ANY($1::text[])
+        AND ended_at IS NULL
+        AND status NOT IN ('TERMINATED', 'FAILED', 'TERMINATING')
+      ORDER BY id`,
+    [[...ids]],
+  );
+  return result.rows;
+}
+
+/** Moves a browser session to a new status, returning the previous one. */
+export async function setSessionStatus(
+  client: PoolClient,
+  sessionId: string,
+  status: string,
+  from: readonly string[],
+): Promise<string | null> {
+  const result = await client.query<{ previous_status: string }>(
+    `UPDATE browser_sessions AS s
+        SET status = $2
+       FROM (SELECT id, status FROM browser_sessions WHERE id = $1 FOR UPDATE) AS current
+      WHERE s.id = current.id AND current.status = ANY($3::text[])
+      RETURNING current.status AS previous_status`,
+    [sessionId, status, [...from]],
+  );
+  return result.rows[0]?.previous_status ?? null;
+}
+
 /** Counts routes a connector currently carries, for the concurrent limit. */
 export async function countReadyForConnector(
   client: PoolClient,

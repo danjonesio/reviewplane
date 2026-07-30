@@ -110,9 +110,47 @@ the other's connection down. Nothing listens: the only socket the connector
 opens towards a service is the loopback dial to the destination fixed at
 publication.
 
+## Reconnect and reconciliation
+
+The route table is in memory, so a restarted connector holds nothing, and a
+connector that has been disconnected may hold routes the control plane has since
+closed. Both are settled the same way (`docs/CONNECTOR_PROTOCOL.md` §17,
+ADR-0018): on **every** established control channel, before anything else, the
+connector withdraws every route from service, sends
+`connector.reconnect.request` describing what it withdrew, and serves again only
+what the control plane's `connector.reconnect.response` continues.
+
+The ordering is the safety property. Between the request and the answer the
+connector serves nothing, so a response that names no route, an answer that
+never arrives, and a control plane that refuses the build all leave the same
+state: no route carrying traffic that nobody has re-authorised. The wait is
+bounded; on timeout the connector says so, drops the channel and retries under
+the backoff below.
+
+A continued route is restated in full by the control plane, so it resumes under
+the same `route_id` against the same destination with no second publication
+exchange — which is what makes a development VM reboot cost a pause rather than
+a manual re-publication. The connector still runs its own §11 validation on that
+restatement, because being told to serve something is not the same as being
+allowed to.
+
+Reconnect delays are jittered and bounded (`reconnect` in the configuration).
+The attempt counter that grows the delay bounds consecutive failures, not the
+connector's lifetime: a channel that stayed up longer than `max_delay` ends the
+incident, while a channel accepted and immediately dropped does not, so a
+flapping peer is still backed off from.
+
+`services/connector/internal/protocolsim` is the protocol-simulation harness for
+all of this (`docs/DEVELOPMENT.md` §4): a control plane, the gateway role of the
+data channel, this connector and two loopback development services in one
+process, with the channels severed deterministically and no browser involved.
+
 ## Not implemented at this stage
 
 Workspace discovery and Git context (so `workspaces[].id` is configured rather
-than discovered), the local MCP bridge, local notifications, self-update, and
-systemd unit packaging. WebSockets, server-sent events, HTTP streaming and hot
-reload over a route belong to the issue that owns tunnel compatibility.
+than discovered, and the reconnect payload's `workspace_head_state` is sent
+empty), agent-session association (so `known_agent_sessions` is sent empty), the
+local MCP bridge, local notifications, self-update — an `upgrade_required`
+classification is reported and the connector stops — and systemd unit packaging.
+WebSockets, server-sent events, HTTP streaming and hot reload over a route belong
+to the issue that owns tunnel compatibility.

@@ -316,6 +316,58 @@ func TestFailedPublicationIsAudited(t *testing.T) {
 	}
 }
 
+// A connector that goes away while a request is in flight, before the response
+// head has arrived, must still answer CONNECTOR_OFFLINE.
+//
+// This is the case docs/MCP_SPEC.md section 12 and docs/TESTING.md section 11
+// care about most: the request neither hangs nor reports a generic upstream
+// failure. Before RVP-18 the stream ended with the session's own transport
+// error, which had no stable class, and the caller was told INTERNAL_ERROR.
+func TestConnectorLossBeforeTheResponseHeadIsConnectorOffline(t *testing.T) {
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	h := newHarness(t, harnessOptions{
+		devHandler: func(w http.ResponseWriter, _ *http.Request) {
+			close(reached)
+			// The development service never answers: the connector disappears
+			// first, which is what the test is about.
+			<-release
+			w.WriteHeader(http.StatusOK)
+		},
+	})
+	defer close(release)
+	h.publish(RegisterRequest{})
+
+	type outcome struct {
+		status int
+		code   string
+	}
+	answered := make(chan outcome, 1)
+	go func() {
+		response := h.browse(browserRequest{capability: h.defaultCapability()})
+		defer func() { _ = response.Body.Close() }()
+		answered <- outcome{response.StatusCode, response.Header.Get(ErrorCodeHeader)}
+	}()
+
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request never reached the development service")
+	}
+
+	h.session.Close(nil)
+
+	select {
+	case got := <-answered:
+		if got.status != http.StatusServiceUnavailable || got.code != CodeConnectorOffline {
+			t.Fatalf("status %d code %q, want %d %s",
+				got.status, got.code, http.StatusServiceUnavailable, CodeConnectorOffline)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the request hung after the connector disconnected")
+	}
+}
+
 func contains(values []string, candidate string) bool {
 	for _, value := range values {
 		if value == candidate {

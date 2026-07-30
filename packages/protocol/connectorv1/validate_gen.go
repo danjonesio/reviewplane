@@ -19,6 +19,7 @@ var pattern10 = regexp.MustCompile("^[a-z0-9]+$")
 var pattern11 = regexp.MustCompile("^[a-z0-9_]+$")
 var pattern12 = regexp.MustCompile("^[A-Za-z0-9.:_-]+$")
 var pattern13 = regexp.MustCompile("^[A-Za-z0-9.:_\\[\\]-]+:[0-9]{1,5}$")
+var pattern14 = regexp.MustCompile("^[0-9a-f]+$")
 
 // validateIdentifier checks opaque durable identifier (docs/DOMAIN_MODEL.md section
 // 3). Consumers MUST treat the value as opaque: the schema bounds only its length and
@@ -101,13 +102,49 @@ func validateDestinationProtocol(value any, path string, out *[]SchemaViolation)
 // validateMessageType checks version 1 message type. Unknown types are rejected, never
 // ignored. This enumeration MUST equal the keys of x-protocol.messages.
 func validateMessageType(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{values: []string{"connector.registration.request", "connector.registration.response", "heartbeat", "route.publish", "route.publish.ack"}})
+	checkString(value, path, out, stringOpts{values: []string{"connector.registration.request", "connector.registration.response", "heartbeat", "route.publish", "route.publish.ack", "connector.reconnect.request", "connector.reconnect.response"}})
 }
 
 // validateErrorClass checks stable connector error class (docs/CONNECTOR_PROTOCOL.md
 // section 21). This enumeration MUST equal x-protocol.error_classes.
 func validateErrorClass(value any, path string, out *[]SchemaViolation) {
 	checkString(value, path, out, stringOpts{values: []string{"ENROLMENT_TOKEN_INVALID", "IDENTITY_REVOKED", "PROTOCOL_UNSUPPORTED", "PROJECT_NOT_AUTHORISED", "WORKSPACE_NOT_FOUND", "DESTINATION_NOT_ALLOWED", "PORT_NOT_LISTENING", "ROUTE_LIMIT_EXCEEDED", "ROUTE_EXPIRED", "STREAM_LIMIT_EXCEEDED", "CONTROL_PLANE_UNAVAILABLE", "UPGRADE_REQUIRED"}})
+}
+
+// validateUpgradeClassification checks control-plane classification of the connector
+// build (docs/CONNECTOR_PROTOCOL.md section 19). upgrade_required and unsupported are
+// terminal: the connector reports the classification and stops rather than retrying
+// with a build the control plane has just refused (section 5.3).
+func validateUpgradeClassification(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"compatible", "upgrade_recommended", "upgrade_required", "unsupported"}})
+}
+
+// validateRouteReconciliationDecision checks the control plane's authoritative answer
+// for one route on reconnect (docs/CONNECTOR_PROTOCOL.md section 17). continue resumes
+// the route under the same route_id without re-publication; revoke closes it.
+func validateRouteReconciliationDecision(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"continue", "revoke"}})
+}
+
+// validateRouteReconciliationReason checks why a route was continued or closed. It is
+// a closed vocabulary so that every decision is loggable and auditable without free
+// text (docs/SECURITY.md section 18).
+func validateRouteReconciliationReason(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"authorised", "unknown_route", "expired", "revoked", "not_authorised", "destination_mismatch"}})
+}
+
+// validateSessionReconciliationDecision checks the control plane's authoritative
+// answer for one browser session on reconnect (docs/CONNECTOR_PROTOCOL.md section 17).
+// re_establish rebuilds the session's data path; end closes what the connector still
+// holds for it.
+func validateSessionReconciliationDecision(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"re_establish", "end"}})
+}
+
+// validateSessionReconciliationReason checks why a session was re-established or
+// ended. A closed vocabulary, for the same reason as route_reconciliation_reason.
+func validateSessionReconciliationReason(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"route_resumed", "route_revoked", "session_ended", "connector_reconnected"}})
 }
 
 // validateEnvelopeProtocolVersion checks protocol version. Stage 0 accepts 1 only; any
@@ -153,7 +190,7 @@ func validateEnvelope(value any, path string, out *[]SchemaViolation) {
 	if matchesCondition(source["type"], []string{"connector.registration.request", "connector.registration.response"}) {
 		forbidProperty(source, path, "connector_id", "the registration exchange precedes connector identity assignment", out)
 	}
-	if matchesCondition(source["type"], []string{"heartbeat", "route.publish", "route.publish.ack"}) {
+	if matchesCondition(source["type"], []string{"heartbeat", "route.publish", "route.publish.ack", "connector.reconnect.request", "connector.reconnect.response"}) {
 		requireProperty(source, path, "connector_id", "every post-enrolment message is attributed to a connector identity", out)
 	}
 }
@@ -491,5 +528,265 @@ func validateDataStreamHeader(value any, path string, out *[]SchemaViolation) {
 	}
 	if field, present := source["deadline"]; present {
 		validateTimestamp(field, path+".deadline", out)
+	}
+}
+
+// validateReconnectRouteObservedDestination checks destination the connector is
+// opening for this route, as host:port. A destination that differs from the
+// authoritative record is closed rather than continued, because docs/ARCHITECTURE.md
+// section 14 forbids silently redirecting traffic to a different environment.
+func validateReconnectRouteObservedDestination(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 3, maxLength: 262, pattern: pattern13})
+}
+
+// validateReconnectRoute checks a ReconnectRoute value.
+func validateReconnectRoute(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"route_id", "project_id", "workspace_id", "observed_destination", "expires_at"}, []string{"route_id", "project_id", "workspace_id", "observed_destination", "expires_at"})
+	if !ok {
+		return
+	}
+	if field, present := source["route_id"]; present {
+		validateIdentifier(field, path+".route_id", out)
+	}
+	if field, present := source["project_id"]; present {
+		validateIdentifier(field, path+".project_id", out)
+	}
+	if field, present := source["workspace_id"]; present {
+		validateIdentifier(field, path+".workspace_id", out)
+	}
+	if field, present := source["observed_destination"]; present {
+		validateReconnectRouteObservedDestination(field, path+".observed_destination", out)
+	}
+	if field, present := source["expires_at"]; present {
+		validateTimestamp(field, path+".expires_at", out)
+	}
+}
+
+// validateReconnectStream checks a ReconnectStream value.
+func validateReconnectStream(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"stream_id", "route_id", "browser_session_id", "deadline"}, []string{"stream_id", "route_id", "browser_session_id", "deadline"})
+	if !ok {
+		return
+	}
+	if field, present := source["stream_id"]; present {
+		validateIdentifier(field, path+".stream_id", out)
+	}
+	if field, present := source["route_id"]; present {
+		validateIdentifier(field, path+".route_id", out)
+	}
+	if field, present := source["browser_session_id"]; present {
+		validateIdentifier(field, path+".browser_session_id", out)
+	}
+	if field, present := source["deadline"]; present {
+		validateTimestamp(field, path+".deadline", out)
+	}
+}
+
+// validateWorkspaceHeadBranch checks checked-out branch.
+func validateWorkspaceHeadBranch(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 255, pattern: pattern9})
+}
+
+// validateWorkspaceHeadHeadCommit checks hEAD commit identifier.
+func validateWorkspaceHeadHeadCommit(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 7, maxLength: 64, pattern: pattern14})
+}
+
+// validateWorkspaceHeadDirty checks whether the working tree has uncommitted changes.
+func validateWorkspaceHeadDirty(value any, path string, out *[]SchemaViolation) {
+	checkBoolean(value, path, out)
+}
+
+// validateWorkspaceHead checks a WorkspaceHead value.
+func validateWorkspaceHead(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"workspace_id", "branch", "head_commit", "dirty"}, []string{"workspace_id", "branch", "head_commit", "dirty"})
+	if !ok {
+		return
+	}
+	if field, present := source["workspace_id"]; present {
+		validateIdentifier(field, path+".workspace_id", out)
+	}
+	if field, present := source["branch"]; present {
+		validateWorkspaceHeadBranch(field, path+".branch", out)
+	}
+	if field, present := source["head_commit"]; present {
+		validateWorkspaceHeadHeadCommit(field, path+".head_commit", out)
+	}
+	if field, present := source["dirty"]; present {
+		validateWorkspaceHeadDirty(field, path+".dirty", out)
+	}
+}
+
+// validateReconnectRequestCapabilities checks capabilities this connector build
+// supports.
+func validateReconnectRequestCapabilities(value any, path string, out *[]SchemaViolation) {
+	items, ok := checkArray(value, path, out, 0, 32, true)
+	if !ok {
+		return
+	}
+	for index, item := range items {
+		validateConnectorCapability(item, indexPath(path, index), out)
+	}
+}
+
+// validateReconnectRequestActiveRoutes checks routes the connector believes it is
+// still serving.
+func validateReconnectRequestActiveRoutes(value any, path string, out *[]SchemaViolation) {
+	items, ok := checkArray(value, path, out, 0, 16, false)
+	if !ok {
+		return
+	}
+	for index, item := range items {
+		validateReconnectRoute(item, indexPath(path, index), out)
+	}
+}
+
+// validateReconnectRequestActiveStreams checks data streams the connector still holds
+// open.
+func validateReconnectRequestActiveStreams(value any, path string, out *[]SchemaViolation) {
+	items, ok := checkArray(value, path, out, 0, 32, false)
+	if !ok {
+		return
+	}
+	for index, item := range items {
+		validateReconnectStream(item, indexPath(path, index), out)
+	}
+}
+
+// validateReconnectRequestKnownAgentSessions checks agent sessions the connector has
+// observed locally, conventionally prefixed ags_. Stage 0 sends an empty array;
+// agent-session re-establishment is Stage 1.
+func validateReconnectRequestKnownAgentSessions(value any, path string, out *[]SchemaViolation) {
+	items, ok := checkArray(value, path, out, 0, 32, true)
+	if !ok {
+		return
+	}
+	for index, item := range items {
+		validateIdentifier(item, indexPath(path, index), out)
+	}
+}
+
+// validateReconnectRequestWorkspaceHeadState checks head state of the workspaces this
+// connector serves. Stage 0 sends an empty array; workspace discovery is Stage 1
+// (section 9).
+func validateReconnectRequestWorkspaceHeadState(value any, path string, out *[]SchemaViolation) {
+	items, ok := checkArray(value, path, out, 0, 8, false)
+	if !ok {
+		return
+	}
+	for index, item := range items {
+		validateWorkspaceHead(item, indexPath(path, index), out)
+	}
+}
+
+// validateReconnectRequest checks a ReconnectRequest value.
+func validateReconnectRequest(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"connector_version", "capabilities", "active_routes", "active_streams", "known_agent_sessions", "workspace_head_state"}, []string{"connector_version", "capabilities", "active_routes", "active_streams", "known_agent_sessions", "workspace_head_state"})
+	if !ok {
+		return
+	}
+	if field, present := source["connector_version"]; present {
+		validateSemanticVersion(field, path+".connector_version", out)
+	}
+	if field, present := source["capabilities"]; present {
+		validateReconnectRequestCapabilities(field, path+".capabilities", out)
+	}
+	if field, present := source["active_routes"]; present {
+		validateReconnectRequestActiveRoutes(field, path+".active_routes", out)
+	}
+	if field, present := source["active_streams"]; present {
+		validateReconnectRequestActiveStreams(field, path+".active_streams", out)
+	}
+	if field, present := source["known_agent_sessions"]; present {
+		validateReconnectRequestKnownAgentSessions(field, path+".known_agent_sessions", out)
+	}
+	if field, present := source["workspace_head_state"]; present {
+		validateReconnectRequestWorkspaceHeadState(field, path+".workspace_head_state", out)
+	}
+}
+
+// validateRouteDecision checks a RouteDecision value.
+func validateRouteDecision(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"route_id", "decision", "reason", "route"}, []string{"route_id", "decision", "reason"})
+	if !ok {
+		return
+	}
+	if field, present := source["route_id"]; present {
+		validateIdentifier(field, path+".route_id", out)
+	}
+	if field, present := source["decision"]; present {
+		validateRouteReconciliationDecision(field, path+".decision", out)
+	}
+	if field, present := source["reason"]; present {
+		validateRouteReconciliationReason(field, path+".reason", out)
+	}
+	if field, present := source["route"]; present {
+		validateRoutePublish(field, path+".route", out)
+	}
+	if matchesCondition(source["decision"], []string{"continue"}) {
+		requireProperty(source, path, "route", "a continued route restates its publication so that it can be resumed without re-publication", out)
+	}
+	if matchesCondition(source["decision"], []string{"revoke"}) {
+		forbidProperty(source, path, "route", "a revoked route is closed and carries no publication to resume", out)
+	}
+}
+
+// validateSessionDecision checks a SessionDecision value.
+func validateSessionDecision(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"browser_session_id", "decision", "reason"}, []string{"browser_session_id", "decision", "reason"})
+	if !ok {
+		return
+	}
+	if field, present := source["browser_session_id"]; present {
+		validateIdentifier(field, path+".browser_session_id", out)
+	}
+	if field, present := source["decision"]; present {
+		validateSessionReconciliationDecision(field, path+".decision", out)
+	}
+	if field, present := source["reason"]; present {
+		validateSessionReconciliationReason(field, path+".reason", out)
+	}
+}
+
+// validateReconnectResponseRoutes checks one decision per route, covering both the
+// routes the connector claimed and the routes the control plane holds for it.
+func validateReconnectResponseRoutes(value any, path string, out *[]SchemaViolation) {
+	items, ok := checkArray(value, path, out, 0, 16, false)
+	if !ok {
+		return
+	}
+	for index, item := range items {
+		validateRouteDecision(item, indexPath(path, index), out)
+	}
+}
+
+// validateReconnectResponseSessions checks one decision per affected browser session.
+func validateReconnectResponseSessions(value any, path string, out *[]SchemaViolation) {
+	items, ok := checkArray(value, path, out, 0, 16, false)
+	if !ok {
+		return
+	}
+	for index, item := range items {
+		validateSessionDecision(item, indexPath(path, index), out)
+	}
+}
+
+// validateReconnectResponse checks a ReconnectResponse value.
+func validateReconnectResponse(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"reconciled_at", "upgrade", "routes", "sessions"}, []string{"reconciled_at", "upgrade", "routes", "sessions"})
+	if !ok {
+		return
+	}
+	if field, present := source["reconciled_at"]; present {
+		validateTimestamp(field, path+".reconciled_at", out)
+	}
+	if field, present := source["upgrade"]; present {
+		validateUpgradeClassification(field, path+".upgrade", out)
+	}
+	if field, present := source["routes"]; present {
+		validateReconnectResponseRoutes(field, path+".routes", out)
+	}
+	if field, present := source["sessions"]; present {
+		validateReconnectResponseSessions(field, path+".sessions", out)
 	}
 }

@@ -465,6 +465,18 @@ func (p *Proxy) finishStream(
 	_ = received
 
 	failure := &denial{http.StatusBadGateway, CodeInternalError, "upstream_failed"}
+	// A connector that went away mid-request is CONNECTOR_OFFLINE, the same code
+	// the pre-flight check answers with (docs/MCP_SPEC.md section 12). Reporting
+	// a generic upstream failure here would make a disconnect the one case an
+	// operator could not read off the response, which docs/ARCHITECTURE.md
+	// section 14 and docs/TESTING.md section 11 both forbid.
+	var sessionClosed *datachannel.SessionClosedError
+	if errors.As(cause, &sessionClosed) {
+		p.metrics.Count(metrics.Streams, "outcome", "reset")
+		p.refuse(w, r, requestID,
+			&denial{http.StatusServiceUnavailable, CodeConnectorOffline, "connector_offline_mid_stream"})
+		return
+	}
 	var streamErr *datachannel.StreamError
 	if errors.As(cause, &streamErr) {
 		switch streamErr.Class {

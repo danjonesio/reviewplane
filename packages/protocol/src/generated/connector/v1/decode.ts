@@ -19,13 +19,25 @@ import type {
   Heartbeat,
   HeartbeatStatus,
   MessageType,
+  ReconnectRequest,
+  ReconnectResponse,
+  ReconnectRoute,
+  ReconnectStream,
   RegistrationRequest,
   RegistrationResponse,
   ResourceSummary,
+  RouteDecision,
   RoutePublish,
   RoutePublishAck,
   RoutePublishAckStatus,
+  RouteReconciliationDecision,
+  RouteReconciliationReason,
+  SessionDecision,
+  SessionReconciliationDecision,
+  SessionReconciliationReason,
   SignedIdentity,
+  UpgradeClassification,
+  WorkspaceHead,
 } from "./types.ts";
 
 /**
@@ -184,5 +196,98 @@ export function decodeDataStreamHeader(value: unknown): DataStreamHeader {
     stream_id: source["stream_id"] as string,
     destination_protocol: source["destination_protocol"] as DestinationProtocol,
     deadline: source["deadline"] as string,
+  };
+}
+
+/**
+ * Decodes a validated ReconnectRoute.
+ */
+export function decodeReconnectRoute(value: unknown): ReconnectRoute {
+  const source = value as Record<string, unknown>;
+  return {
+    route_id: source["route_id"] as string,
+    project_id: source["project_id"] as string,
+    workspace_id: source["workspace_id"] as string,
+    observed_destination: source["observed_destination"] as string,
+    expires_at: source["expires_at"] as string,
+  };
+}
+
+/**
+ * Decodes a validated ReconnectStream.
+ */
+export function decodeReconnectStream(value: unknown): ReconnectStream {
+  const source = value as Record<string, unknown>;
+  return {
+    stream_id: source["stream_id"] as string,
+    route_id: source["route_id"] as string,
+    browser_session_id: source["browser_session_id"] as string,
+    deadline: source["deadline"] as string,
+  };
+}
+
+/**
+ * Decodes a validated WorkspaceHead.
+ */
+export function decodeWorkspaceHead(value: unknown): WorkspaceHead {
+  const source = value as Record<string, unknown>;
+  return {
+    workspace_id: source["workspace_id"] as string,
+    branch: source["branch"] as string,
+    head_commit: source["head_commit"] as string,
+    dirty: source["dirty"] as boolean,
+  };
+}
+
+/**
+ * Decodes a validated ReconnectRequest.
+ */
+export function decodeReconnectRequest(value: unknown): ReconnectRequest {
+  const source = value as Record<string, unknown>;
+  return {
+    connector_version: source["connector_version"] as string,
+    capabilities: (source["capabilities"] as unknown[]).map((item) => item as string),
+    active_routes: (source["active_routes"] as unknown[]).map((item) => decodeReconnectRoute(item)),
+    active_streams: (source["active_streams"] as unknown[]).map((item) => decodeReconnectStream(item)),
+    known_agent_sessions: (source["known_agent_sessions"] as unknown[]).map((item) => item as string),
+    workspace_head_state: (source["workspace_head_state"] as unknown[]).map((item) => decodeWorkspaceHead(item)),
+  };
+}
+
+/**
+ * Decodes a validated RouteDecision.
+ */
+export function decodeRouteDecision(value: unknown): RouteDecision {
+  const source = value as Record<string, unknown>;
+  return {
+    route_id: source["route_id"] as string,
+    decision: source["decision"] as RouteReconciliationDecision,
+    reason: source["reason"] as RouteReconciliationReason,
+    ...(source["route"] === undefined ? {} : { route: decodeRoutePublish(source["route"]) }),
+  };
+}
+
+/**
+ * Decodes a validated SessionDecision.
+ */
+export function decodeSessionDecision(value: unknown): SessionDecision {
+  const source = value as Record<string, unknown>;
+  return {
+    browser_session_id: source["browser_session_id"] as string,
+    decision: source["decision"] as SessionReconciliationDecision,
+    reason: source["reason"] as SessionReconciliationReason,
+  };
+}
+
+/**
+ * Decodes a validated ReconnectResponse.
+ */
+export function decodeReconnectResponse(value: unknown): ReconnectResponse {
+  const source = value as Record<string, unknown>;
+  return {
+    reconciled_at: source["reconciled_at"] as string,
+    upgrade: source["upgrade"] as UpgradeClassification,
+    routes: (source["routes"] as unknown[]).map((item) => decodeRouteDecision(item)),
+    sessions: (source["sessions"] as unknown[]).map((item) => decodeSessionDecision(item)),
   };
 }

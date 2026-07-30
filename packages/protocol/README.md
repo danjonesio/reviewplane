@@ -130,6 +130,25 @@ encoders call when they build a wire frame. `docs/SECURITY.md` §18 forbids raw
 credentials in logs, and accidental serialisation is the most common way they
 get there.
 
+## Reconnect reconciliation
+
+`connector.reconnect.request` and `connector.reconnect.response` carry the
+`docs/CONNECTOR_PROTOCOL.md` §17 exchange, and two schema rules are the decision
+rather than a convention:
+
+- every one of the six request fields is `required`, so a connector cannot
+  quietly stop reporting a category. Stage 0 sends `known_agent_sessions` and
+  `workspace_head_state` as empty arrays, and a payload omitting one is refused.
+- an `x-requires` rule makes `route` mandatory on a `continue` decision and
+  forbidden on a `revoke` one. A continued route must restate its publication,
+  because a connector that lost its route table could not otherwise resume the
+  route it is being told to keep; a revoked one must not, because carrying a
+  publication would make a closure look like a grant.
+
+The reason vocabularies are enumerations rather than free text, so every
+reconciliation decision is loggable and auditable without one
+(`docs/SECURITY.md` §18).
+
 ## Route capabilities
 
 `session_capability` is the bearer credential a browser session presents to the

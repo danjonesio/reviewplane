@@ -8,6 +8,7 @@
  */
 
 import {
+  jsonBoolean,
   jsonInteger,
   jsonNumber,
   jsonString,
@@ -19,12 +20,19 @@ import type {
   Envelope,
   EnvironmentDescriptor,
   Heartbeat,
+  ReconnectRequest,
+  ReconnectResponse,
+  ReconnectRoute,
+  ReconnectStream,
   RegistrationRequest,
   RegistrationResponse,
   ResourceSummary,
+  RouteDecision,
   RoutePublish,
   RoutePublishAck,
+  SessionDecision,
   SignedIdentity,
+  WorkspaceHead,
 } from "./types.ts";
 
 /**
@@ -188,5 +196,93 @@ export function encodeDataStreamHeader(value: DataStreamHeader): string {
   fields.push(`"stream_id":${jsonString(value.stream_id)}`);
   fields.push(`"destination_protocol":${jsonString(value.destination_protocol)}`);
   fields.push(`"deadline":${jsonString(value.deadline)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ReconnectRoute.
+ */
+export function encodeReconnectRoute(value: ReconnectRoute): string {
+  const fields: string[] = [];
+  fields.push(`"route_id":${jsonString(value.route_id)}`);
+  fields.push(`"project_id":${jsonString(value.project_id)}`);
+  fields.push(`"workspace_id":${jsonString(value.workspace_id)}`);
+  fields.push(`"observed_destination":${jsonString(value.observed_destination)}`);
+  fields.push(`"expires_at":${jsonString(value.expires_at)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ReconnectStream.
+ */
+export function encodeReconnectStream(value: ReconnectStream): string {
+  const fields: string[] = [];
+  fields.push(`"stream_id":${jsonString(value.stream_id)}`);
+  fields.push(`"route_id":${jsonString(value.route_id)}`);
+  fields.push(`"browser_session_id":${jsonString(value.browser_session_id)}`);
+  fields.push(`"deadline":${jsonString(value.deadline)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a WorkspaceHead.
+ */
+export function encodeWorkspaceHead(value: WorkspaceHead): string {
+  const fields: string[] = [];
+  fields.push(`"workspace_id":${jsonString(value.workspace_id)}`);
+  fields.push(`"branch":${jsonString(value.branch)}`);
+  fields.push(`"head_commit":${jsonString(value.head_commit)}`);
+  fields.push(`"dirty":${jsonBoolean(value.dirty)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ReconnectRequest.
+ */
+export function encodeReconnectRequest(value: ReconnectRequest): string {
+  const fields: string[] = [];
+  fields.push(`"connector_version":${jsonString(value.connector_version)}`);
+  fields.push(`"capabilities":${`[${value.capabilities.map((item) => jsonString(item)).join(",")}]`}`);
+  fields.push(`"active_routes":${`[${value.active_routes.map((item) => encodeReconnectRoute(item)).join(",")}]`}`);
+  fields.push(`"active_streams":${`[${value.active_streams.map((item) => encodeReconnectStream(item)).join(",")}]`}`);
+  fields.push(`"known_agent_sessions":${`[${value.known_agent_sessions.map((item) => jsonString(item)).join(",")}]`}`);
+  fields.push(`"workspace_head_state":${`[${value.workspace_head_state.map((item) => encodeWorkspaceHead(item)).join(",")}]`}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a RouteDecision.
+ */
+export function encodeRouteDecision(value: RouteDecision): string {
+  const fields: string[] = [];
+  fields.push(`"route_id":${jsonString(value.route_id)}`);
+  fields.push(`"decision":${jsonString(value.decision)}`);
+  fields.push(`"reason":${jsonString(value.reason)}`);
+  if (value.route !== undefined) {
+    fields.push(`"route":${encodeRoutePublish(value.route)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a SessionDecision.
+ */
+export function encodeSessionDecision(value: SessionDecision): string {
+  const fields: string[] = [];
+  fields.push(`"browser_session_id":${jsonString(value.browser_session_id)}`);
+  fields.push(`"decision":${jsonString(value.decision)}`);
+  fields.push(`"reason":${jsonString(value.reason)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ReconnectResponse.
+ */
+export function encodeReconnectResponse(value: ReconnectResponse): string {
+  const fields: string[] = [];
+  fields.push(`"reconciled_at":${jsonString(value.reconciled_at)}`);
+  fields.push(`"upgrade":${jsonString(value.upgrade)}`);
+  fields.push(`"routes":${`[${value.routes.map((item) => encodeRouteDecision(item)).join(",")}]`}`);
+  fields.push(`"sessions":${`[${value.sessions.map((item) => encodeSessionDecision(item)).join(",")}]`}`);
   return `{${fields.join(",")}}`;
 }

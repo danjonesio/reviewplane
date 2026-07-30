@@ -85,6 +85,34 @@
       "kind": "data_stream_header",
       "file": "valid/data-stream-header.json",
       "note": "The section 12 header fields. It carries no host or port: the connector opens only the destination already bound to route_id."
+    },
+    {
+      "name": "reconnect-request",
+      "kind": "control_frame",
+      "file": "valid/reconnect-request.json",
+      "message_type": "connector.reconnect.request",
+      "note": "The section 17 reconnect payload with all six fields populated as Stage 0 sends them: version, capabilities, active routes, active streams, and the empty agent-session and workspace-head collections."
+    },
+    {
+      "name": "reconnect-request-after-restart",
+      "kind": "control_frame",
+      "file": "valid/reconnect-request-after-restart.json",
+      "message_type": "connector.reconnect.request",
+      "note": "A connector that has just restarted holds nothing. Every collection is empty and every field is still present, which is what lets the control plane restore routes the connector no longer knows about."
+    },
+    {
+      "name": "reconnect-response",
+      "kind": "control_frame",
+      "file": "valid/reconnect-response.json",
+      "message_type": "connector.reconnect.response",
+      "note": "The authoritative desired state: one route continued with its publication restated, one closed as unknown, and one session re-established."
+    },
+    {
+      "name": "reconnect-response-upgrade-required",
+      "kind": "control_frame",
+      "file": "valid/reconnect-response-upgrade-required.json",
+      "message_type": "connector.reconnect.response",
+      "note": "The section 19 upgrade-required classification, which the connector reports and stops on rather than retrying."
     }
   ],
   "invalid": [
@@ -246,6 +274,34 @@
       "file": "invalid/data-stream-header-with-destination.json",
       "expect_reason": "schema_violation",
       "note": "The browser side cannot smuggle a destination host or port into the stream header (docs/CONNECTOR_PROTOCOL.md section 12, docs/SECURITY.md section 9)."
+    },
+    {
+      "name": "reconnect-request-missing-workspace-head-state",
+      "kind": "control_frame",
+      "file": "invalid/reconnect-request-missing-workspace-head-state.json",
+      "expect_reason": "schema_violation",
+      "note": "All six section 17 fields are required. An omitted collection is a refused frame, not an empty one, so a connector cannot quietly stop reporting a category."
+    },
+    {
+      "name": "reconnect-request-workspace-head-with-source",
+      "kind": "control_frame",
+      "file": "invalid/reconnect-request-workspace-head-with-source.json",
+      "expect_reason": "schema_violation",
+      "note": "Workspace head state describes the repository, never its contents (docs/CONNECTOR_PROTOCOL.md section 9). additionalProperties is false, so source cannot ride along."
+    },
+    {
+      "name": "reconnect-response-continue-without-route",
+      "kind": "control_frame",
+      "file": "invalid/reconnect-response-continue-without-route.json",
+      "expect_reason": "schema_violation",
+      "note": "A continued route must restate its publication, otherwise a connector that lost its route table could not resume the route it is being told to keep."
+    },
+    {
+      "name": "reconnect-response-revoke-with-route",
+      "kind": "control_frame",
+      "file": "invalid/reconnect-response-revoke-with-route.json",
+      "expect_reason": "schema_violation",
+      "note": "A revoked route carries no publication. Carrying one would make a closure look like a grant."
     }
   ]
 }
