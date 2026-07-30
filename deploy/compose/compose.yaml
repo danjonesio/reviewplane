@@ -3,9 +3,10 @@
 # Stage 0 shape. The rules `deploy/compose/README.md` records are enforced
 # here rather than left to the operator:
 #
-#   * only the gateway publishes host ports. Stage 0 has no gateway yet, so
-#     nothing is published: the server and the worker sit on an internal
-#     network and are reached from inside it.
+#   * only the gateway publishes host ports. It serves the web application's
+#     static assets, proxies `/api` and upgrades `/ws` to the control plane,
+#     and refuses the worker channel outright. The server, the worker and
+#     PostgreSQL publish nothing.
 #   * Chromium runs in `browser-worker`, never in the API container.
 #   * no container mounts the Docker socket.
 #   * PostgreSQL is private; artefacts live on a private volume (ADR-0012).
@@ -28,10 +29,16 @@ networks:
     internal: true
   data:
     internal: true
+  # Gateway to control plane. Also internal: the gateway is the only service
+  # with a published port, and it reaches the server over this network rather
+  # than over the host.
+  edge:
+    internal: true
 
 volumes:
   postgres-data:
   artefact-data:
+  caddy-data:
 
 services:
   postgres:
@@ -51,12 +58,32 @@ services:
       timeout: 5s
       retries: 12
 
+  # The only service with a published port. It serves `apps/web`'s build
+  # output, proxies `/api`, upgrades `/ws` and refuses `/internal`
+  # (`docs/ARCHITECTURE.md` section 4.1).
+  gateway:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/gateway/Dockerfile
+    restart: unless-stopped
+    networks: [edge]
+    depends_on:
+      - server
+    ports:
+      - "${REVIEWPLANE_GATEWAY_PORT:-8443}:8443"
+    volumes:
+      - caddy-data:/data
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt:
+      - no-new-privileges:true
+
   server:
     build:
       context: ../..
       dockerfile: apps/server/Dockerfile
     restart: unless-stopped
-    networks: [data, browser]
+    networks: [data, browser, edge]
     depends_on:
       postgres:
         condition: service_healthy
@@ -69,6 +96,11 @@ services:
       REVIEWPLANE_WORKER_COMMAND_CREDENTIAL_FILE: /run/secrets/worker_command_credential
       REVIEWPLANE_WORKER_ENDPOINT: http://browser-worker:8090
       REVIEWPLANE_ARTEFACT_PATH: /var/lib/reviewplane/artefacts
+      # Origins a browser may open the live WebSocket from. It is the gateway's
+      # public URL: a viewer's page is served from there and nowhere else.
+      REVIEWPLANE_ALLOWED_ORIGINS: ${REVIEWPLANE_PUBLIC_ORIGIN:-https://localhost:8443}
+      # The gateway terminates TLS, so the viewer session cookie is Secure.
+      REVIEWPLANE_SECURE_COOKIES: "true"
     secrets:
       - database_url
       - bootstrap_token

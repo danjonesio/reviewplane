@@ -12,12 +12,15 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@fastify/websocket": "^11.3.0",
     "@reviewplane/protocol": "workspace:*",
     "fastify": "^5.10.0",
     "pg": "^8.22.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",
-    "@types/pg": "^8.20.0"
+    "@types/pg": "^8.20.0",
+    "@types/ws": "^8.18.1",
+    "ws": "^8.21.1"
   }
 }

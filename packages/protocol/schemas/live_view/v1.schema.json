@@ -1,0 +1,679 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/danjonesio/reviewplane/schemas/live_view/v1.schema.json",
+  "title": "ReviewPlane live-view channel, version 1",
+  "description": "Single source for the version 1 live-frame channel of docs/API.md section 18.2: the metadata, quality-adaptation and heartbeat messages exchanged over /ws/v1/browser-sessions/:sessionId/live, and over the internal worker-to-control-plane leg that feeds it. The binary frame payload is a separate transport message referenced by the live.frame metadata that precedes it and is deliberately not a JSON schema: base64 in JSON would inflate bandwidth and blur the separation section 18.2 requires. TypeScript models, validators and canonical encoders are generated from this file. Hand-maintained equivalents in apps/server, apps/browser-worker or apps/web are a review failure.",
+  "x-protocol": {
+    "name": "live_view",
+    "version": 1,
+    "languages": ["typescript"],
+    "limits": {
+      "max_live_message_bytes": 8192,
+      "max_frame_payload_bytes": 4194304
+    },
+    "envelope_limit": "max_live_message_bytes",
+    "channels": {
+      "stream": "Frame metadata and the scheduler's applied quality.",
+      "control": "Attachment, viewer quality requests, session state and refusals.",
+      "keepalive": "Liveness and observed stream statistics in both directions."
+    },
+    "directions": [
+      "worker_to_viewer",
+      "control_plane_to_viewer",
+      "viewer_to_control_plane",
+      "control_plane_to_worker"
+    ],
+    "messages": {
+      "live.attached": {
+        "channel": "control",
+        "direction": "control_plane_to_viewer",
+        "payload": "stream_attached",
+        "description": "First message on an accepted viewer connection. It is sent only after authentication and project authorisation have both succeeded, so a refused viewer never sees one (docs/SECURITY.md section 7)."
+      },
+      "live.frame": {
+        "channel": "stream",
+        "direction": "worker_to_viewer",
+        "payload": "frame_metadata",
+        "description": "Metadata for exactly one frame. The binary payload follows as the next transport message and is never embedded here (docs/API.md section 18.2). Produced by the worker's scheduler and relayed unchanged by the control plane."
+      },
+      "live.quality": {
+        "channel": "stream",
+        "direction": "worker_to_viewer",
+        "payload": "quality_state",
+        "description": "The quality and rate the worker scheduler decided to apply. The scheduler is authoritative: this message reports a decision, it does not confirm a request."
+      },
+      "live.quality_request": {
+        "channel": "control",
+        "direction": "viewer_to_control_plane",
+        "payload": "quality_request",
+        "description": "A viewer's advisory request for a mode or rate, relayed by the control plane to the worker. The worker may honour, bound or ignore it (docs/API.md section 18.2)."
+      },
+      "live.heartbeat": {
+        "channel": "keepalive",
+        "direction": "control_plane_to_viewer",
+        "payload": "stream_heartbeat",
+        "description": "Periodic liveness plus the observed send, drop and buffer figures, so a viewer can display the drop rate docs/ARCHITECTURE.md section 6.3 requires to be measurable."
+      },
+      "live.viewer_heartbeat": {
+        "channel": "keepalive",
+        "direction": "viewer_to_control_plane",
+        "payload": "viewer_heartbeat",
+        "description": "Viewer liveness and the last frame it actually rendered, which is how the control plane detects a slow viewer before its send buffer grows."
+      },
+      "live.session_state": {
+        "channel": "control",
+        "direction": "control_plane_to_viewer",
+        "payload": "session_state",
+        "description": "Browser-session status, URL and viewport at attachment and on every change, so the page can state the session's condition as text rather than by the presence of frames."
+      },
+      "live.error": {
+        "channel": "control",
+        "direction": "control_plane_to_viewer",
+        "payload": "live_error",
+        "description": "A refusal or stream failure, carrying both the stable error class and the failure state the UI must show (docs/UX_FLOWS.md section 18)."
+      }
+    },
+    "error_classes": [
+      "PROTOCOL_UNSUPPORTED",
+      "AUTHENTICATION_REQUIRED",
+      "AUTHORISATION_DENIED",
+      "PROJECT_CONTEXT_MISMATCH",
+      "RESOURCE_NOT_FOUND",
+      "BROWSER_CAPACITY_EXHAUSTED",
+      "BROWSER_SESSION_NOT_ACTIVE",
+      "POLICY_DENIED",
+      "RATE_LIMITED",
+      "UNSUPPORTED_CAPABILITY",
+      "INTERNAL_ERROR"
+    ],
+    "violation_reasons": {
+      "frame_too_large": {
+        "error_class": null,
+        "description": "The encoded message exceeded its byte bound. Detected on the raw bytes before deserialisation."
+      },
+      "malformed_json": {
+        "error_class": null,
+        "description": "The message was not well-formed JSON, or was truncated."
+      },
+      "unsupported_protocol_version": {
+        "error_class": "PROTOCOL_UNSUPPORTED",
+        "description": "protocol_version was absent, not an integer, or not a version this build accepts."
+      },
+      "unknown_message_type": {
+        "error_class": "PROTOCOL_UNSUPPORTED",
+        "description": "type was absent or not a version 1 message type. Unknown types are rejected, never ignored."
+      },
+      "payload_too_large": {
+        "error_class": null,
+        "description": "The payload exceeded the byte bound declared for its message type."
+      },
+      "schema_violation": {
+        "error_class": null,
+        "description": "The message parsed but did not satisfy the schema for its message type."
+      }
+    },
+    "schema_violation_codes": [
+      "type",
+      "required",
+      "forbidden",
+      "unknown_property",
+      "enum",
+      "const",
+      "pattern",
+      "too_short",
+      "too_long",
+      "too_small",
+      "too_large",
+      "too_few_items",
+      "too_many_items",
+      "duplicate_items",
+      "not_integer"
+    ],
+    "vocabularies": {
+      "frame_rate_bands": {
+        "description": "The two rates docs/ARCHITECTURE.md section 6.3 fixes, expressed as the inclusive frames-per-second bounds the scheduler adapts within. session_room is 10 to 20; thumbnail is 2 to 5. A scheduler that leaves its band is a defect, not an adaptation.",
+        "values": ["session_room:10:20", "thumbnail:2:5"]
+      },
+      "transport_records": {
+        "description": "Record kinds of the internal worker-to-control-plane leg, which carries the same messages over a length-prefixed byte stream rather than a WebSocket: 1 is a JSON message bounded by max_live_message_bytes, 2 is a binary frame payload bounded by max_frame_payload_bytes. On the viewer leg the same separation is a text WebSocket message followed by a binary one.",
+        "values": ["1:message", "2:frame_payload"]
+      }
+    },
+    "identifier_prefixes": {
+      "message_id": "msg_",
+      "browser_session_id": "brs_",
+      "project_id": "prj_",
+      "stream_id": "lvs_",
+      "viewer_id": "vwr_"
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "description": "Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the value as opaque: the schema bounds only its length and character class and never its documented prefix.",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "timestamp": {
+      "type": "string",
+      "description": "RFC 3339 timestamp in UTC, with a mandatory trailing Z.",
+      "minLength": 20,
+      "maxLength": 30,
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$"
+    },
+    "resolved_url": {
+      "type": "string",
+      "description": "Absolute URL observed by the browser. Page-derived and therefore untrusted (ADR-0010): bounded in length and character class, rendered as text, never executed.",
+      "minLength": 1,
+      "maxLength": 2048,
+      "pattern": "^[!-~]+$"
+    },
+    "reason_text": {
+      "type": "string",
+      "description": "Short operator-facing explanation. Never carries page content verbatim beyond its bound, and never carries credentials (docs/SECURITY.md section 18).",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "message_type": {
+      "type": "string",
+      "description": "Version 1 message type. Unknown types are rejected, never ignored. This enumeration MUST equal the keys of x-protocol.messages.",
+      "enum": [
+        "live.attached",
+        "live.frame",
+        "live.quality",
+        "live.quality_request",
+        "live.heartbeat",
+        "live.viewer_heartbeat",
+        "live.session_state",
+        "live.error"
+      ]
+    },
+    "error_class": {
+      "type": "string",
+      "description": "Stable error class, drawn from the docs/MCP_SPEC.md section 12 enumeration so a refusal reaches the viewer with the same code the HTTP API would report. This enumeration MUST equal x-protocol.error_classes.",
+      "enum": [
+        "PROTOCOL_UNSUPPORTED",
+        "AUTHENTICATION_REQUIRED",
+        "AUTHORISATION_DENIED",
+        "PROJECT_CONTEXT_MISMATCH",
+        "RESOURCE_NOT_FOUND",
+        "BROWSER_CAPACITY_EXHAUSTED",
+        "BROWSER_SESSION_NOT_ACTIVE",
+        "POLICY_DENIED",
+        "RATE_LIMITED",
+        "UNSUPPORTED_CAPABILITY",
+        "INTERNAL_ERROR"
+      ]
+    },
+    "live_mode": {
+      "type": "string",
+      "description": "Which of the two rates of docs/ARCHITECTURE.md section 6.3 the stream is running at. session_room adapts between 10 and 20 frames per second; thumbnail between 2 and 5.",
+      "enum": ["session_room", "thumbnail"]
+    },
+    "frame_format": {
+      "type": "string",
+      "description": "Media type of the binary frame payload. JPEG only: live frames are transient viewing data, not evidence, and lossless originals are the business of an explicitly captured screenshot (ADR-0009).",
+      "enum": ["image/jpeg"]
+    },
+    "frame_retention": {
+      "type": "string",
+      "description": "Retention applied to the binary payloads of this stream. The single value is the point: docs/SECURITY.md section 14 sets live_frames: never and ADR-0009 forbids a recording path here, so a stream cannot advertise anything else.",
+      "enum": ["never"]
+    },
+    "session_status": {
+      "type": "string",
+      "description": "Browser-session lifecycle status (docs/DOMAIN_MODEL.md section 12), reported so the page states the session's condition as text.",
+      "enum": [
+        "REQUESTED",
+        "ALLOCATING",
+        "READY",
+        "ACTIVE",
+        "PAUSED",
+        "DEGRADED",
+        "TERMINATING",
+        "TERMINATED",
+        "FAILED"
+      ]
+    },
+    "failure_state": {
+      "type": "string",
+      "description": "The actionable state docs/UX_FLOWS.md section 18 requires the UI to show instead of a blank canvas or a generic error. Each value names a cause a human can act on.",
+      "enum": [
+        "not_authenticated",
+        "not_authorised_for_project",
+        "browser_session_not_found",
+        "browser_session_ended",
+        "browser_worker_failed",
+        "live_capture_unavailable",
+        "viewer_rate_limited",
+        "control_plane_unavailable"
+      ]
+    },
+    "quality_reason": {
+      "type": "string",
+      "description": "Why the scheduler chose the quality it did. Recorded so an operator can tell an adaptation from a defect.",
+      "enum": [
+        "initial",
+        "viewer_requested",
+        "viewer_falling_behind",
+        "viewer_keeping_up",
+        "mode_changed",
+        "bounded_by_policy"
+      ]
+    },
+    "viewport": {
+      "type": "object",
+      "description": "Browser viewport in CSS pixels plus device pixel ratio (docs/API.md section 11). The frame payload's own dimensions are reported per frame and may be smaller after an adaptation.",
+      "additionalProperties": false,
+      "required": ["width", "height", "device_scale_factor"],
+      "properties": {
+        "width": {
+          "type": "integer",
+          "description": "Viewport width in CSS pixels.",
+          "minimum": 240,
+          "maximum": 3840
+        },
+        "height": {
+          "type": "integer",
+          "description": "Viewport height in CSS pixels.",
+          "minimum": 240,
+          "maximum": 2160
+        },
+        "device_scale_factor": {
+          "type": "number",
+          "description": "Device pixel ratio of the browser session.",
+          "minimum": 1,
+          "maximum": 4
+        }
+      }
+    },
+    "envelope": {
+      "type": "object",
+      "description": "Live-channel message envelope. Every message names the browser session it concerns and the stream instance it belongs to, so a message from a superseded stream is recognisable rather than merely late.",
+      "additionalProperties": false,
+      "required": ["protocol_version", "message_id", "type", "sent_at", "payload"],
+      "properties": {
+        "protocol_version": {
+          "type": "integer",
+          "description": "Protocol version. Stage 0 accepts 1 only; any other value is rejected with PROTOCOL_UNSUPPORTED and is never best-effort parsed.",
+          "const": 1
+        },
+        "message_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Sender-assigned message identifier, conventionally prefixed msg_."
+        },
+        "type": {
+          "$ref": "#/$defs/message_type",
+          "description": "Version 1 message type. Unknown types are rejected."
+        },
+        "sent_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "Time the sender emitted the message."
+        },
+        "browser_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Browser session the message concerns, conventionally prefixed brs_. Absent only on a viewer message sent before attachment completes."
+        },
+        "stream_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Live-stream instance, conventionally prefixed lvs_. A new producer run gets a new value, so a viewer can discard frames belonging to a stream it no longer follows."
+        },
+        "payload": {
+          "type": "object",
+          "description": "Message payload. Its schema is selected by type. The message is bounded by x-protocol.limits.max_live_message_bytes and each payload by its own x-max-bytes.",
+          "x-dynamic": true
+        }
+      },
+      "x-requires": [
+        {
+          "when": {
+            "property": "type",
+            "in": [
+              "live.attached",
+              "live.frame",
+              "live.quality",
+              "live.heartbeat",
+              "live.session_state"
+            ]
+          },
+          "required": ["browser_session_id", "stream_id"],
+          "detail": "every server message that describes a running stream names both the session and the stream instance"
+        },
+        {
+          "when": {
+            "property": "type",
+            "equals": "live.frame"
+          },
+          "required": ["browser_session_id"],
+          "detail": "frame metadata is bound to its browser session so a relayed frame cannot be attributed to another"
+        }
+      ]
+    },
+    "stream_attached": {
+      "type": "object",
+      "description": "Confirms an authenticated, authorised viewer attachment and states the terms of the stream.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": [
+        "project_id",
+        "mode",
+        "format",
+        "retention",
+        "max_frame_bytes",
+        "attached_at"
+      ],
+      "properties": {
+        "project_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Project owning the browser session. The viewer was authorised against this value before this message was sent."
+        },
+        "mode": {
+          "$ref": "#/$defs/live_mode",
+          "description": "Rate band the stream starts in."
+        },
+        "format": {
+          "$ref": "#/$defs/frame_format",
+          "description": "Media type every binary frame payload on this stream will carry."
+        },
+        "retention": {
+          "$ref": "#/$defs/frame_retention",
+          "description": "Retention applied to frame payloads. Always never (ADR-0009, docs/SECURITY.md section 14)."
+        },
+        "max_frame_bytes": {
+          "type": "integer",
+          "description": "Largest binary payload the control plane will forward. A larger frame is dropped by the producer rather than truncated.",
+          "minimum": 1024,
+          "maximum": 4194304
+        },
+        "attached_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the attachment was accepted."
+        }
+      }
+    },
+    "frame_metadata": {
+      "type": "object",
+      "description": "Describes the binary payload that follows it as the next transport message. Nothing here is page-derived except by dimension, and the payload itself is rendered as an image and never as markup (ADR-0010).",
+      "additionalProperties": false,
+      "x-max-bytes": 1024,
+      "required": [
+        "sequence",
+        "captured_at",
+        "mode",
+        "format",
+        "width",
+        "height",
+        "quality",
+        "byte_length",
+        "dropped_before"
+      ],
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "description": "Monotonically increasing per-stream frame number. Gaps are the dropped frames docs/ARCHITECTURE.md section 6.3 prefers to a growing queue, and are therefore expected rather than exceptional.",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "captured_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the worker captured the frame."
+        },
+        "mode": {
+          "$ref": "#/$defs/live_mode",
+          "description": "Rate band in force when the frame was captured."
+        },
+        "format": {
+          "$ref": "#/$defs/frame_format",
+          "description": "Media type of the payload."
+        },
+        "width": {
+          "type": "integer",
+          "description": "Payload width in device pixels. It may be below the viewport width after a bandwidth adaptation.",
+          "minimum": 1,
+          "maximum": 7680
+        },
+        "height": {
+          "type": "integer",
+          "description": "Payload height in device pixels.",
+          "minimum": 1,
+          "maximum": 4320
+        },
+        "quality": {
+          "type": "integer",
+          "description": "Encoder quality the frame was produced at, 1 to 100.",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "byte_length": {
+          "type": "integer",
+          "description": "Byte length of the binary payload that follows. A receiver that reads a different length MUST discard the frame rather than render a partial one.",
+          "minimum": 1,
+          "maximum": 4194304
+        },
+        "dropped_before": {
+          "type": "integer",
+          "description": "Frames the producer discarded since the previous delivered frame. Reported per frame so the drop rate is observable without a separate metrics path.",
+          "minimum": 0,
+          "maximum": 4294967295
+        }
+      }
+    },
+    "quality_state": {
+      "type": "object",
+      "description": "The scheduler's applied decision. The worker is authoritative over every field here (docs/API.md section 18.2).",
+      "additionalProperties": false,
+      "x-max-bytes": 1024,
+      "required": ["mode", "target_fps", "quality", "max_width", "max_height", "reason", "decided_at"],
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/live_mode",
+          "description": "Rate band now in force."
+        },
+        "target_fps": {
+          "type": "integer",
+          "description": "Frames per second the producer is now aiming for. It stays inside the band of x-protocol.vocabularies.frame_rate_bands for the mode.",
+          "minimum": 1,
+          "maximum": 30
+        },
+        "quality": {
+          "type": "integer",
+          "description": "Encoder quality now in force, 1 to 100.",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "max_width": {
+          "type": "integer",
+          "description": "Largest payload width the producer will now emit.",
+          "minimum": 1,
+          "maximum": 7680
+        },
+        "max_height": {
+          "type": "integer",
+          "description": "Largest payload height the producer will now emit.",
+          "minimum": 1,
+          "maximum": 4320
+        },
+        "reason": {
+          "$ref": "#/$defs/quality_reason",
+          "description": "Why the scheduler chose it."
+        },
+        "decided_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the decision was taken."
+        }
+      }
+    },
+    "quality_request": {
+      "type": "object",
+      "description": "A viewer's advisory request. The worker scheduler may honour it, bound it or ignore it; a viewer MUST NOT assume its request was applied and MUST read the live.quality that follows.",
+      "additionalProperties": false,
+      "x-max-bytes": 512,
+      "required": ["requested_at"],
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/live_mode",
+          "description": "Rate band the viewer would like."
+        },
+        "max_fps": {
+          "type": "integer",
+          "description": "Upper rate the viewer can consume. A viewer may lower its own ceiling; it cannot raise the band's.",
+          "minimum": 1,
+          "maximum": 30
+        },
+        "max_width": {
+          "type": "integer",
+          "description": "Largest payload width the viewer can usefully display, for example its rendered canvas width.",
+          "minimum": 1,
+          "maximum": 7680
+        },
+        "max_height": {
+          "type": "integer",
+          "description": "Largest payload height the viewer can usefully display.",
+          "minimum": 1,
+          "maximum": 4320
+        },
+        "requested_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the viewer made the request."
+        }
+      }
+    },
+    "stream_heartbeat": {
+      "type": "object",
+      "description": "Liveness plus the figures docs/TESTING.md section 12 requires to be measurable: delivered frames, dropped frames, and the depth of the bounded buffer that produced the drops.",
+      "additionalProperties": false,
+      "x-max-bytes": 1024,
+      "required": [
+        "observed_at",
+        "frames_sent",
+        "frames_dropped",
+        "buffer_depth",
+        "buffer_capacity",
+        "measured_fps"
+      ],
+      "properties": {
+        "observed_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the figures were sampled."
+        },
+        "frames_sent": {
+          "type": "integer",
+          "description": "Frames delivered to this viewer since attachment.",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "frames_dropped": {
+          "type": "integer",
+          "description": "Frames discarded rather than queued since attachment.",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "buffer_depth": {
+          "type": "integer",
+          "description": "Frames currently waiting to be written to this viewer.",
+          "minimum": 0,
+          "maximum": 64
+        },
+        "buffer_capacity": {
+          "type": "integer",
+          "description": "Bound on that buffer. It is a fixed small number: a viewer that falls behind sees fewer, newer frames rather than a backlog.",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "measured_fps": {
+          "type": "number",
+          "description": "Frames per second actually delivered over the last sampling window.",
+          "minimum": 0,
+          "maximum": 240
+        }
+      }
+    },
+    "viewer_heartbeat": {
+      "type": "object",
+      "description": "Viewer liveness and progress. The last rendered sequence is what lets the control plane distinguish a viewer that is slow from a link that is idle.",
+      "additionalProperties": false,
+      "x-max-bytes": 512,
+      "required": ["observed_at"],
+      "properties": {
+        "observed_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the viewer sampled its own state."
+        },
+        "last_sequence_rendered": {
+          "type": "integer",
+          "description": "Sequence of the last frame the viewer actually painted.",
+          "minimum": 0,
+          "maximum": 4294967295
+        }
+      }
+    },
+    "session_state": {
+      "type": "object",
+      "description": "Browser-session condition, sent at attachment and whenever it changes. The URL is page-derived and is rendered as text only.",
+      "additionalProperties": false,
+      "x-max-bytes": 4096,
+      "required": ["status", "viewport", "control_epoch", "observed_at"],
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/session_status",
+          "description": "Lifecycle status of the browser session."
+        },
+        "url": {
+          "$ref": "#/$defs/resolved_url",
+          "description": "URL the browser last settled on, when one is known. Untrusted content (ADR-0010)."
+        },
+        "viewport": {
+          "$ref": "#/$defs/viewport",
+          "description": "Viewport of the browser session."
+        },
+        "control_epoch": {
+          "type": "integer",
+          "description": "Control epoch current at the browser session (ADR-0007). Reported so a later takeover surface has the value it must present.",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "live_capture": {
+          "type": "boolean",
+          "description": "Whether frame capture is running. False with an otherwise healthy status is the degraded case docs/DEVELOPMENT.md section 11 requires: the session stays usable for navigation and screenshots without live frames."
+        },
+        "observed_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the state was observed."
+        }
+      }
+    },
+    "live_error": {
+      "type": "object",
+      "description": "A refusal or a stream failure. It carries the stable error class for logs and the failure state for the UI, because docs/UX_FLOWS.md section 18 forbids a generic message where a specific cause exists.",
+      "additionalProperties": false,
+      "x-max-bytes": 1024,
+      "required": ["code", "state", "message", "retryable"],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/error_class",
+          "description": "Stable error class."
+        },
+        "state": {
+          "$ref": "#/$defs/failure_state",
+          "description": "Actionable failure state the viewer must display."
+        },
+        "message": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Operator-facing explanation. Carries no credentials and no unbounded page content."
+        },
+        "retryable": {
+          "type": "boolean",
+          "description": "Whether reconnecting could succeed. A viewer MUST NOT reconnect in a loop when this is false."
+        },
+        "retry_after_ms": {
+          "type": "integer",
+          "description": "Hint for how long to wait before reconnecting, returned with RATE_LIMITED (docs/API.md section 19).",
+          "minimum": 0,
+          "maximum": 3600000
+        }
+      }
+    }
+  }
+}

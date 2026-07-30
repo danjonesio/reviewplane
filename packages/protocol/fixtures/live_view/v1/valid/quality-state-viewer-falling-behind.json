@@ -1,0 +1,17 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JLIVEQUALITY02",
+  "type": "live.quality",
+  "sent_at": "2026-07-30T10:05:02.000Z",
+  "browser_session_id": "brs_01JHOMEPAGEREVIEW",
+  "stream_id": "lvs_01JHOMEPAGESTREAM",
+  "payload": {
+    "mode": "session_room",
+    "target_fps": 12,
+    "quality": 55,
+    "max_width": 1152,
+    "max_height": 720,
+    "reason": "viewer_falling_behind",
+    "decided_at": "2026-07-30T10:05:01.996Z"
+  }
+}

@@ -25,11 +25,13 @@ import { decodeBrowserFrame, encodeBrowserFrame } from "../src/browser-frame.ts"
 import {
   BROWSER_CORPUS,
   CONNECTOR_CORPUS,
+  LIVE_VIEW_CORPUS,
   loadCanonicalEncodings,
   loadFixtureManifest,
   readFixture,
   type FixtureCorpus,
 } from "../src/fixtures.ts";
+import { decodeLiveViewFrame, encodeLiveViewFrame } from "../src/live-view-frame.ts";
 import {
   decodeControlFrame,
   decodeDataStreamHeaderFrame,
@@ -119,6 +121,17 @@ const CODECS: Readonly<Record<string, Codec>> = {
     },
     refusal(raw) {
       const result = decodeBrowserFrame(raw);
+      return result.ok ? null : { reason: result.error.reason, errorClass: result.error.errorClass };
+    },
+  },
+  live_view_frame: {
+    roundTrip(raw) {
+      const decoded = decodeLiveViewFrame(raw);
+      if (!decoded.ok) return { ok: false, message: `${decoded.error.reason}: ${decoded.error.message}` };
+      return { ok: true, encoded: encodeLiveViewFrame(decoded.value) };
+    },
+    refusal(raw) {
+      const result = decodeLiveViewFrame(raw);
       return result.ok ? null : { reason: result.error.reason, errorClass: result.error.errorClass };
     },
   },
@@ -228,6 +241,7 @@ function checkGo(): void {
 checkGeneratedFiles();
 checkFixtures(CONNECTOR_CORPUS, "connector");
 checkFixtures(BROWSER_CORPUS, "browser");
+checkFixtures(LIVE_VIEW_CORPUS, "live view");
 checkGo();
 
 if (failures.length > 0) {

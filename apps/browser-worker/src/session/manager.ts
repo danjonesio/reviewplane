@@ -22,10 +22,20 @@ import type {
   TerminationReason,
 } from "@reviewplane/protocol/browser";
 
+import type { LiveMode, QualityState } from "@reviewplane/protocol/live-view";
+
 import type { WorkerConfig } from "../config.ts";
+import { createLogger, type Logger } from "../logging.ts";
 import { executeCommand, buildResult, type ArtefactUploader } from "./commands.ts";
 import { authoriseCommand } from "./control.ts";
+import {
+  ScreencastProducer,
+  ScreencastUnavailableError,
+  type LiveTransport,
+} from "./screencast.ts";
 import { BrowserSession, type SessionAllocation } from "./session.ts";
+import type { ViewerPreference } from "./quality.ts";
+import { captureSize } from "./viewport.ts";
 
 /** Raised for a request the worker refuses before it reaches a session. */
 export class SessionRefusal extends Error {
@@ -47,6 +57,7 @@ export interface SessionManagerOptions {
   readonly artefacts: ArtefactUploader;
   readonly observer: ManagerObserver;
   readonly now?: () => Date;
+  readonly logger?: Logger;
 }
 
 function refusal(
@@ -68,7 +79,10 @@ export class SessionManager {
   readonly #artefacts: ArtefactUploader;
   readonly #observer: ManagerObserver;
   readonly #now: () => Date;
+  readonly #logger: Logger;
   readonly #sessions = new Map<string, BrowserSession>();
+  /** At most one live producer per session; the control plane fans out. */
+  readonly #producers = new Map<string, ScreencastProducer>();
   #assignedProjects: ReadonlySet<string> | null = null;
 
   constructor(options: SessionManagerOptions) {
@@ -76,6 +90,7 @@ export class SessionManager {
     this.#artefacts = options.artefacts;
     this.#observer = options.observer;
     this.#now = options.now ?? (() => new Date());
+    this.#logger = options.logger ?? createLogger({ service: "browser-worker" });
   }
 
   /**
@@ -153,6 +168,7 @@ export class SessionManager {
       sandbox: this.#config.sandbox,
       onSelfTermination: (terminated, status, reason) => {
         this.#sessions.delete(terminated.id);
+        void this.stopLive(terminated.id);
         this.#report(terminated, status, "ACTIVE", reason);
       },
     });
@@ -286,6 +302,106 @@ export class SessionManager {
     return result;
   }
 
+  // -------------------------------------------------------------------
+  // Live frames
+  // -------------------------------------------------------------------
+
+  /**
+   * Starts the live producer for one session.
+   *
+   * There is at most one producer per session: the control plane fans a single
+   * worker stream out to however many viewers are attached, so a second viewer
+   * costs the worker nothing and cannot be used to multiply capture work
+   * (`docs/API.md` section 19).
+   *
+   * A screencast that will not start is reported as a refusal rather than
+   * failing the session. `docs/DEVELOPMENT.md` section 11 requires the live
+   * stream to degrade without breaking the workflow, so navigation, snapshots
+   * and screenshots stay available on a session with no live frames.
+   */
+  async startLive(
+    browserSessionId: string,
+    mode: LiveMode,
+    transport: LiveTransport,
+  ): Promise<ScreencastProducer> {
+    const session = this.#sessions.get(browserSessionId);
+    if (session === undefined) {
+      throw new SessionRefusal(
+        refusal("RESOURCE_NOT_FOUND", "No such browser session on this worker.", false),
+      );
+    }
+    if (!session.acceptsCommands) {
+      throw new SessionRefusal(
+        refusal(
+          "BROWSER_SESSION_NOT_ACTIVE",
+          `Browser session is ${session.status}.`,
+          false,
+          session.controlEpoch,
+        ),
+      );
+    }
+    if (this.#producers.has(browserSessionId)) {
+      throw new SessionRefusal(
+        refusal(
+          "POLICY_DENIED",
+          "This browser session already has a live producer; the control plane fans one stream out to every viewer.",
+          true,
+        ),
+      );
+    }
+    const producer = new ScreencastProducer({
+      browserSessionId,
+      page: session.requirePage(),
+      capture: captureSize(session.viewport),
+      mode,
+      logger: this.#logger,
+      now: this.#now,
+    });
+    this.#producers.set(browserSessionId, producer);
+    try {
+      await producer.start(transport);
+    } catch (error) {
+      this.#producers.delete(browserSessionId);
+      if (error instanceof ScreencastUnavailableError) {
+        throw new SessionRefusal(
+          refusal(
+            "UNSUPPORTED_CAPABILITY",
+            "Live capture could not be started for this session. Navigation and screenshot capture are unaffected.",
+            true,
+          ),
+        );
+      }
+      throw error;
+    }
+    return producer;
+  }
+
+  /** Stops the live producer, if one is running. Safe to call repeatedly. */
+  async stopLive(browserSessionId: string): Promise<void> {
+    const producer = this.#producers.get(browserSessionId);
+    if (producer === undefined) return;
+    this.#producers.delete(browserSessionId);
+    await producer.stop();
+  }
+
+  liveProducer(browserSessionId: string): ScreencastProducer | undefined {
+    return this.#producers.get(browserSessionId);
+  }
+
+  /** Relays a viewer's advisory quality request to the scheduler. */
+  async requestLiveQuality(
+    browserSessionId: string,
+    preference: ViewerPreference,
+  ): Promise<QualityState> {
+    const producer = this.#producers.get(browserSessionId);
+    if (producer === undefined) {
+      throw new SessionRefusal(
+        refusal("RESOURCE_NOT_FOUND", "This browser session has no live producer.", false),
+      );
+    }
+    return producer.requestQuality(preference);
+  }
+
   /** Terminates a session and destroys its ephemeral data. */
   async terminate(
     browserSessionId: string,
@@ -301,6 +417,9 @@ export class SessionManager {
     const previous = session.status;
     session.setStatus("TERMINATING");
     this.#sessions.delete(browserSessionId);
+    // The producer goes before the context does: a screencast still attached
+    // to a closing page produces errors rather than frames.
+    await this.stopLive(browserSessionId);
     await session.destroy();
     session.setStatus("TERMINATED");
     return this.#report(session, "TERMINATED", previous, detail ?? `terminated: ${reason}`);
@@ -310,6 +429,7 @@ export class SessionManager {
   async fail(session: BrowserSession, reason: string): Promise<SessionStatusReport> {
     const previous = session.status;
     this.#sessions.delete(session.id);
+    await this.stopLive(session.id);
     await session.destroy();
     session.setStatus("FAILED");
     return this.#report(session, "FAILED", previous, reason);

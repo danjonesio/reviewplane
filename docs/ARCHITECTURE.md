@@ -52,6 +52,27 @@ Responsibilities:
 
 A bundled Caddy configuration is the preferred default. Bring-your-own reverse proxy remains supported.
 
+The bundled configuration is `deploy/compose/gateway/`. It is the only service
+in the Compose stack that publishes a host port, and it is deliberately thin: it
+holds no credential, reaches no database and gets no Docker socket.
+
+- `/api/*` and `/ws/*` proxy to the control plane, the second carrying
+  WebSocket upgrades. Idle timeouts are long enough for a live viewer watching
+  a quiet page.
+- Everything else is served from the web application's build output, with an
+  unknown path falling back to the document because routing is client-side
+  (ADR-0011).
+- `/internal/*` is refused outright. That path is the browser-worker channel of
+  `docs/API.md` section 15.1, and a misconfigured network must not be able to
+  turn it into a reachable API.
+- The security headers include a content-security policy that permits `self`
+  only, plus `blob:` and `data:` images so a live frame can be decoded. The
+  policy is strict enough to be worth having precisely because ADR-0011 forbids
+  loading anything from another host.
+- The web application is built inside the gateway image, since ADR-0011 removed
+  the server-rendering process and the component that serves static files is
+  this one.
+
 ### 4.2 Server
 
 One codebase may initially run multiple process roles:
@@ -81,6 +102,20 @@ Preferred initial stack (ADR-0011):
 - TypeScript
 
 The build output is static assets served by the gateway; the web application has no server-side rendering process. All surfaces, including the live session room and annotation canvas, are client-rendered React using the HTTP API and WebSocket channels.
+
+`apps/web` exists today with two surfaces: a list of active browser sessions
+and a session's live view. Routing is code-declared TanStack Router, server
+state is TanStack Query, and the live channel is a framework-free client in
+`src/live/client.ts` so that reconnect, stall detection and the
+metadata-to-payload pairing can be tested without a browser — and so that the
+annotation overlay of a later issue has the frame's declared dimensions and
+sequence to work from.
+
+Live frames are painted into a canvas. Page-derived content is decoded as an
+image and drawn; no page-derived markup is ever inserted into the document
+(ADR-0010). `pnpm --filter @reviewplane/web build` fails when the produced
+bundle would fetch from another host, so ADR-0011's no-CDN requirement is a
+property of the artefact rather than of review.
 
 ### 4.4 MCP server
 
@@ -197,6 +232,17 @@ Artefact keys are content-addressed and must not expose user-entered names. Wher
 
 Ephemeral data must not be persisted unless a configured recording policy converts it into an artefact.
 
+For live frames specifically, "must not be persisted" is enforced by the shape
+of the code rather than by a retention job. A frame exists as a value between
+the CDP callback and a socket write: the worker never writes one to its
+filesystem or hands one to the artefact uploader, the control plane never
+writes one to PostgreSQL or to the artefact store, and neither logs one. Stage
+0 implements no recording policy at all, so there is no configuration that can
+turn a frame into an artefact; when one arrives it must be an explicit,
+audited conversion rather than a flag on this path. `docs/TESTING.md` sections
+7 and 10 hold the tests that check the filesystem, the database and the
+artefact store after a sustained viewing session.
+
 ## 6. Browser topology
 
 ### 6.1 Central workers
@@ -242,6 +288,41 @@ Use CDP screencast frames or equivalent browser-worker capture:
 - Frames are dropped rather than queued when viewers fall behind
 
 Live frames are ephemeral and delivered over authenticated WebSockets.
+
+### 6.3.1 How the rates and the drop policy are implemented
+
+The path is worker to control plane to viewer, and each hop has one job.
+
+**The worker produces.** A CDP screencast is started per browser session, at
+most one at a time. Its scheduler (`apps/browser-worker/src/session/quality.ts`)
+owns rate, encoder quality and dimensions, and never leaves the band its mode
+declares: 10 to 20 frames per second for `session_room`, 2 to 5 for
+`thumbnail`. A viewer request may lower a ceiling — a viewer that cannot
+consume the floor is better served slowly than not at all — and can never
+raise one. Chromium paints when it likes, so frames arriving faster than the
+target interval are acknowledged and declined; a declined frame never becomes
+part of the stream and never takes a sequence number, which keeps the drop rate
+a statement about the viewer rather than about the page's paint rate. Frames
+that do enter the stream sit in a buffer two frames deep; when it is full the
+oldest goes, and the count of discarded frames rides on the next delivered
+frame's metadata.
+
+**The transport between them** is an HTTP response body rather than a
+WebSocket, framed as a one-byte record kind, a four-byte big-endian length and
+the bytes. It carries the same `live_view` messages the viewer receives, so
+there is one message definition and not two. Abandoning that response is the
+only way to stop the producer: there is no "stop" message, which means a
+control plane that crashes cannot leave a worker streaming to nobody. A viewer
+quality request travels as a separate short request rather than upstream on
+this body, so nothing can interleave with a frame payload.
+
+**The control plane relays.** One worker stream per browser session is fanned
+out to every attached viewer, so a second viewer costs the worker nothing.
+Each viewer is bounded independently: a viewer with bytes still outstanding
+does not receive the current frame and its drop counter advances. That costs a
+constant amount of memory per viewer, always favours the newest frame, and
+stops one slow viewer thinning the stream for the others. When the last viewer
+detaches the worker stream is closed immediately rather than swept by a timer.
 
 ### 6.4 Human input
 

@@ -67,6 +67,14 @@ Artefacts default to the filesystem driver on the `artefact_data` volume; no obj
 
 Production files must pin exact supported versions or immutable digests. Examples may use placeholders until release automation exists.
 
+The stack in `deploy/compose/` implements the `gateway`, `server`,
+`browser-worker` and `postgres` rows today. Its gateway image builds
+`apps/web` and serves the result, because ADR-0011 removed the server-rendering
+process and left static assets as the gateway's responsibility
+(`docs/ARCHITECTURE.md` §4.1). It publishes one host port, defaulting to 8443
+with TLS from Caddy's internal certificate authority so that a fresh install is
+HTTPS before an operator has obtained a certificate.
+
 ## 4. Networks
 
 Recommended:

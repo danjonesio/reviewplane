@@ -27,7 +27,7 @@ examples/
 
 The exact structure may be refined before code is created, but separation between control plane, browser execution and connector must remain.
 
-Existing today: `packages/protocol` (pnpm workspace member and Go module `github.com/danjonesio/reviewplane/packages/protocol`), `apps/server`, `apps/browser-worker` and `deploy/compose`, plus the workspace root that carries `pnpm-workspace.yaml`, `tsconfig.base.json`, `eslint.config.js` and `go.work`. Go modules are listed in `go.work` so that a service resolves `packages/protocol` from the working tree rather than from a tag; add each new module there as it is created.
+Existing today: `packages/protocol` (pnpm workspace member and Go module `github.com/danjonesio/reviewplane/packages/protocol`), `apps/server`, `apps/browser-worker`, `apps/web` and `deploy/compose` (including the gateway image that serves the web build output), plus the workspace root that carries `pnpm-workspace.yaml`, `tsconfig.base.json`, `eslint.config.js` and `go.work`. Go modules are listed in `go.work` so that a service resolves `packages/protocol` from the working tree rather than from a tag; add each new module there as it is created.
 
 Inside a TypeScript application: `src/main.ts` is a thin entry point, `src/app.ts` (or `src/worker.ts`) is composition only, and domain code lives in `src/modules/<domain>/`. Shared files at `src/` are kept to the few things every module needs — configuration, identifiers, errors, authentication, events and the database pool.
 
@@ -59,7 +59,7 @@ Generate or validate Go and TypeScript models from one versioned source. Do not 
 
 The mechanism is ADR-0013. Each protocol version has one machine-readable source — for the connector protocol, `packages/protocol/schemas/connector/v1.schema.json` — from which `pnpm protocol:generate` renders the committed TypeScript and Go. `pnpm protocol:check` re-renders both in memory and fails when a committed file differs, so a change made in one language alone cannot land. It also runs the committed cross-language fixture corpus and the Go test suite. The Go toolchain is required for both commands, because the generator formats its Go output with `gofmt`.
 
-Connector-protocol messages and browser-worker messages (`packages/protocol/schemas/browser/v1.schema.json`) are implemented today. API, MCP and event schemas join the package as the issues that introduce those surfaces land.
+Connector-protocol messages, browser-worker messages (`packages/protocol/schemas/browser/v1.schema.json`) and live-view messages (`packages/protocol/schemas/live_view/v1.schema.json`) are implemented today. The remaining API, MCP and event schemas join the package as the issues that introduce those surfaces land.
 
 Each schema source declares the languages it renders in its own `x-protocol.languages`, and `pnpm protocol:check` compares exactly that set. The browser-worker protocol declares `["typescript"]`: both its parties, `apps/server` and `apps/browser-worker`, are TypeScript, so a Go rendering would have no consumer. Declaring the set keeps the ADR-0013 guarantee exact rather than weakening it — when a Go component needs those messages the field changes and the check starts failing until the Go is committed.
 
@@ -107,11 +107,13 @@ go vet ./...
 
 Prefer root orchestration commands that run the correct service-specific tooling.
 
-Working today at the repository root: `pnpm install`, `pnpm build`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm test:browser`, `pnpm protocol:generate` and `pnpm protocol:check`. `go test ./...` and `go vet ./...` run from a module directory such as `packages/protocol`. The remaining scripts arrive with the surfaces they exercise.
+Working today at the repository root: `pnpm install`, `pnpm build`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm test:browser`, `pnpm test:ui`, `pnpm protocol:generate` and `pnpm protocol:check`. `go test ./...` and `go vet ./...` run from a module directory such as `packages/protocol`. The remaining scripts arrive with the surfaces they exercise.
 
 `pnpm test` needs Docker: the `apps/server` suite starts a disposable PostgreSQL and removes it afterwards, because the artefact and event behaviour it covers is only meaningful against the real database.
 
 `pnpm test:browser` is separate because it needs a Chromium and its system libraries, and because `docs/SECURITY.md` section 10 requires the Chromium sandbox to be enabled. It builds the worker image and runs the suite inside it under the same container controls `deploy/compose/compose.yaml` applies — non-root, `cap-drop ALL` plus `SYS_CHROOT`, the committed seccomp profile, no network — so a green run is evidence about the deployed posture rather than about a developer's machine.
+
+`pnpm test:ui` runs the user-interface and accessibility suite of `docs/TESTING.md` section 15. It builds the web bundle and drives it in the same image, for the same reason: the repository has one Chromium and keeping a second in step would be a liability rather than a convenience. `pnpm build` for `apps/web` also fails when the produced bundle would reach an external host, so a green build is part of the ADR-0011 no-CDN guarantee.
 
 ## 6. Configuration
 
@@ -173,6 +175,21 @@ In `apps/browser-worker` these read as:
 - Avoid colour-only state indication
 - Live streams degrade without breaking review workflows
 - Original evidence remains available when overlay rendering fails
+
+In `apps/web` these read as:
+
+- `src/live/client.ts` is the live channel and holds no React. Reconnect,
+  stall detection and the pairing of frame metadata with the binary message
+  that follows it are testable without a browser, and a later overlay renderer
+  gets the frame's declared dimensions and sequence from the same place.
+- Live frames are drawn into a canvas as decoded images. Page-derived content
+  is never inserted as markup, and a page-derived URL is rendered as text
+  rather than as a link (ADR-0010).
+- "Degrades without breaking" is specific: a failed or stalled stream shows a
+  named cause from `docs/UX_FLOWS.md` section 18 over the last frame, states
+  that navigation and screenshot capture still work, and offers a reconnect.
+- Reduced motion is answered by running the stream in the low-rate mode and
+  saying so, not only by disabling CSS transitions.
 
 ## 12. Feature flags
 

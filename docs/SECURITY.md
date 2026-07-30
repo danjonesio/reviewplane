@@ -114,6 +114,14 @@ Initial local authentication must provide:
 
 OIDC support should be added before team production use.
 
+Stage 0 implements the cookie half of this list through ADR-0014: the bootstrap
+administrator token is presented once, in an `Authorization` header, and is
+exchanged for a short-lived viewer session whose token lives in an HTTP-only,
+`SameSite=Strict` cookie. Only the token's digest is stored, sessions expire
+and can be revoked, and the administrator token itself never reaches the
+browser. Password hashing, login rate limiting and session rotation arrive with
+local accounts, which this exchange is deliberately shaped to be replaced by.
+
 ### 6.2 Connector authentication
 
 Enrolment flow:
@@ -156,6 +164,20 @@ Every request must be authorised using:
 - Policy decision
 
 Do not rely on UI visibility for enforcement.
+
+### Live-view authorisation
+
+A live viewer sees whatever is on the browser's screen, so the checks run
+before the WebSocket exists rather than inside the send path:
+
+- The `Origin` header is on the configured allow list.
+- The viewer session resolves, is unexpired and is unrevoked.
+- The browser session's project is inside the viewer session's scope.
+- The browser session has not ended.
+- The live-viewer limits of `docs/API.md` section 19.1 admit another viewer.
+
+Each failure is an HTTP status on the handshake. No WebSocket is created, so no
+frame can be transmitted to a viewer that failed any of them.
 
 ### Browser command authorisation
 
@@ -326,6 +348,15 @@ retention:
 ```
 
 Administrators can shorten or extend policy. Legal hold and enterprise policy are later capabilities.
+
+`live_frames: never` is not a retention job. There is no code path that writes
+a live frame anywhere: not to the worker's filesystem, not to the artefact
+store, not to PostgreSQL, not to a log. The `live.attached` message states
+`retention: never` on the wire, and the protocol schema makes that field a
+single-valued enumeration, so a stream cannot advertise anything else even by
+mistake. Session video, which is the supported way to keep moving pictures,
+remains `disabled` and is a separate, explicitly configured capture rather than
+a flag on this path.
 
 ## 15. Encryption
 

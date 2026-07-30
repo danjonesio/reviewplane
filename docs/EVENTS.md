@@ -134,8 +134,17 @@ Names are stable public integration contracts.
 - `browser.control_released`
 - `browser.command_rejected`
 - `browser.command_executed`
+- `browser.live_view_started`
+- `browser.live_view_stopped`
 
 Do not emit every pointer movement as a durable event. High-frequency input may be sampled or summarised.
+
+The live-view pair is per viewer attachment, not per frame. A frame is not an
+event, and a payload here never carries frame content: `started` records the
+mode, `stopped` records why the viewer left and how many frames it was sent and
+had dropped. They exist because a human watching a browser session is an access
+to the most sensitive data the product handles (`docs/SECURITY.md` section 14),
+and `AGENTS.md` requires that to leave an audit record.
 
 ### Evidence
 

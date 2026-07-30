@@ -3,17 +3,24 @@
 The single versioned source for ReviewPlane protocol schemas, with generated
 TypeScript and Go models.
 
-At Stage 0 it covers two protocols:
+At Stage 0 it covers three protocols:
 
 - the version 1 **connector protocol** of `docs/CONNECTOR_PROTOCOL.md`, spoken
   between the Go connector, the Go tunnel gateway and the TypeScript control
   plane;
 - the version 1 **browser-worker protocol** of `docs/ARCHITECTURE.md` §4.5,
   §6.4 and §11, spoken between the control-plane server and a central Chromium
-  worker.
+  worker;
+- the version 1 **live-view channel** of `docs/API.md` §18.2, spoken by the
+  worker, the control plane and the web application. Its binary frame payload
+  is deliberately not a JSON schema: it is a separate transport message
+  described by the `live.frame` metadata before it, and
+  `live-view-stream.ts` carries the length-prefixed framing that keeps the two
+  associated on the internal worker-to-control-plane leg.
 
-API, MCP and event schemas (`docs/DEVELOPMENT.md` §3) are added by the issues
-that introduce those surfaces; they belong in this package, not in a service.
+The remaining API, MCP and event schemas (`docs/DEVELOPMENT.md` §3) are added
+by the issues that introduce those surfaces; they belong in this package, not
+in a service.
 
 ## Layout
 
@@ -35,24 +42,30 @@ each source declares the languages it renders in its own
 ```ts
 import { decodeControlFrame } from "@reviewplane/protocol";
 import { decodeBrowserFrame } from "@reviewplane/protocol/browser";
+import { decodeLiveViewFrame } from "@reviewplane/protocol/live-view";
 ```
 
-The browser protocol is a separate subpath export because both protocols
-declare an `Envelope`, a `MessageType` and a `LIMITS` block; a single namespace
-would make the two indistinguishable at a call site.
+Each protocol is a separate subpath export because all three declare an
+`Envelope`, a `MessageType` and a `LIMITS` block; a single namespace would make
+them indistinguishable at a call site.
 
-## Why the browser protocol renders TypeScript only
+`@reviewplane/protocol/live-view` runs in a browser as well as in Node, because
+`apps/web` decodes live messages itself. Nothing on that path imports a Node
+built-in; `byteLength` in `canonical.ts` counts UTF-8 bytes rather than calling
+`Buffer.byteLength` for exactly that reason.
 
-`x-protocol.languages` in `schemas/browser/v1.schema.json` is
-`["typescript"]`. Both parties to that protocol — `apps/server` and
-`apps/browser-worker` — are TypeScript, so a Go rendering would have no
-consumer, and producing one would mean extracting the hand-written Go runtime
-in `connectorv1/` into a shared package and regenerating every committed Go
-file to call it through exported names. ADR-0013's guarantee is that a change
-made in one language cannot land in another; scoping the languages in the
-schema keeps that guarantee exact rather than weakening it, because
-`pnpm protocol:check` renders and compares precisely the set the source
-declares. When a Go component needs these messages, the field changes to
+## Why the browser and live-view protocols render TypeScript only
+
+`x-protocol.languages` in `schemas/browser/v1.schema.json` and
+`schemas/live_view/v1.schema.json` is `["typescript"]`. Every party to those
+protocols — `apps/server`, `apps/browser-worker` and `apps/web` — is
+TypeScript, so a Go rendering would have no consumer, and producing one would
+mean extracting the hand-written Go runtime in `connectorv1/` into a shared
+package and regenerating every committed Go file to call it through exported
+names. ADR-0013's guarantee is that a change made in one language cannot land
+in another; scoping the languages in the schema keeps that guarantee exact
+rather than weakening it, because `pnpm protocol:check` renders and compares
+precisely the set the source declares. When a Go component needs these messages, the field changes to
 `["typescript", "go"]` and the check starts failing until the Go is committed.
 
 ## Commands

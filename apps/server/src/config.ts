@@ -24,6 +24,13 @@ export interface ServerConfig {
   readonly artefactPath: string;
   readonly artefactMaxBytes: number;
   readonly workerRequestTimeoutMs: number;
+  /**
+   * Origins a browser may open the live WebSocket from (`docs/API.md` §18.2).
+   * Empty means same-origin only, which is what a gateway deployment has.
+   */
+  readonly allowedOrigins: readonly string[];
+  /** Whether the viewer session cookie is marked `Secure` (ADR-0014). */
+  readonly secureCookies: boolean;
 }
 
 export type Environment = Readonly<Record<string, string | undefined>>;
@@ -94,6 +101,18 @@ export function loadServerConfig(environment: Environment = process.env): Server
     );
   }
 
+  const allowedOrigins = text(environment, "REVIEWPLANE_ALLOWED_ORIGINS", "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter((origin) => origin !== "");
+  for (const origin of allowedOrigins) {
+    if (!/^https?:\/\/[!-~]+$/u.test(origin)) {
+      throw new ConfigurationError(
+        `REVIEWPLANE_ALLOWED_ORIGINS holds a value that is not an http or https origin: ${origin}`,
+      );
+    }
+  }
+
   return {
     listenAddress: text(environment, "REVIEWPLANE_LISTEN_ADDRESS", "0.0.0.0"),
     port: integer(environment, "REVIEWPLANE_PORT", 8080, 1, 65535),
@@ -117,5 +136,9 @@ export function loadServerConfig(environment: Environment = process.env): Server
       1000,
       600000,
     ),
+    allowedOrigins,
+    // Defaults to true: the deployed shape terminates TLS at the gateway, and
+    // an operator who runs plain HTTP for local development has to say so.
+    secureCookies: text(environment, "REVIEWPLANE_SECURE_COOKIES", "true") !== "false",
   };
 }

@@ -1,0 +1,19 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JLIVEHUGEFRAME",
+  "type": "live.frame",
+  "sent_at": "2026-07-30T10:04:12.140Z",
+  "browser_session_id": "brs_01JHOMEPAGEREVIEW",
+  "stream_id": "lvs_01JHOMEPAGESTREAM",
+  "payload": {
+    "sequence": 412,
+    "captured_at": "2026-07-30T10:04:12.137Z",
+    "mode": "session_room",
+    "format": "image/jpeg",
+    "width": 1440,
+    "height": 900,
+    "quality": 70,
+    "byte_length": 16777216,
+    "dropped_before": 0
+  }
+}

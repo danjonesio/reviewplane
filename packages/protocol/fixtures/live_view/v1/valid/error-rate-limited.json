@@ -1,0 +1,13 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JLIVEERROR0002",
+  "type": "live.error",
+  "sent_at": "2026-07-30T10:07:45.000Z",
+  "payload": {
+    "code": "RATE_LIMITED",
+    "state": "viewer_rate_limited",
+    "message": "Too many live viewers attached from this session. Close a viewer or wait before retrying.",
+    "retryable": true,
+    "retry_after_ms": 5000
+  }
+}

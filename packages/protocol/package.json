@@ -15,6 +15,11 @@
       "types": "./dist/browser.d.ts",
       "default": "./dist/browser.js"
     },
+    "./live-view": {
+      "development": "./src/live-view.ts",
+      "types": "./dist/live-view.d.ts",
+      "default": "./dist/live-view.js"
+    },
     "./schemas/*": "./schemas/*",
     "./fixtures/*": "./fixtures/*"
   },

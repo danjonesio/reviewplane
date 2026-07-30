@@ -325,6 +325,14 @@ FAILED
 - Each command is authorised against project, session and control epoch
 - Live frames are not durable by default
 
+"Live frames are not durable by default" is enforced by there being no path
+that persists one: `docs/ARCHITECTURE.md` section 5.3 records how, and
+`docs/SECURITY.md` section 14 records what the retention setting means in
+practice. Watching a session is nevertheless a meaningful action, so it
+produces `browser.live_view_started` and `browser.live_view_stopped` audit
+events (`docs/EVENTS.md` section 7); those record who watched and how many
+frames were delivered, never what was on screen.
+
 ## 13. Control lease
 
 Time-bounded control grant.

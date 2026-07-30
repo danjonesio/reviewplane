@@ -33,6 +33,31 @@ Human API:
 
 Connector, worker and agent authentication use separate endpoints and credentials.
 
+### 4.1 Viewer sessions
+
+Stage 0 implements the session cookie above through the exchange of ADR-0014:
+
+```text
+POST   /api/v1/auth/viewer-sessions
+GET    /api/v1/auth/viewer-sessions/current
+DELETE /api/v1/auth/viewer-sessions/current
+POST   /api/v1/projects/:projectId/viewer-sessions
+```
+
+`POST /api/v1/auth/viewer-sessions` takes the bootstrap administrator token in
+an `Authorization` header — never in a cookie, never in a URL — and answers
+with `Set-Cookie: reviewplane_viewer=...; HttpOnly; SameSite=Strict; Secure`.
+The control plane stores only the SHA-256 digest of the session token.
+
+A viewer session carries an explicit project scope. The administrator's session
+is organisation-wide; the project route mints one limited to a single project
+and returns its token exactly once. Every read the web application performs is
+filtered by that scope, and the live channel of section 18.2 authorises against
+it before the WebSocket upgrade completes.
+
+State-changing browser-session routes — start, command, terminate — remain
+administrative and are not reachable with a viewer session.
+
 ## 5. Common metadata
 
 Responses include:
@@ -295,7 +320,7 @@ Client sends last sequence. Server emits event envelopes from `EVENTS.md`.
 ### 18.2 Browser live stream
 
 ```text
-/ws/v1/browser-sessions/:sessionId/live
+/ws/v1/browser-sessions/:sessionId/live?mode=session_room|thumbnail
 ```
 
 Subprotocol separates:
@@ -307,6 +332,41 @@ Subprotocol separates:
 - Heartbeats
 
 The viewer can request quality but the worker scheduler remains authoritative.
+
+The messages are defined once, in
+`packages/protocol/schemas/live_view/v1.schema.json` (ADR-0013), and are not
+restated here:
+
+| Message | Direction | Purpose |
+|---|---|---|
+| `live.attached` | control plane to viewer | Attachment accepted; states mode, format and that frame retention is `never` |
+| `live.session_state` | control plane to viewer | Browser-session status, URL, viewport and control epoch |
+| `live.frame` | worker to viewer | Metadata for the binary message that follows it |
+| `live.quality` | worker to viewer | The rate, quality and dimensions the scheduler applied |
+| `live.quality_request` | viewer to control plane | Advisory request, relayed to the worker |
+| `live.heartbeat` | control plane to viewer | Sent, dropped, buffer depth and measured rate |
+| `live.viewer_heartbeat` | viewer to control plane | Viewer liveness and the last sequence it painted |
+| `live.error` | control plane to viewer | Stable error class plus the `docs/UX_FLOWS.md` section 18 state to display |
+
+The separation is a transport rule, not a convention: a `live.frame` text
+message is immediately followed by one binary message carrying the frame's
+bytes, and `byte_length` in the metadata MUST equal the length of that message.
+A receiver that reads a different length MUST discard the frame. A binary
+message with no preceding metadata MUST be discarded rather than rendered.
+Frame bytes MUST NOT be base64-encoded into a JSON message; the schema's
+`additionalProperties: false` is what keeps that true over time.
+
+Cursor and target overlays are reserved and are not sent in Stage 0.
+
+Authentication and authorisation both complete before the upgrade
+(section 4.1). An anonymous viewer, a viewer whose session is scoped to another
+project, and a viewer whose browser session has ended are all refused with an
+HTTP status on the handshake, so no WebSocket exists for them and no frame is
+transmitted. The `Origin` header is checked against a configured allow list.
+
+Internally the control plane obtains frames from the worker over a separate
+leg, described in `docs/ARCHITECTURE.md` section 6.3. One worker stream serves
+however many viewers are attached, and closing it is what stops capture.
 
 ### 18.3 Human control
 
@@ -345,6 +405,27 @@ Apply separate limits for:
 - Event replay
 
 Limit errors return retry hints when appropriate.
+
+### 19.1 Live-viewer limits implemented today
+
+A live viewer is the cheapest way to make the control plane and a browser
+worker do expensive work, so the bounds apply to an authorised viewer and not
+only to an anonymous one (`docs/SECURITY.md` section 4).
+
+| Limit | Value | Refusal |
+|---|---|---|
+| Concurrent viewers per browser session | 4 | `RATE_LIMITED` on the handshake |
+| Concurrent viewers per viewer session | 8 | `RATE_LIMITED` on the handshake |
+| Attach attempts per viewer session | 30 per minute | `RATE_LIMITED` on the handshake |
+| Inbound messages per viewer | 20 per 10 seconds | `live.error` with `viewer_rate_limited`, then close |
+| Inbound message size | 8192 bytes | Refused by the socket before buffering |
+| Quality requests relayed to a worker | 1 per 2 seconds per session | Silently coalesced |
+
+A refusal on the handshake carries `retry_after_ms` in its error details; a
+refusal on an open socket carries it in the `live.error` payload.
+
+A second viewer on a session costs the worker nothing: the control plane opens
+one worker stream per browser session and fans it out.
 
 ## 20. Compatibility
 

@@ -43,6 +43,14 @@ Contract tests for a protocol run one committed fixture corpus in every language
 - MCP client and review retrieval
 - WebSocket live frames and control
 
+The live-frame integration runs against a real listening server and a real
+WebSocket client (`apps/server/test/live.test.ts`), because the properties
+under test are properties of the handshake and of message ordering: a refusal
+before the upgrade, a text metadata message immediately followed by the binary
+message it describes, and a worker stream that closes when the last viewer
+leaves. The measured-rate half of section 12 is settled in the browser suite,
+where a real Chromium is producing the frames.
+
 ### End to end
 
 Complete user workflows in deployed Compose environment.
@@ -132,6 +140,13 @@ Required transition tests:
 These live in `apps/browser-worker/test/browser/` and run with `pnpm test:browser`, which builds the worker image and runs the suite inside it under the same container controls `deploy/compose/compose.yaml` applies. Running them anywhere laxer would not answer the question the sandbox check asks. They are excluded from `pnpm test` because they need a Chromium and its system libraries.
 
 The suite drives the worker against the fixture applications in `test/browser/fixture-app.ts`, including a page whose visible content instructs the agent to change policy and exfiltrate source. Element-reference tests assert that a stale reference fails rather than targeting whatever now occupies its position, which is the failure mode a passing "it clicked something" test would hide.
+
+Live capture is exercised in the same suite. It needs a page that repaints,
+because a CDP screencast emits on paint and a static page produces one frame
+and then silence; `fixture-app.ts` therefore serves an animated page whose only
+purpose is to give the compositor work. The measured rate for each mode is
+printed by the run, so the figures `docs/TESTING.md` section 12 asks to be
+published come from the suite rather than from a separate benchmark.
 
 ## 8. MCP tests
 
@@ -255,6 +270,28 @@ For each supported upgrade path:
 - Responsive layouts at 390x844 and 1440x900
 - Browser live surface reconnect
 - Before-and-after comparison
+
+These live in `apps/web/test/ui/` and run with `pnpm test:ui`, which builds the
+bundle and drives it in a real Chromium against a stub control plane that
+speaks the generated live-view protocol. They are separate from `pnpm test` for
+the same reason the browser suite is: a Chromium and its system libraries are
+not assumed on a developer's machine, so the suite runs inside the browser
+worker's image under the same container controls.
+
+The stub is restartable, which is what makes the API-restart case of section 11
+testable end to end: the control plane is stopped mid-stream, the page is
+asserted to show `Reconnecting`, the control plane is restarted on the same
+port, and the page is asserted to return to `Live` with its painted-frame count
+still advancing. The suite also asserts that the page issues no request to any
+host but its own, which is ADR-0011's no-CDN requirement observed at run time
+rather than in the bundle.
+
+Frame-lifetime evidence is split deliberately: `apps/server/test/live.test.ts`
+proves the artefact store, the database and the event payloads hold no frame
+after a sustained viewing session, and
+`apps/browser-worker/test/browser/live.browser.test.ts` proves the same of the
+worker's own filesystem — including that the ephemeral profile directory gains
+no image file and does not survive termination.
 
 ## 16. Release gates
 

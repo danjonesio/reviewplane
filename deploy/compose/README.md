@@ -5,7 +5,9 @@ This directory contains the supported single-host deployment.
 Present today:
 
 ```text
-compose.yaml                    PostgreSQL, server and browser worker
+compose.yaml                    gateway, PostgreSQL, server and browser worker
+gateway/Dockerfile              builds the web application and the Caddy image
+gateway/Caddyfile               TLS, routing, WebSocket upgrades, static assets
 browser-worker-seccomp.json     seccomp profile for the browser worker
 .env.example                    non-secret settings
 secrets/                        mounted secret files, never committed
@@ -15,13 +17,32 @@ Still planned:
 
 ```text
 compose.override.example.yaml
-Caddyfile
 configure
 reviewplane
 backup
 restore
 upgrade
 ```
+
+## Gateway
+
+`gateway` is the only service that publishes a host port
+(`docs/ARCHITECTURE.md` §4.1). It serves `apps/web`'s build output, proxies
+`/api` and upgrades `/ws` to the control plane, and refuses `/internal`
+outright so that a misconfigured network cannot expose the browser-worker
+channel. It holds no credential, reaches neither PostgreSQL nor the worker, and
+mounts no Docker socket.
+
+The web application is built inside the gateway image because ADR-0011 removed
+the server-rendering process: the build output is static files, and this is the
+component that serves static files. That build fails if the bundle would fetch
+from another host, so an image cannot be produced from one that would.
+
+Stage 0 terminates TLS with Caddy's internal certificate authority, so a fresh
+install is HTTPS from first boot and the viewer session cookie can be `Secure`.
+An operator terminating TLS elsewhere replaces the `tls` directive and points
+`REVIEWPLANE_PUBLIC_ORIGIN` at their own address; that value is also the origin
+the control plane accepts a live-view WebSocket upgrade from.
 
 ## Browser-worker isolation
 

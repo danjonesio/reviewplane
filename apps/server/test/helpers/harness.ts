@@ -21,6 +21,15 @@ import {
   type BrowserFrame,
   type SessionStatusReport,
 } from "@reviewplane/protocol/browser";
+import {
+  LIVE_RECORD_FRAME_PAYLOAD,
+  encodeLiveMessageRecord,
+  encodeLiveRecord,
+  encodeLiveViewFrame,
+  type FrameMetadata,
+  type LiveMode,
+  type QualityState,
+} from "@reviewplane/protocol/live-view";
 
 import { buildApp, type BuiltApp } from "../../src/app.ts";
 import type { ServerConfig } from "../../src/config.ts";
@@ -42,13 +51,41 @@ export interface StubWorkerBehaviour {
   refuseWith?: { status: number; code: string; message: string };
 }
 
+/**
+ * The stub worker's live producer.
+ *
+ * A test pushes frames explicitly rather than waiting for a timer, so a
+ * measured rate in a test is a statement about the relay and not about how
+ * fast the machine running the test happens to be.
+ */
+export interface StubLiveProducer {
+  /** Live streams the control plane opened, newest last. */
+  readonly opened: { browserSessionId: string; mode: LiveMode }[];
+  /** Streams closed by the control plane, with the reason recorded. */
+  readonly closed: string[];
+  readonly qualityRequests: unknown[];
+  /** Whether a stream is currently open. */
+  readonly open: boolean;
+  /** Pushes one frame: metadata then the payload, as the worker would. */
+  pushFrame(payload: Uint8Array, overrides?: Partial<FrameMetadata>): void;
+  /** Pushes one non-frame message, such as a heartbeat. */
+  pushMessage(json: string): void;
+  /** Ends the stream as a worker crash would. */
+  endStream(): void;
+  /** Set to refuse the next stream with this HTTP status. */
+  refuseWith?: number;
+}
+
 export interface Harness {
   readonly built: BuiltApp;
   readonly config: ServerConfig;
   readonly artefactRoot: string;
   readonly worker: StubWorkerBehaviour;
+  readonly live: StubLiveProducer;
   /** Requests the control plane made to the worker, in order. */
   readonly workerRequests: { path: string; authorization: string | undefined }[];
+  /** Base URL of the listening server, for a real WebSocket client. */
+  listen(): Promise<string>;
   stop(): Promise<void>;
 }
 
@@ -76,7 +113,11 @@ export async function startHarness(pool: Pool): Promise<Harness> {
     artefactPath: artefactRoot,
     artefactMaxBytes: 20971520,
     workerRequestTimeoutMs: 5000,
+    allowedOrigins: ["https://reviewplane.test"],
+    secureCookies: false,
   };
+
+  const live = createStubLiveProducer();
 
   const workerFetch: typeof fetch = async (input, init) => {
     const url = new URL(typeof input === "string" ? input : String(input));
@@ -100,6 +141,18 @@ export async function startHarness(pool: Pool): Promise<Harness> {
           error: { code: worker.refuseWith.code, message: worker.refuseWith.message },
         }),
         { status: worker.refuseWith.status, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    const liveMatch = /^\/internal\/v1\/browser-sessions\/([^/]+)\/live(\/quality)?$/u.exec(
+      url.pathname,
+    );
+    if (liveMatch !== null) {
+      return live.handle(
+        liveMatch[1] as string,
+        liveMatch[2] !== undefined,
+        url,
+        init,
       );
     }
 
@@ -191,17 +244,161 @@ export async function startHarness(pool: Pool): Promise<Harness> {
   const built = await buildApp({ config, pool, workerFetch });
   await built.app.ready();
 
+  let origin: string | null = null;
+
   return {
     built,
     config,
     artefactRoot,
     worker,
+    live,
     workerRequests,
+    async listen() {
+      if (origin !== null) return origin;
+      const address = await built.app.listen({ host: "127.0.0.1", port: 0 });
+      origin = address;
+      return address;
+    },
     async stop() {
       await built.app.close();
       await rm(artefactRoot, { recursive: true, force: true });
     },
   };
+}
+
+const DEFAULT_FRAME_METADATA: FrameMetadata = {
+  sequence: 0,
+  captured_at: "2026-07-30T10:04:12.137Z",
+  mode: "session_room",
+  format: "image/jpeg",
+  width: 1440,
+  height: 900,
+  quality: 65,
+  byte_length: 1,
+  dropped_before: 0,
+};
+
+const DEFAULT_QUALITY: QualityState = {
+  mode: "session_room",
+  target_fps: 15,
+  quality: 65,
+  max_width: 1440,
+  max_height: 900,
+  reason: "viewer_requested",
+  decided_at: "2026-07-30T10:04:12.000Z",
+};
+
+interface StubLiveInternals extends StubLiveProducer {
+  handle(
+    browserSessionId: string,
+    isQuality: boolean,
+    url: URL,
+    init: RequestInit | undefined,
+  ): Response;
+}
+
+/**
+ * A worker live endpoint over a real streaming `Response`, so the control
+ * plane's reader, record decoder and metadata/payload pairing all run exactly
+ * as they do in production.
+ */
+function createStubLiveProducer(): StubLiveInternals {
+  const opened: { browserSessionId: string; mode: LiveMode }[] = [];
+  const closed: string[] = [];
+  const qualityRequests: unknown[] = [];
+  let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
+  let sequence = 0;
+  let sessionId = "";
+
+  const producer: StubLiveInternals = {
+    opened,
+    closed,
+    qualityRequests,
+    get open(): boolean {
+      return controller !== null;
+    },
+    pushFrame(payload, overrides = {}) {
+      if (controller === null) throw new Error("no live stream is open");
+      sequence += 1;
+      const metadata: FrameMetadata = {
+        ...DEFAULT_FRAME_METADATA,
+        ...overrides,
+        sequence: overrides.sequence ?? sequence,
+        byte_length: payload.byteLength,
+      };
+      controller.enqueue(
+        encodeLiveMessageRecord(
+          encodeLiveViewFrame({
+            envelope: {
+              protocol_version: 1,
+              message_id: newId("msg_"),
+              type: "live.frame",
+              sent_at: new Date().toISOString(),
+              browser_session_id: sessionId,
+              stream_id: "lvs_stub",
+            },
+            type: "live.frame",
+            payload: metadata,
+          }),
+        ),
+      );
+      controller.enqueue(encodeLiveRecord(LIVE_RECORD_FRAME_PAYLOAD, payload));
+    },
+    pushMessage(json) {
+      if (controller === null) throw new Error("no live stream is open");
+      controller.enqueue(encodeLiveMessageRecord(json));
+    },
+    endStream() {
+      controller?.close();
+      controller = null;
+      closed.push("worker ended the stream");
+    },
+    handle(browserSessionId, isQuality, url, init) {
+      if (isQuality) {
+        qualityRequests.push(String(init?.body ?? ""));
+        return new Response(
+          encodeLiveViewFrame({
+            envelope: {
+              protocol_version: 1,
+              message_id: newId("msg_"),
+              type: "live.quality",
+              sent_at: new Date().toISOString(),
+              browser_session_id: browserSessionId,
+              stream_id: "lvs_stub",
+            },
+            type: "live.quality",
+            payload: DEFAULT_QUALITY,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (producer.refuseWith !== undefined) {
+        const status = producer.refuseWith;
+        producer.refuseWith = undefined as never;
+        return new Response("", { status });
+      }
+      sessionId = browserSessionId;
+      sequence = 0;
+      opened.push({
+        browserSessionId,
+        mode: (url.searchParams.get("mode") ?? "session_room") as LiveMode,
+      });
+      const body = new ReadableStream<Uint8Array>({
+        start(streamController) {
+          controller = streamController;
+        },
+        cancel(reason) {
+          controller = null;
+          closed.push(String(reason ?? "cancelled"));
+        },
+      });
+      return new Response(body, {
+        status: 200,
+        headers: { "content-type": "application/vnd.reviewplane.live-view.v1" },
+      });
+    },
+  };
+  return producer;
 }
 
 function frameResponse(frame: BrowserFrame): Response {

@@ -14,6 +14,10 @@ import { registerBrowserSessionRoutes } from "./modules/browser-sessions/routes.
 import { BrowserSessionService } from "./modules/browser-sessions/service.ts";
 import { BrowserWorkerClient } from "./modules/browser-sessions/worker-client.ts";
 import { WorkerRegistry } from "./modules/browser-sessions/workers.ts";
+import { LiveRelay } from "./modules/live/relay.ts";
+import { registerLiveRoutes, resolveViewer } from "./modules/live/routes.ts";
+import { ViewerSessionStore } from "./modules/live/viewer-sessions.ts";
+import { WorkerLiveClient } from "./modules/live/worker-live-client.ts";
 import { registerProjectRoutes } from "./modules/projects/routes.ts";
 
 export interface BuildAppOptions {
@@ -31,6 +35,8 @@ export interface BuiltApp {
   readonly artefacts: ArtefactService;
   readonly sessions: BrowserSessionService;
   readonly workers: WorkerRegistry;
+  readonly viewers: ViewerSessionStore;
+  readonly relay: LiveRelay;
 }
 
 export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
@@ -51,6 +57,25 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     ...(options.workerFetch === undefined ? {} : { fetchImplementation: options.workerFetch }),
   });
   const sessions = new BrowserSessionService(pool, workers, workerClient);
+  const viewers = new ViewerSessionStore(pool);
+  const liveClient = new WorkerLiveClient({
+    endpoint: config.workerEndpoint,
+    credential: config.workerCommandCredential,
+    ...(options.workerFetch === undefined ? {} : { fetchImplementation: options.workerFetch }),
+  });
+  const relay = new LiveRelay({
+    client: liveClient,
+    logger: {
+      info: (message, fields) => {
+        app.log.info(fields ?? {}, message);
+      },
+      warn: (message, fields) => {
+        app.log.warn(fields ?? {}, message);
+      },
+    },
+  });
+  const viewerAuth = async (request: Parameters<typeof resolveViewer>[0]) =>
+    resolveViewer(request, { viewers, bootstrapToken: config.bootstrapToken });
 
   app.get("/health", async () => ({ status: "ok" }));
 
@@ -58,6 +83,7 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     pool,
     bootstrapToken: config.bootstrapToken,
     workerCredential: config.workerCredential,
+    viewerAuth,
   });
   await registerArtefactRoutes(app, {
     pool,
@@ -72,7 +98,18 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     workers,
     bootstrapToken: config.bootstrapToken,
     workerCredential: config.workerCredential,
+    viewerAuth,
+  });
+  await registerLiveRoutes(app, {
+    pool,
+    sessions,
+    relay,
+    viewers,
+    bootstrapToken: config.bootstrapToken,
+    workerCredential: config.workerCredential,
+    allowedOrigins: config.allowedOrigins,
+    secureCookies: config.secureCookies,
   });
 
-  return { app, artefacts, sessions, workers };
+  return { app, artefacts, sessions, workers, viewers, relay };
 }

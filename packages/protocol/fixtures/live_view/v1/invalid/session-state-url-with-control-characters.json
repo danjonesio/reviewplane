@@ -1,0 +1,19 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JLIVEBADURL",
+  "type": "live.session_state",
+  "sent_at": "2026-07-30T10:04:11.100Z",
+  "browser_session_id": "brs_01JHOMEPAGEREVIEW",
+  "stream_id": "lvs_01JHOMEPAGESTREAM",
+  "payload": {
+    "status": "ACTIVE",
+    "url": "https://route-01jhomepage.internal.invalid/\u001b[2J",
+    "viewport": {
+      "width": 1440,
+      "height": 900,
+      "device_scale_factor": 1
+    },
+    "control_epoch": 3,
+    "observed_at": "2026-07-30T10:04:11.090Z"
+  }
+}
