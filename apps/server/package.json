@@ -1,0 +1,23 @@
+{
+  "name": "@reviewplane/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ReviewPlane control-plane server: projects, browser-session orchestration, artefacts, events.",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "node src/main.ts",
+    "start": "node src/main.ts",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@reviewplane/protocol": "workspace:*",
+    "fastify": "^5.10.0",
+    "pg": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "@types/pg": "^8.20.0"
+  }
+}
