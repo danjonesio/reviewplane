@@ -84,6 +84,10 @@ async function open(
     problems.push(`page error: ${error.message}`);
   });
   page.on("requestfailed", (request) => {
+    // Signing out clears the query cache, which aborts the session refetch that
+    // was already in flight. A cancelled request is the application deciding it
+    // no longer wants an answer, not a network failure.
+    if ((request.failure()?.errorText ?? "").includes("ERR_ABORTED")) return;
     problems.push(`request failed: ${request.url()}`);
   });
   page.on("response", (response) => {

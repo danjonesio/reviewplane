@@ -182,10 +182,15 @@ export async function registerIdentityRoutes(
       });
     }
     const user = await options.users.sole(organisation.id);
-    const outstanding = await options.installTokens.liveTokenExists(organisation.id);
+    const required = user === null || user.passwordHash === null;
+    // Whether a token is outstanding is only reported while the installation is
+    // unclaimed, where it is what the screen needs to say. On a claimed
+    // deployment it would tell an unauthenticated caller that a password reset
+    // is in flight, which is not their business.
+    const outstanding = required && (await options.installTokens.liveTokenExists(organisation.id));
     return reply.send({
       data: {
-        bootstrap_required: user === null || user.passwordHash === null,
+        bootstrap_required: required,
         organisation: { id: organisation.id, name: organisation.name, slug: organisation.slug },
         install_token_outstanding: outstanding,
       },

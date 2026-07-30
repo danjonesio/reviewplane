@@ -179,7 +179,13 @@ describe("administrator bootstrap", () => {
     assert.equal(claimed.statusCode, 201, claimed.body);
 
     const after = await built.app.inject({ method: "GET", url: "/api/v1/auth/bootstrap" });
-    assert.equal((after.json() as { data: { bootstrap_required: boolean } }).data.bootstrap_required, false);
+    const claimedStatus = (
+      after.json() as { data: { bootstrap_required: boolean; install_token_outstanding: boolean } }
+    ).data;
+    assert.equal(claimedStatus.bootstrap_required, false);
+    // A claimed deployment does not tell an unauthenticated caller whether a
+    // reset token is in flight.
+    assert.equal(claimedStatus.install_token_outstanding, false);
 
     // Exactly one administrator, and the address is the one just chosen.
     const users = await postgres.pool.query<{ count: string }>(
