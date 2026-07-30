@@ -53,6 +53,8 @@ func New() *Registry {
 			RoutesActive:          "Routes registered now.",
 			Streams:               "Tunnel streams, by outcome.",
 			StreamsActive:         "Tunnel streams open now.",
+			Upgrades:              "HTTP upgrade requests carried by the tunnel, by outcome.",
+			UpgradesActive:        "Upgraded connections open now.",
 			Bytes:                 "Tunnel bytes transferred, by direction.",
 			Requests:              "Browser requests, by the stable code the gateway answered with.",
 			Denials:               "Browser requests refused, by the stable reason recorded in the audit trail.",
@@ -72,6 +74,8 @@ const (
 	RoutesActive          = "reviewplane_tunnel_routes_active"
 	Streams               = "reviewplane_tunnel_streams_total"
 	StreamsActive         = "reviewplane_tunnel_streams_active"
+	Upgrades              = "reviewplane_tunnel_upgrades_total"
+	UpgradesActive        = "reviewplane_tunnel_upgrades_open"
 	Bytes                 = "reviewplane_tunnel_bytes_total"
 	Requests              = "reviewplane_tunnel_requests_total"
 	Denials               = "reviewplane_tunnel_denied_total"

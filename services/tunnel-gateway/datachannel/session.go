@@ -41,6 +41,19 @@ const (
 
 	// DefaultMaxStreamBytes bounds one stream's transfer in one direction.
 	DefaultMaxStreamBytes = 64 << 20
+
+	// DefaultIdleTimeout is the no-progress window of a request/response
+	// stream. A development server that has neither read the request nor
+	// started an answer for this long has stalled.
+	DefaultIdleTimeout = 60 * time.Second
+
+	// DefaultUpgradeIdleTimeout is the no-progress window of an upgraded
+	// stream. It is far longer than DefaultIdleTimeout because silence on an
+	// upgraded connection is normal: a hot-reload WebSocket carries nothing at
+	// all while the developer is reading code, and closing it would make the
+	// page stale while it still looked live
+	// (docs/CONNECTOR_PROTOCOL.md section 13.3).
+	DefaultUpgradeIdleTimeout = 15 * time.Minute
 )
 
 // SessionConfig bounds one multiplexed session.
@@ -52,9 +65,14 @@ type SessionConfig struct {
 	MaxStreamBytes int64
 	// StreamWindow is the initial per-direction flow-control window.
 	StreamWindow int
-	// IdleTimeout closes a stream that makes no progress. A stream also has an
-	// absolute deadline from its header; whichever fires first ends it.
+	// IdleTimeout closes a request/response stream that makes no progress. A
+	// stream also has an absolute deadline from its header; whichever fires
+	// first ends it.
 	IdleTimeout time.Duration
+	// UpgradeIdleTimeout is the same window for a stream whose header declares
+	// stream_mode upgrade. Two windows rather than one because the two kinds of
+	// stream mean different things by silence.
+	UpgradeIdleTimeout time.Duration
 	// Now supplies the clock, so deadline arithmetic is testable.
 	Now func() time.Time
 }
@@ -70,7 +88,10 @@ func (c SessionConfig) withDefaults() SessionConfig {
 		c.StreamWindow = InitialStreamWindow
 	}
 	if c.IdleTimeout <= 0 {
-		c.IdleTimeout = 60 * time.Second
+		c.IdleTimeout = DefaultIdleTimeout
+	}
+	if c.UpgradeIdleTimeout <= 0 {
+		c.UpgradeIdleTimeout = DefaultUpgradeIdleTimeout
 	}
 	if c.Now == nil {
 		c.Now = time.Now
@@ -250,13 +271,22 @@ func (s *Session) Close(cause error) {
 }
 
 func (s *Session) newStreamLocked(id uint32, header connectorv1.DataStreamHeader) *Stream {
+	// The idle window follows the declared mode. Both ends derive it from the
+	// same header field rather than from a local guess, so neither can close a
+	// stream the other still believes in.
+	idleTimeout := s.config.IdleTimeout
+	if header.StreamMode != nil && *header.StreamMode == connectorv1.StreamModeUpgrade {
+		idleTimeout = s.config.UpgradeIdleTimeout
+	}
 	stream := &Stream{
-		session:  s,
-		id:       id,
-		header:   header,
-		window:   int64(s.config.StreamWindow),
-		capacity: s.config.StreamWindow,
-		maxBytes: s.config.MaxStreamBytes,
+		session:     s,
+		id:          id,
+		header:      header,
+		window:      int64(s.config.StreamWindow),
+		capacity:    s.config.StreamWindow,
+		maxBytes:    s.config.MaxStreamBytes,
+		idleTimeout: idleTimeout,
+		done:        make(chan struct{}),
 	}
 	stream.readable = sync.NewCond(&stream.mu)
 	stream.writable = sync.NewCond(&stream.mu)

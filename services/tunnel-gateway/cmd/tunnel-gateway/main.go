@@ -58,9 +58,10 @@ func run() error {
 			InternalSuffix:      settings.InternalSuffix,
 			HostHeader:          gatewayhttp.HostHeaderMode(settings.HostHeaderMode),
 			Forwarded:           gatewayhttp.ForwardedHeaderMode(settings.ForwardedHeaderMode),
-			StreamTTL:           settings.StreamTTL,
+			StreamMaxLifetime:   settings.StreamMaxLifetime,
 			MaxRequestBodyBytes: settings.MaxRequestBodyBytes,
 			MaxStreamsPerRoute:  settings.MaxStreamsPerRoute,
+			RelayBufferBytes:    settings.RelayBufferBytes,
 		},
 		Admin: gatewayhttp.AdminConfig{
 			Token:          settings.AdminToken,
@@ -72,9 +73,10 @@ func run() error {
 			MaxRouteTTL:           settings.RouteTTLMax,
 		},
 		Session: datachannel.SessionConfig{
-			MaxStreams:     settings.MaxStreamsPerConnector,
-			MaxStreamBytes: settings.MaxStreamBytes,
-			IdleTimeout:    settings.StreamIdleTimeout,
+			MaxStreams:         settings.MaxStreamsPerConnector,
+			MaxStreamBytes:     settings.MaxStreamBytes,
+			IdleTimeout:        settings.StreamIdleTimeout,
+			UpgradeIdleTimeout: settings.UpgradeIdleTimeout,
 		},
 		Identity: gatewayhttp.IdentityPolicy{
 			Source:    gatewayhttp.IdentitySource(settings.IdentitySource),

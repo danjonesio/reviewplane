@@ -229,6 +229,17 @@ func contains(values []string, candidate string) bool {
 	return false
 }
 
+// RelayBufferBytes is the copy buffer one direction of one stream holds. It is
+// the only per-stream allocation the relay makes; everything beyond it is
+// bounded by the flow-control window of section 12.2, which is what turns a
+// slow consumer into backpressure rather than into buffering on the developer's
+// own machine.
+const RelayBufferBytes = 32 << 10
+
+// DefaultSweepInterval is how often the connector enforces stream deadlines and
+// idle timeouts on the streams it is carrying.
+const DefaultSweepInterval = 5 * time.Second
+
 // ConnectorConfig configures the connector-side stream server.
 type ConnectorConfig struct {
 	Routes *RouteTable
@@ -236,6 +247,11 @@ type ConnectorConfig struct {
 	Dial func(ctx context.Context, address string) (net.Conn, error)
 	// DialTimeout bounds one dial.
 	DialTimeout time.Duration
+	// SweepInterval is how often deadlines and idle timeouts are enforced. The
+	// connector runs its own sweep rather than trusting the gateway to close
+	// everything: a channel that dies mid-stream would otherwise leave the
+	// developer's machine holding open sockets nothing is going to end.
+	SweepInterval time.Duration
 	// Now supplies the clock.
 	Now    func() time.Time
 	Logger *slog.Logger
@@ -251,6 +267,9 @@ func (c ConnectorConfig) withDefaults() ConnectorConfig {
 	if c.DialTimeout <= 0 {
 		c.DialTimeout = 5 * time.Second
 	}
+	if c.SweepInterval <= 0 {
+		c.SweepInterval = DefaultSweepInterval
+	}
 	if c.Now == nil {
 		c.Now = time.Now
 	}
@@ -264,12 +283,36 @@ func (c ConnectorConfig) withDefaults() ConnectorConfig {
 // destination until the session ends.
 func ServeConnector(session *Session, config ConnectorConfig) error {
 	config = config.withDefaults()
+	stop := make(chan struct{})
+	defer close(stop)
+	go sweepStreams(session, config, stop)
 	for {
 		stream, err := session.Accept()
 		if err != nil {
 			return err
 		}
 		go serveStream(stream, config)
+	}
+}
+
+// sweepStreams enforces deadlines and idle timeouts until the session ends.
+func sweepStreams(session *Session, config ConnectorConfig, stop <-chan struct{}) {
+	ticker := time.NewTicker(config.SweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-session.Done():
+			return
+		case <-ticker.C:
+			if closed := session.EnforceDeadlines(config.Now()); closed.Total() > 0 {
+				config.Logger.Info("closed streams past their deadline or idle window",
+					slog.Int("deadline", closed.Deadline),
+					slog.Int("idle", closed.Idle),
+				)
+			}
+		}
 	}
 }
 
@@ -299,7 +342,9 @@ func serveStream(stream *Stream, config ConnectorConfig) {
 	ctx, cancel := context.WithTimeout(context.Background(), config.DialTimeout)
 	// The address comes from the route table, never from the header and never
 	// from the request bytes. The header schema has no host or port field, and
-	// the bytes are relayed without being parsed.
+	// the bytes are relayed without being parsed. That is as true of an
+	// upgraded stream as of any other: stream_mode selects an idle window and
+	// nothing else.
 	upstream, err := config.Dial(ctx, route.Destination())
 	cancel()
 	if err != nil {
@@ -316,8 +361,29 @@ func serveStream(stream *Stream, config ConnectorConfig) {
 		return
 	}
 	if deadline, ok := stream.Deadline(); ok {
+		// The absolute deadline is the route's expiry, so the local socket
+		// cannot outlive the authorisation that opened it even if every other
+		// control failed. It is not the liveness control: that is the idle
+		// window, enforced by the sweep above.
 		_ = upstream.SetDeadline(deadline)
 	}
+
+	// A stream that ends while this goroutine is parked reading the local
+	// socket would otherwise stay parked until that absolute deadline, which on
+	// an upgraded stream is hours away. Closing the socket when the stream
+	// terminates is what makes revocation, expiry and a lost data channel reach
+	// the development service promptly.
+	finished := make(chan struct{})
+	defer close(finished)
+	go func() {
+		select {
+		case <-stream.Done():
+			_ = upstream.Close()
+		case <-finished:
+		}
+	}()
+
+	upgraded := stream.Mode() == connectorv1.StreamModeUpgrade
 
 	var wait sync.WaitGroup
 	wait.Add(1)
@@ -325,15 +391,24 @@ func serveStream(stream *Stream, config ConnectorConfig) {
 		defer wait.Done()
 		// Gateway to destination. CloseWrite tells the development service the
 		// request is complete, which is what lets it answer a request with no
-		// Content-Length.
-		_, _ = io.Copy(upstream, stream)
+		// Content-Length, and on an upgraded connection it is how a browser-side
+		// close reaches the far end.
+		_, _ = io.CopyBuffer(upstream, stream, make([]byte, RelayBufferBytes))
 		if closer, ok := upstream.(interface{ CloseWrite() error }); ok {
 			_ = closer.CloseWrite()
 		}
 	}()
 
-	_, copyErr := io.Copy(stream, upstream)
+	_, copyErr := io.CopyBuffer(stream, upstream, make([]byte, RelayBufferBytes))
 	_ = stream.CloseWrite()
+	if upgraded {
+		// An upgraded connection is one conversation, not a request followed by
+		// an answer. Once the development service has closed its end there is
+		// nothing further for the browser to send, and leaving the other
+		// direction parked would hold the stream open until its deadline. This
+		// is also what propagates a server-initiated close back to the browser.
+		_ = stream.Close()
+	}
 	wait.Wait()
 	if copyErr != nil && !errors.Is(copyErr, io.EOF) {
 		config.Logger.Debug("stream ended",

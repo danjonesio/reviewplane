@@ -39,6 +39,13 @@ type Stream struct {
 	writeClosed bool
 	accepted    bool
 	terminated  error
+	// done is closed exactly once, when the stream terminates. It is how a
+	// relay blocked on a socket rather than on the stream learns that the
+	// stream has gone: an upgraded connection has one goroutine parked in a
+	// read on the local destination, and without this it would stay parked
+	// until that socket's own deadline (docs/CONNECTOR_PROTOCOL.md section
+	// 13.3).
+	done chan struct{}
 
 	sentBytes     int64
 	receivedBytes int64
@@ -47,6 +54,12 @@ type Stream struct {
 	lastProgress time.Time
 	deadline     time.Time
 	deadlineSet  bool
+	// idleTimeout is this stream's own no-progress window. It is per stream
+	// rather than per session because an upgraded stream and a request/response
+	// stream have different right answers: a WebSocket carrying hot-reload
+	// notifications is legitimately silent for a long editing pause, and a
+	// stalled HTTP exchange is not.
+	idleTimeout time.Duration
 }
 
 // ID is the transport's stream number, unique for the connection.
@@ -81,6 +94,28 @@ func (s *Stream) Deadline() (time.Time, bool) {
 	defer s.mu.Unlock()
 	return s.deadline, s.deadlineSet
 }
+
+// Mode reports the framing the stream carries. A header that names none is
+// request_response, so a peer built before section 13.3 is read the way it
+// meant rather than as an upgrade.
+func (s *Stream) Mode() connectorv1.StreamMode {
+	if s.header.StreamMode == nil {
+		return connectorv1.StreamModeRequestResponse
+	}
+	return *s.header.StreamMode
+}
+
+// IdleTimeout reports this stream's no-progress window. It is derived from the
+// mode the header declared, so both ends of one stream compute the same value
+// from the same field rather than from a local guess.
+func (s *Stream) IdleTimeout() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.idleTimeout
+}
+
+// Done is closed when the stream terminates, whatever ended it.
+func (s *Stream) Done() <-chan struct{} { return s.done }
 
 // Accepted reports whether the connector has confirmed it opened the local
 // destination.
@@ -287,6 +322,7 @@ func (s *Stream) terminate(cause error) {
 			cause = io.EOF
 		}
 		s.terminated = cause
+		close(s.done)
 	}
 	s.readable.Broadcast()
 	s.writable.Broadcast()
@@ -295,24 +331,41 @@ func (s *Stream) terminate(cause error) {
 
 // ExpiredAt reports whether the stream must be closed at the given instant,
 // either because its absolute deadline has passed or because it has made no
-// progress for the session's idle timeout.
+// progress for its idle timeout.
 func (s *Stream) ExpiredAt(now time.Time) (bool, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.deadlineSet && !now.Before(s.deadline) {
-		return true, "deadline"
+		return true, ReasonDeadline
 	}
-	if now.Sub(s.lastProgress) >= s.session.config.IdleTimeout {
-		return true, "idle"
+	if now.Sub(s.lastProgress) >= s.idleTimeout {
+		return true, ReasonIdle
 	}
 	return false, ""
 }
 
+// Reasons a sweep closed a stream. They are separate because they mean
+// different things to an operator: a deadline means the route ran out, and idle
+// means nothing moved for the window this stream's mode allows.
+const (
+	ReasonDeadline = "deadline"
+	ReasonIdle     = "idle"
+)
+
+// SweepResult counts what one deadline sweep closed, by reason.
+type SweepResult struct {
+	Deadline int
+	Idle     int
+}
+
+// Total counts every stream the sweep closed.
+func (r SweepResult) Total() int { return r.Deadline + r.Idle }
+
 // EnforceDeadlines closes every stream whose deadline or idle timeout has
-// passed, and reports how many it closed. The caller runs it on a ticker; it is
+// passed, and reports what it closed. The caller runs it on a ticker; it is
 // a method rather than a goroutine so that a test can drive it with its own
 // clock.
-func (s *Session) EnforceDeadlines(now time.Time) int {
+func (s *Session) EnforceDeadlines(now time.Time) SweepResult {
 	s.mu.Lock()
 	streams := make([]*Stream, 0, len(s.streams))
 	for _, stream := range s.streams {
@@ -320,12 +373,18 @@ func (s *Session) EnforceDeadlines(now time.Time) int {
 	}
 	s.mu.Unlock()
 
-	closed := 0
+	var result SweepResult
 	for _, stream := range streams {
-		if expired, _ := stream.ExpiredAt(now); expired {
-			_ = stream.Reset(connectorv1.ErrorClassRouteExpired)
-			closed++
+		expired, reason := stream.ExpiredAt(now)
+		if !expired {
+			continue
 		}
+		_ = stream.Reset(connectorv1.ErrorClassRouteExpired)
+		if reason == ReasonIdle {
+			result.Idle++
+			continue
+		}
+		result.Deadline++
 	}
-	return closed
+	return result
 }
