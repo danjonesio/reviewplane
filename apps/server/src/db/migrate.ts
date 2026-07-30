@@ -50,6 +50,57 @@ export async function listMigrations(directory: string = MIGRATIONS_DIRECTORY): 
   return files;
 }
 
+/** The migration-state table, and the schema version it reports. */
+export interface MigrationState {
+  /** Files on disk that this database has not applied, in apply order. */
+  readonly pending: readonly string[];
+  /** Files this database has applied. */
+  readonly applied: readonly string[];
+  /**
+   * The highest applied migration's file name, or `null` for an empty database.
+   * It is the "schema version" `docs/DEPLOYMENT.md` §11 asks a migration command
+   * to report: a file name rather than a number, because the file name is what
+   * an operator finds in the repository.
+   */
+  readonly schemaVersion: string | null;
+}
+
+/**
+ * Reads the migration state without changing it.
+ *
+ * `docs/DEPLOYMENT.md` §11 requires readiness to fail when required migrations
+ * are missing, and `docs/OPERATIONS.md` §2 names that as the example of an API
+ * that is not ready. So readiness asks this question rather than asking whether
+ * a connection can be opened: a process serving requests against a schema older
+ * than its code is exactly the state readiness exists to keep traffic away from.
+ *
+ * An absent `schema_migrations` table is a database nobody has migrated, not an
+ * error: every file is pending.
+ */
+export async function migrationState(
+  pool: Pool,
+  directory = MIGRATIONS_DIRECTORY,
+): Promise<MigrationState> {
+  const files = await listMigrations(directory);
+  const table = await pool.query<{ present: boolean }>(
+    "select to_regclass('schema_migrations') is not null as present",
+  );
+  const done = new Set<string>();
+  if (table.rows[0]?.present === true) {
+    const existing = await pool.query<{ filename: string }>(
+      "select filename from schema_migrations",
+    );
+    for (const row of existing.rows) done.add(row.filename);
+  }
+  const applied = files.filter((file) => done.has(file));
+  const pending = files.filter((file) => !done.has(file));
+  return {
+    pending,
+    applied,
+    schemaVersion: applied.length === 0 ? null : (applied[applied.length - 1] as string),
+  };
+}
+
 export async function migrate(pool: Pool, directory = MIGRATIONS_DIRECTORY): Promise<MigrationResult> {
   const files = await listMigrations(directory);
   const client = await pool.connect();

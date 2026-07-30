@@ -5,6 +5,9 @@
   "type": "module",
   "description": "ReviewPlane control-plane server: the authoritative HTTP API for projects, connectors, published services, browser sessions, artefacts, reviews, findings, agent sessions and events.",
   "main": "dist/main.js",
+  "bin": {
+    "reviewplane": "dist/cli.js"
+  },
   "exports": {
     "./domain": {
       "development": "./src/domain.ts",

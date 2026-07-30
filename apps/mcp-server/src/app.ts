@@ -42,6 +42,7 @@ import {
   ReviewService,
   WorkerRegistry,
   WorkspaceStore,
+  registerHealthRoutes,
   type ArtefactStore,
 } from "@reviewplane/server/domain";
 
@@ -151,6 +152,13 @@ export async function buildMcpApp(options: BuildMcpAppOptions): Promise<BuiltMcp
     return credential;
   };
 
+  // `docs/OPERATIONS.md` section 2 requires every service to expose the same
+  // three endpoints, and names "MCP not ready when authorisation backend is
+  // unavailable" as this role's readiness question. The authorisation backend
+  // is the credential store in PostgreSQL, so the shared readiness check — a
+  // reachable database whose migrations are all applied — is exactly it.
+  registerHealthRoutes(app, { role: "mcp", pool });
+  // Retained: the Stage 0 name the Compose health check already uses.
   app.get("/health", async () => ({ status: "ok" }));
 
   const handle = async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {

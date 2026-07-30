@@ -1,0 +1,918 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/danjonesio/reviewplane/schemas/platform/v1.schema.json",
+  "title": "ReviewPlane platform foundation, version 1",
+  "description": "Single source for the surfaces every other Stage 1 surface is built on: the opaque entity identifier of docs/DOMAIN_MODEL.md section 3, the response metadata, stable error codes and refusal body of docs/API.md section 5, the opaque pagination cursor of section 6, the idempotency and correlation headers, the event envelope of docs/EVENTS.md section 2 with the Stage 1 catalogue of section 7, and the project event-stream messages of docs/API.md section 18.1. x-protocol.messages is keyed by the event types this source owns — the organisation, project and durable-job events no other source defines — so the generated MESSAGE_TYPE_VALUES is exactly that set and PAYLOAD_MAX_BYTES its per-event bound. Review-domain event payloads stay in schemas/review/v1.schema.json, which docs/EVENTS.md section 8 makes their only source. TypeScript and Go models are generated from this file; a hand-maintained equivalent in a service is a review failure (ADR-0013).",
+  "x-protocol": {
+    "name": "platform",
+    "version": 1,
+    "languages": ["typescript", "go"],
+    "limits": {
+      "max_event_bytes": 32768,
+      "max_stream_message_bytes": 8192,
+      "max_api_error_bytes": 8192
+    },
+    "envelope_limit": "max_event_bytes",
+    "channels": {
+      "organisation": "Organisation and project lifecycle (docs/EVENTS.md section 7).",
+      "jobs": "Durable background work (docs/ARCHITECTURE.md section 4.8).",
+      "stream": "The project event stream of docs/API.md section 18.1.",
+      "api": "The HTTP response metadata and refusal envelope of docs/API.md section 5."
+    },
+    "directions": ["control_plane_to_subscriber", "subscriber_to_control_plane"],
+    "messages": {
+      "organisation.created": {
+        "channel": "organisation",
+        "direction": "control_plane_to_subscriber",
+        "payload": "organisation_created_payload",
+        "description": "An organisation was created. Stage 1 seeds exactly one, so this is normally the first event any deployment records."
+      },
+      "project.created": {
+        "channel": "organisation",
+        "direction": "control_plane_to_subscriber",
+        "payload": "project_created_payload",
+        "description": "A project was created. Its event stream begins at this event."
+      },
+      "project.updated": {
+        "channel": "organisation",
+        "direction": "control_plane_to_subscriber",
+        "payload": "project_updated_payload",
+        "description": "A project's mutable attributes changed. The payload names the fields that changed rather than restating the record, because the record is queryable and the audit question is what moved."
+      },
+      "project.archived": {
+        "channel": "organisation",
+        "direction": "control_plane_to_subscriber",
+        "payload": "project_archived_payload",
+        "description": "A project was archived. Archival is a status change, not a deletion; the audit trail and its artefacts survive it."
+      },
+      "job.enqueued": {
+        "channel": "jobs",
+        "direction": "control_plane_to_subscriber",
+        "payload": "job_enqueued_payload",
+        "description": "Durable background work was accepted. It is written in the same transaction as the state change that asked for it, so a job cannot exist without the change that scheduled it and vice versa."
+      },
+      "job.succeeded": {
+        "channel": "jobs",
+        "direction": "control_plane_to_subscriber",
+        "payload": "job_succeeded_payload",
+        "description": "A durable job completed."
+      },
+      "job.failed": {
+        "channel": "jobs",
+        "direction": "control_plane_to_subscriber",
+        "payload": "job_failed_payload",
+        "description": "A durable job attempt failed. It carries a stable reason and whether another attempt will follow, so an operator can tell a retry from a dead job without reading the runner's source."
+      }
+    },
+    "standalone": {
+      "stream_subscribe": {
+        "channel": "stream",
+        "def": "stream_subscribe",
+        "max_bytes_limit": "max_stream_message_bytes",
+        "description": "The first message a subscriber sends on /ws/v1/projects/:projectId/events. It carries the last project sequence the client has already applied, which is what makes a reconnect a resume rather than a reload."
+      },
+      "stream_subscribed": {
+        "channel": "stream",
+        "def": "stream_subscribed",
+        "max_bytes_limit": "max_stream_message_bytes",
+        "description": "Subscription accepted. It states the sequence the stream is at and the oldest sequence still replayable, so a client knows before any event arrives whether its position is inside the replay window."
+      },
+      "stream_refresh_required": {
+        "channel": "stream",
+        "def": "stream_refresh_required",
+        "max_bytes_limit": "max_stream_message_bytes",
+        "description": "The subscriber's position cannot be replayed, so it MUST refetch current state (docs/EVENTS.md section 10). It is an explicit instruction because a silent jump would leave a client quietly wrong."
+      },
+      "stream_heartbeat": {
+        "channel": "stream",
+        "def": "stream_heartbeat",
+        "max_bytes_limit": "max_stream_message_bytes",
+        "description": "Liveness on a quiet project, carrying the sequence the stream is at so a client can notice a missed event without waiting for the next one."
+      },
+      "stream_error": {
+        "channel": "stream",
+        "def": "stream_error",
+        "max_bytes_limit": "max_stream_message_bytes",
+        "description": "A refusal on an open subscription, carrying a stable code. Refusals that precede the WebSocket upgrade are HTTP responses instead, so an unauthorised subscriber never obtains a socket."
+      },
+      "api_error_response": {
+        "channel": "api",
+        "def": "api_error_response",
+        "max_bytes_limit": "max_api_error_bytes",
+        "description": "The refusal body of docs/API.md section 5. It is not a channel message but the body of an HTTP response, defined here so the control-plane API, the MCP server and any later integration cannot disagree about its shape."
+      }
+    },
+    "error_classes": [
+      "AUTHENTICATION_REQUIRED",
+      "AUTHORISATION_DENIED",
+      "PROJECT_CONTEXT_AMBIGUOUS",
+      "PROJECT_CONTEXT_MISMATCH",
+      "RESOURCE_NOT_FOUND",
+      "RESOURCE_STALE",
+      "VERSION_CONFLICT",
+      "IDEMPOTENCY_CONFLICT",
+      "VALIDATION_FAILED",
+      "CONNECTOR_OFFLINE",
+      "PUBLISHED_SERVICE_UNAVAILABLE",
+      "BROWSER_CAPACITY_EXHAUSTED",
+      "BROWSER_SESSION_NOT_ACTIVE",
+      "BROWSER_COMMAND_TIMEOUT",
+      "CONTROL_NOT_OWNED",
+      "CONTROL_EPOCH_STALE",
+      "POLICY_DENIED",
+      "APPROVAL_REQUIRED",
+      "EVIDENCE_REQUIRED",
+      "ARTEFACT_UPLOAD_INCOMPLETE",
+      "UNSUPPORTED_CAPABILITY",
+      "RATE_LIMITED",
+      "INTERNAL_ERROR"
+    ],
+    "violation_reasons": {
+      "frame_too_large": {
+        "error_class": null,
+        "description": "The encoded event or message exceeded its byte bound. Detected on the raw bytes before deserialisation."
+      },
+      "malformed_json": {
+        "error_class": null,
+        "description": "The message was not well-formed JSON, or was truncated."
+      },
+      "unsupported_schema_version": {
+        "error_class": "UNSUPPORTED_CAPABILITY",
+        "description": "schema_version was absent, not an integer, or not a version this build accepts."
+      },
+      "unknown_message_type": {
+        "error_class": "UNSUPPORTED_CAPABILITY",
+        "description": "type was absent or not an event type this source owns. A consumer that receives an event type it does not know MUST ignore it rather than fail; a producer that writes one through this codec is refused."
+      },
+      "payload_too_large": {
+        "error_class": null,
+        "description": "The payload exceeded the byte bound declared for its event type."
+      },
+      "schema_violation": {
+        "error_class": "VALIDATION_FAILED",
+        "description": "The message parsed but did not satisfy the schema for its type."
+      }
+    },
+    "schema_violation_codes": [
+      "type",
+      "required",
+      "forbidden",
+      "unknown_property",
+      "enum",
+      "const",
+      "pattern",
+      "too_short",
+      "too_long",
+      "too_small",
+      "too_large",
+      "too_few_items",
+      "too_many_items",
+      "duplicate_items",
+      "not_integer"
+    ],
+    "vocabularies": {
+      "event_types": {
+        "description": "Stage 1 event catalogue of docs/EVENTS.md section 7. Event names are stable public integration contracts; adding one is additive within a schema version, which is why the envelope's type field bounds a name's shape rather than enumerating it. A consumer that does not recognise a name MUST ignore the event rather than fail.",
+        "values": [
+          "organisation.created",
+          "user.invited",
+          "authentication.login_succeeded",
+          "authentication.login_failed",
+          "session.revoked",
+          "project.created",
+          "project.updated",
+          "project.repository_changed",
+          "project.archived",
+          "connector.enrolled",
+          "connector.connected",
+          "connector.degraded",
+          "connector.disconnected",
+          "connector.revoked",
+          "workspace.observed",
+          "workspace.head_changed",
+          "published_service.requested",
+          "published_service.ready",
+          "published_service.failed",
+          "published_service.expired",
+          "published_service.revoked",
+          "agent_credential.issued",
+          "agent_session.started",
+          "agent_session.waiting",
+          "agent_session.blocked",
+          "agent_session.completed",
+          "agent_session.failed",
+          "agent_session.disconnected",
+          "browser_session.requested",
+          "browser_session.allocated",
+          "browser_session.ready",
+          "browser_session.navigated",
+          "browser_session.paused",
+          "browser_session.resumed",
+          "browser_session.degraded",
+          "browser_session.terminated",
+          "browser_session.failed",
+          "browser.control_requested",
+          "browser.control_transferred",
+          "browser.control_released",
+          "browser.command_rejected",
+          "browser.command_executed",
+          "browser.live_view_started",
+          "browser.live_view_stopped",
+          "screenshot.captured",
+          "artefact.upload_started",
+          "artefact.upload_completed",
+          "artefact.upload_failed",
+          "artefact.access_granted",
+          "artefact.redacted",
+          "artefact.expired",
+          "review.created",
+          "review.named",
+          "review.assigned",
+          "review.claimed",
+          "review.status_changed",
+          "review.accepted",
+          "review.reopened",
+          "review.archived",
+          "finding.created",
+          "finding.annotated",
+          "finding.claimed",
+          "finding.status_changed",
+          "finding.comment_added",
+          "finding.verification_submitted",
+          "finding.verification_accepted",
+          "finding.verification_rejected",
+          "finding.resolved",
+          "finding.reopened",
+          "job.enqueued",
+          "job.succeeded",
+          "job.failed"
+        ]
+      },
+      "stream_message_types": {
+        "description": "Discriminator values carried by the stream control messages of docs/API.md section 18.1. An event envelope carries its own event type in the same field, so one member distinguishes every message on the channel.",
+        "values": [
+          "stream.subscribe",
+          "stream.subscribed",
+          "stream.refresh_required",
+          "stream.heartbeat",
+          "stream.error"
+        ]
+      },
+      "idempotency_headers": {
+        "description": "Request headers that carry an idempotency key on a state-changing HTTP request (docs/API.md section 2, docs/MCP_SPEC.md section 10). The key is scoped to actor, operation and project; the header only carries it.",
+        "values": ["Idempotency-Key"]
+      },
+      "correlation_headers": {
+        "description": "Request headers that carry a correlation identifier (docs/ARCHITECTURE.md section 15). The control plane mints one when the caller supplies none and returns it as meta.request_id on every response.",
+        "values": ["X-Request-Id"]
+      },
+      "pagination_parameters": {
+        "description": "Query parameters of a paginated collection (docs/API.md section 6). The cursor is opaque and MUST NOT be constructed by a client.",
+        "values": ["cursor", "limit"]
+      }
+    },
+    "identifier_prefixes": {
+      "organisation": "org_",
+      "user": "usr_",
+      "project": "prj_",
+      "environment": "env_",
+      "connector": "con_",
+      "workspace": "wsp_",
+      "published_service": "svc_",
+      "agent_credential": "agc_",
+      "agent_session": "ags_",
+      "browser_worker": "wkr_",
+      "browser_session": "brs_",
+      "control_lease": "lse_",
+      "review": "rev_",
+      "finding": "fin_",
+      "comment": "cmt_",
+      "annotation": "ann_",
+      "artefact": "art_",
+      "artefact_grant": "agr_",
+      "verification": "ver_",
+      "event": "evt_",
+      "job": "job_",
+      "request": "req_"
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "description": "Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the value as opaque: the schema bounds only its length and character class and never its documented prefix, and the value encodes no tenant, no timestamp and no database sequence.",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "timestamp": {
+      "type": "string",
+      "description": "RFC 3339 timestamp in UTC, with a mandatory trailing Z.",
+      "minLength": 20,
+      "maxLength": 30,
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$"
+    },
+    "sequence_number": {
+      "type": "integer",
+      "description": "Position in a project's event stream. Monotonically increasing within a project and never reused. Global ordering across projects is not guaranteed, and the value is not a database row identifier a consumer may depend on.",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "cursor": {
+      "type": "string",
+      "description": "Opaque pagination cursor (docs/API.md section 6). It is base64url text without padding; its contents are the server's business and a client MUST NOT parse, construct or modify one.",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "message_type": {
+      "type": "string",
+      "description": "The event types this source owns. Unknown types are rejected by this codec, never ignored. This enumeration MUST equal the keys of x-protocol.messages, and is a subset of the event_types vocabulary: an event type defined in another schema source is decoded by that source.",
+      "enum": [
+        "organisation.created",
+        "project.created",
+        "project.updated",
+        "project.archived",
+        "job.enqueued",
+        "job.succeeded",
+        "job.failed"
+      ]
+    },
+    "error_class": {
+      "type": "string",
+      "description": "Stable API error code (docs/API.md section 5, docs/MCP_SPEC.md section 12). This enumeration MUST equal x-protocol.error_classes. Adding a code is additive within a protocol version, and clients MUST tolerate a code they do not recognise.",
+      "enum": [
+        "AUTHENTICATION_REQUIRED",
+        "AUTHORISATION_DENIED",
+        "PROJECT_CONTEXT_AMBIGUOUS",
+        "PROJECT_CONTEXT_MISMATCH",
+        "RESOURCE_NOT_FOUND",
+        "RESOURCE_STALE",
+        "VERSION_CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "VALIDATION_FAILED",
+        "CONNECTOR_OFFLINE",
+        "PUBLISHED_SERVICE_UNAVAILABLE",
+        "BROWSER_CAPACITY_EXHAUSTED",
+        "BROWSER_SESSION_NOT_ACTIVE",
+        "BROWSER_COMMAND_TIMEOUT",
+        "CONTROL_NOT_OWNED",
+        "CONTROL_EPOCH_STALE",
+        "POLICY_DENIED",
+        "APPROVAL_REQUIRED",
+        "EVIDENCE_REQUIRED",
+        "ARTEFACT_UPLOAD_INCOMPLETE",
+        "UNSUPPORTED_CAPABILITY",
+        "RATE_LIMITED",
+        "INTERNAL_ERROR"
+      ]
+    },
+    "actor_type": {
+      "type": "string",
+      "description": "Kind of principal an event is attributed to (docs/EVENTS.md section 5). Actor identity MUST never be inferred from display text.",
+      "enum": ["human_user", "agent_session", "connector", "browser_worker", "system", "integration"]
+    },
+    "job_kind": {
+      "type": "string",
+      "description": "Durable background work the runner understands (docs/ARCHITECTURE.md section 4.8). It is an enumeration because an operator reading a failed job needs a name with a fixed meaning, not free text a caller chose.",
+      "enum": ["event_outbox_dispatch", "idempotency_key_expiry", "published_service_expiry"]
+    },
+    "job_failure_reason": {
+      "type": "string",
+      "description": "Why a job attempt failed. Stable, so a dead-lettered job can be diagnosed from the audit trail alone.",
+      "enum": ["handler_error", "attempt_timeout", "attempts_exhausted", "handler_unknown"]
+    },
+    "project_status": {
+      "type": "string",
+      "description": "Project lifecycle status (docs/DOMAIN_MODEL.md section 5).",
+      "enum": ["active", "archived"]
+    },
+    "actor": {
+      "type": "object",
+      "description": "The principal an event is attributed to (docs/EVENTS.md section 2).",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/actor_type",
+          "description": "Principal kind. It is the authoritative part of an actor; display is not."
+        },
+        "id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Identifier of the principal, absent for a system actor that has none."
+        },
+        "display": {
+          "type": "string",
+          "description": "Human-readable label for a timeline. It is description and never an authorisation input.",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "^[^\\x00-\\x1f]+$"
+        }
+      }
+    },
+    "correlation": {
+      "type": "object",
+      "description": "Correlation identifiers (docs/EVENTS.md section 2, docs/ARCHITECTURE.md section 15). Every member is an opaque identifier: correlation never carries a header, a body or a secret.",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "request_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "The API request that caused the event, conventionally prefixed req_."
+        },
+        "causation_event_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "The event that caused this one, conventionally prefixed evt_."
+        },
+        "connector_id": { "$ref": "#/$defs/identifier", "description": "Connector, conventionally prefixed con_." },
+        "environment_id": { "$ref": "#/$defs/identifier", "description": "Environment, conventionally prefixed env_." },
+        "workspace_id": { "$ref": "#/$defs/identifier", "description": "Workspace, conventionally prefixed wsp_." },
+        "published_service_id": { "$ref": "#/$defs/identifier", "description": "Published service, conventionally prefixed svc_." },
+        "agent_session_id": { "$ref": "#/$defs/identifier", "description": "Agent session, conventionally prefixed ags_." },
+        "browser_session_id": { "$ref": "#/$defs/identifier", "description": "Browser session, conventionally prefixed brs_." },
+        "worker_id": { "$ref": "#/$defs/identifier", "description": "Browser worker, conventionally prefixed wkr_." },
+        "artefact_id": { "$ref": "#/$defs/identifier", "description": "Artefact, conventionally prefixed art_." },
+        "review_id": { "$ref": "#/$defs/identifier", "description": "Review, conventionally prefixed rev_." },
+        "finding_id": { "$ref": "#/$defs/identifier", "description": "Finding, conventionally prefixed fin_." },
+        "annotation_id": { "$ref": "#/$defs/identifier", "description": "Annotation, conventionally prefixed ann_." },
+        "job_id": { "$ref": "#/$defs/identifier", "description": "Durable job, conventionally prefixed job_." }
+      }
+    },
+    "envelope": {
+      "type": "object",
+      "description": "The docs/EVENTS.md section 2 event envelope. Every event names the organisation it belongs to, its position in a stream, and the actor that caused it; the payload schema is selected by type. project_id is optional because an occurrence can precede any project association — a connector enrolment does — and every project-scoped read filters on it.",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "schema_version",
+        "sequence",
+        "type",
+        "occurred_at",
+        "recorded_at",
+        "organisation_id",
+        "actor",
+        "payload"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Event identifier, conventionally prefixed evt_. Consumers deduplicate on it."
+        },
+        "schema_version": {
+          "type": "integer",
+          "description": "Envelope schema version. Stage 1 accepts 1 only; any other value is rejected rather than best-effort parsed.",
+          "const": 1
+        },
+        "sequence": {
+          "$ref": "#/$defs/sequence_number",
+          "description": "Monotonic position within the stream."
+        },
+        "type": {
+          "$ref": "#/$defs/message_type",
+          "description": "Event type. This codec owns the types in message_type; an event of another type is decoded by the schema source that owns it."
+        },
+        "occurred_at": { "$ref": "#/$defs/timestamp", "description": "When the occurrence happened." },
+        "recorded_at": { "$ref": "#/$defs/timestamp", "description": "When the control plane committed the record." },
+        "organisation_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Owning organisation, conventionally prefixed org_."
+        },
+        "project_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Owning project, conventionally prefixed prj_. Every project-scoped read of this stream filters on it."
+        },
+        "actor": { "$ref": "#/$defs/actor", "description": "Principal the occurrence is attributed to." },
+        "correlation": { "$ref": "#/$defs/correlation", "description": "Correlation identifiers." },
+        "payload": {
+          "type": "object",
+          "description": "Event payload. Its schema is selected by type. Payloads exclude raw secrets, cookies and authorisation headers (docs/EVENTS.md section 8); the event is bounded by x-protocol.limits.max_event_bytes and each payload by its own x-max-bytes.",
+          "x-dynamic": true
+        }
+      }
+    },
+    "organisation_created_payload": {
+      "type": "object",
+      "description": "Payload of organisation.created.",
+      "additionalProperties": false,
+      "x-max-bytes": 1024,
+      "required": ["slug", "name"],
+      "properties": {
+        "slug": {
+          "type": "string",
+          "description": "Mutable human-friendly alias. The identifier is authoritative; this is not.",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[a-z0-9][a-z0-9-]*$"
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name.",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "^[^\\x00-\\x1f]+$"
+        }
+      }
+    },
+    "project_created_payload": {
+      "type": "object",
+      "description": "Payload of project.created.",
+      "additionalProperties": false,
+      "x-max-bytes": 1024,
+      "required": ["slug", "name"],
+      "properties": {
+        "slug": {
+          "type": "string",
+          "description": "Project-scoped alias. Mutable, and never a substitute for the identifier.",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[a-z0-9][a-z0-9-]*$"
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name.",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "^[^\\x00-\\x1f]+$"
+        }
+      }
+    },
+    "project_updated_payload": {
+      "type": "object",
+      "description": "Payload of project.updated. It names the fields that changed rather than restating the record: current state is queryable, and the audit question is what moved.",
+      "additionalProperties": false,
+      "x-max-bytes": 1024,
+      "required": ["changed_fields"],
+      "properties": {
+        "changed_fields": {
+          "type": "array",
+          "description": "Attribute names that changed, in schema order.",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "description": "Attribute name.",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_]*$"
+          }
+        }
+      }
+    },
+    "project_archived_payload": {
+      "type": "object",
+      "description": "Payload of project.archived. It carries previous and new state, which docs/EVENTS.md section 8 requires of a state change.",
+      "additionalProperties": false,
+      "x-max-bytes": 512,
+      "required": ["previous_status", "new_status"],
+      "properties": {
+        "previous_status": { "$ref": "#/$defs/project_status", "description": "Status before the change." },
+        "new_status": { "$ref": "#/$defs/project_status", "description": "Status after the change." }
+      }
+    },
+    "job_enqueued_payload": {
+      "type": "object",
+      "description": "Payload of job.enqueued.",
+      "additionalProperties": false,
+      "x-max-bytes": 1024,
+      "required": ["job_id", "kind", "run_after"],
+      "properties": {
+        "job_id": { "$ref": "#/$defs/identifier", "description": "Job identity, conventionally prefixed job_." },
+        "kind": { "$ref": "#/$defs/job_kind", "description": "Work the job performs." },
+        "run_after": { "$ref": "#/$defs/timestamp", "description": "Earliest time the runner may claim it." }
+      }
+    },
+    "job_succeeded_payload": {
+      "type": "object",
+      "description": "Payload of job.succeeded.",
+      "additionalProperties": false,
+      "x-max-bytes": 1024,
+      "required": ["job_id", "kind", "attempts", "duration_ms"],
+      "properties": {
+        "job_id": { "$ref": "#/$defs/identifier", "description": "Job identity." },
+        "kind": { "$ref": "#/$defs/job_kind", "description": "Work the job performed." },
+        "attempts": {
+          "type": "integer",
+          "description": "Attempts made, including the one that succeeded.",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "duration_ms": {
+          "type": "integer",
+          "description": "Wall-clock duration of the successful attempt.",
+          "minimum": 0,
+          "maximum": 86400000
+        }
+      }
+    },
+    "job_failed_payload": {
+      "type": "object",
+      "description": "Payload of job.failed.",
+      "additionalProperties": false,
+      "x-max-bytes": 1024,
+      "required": ["job_id", "kind", "attempts", "reason", "retrying"],
+      "properties": {
+        "job_id": { "$ref": "#/$defs/identifier", "description": "Job identity." },
+        "kind": { "$ref": "#/$defs/job_kind", "description": "Work the job attempted." },
+        "attempts": {
+          "type": "integer",
+          "description": "Attempts made, including the one that failed.",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "reason": { "$ref": "#/$defs/job_failure_reason", "description": "Stable failure class." },
+        "retrying": {
+          "type": "boolean",
+          "description": "Whether another attempt is scheduled. Stated rather than inferred, so an operator can tell a retry from a dead job without reading the runner's source."
+        },
+        "next_attempt_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the next attempt becomes claimable. Absent when no attempt will follow."
+        }
+      }
+    },
+    "stream_subscribe": {
+      "type": "object",
+      "description": "Subscription request (docs/API.md section 18.1).",
+      "additionalProperties": false,
+      "x-max-bytes": 512,
+      "required": ["type", "last_sequence"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Message discriminator.",
+          "enum": ["stream.subscribe"]
+        },
+        "last_sequence": {
+          "type": "integer",
+          "description": "The highest project sequence the client has already applied. Zero means the client holds nothing and wants the stream from its start; a client that has just loaded current state sends the sequence that state was read at.",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "max_replay": {
+          "type": "integer",
+          "description": "Largest replay the client will accept. A gap larger than this is answered with a refresh instruction rather than a long replay, which is cheaper for both sides than paging through history the client is about to refetch anyway.",
+          "minimum": 1,
+          "maximum": 10000
+        }
+      }
+    },
+    "stream_subscribed": {
+      "type": "object",
+      "description": "Subscription accepted.",
+      "additionalProperties": false,
+      "x-max-bytes": 512,
+      "required": ["type", "project_id", "current_sequence", "earliest_available_sequence", "replaying"],
+      "properties": {
+        "type": { "type": "string", "description": "Message discriminator.", "enum": ["stream.subscribed"] },
+        "project_id": { "$ref": "#/$defs/identifier", "description": "Project the stream belongs to." },
+        "current_sequence": {
+          "type": "integer",
+          "description": "Sequence the stream is at now. Zero when the project has no events yet.",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "earliest_available_sequence": {
+          "type": "integer",
+          "description": "Oldest sequence still replayable. A client below it receives a refresh instruction instead of a replay.",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "replaying": {
+          "type": "boolean",
+          "description": "Whether events between the client's position and current_sequence follow before live delivery begins."
+        }
+      }
+    },
+    "stream_refresh_required": {
+      "type": "object",
+      "description": "The client's position cannot be served from the retained stream (docs/EVENTS.md section 10).",
+      "additionalProperties": false,
+      "x-max-bytes": 512,
+      "required": ["type", "reason", "current_sequence", "earliest_available_sequence"],
+      "properties": {
+        "type": { "type": "string", "description": "Message discriminator.", "enum": ["stream.refresh_required"] },
+        "reason": {
+          "type": "string",
+          "description": "Why a replay was not possible.",
+          "enum": ["replay_window_exceeded", "sequence_ahead_of_stream", "replay_limit_exceeded"]
+        },
+        "current_sequence": {
+          "type": "integer",
+          "description": "Sequence the stream is at now. A client refetches state and resumes from it.",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "earliest_available_sequence": {
+          "type": "integer",
+          "description": "Oldest sequence still replayable.",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "stream_heartbeat": {
+      "type": "object",
+      "description": "Liveness on a quiet stream.",
+      "additionalProperties": false,
+      "x-max-bytes": 256,
+      "required": ["type", "current_sequence", "sent_at"],
+      "properties": {
+        "type": { "type": "string", "description": "Message discriminator.", "enum": ["stream.heartbeat"] },
+        "current_sequence": {
+          "type": "integer",
+          "description": "Sequence the stream is at now.",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "sent_at": { "$ref": "#/$defs/timestamp", "description": "When the control plane sent the heartbeat." }
+      }
+    },
+    "stream_error": {
+      "type": "object",
+      "description": "A refusal on an open subscription.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["type", "code", "message", "retryable"],
+      "properties": {
+        "type": { "type": "string", "description": "Message discriminator.", "enum": ["stream.error"] },
+        "code": { "$ref": "#/$defs/error_class", "description": "Stable error code." },
+        "message": {
+          "type": "string",
+          "description": "Human-readable explanation. It never carries request data, a credential or a stack trace.",
+          "minLength": 1,
+          "maxLength": 1024,
+          "pattern": "^[^\\x00]+$"
+        },
+        "retryable": {
+          "type": "boolean",
+          "description": "Whether repeating the subscription verbatim can succeed. Stated rather than inferred from the code, because the answer is not derivable from the code's shape."
+        }
+      }
+    },
+    "api_error_details": {
+      "type": "object",
+      "description": "Code-specific refusal detail (docs/MCP_SPEC.md section 12). Every member is optional and the object refuses unknown members, so the detail a caller may rely on is a fixed vocabulary rather than whatever a handler happened to attach.",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "current_version": {
+          "type": "integer",
+          "description": "The version the record actually holds. Carried by VERSION_CONFLICT so a caller can re-read and retry rather than guess.",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "expected_version": {
+          "type": "integer",
+          "description": "The version the caller supplied. Carried beside current_version so a log line records both halves of the conflict without the caller having to quote its own request back.",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "current_epoch": {
+          "type": "integer",
+          "description": "The control epoch that is current. Carried by CONTROL_EPOCH_STALE.",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "candidates": {
+          "type": "array",
+          "description": "Identifiers the caller may name to resolve the ambiguity. Carried by PROJECT_CONTEXT_AMBIGUOUS.",
+          "minItems": 1,
+          "maxItems": 50,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier", "description": "Candidate identifier." }
+        },
+        "allowed_transitions": {
+          "type": "array",
+          "description": "Transitions that are legal from the record's current state. Carried by a refused transition.",
+          "minItems": 0,
+          "maxItems": 50,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "description": "Transition or status name.",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_.-]+$"
+          }
+        },
+        "required_evidence": {
+          "type": "array",
+          "description": "Evidence the operation needs before it can succeed. Carried by EVIDENCE_REQUIRED.",
+          "minItems": 1,
+          "maxItems": 50,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "description": "Evidence name.",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_]*$"
+          }
+        },
+        "missing_context": {
+          "type": "array",
+          "description": "Captured context the request omitted. Carried by a refusal to store a finding that could not be reproduced later.",
+          "minItems": 1,
+          "maxItems": 50,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "description": "Field name.",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_.]*$"
+          }
+        },
+        "retry_after_ms": {
+          "type": "integer",
+          "description": "How long to wait before repeating the request. Carried by RATE_LIMITED and by a duplicate that arrived while the first call was still in flight.",
+          "minimum": 0,
+          "maximum": 86400000
+        },
+        "field": {
+          "type": "string",
+          "description": "The request member the refusal is about.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9_.\\[\\]]*$"
+        },
+        "reason": {
+          "type": "string",
+          "description": "Stable sub-reason where one code covers several causes.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        }
+      }
+    },
+    "api_error": {
+      "type": "object",
+      "description": "The refusal itself (docs/API.md section 5).",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "$ref": "#/$defs/error_class", "description": "Stable machine-readable code." },
+        "message": {
+          "type": "string",
+          "description": "Human-readable explanation. It never carries a credential, request data or a stack trace (docs/SECURITY.md section 18).",
+          "minLength": 1,
+          "maxLength": 1024,
+          "pattern": "^[^\\x00]+$"
+        },
+        "details": { "$ref": "#/$defs/api_error_details", "description": "Code-specific detail." }
+      }
+    },
+    "api_meta": {
+      "type": "object",
+      "description": "Response metadata carried by every API response (docs/API.md sections 5 and 6).",
+      "additionalProperties": false,
+      "required": ["request_id"],
+      "properties": {
+        "request_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Correlation identifier for this request, conventionally prefixed req_. It appears on success and on refusal, so a caller can quote one identifier when reporting either."
+        },
+        "next_cursor": {
+          "$ref": "#/$defs/cursor",
+          "description": "Cursor for the next page. Absent on the last page and on a response that is not a collection."
+        }
+      }
+    },
+    "api_error_response": {
+      "type": "object",
+      "description": "The complete refusal body (docs/API.md section 5). A success body is {\"data\": ..., \"meta\": ...} whose data is endpoint-specific and therefore defined by the endpoint's own schema; meta is api_meta in both cases.",
+      "additionalProperties": false,
+      "x-max-bytes": 8192,
+      "required": ["error", "meta"],
+      "properties": {
+        "error": { "$ref": "#/$defs/api_error", "description": "The refusal." },
+        "meta": { "$ref": "#/$defs/api_meta", "description": "Response metadata." }
+      }
+    },
+    "cursor_claims": {
+      "type": "object",
+      "description": "What an opaque pagination cursor encodes. It is defined here so both languages encode and decode the same bytes, and never to invite a client to build one: the encoded form is base64url text and the API refuses a cursor whose shape it did not produce.",
+      "additionalProperties": false,
+      "x-max-bytes": 512,
+      "required": ["version", "sort_key", "id"],
+      "properties": {
+        "version": {
+          "type": "integer",
+          "description": "Cursor format version. A cursor of another version is refused rather than guessed at.",
+          "const": 1
+        },
+        "sort_key": {
+          "type": "string",
+          "description": "Value of the collection's sort column at the last row of the previous page.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[^\\x00]+$"
+        },
+        "id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Identifier of the last row of the previous page, which breaks ties when the sort column repeats."
+        }
+      }
+    }
+  }
+}

@@ -15,7 +15,16 @@ export type Pool = pg.Pool;
 export type PoolClient = pg.PoolClient;
 
 export function createPool(databaseUrl: string): Pool {
-  return new pg.Pool({ connectionString: databaseUrl, max: 10 });
+  const pool = new pg.Pool({ connectionString: databaseUrl, max: 10 });
+  // An idle client that the server drops — a database restart, a failover, an
+  // administrator terminating a backend — emits `error` on the pool, and an
+  // unhandled `error` on an EventEmitter terminates the process. Losing the
+  // control plane because PostgreSQL restarted is the opposite of
+  // `docs/ARCHITECTURE.md` section 14, which asks for state-changing actions to
+  // be rejected safely and for the process to recover. The pool discards the
+  // broken client itself; this handler only stops the default from firing.
+  pool.on("error", () => undefined);
+  return pool;
 }
 
 /**

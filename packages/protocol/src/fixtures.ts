@@ -22,7 +22,10 @@ export type FixtureKind =
   | "browser_frame"
   | "live_view_frame"
   | "review_event"
-  | "mcp_tool_response";
+  | "mcp_tool_response"
+  | "platform_event"
+  | "stream_message"
+  | "api_error_response";
 
 export interface ValidFixture<Type extends string = MessageType> {
   readonly name: string;
@@ -86,6 +89,9 @@ export const REVIEW_CORPUS = corpus("review", 1);
 
 /** Version 1 MCP tool-response corpus. */
 export const MCP_CORPUS = corpus("mcp", 1);
+
+/** Version 1 platform corpus: events, stream messages and the refusal body. */
+export const PLATFORM_CORPUS = corpus("platform", 1);
 
 /** Directory holding the version 1 connector corpus. */
 export const FIXTURES_DIRECTORY = CONNECTOR_CORPUS.directory;

@@ -1,0 +1,67 @@
+{
+  "description": "Golden corpus for the opaque pagination cursor of docs/API.md section 6. The encode cases record the exact text each set of claims must produce, so the TypeScript control plane and any Go consumer are one implementation rather than two that happen to agree today. The reject cases record the stable refusal each malformed cursor must report: a cursor this server did not produce is refused rather than treated as the first page, because silently answering with a different page would make pagination lose rows without saying so.",
+  "encode": [
+    {
+      "name": "timestamp-key",
+      "claims": {
+        "version": 1,
+        "sort_key": "2026-07-30T11:24:22.182Z",
+        "id": "rev_0123456789abcdef0123456789abcdef"
+      },
+      "note": "The ordinary case: a created_at sort key with the identifier that breaks ties when two rows share an instant.",
+      "cursor": "eyJ2ZXJzaW9uIjoxLCJzb3J0X2tleSI6IjIwMjYtMDctMzBUMTE6MjQ6MjIuMTgyWiIsImlkIjoicmV2XzAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmIn0"
+    },
+    {
+      "name": "sequence-key",
+      "claims": {
+        "version": 1,
+        "sort_key": "812",
+        "id": "evt_0123456789abcdef0123456789abcdef"
+      },
+      "note": "A numeric sort column is carried as its text form, so one cursor shape serves every collection.",
+      "cursor": "eyJ2ZXJzaW9uIjoxLCJzb3J0X2tleSI6IjgxMiIsImlkIjoiZXZ0XzAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmIn0"
+    },
+    {
+      "name": "non-ascii-key",
+      "claims": {
+        "version": 1,
+        "sort_key": "Ünicode ✓",
+        "id": "prj_9a8b7c6d5e4f30291827364554637281"
+      },
+      "note": "A sort key is arbitrary text. Both languages must escape it identically before base64url, which is what the canonical encoder guarantees.",
+      "cursor": "eyJ2ZXJzaW9uIjoxLCJzb3J0X2tleSI6IsOcbmljb2RlIOKckyIsImlkIjoicHJqXzlhOGI3YzZkNWU0ZjMwMjkxODI3MzY0NTU0NjM3MjgxIn0"
+    }
+  ],
+  "reject": [
+    {
+      "name": "not-base64url",
+      "cursor": "this is not base64url!",
+      "expect": "malformed_encoding",
+      "note": "Refused on the encoding, before anything is parsed."
+    },
+    {
+      "name": "not-json",
+      "cursor": "bm90LWpzb24",
+      "expect": "malformed_json",
+      "note": "Valid base64url carrying bytes that are not a JSON value."
+    },
+    {
+      "name": "unsupported-version",
+      "cursor": "eyJ2ZXJzaW9uIjoyLCJzb3J0X2tleSI6ImEiLCJpZCI6InJldl8xIn0",
+      "expect": "unsupported_version",
+      "note": "A cursor format this build does not know is refused rather than guessed at."
+    },
+    {
+      "name": "missing-id",
+      "cursor": "eyJ2ZXJzaW9uIjoxLCJzb3J0X2tleSI6ImEifQ",
+      "expect": "schema_violation",
+      "note": "Without the tie-breaking identifier a page boundary is ambiguous, so the member is required."
+    },
+    {
+      "name": "unknown-member",
+      "cursor": "eyJ2ZXJzaW9uIjoxLCJzb3J0X2tleSI6ImEiLCJpZCI6InJldl8xIiwicHJvamVjdF9pZCI6InByal8yIn0",
+      "expect": "schema_violation",
+      "note": "additionalProperties: false. A cursor is not a place to smuggle a scope the request did not carry."
+    }
+  ]
+}

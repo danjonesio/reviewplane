@@ -32,12 +32,31 @@ Events provide immutable audit history, session timelines, realtime updates and 
 }
 ```
 
+The envelope's shape is defined once, in
+`packages/protocol/schemas/platform/v1.schema.json`, and generated into
+TypeScript and Go from there (ADR-0013). `project_id` is optional and absent
+only for an occurrence that precedes any project association — a connector
+enrolment does — in which case the organisation is the stream.
+
 ## 3. Ordering
 
 - `sequence` is monotonically increasing within a project event stream.
 - Global ordering across projects is not guaranteed.
 - Consumers use event ID for deduplication.
 - Realtime reconnect resumes from last acknowledged project sequence.
+
+A sequence is allocated by a row in `event_streams` that the writing
+transaction locks and increments, so monotonicity holds under concurrency in a
+way a `max() + 1` read would not. A stream key is a project where one exists and
+the organisation otherwise. Sequences start at 1 and are never reused; `0` is
+the value a subscriber sends to mean "I hold nothing", and is never an event's
+position.
+
+Identifiers in an event — its own `id`, and every identifier in `actor`,
+`correlation` and the payload — are opaque (`docs/DOMAIN_MODEL.md` section 3).
+They encode no tenant, no timestamp and no database sequence, so ordering
+events by identifier is meaningless and MUST NOT be attempted; `sequence` is
+the only ordering this specification defines.
 
 ## 4. Immutability
 
@@ -233,14 +252,43 @@ written, so evidence from elsewhere never reaches the audit trail.
 
 Never include secret values.
 
+### Durable jobs
+
+- `job.enqueued`
+- `job.succeeded`
+- `job.failed`
+
+Background work is a state change like any other, and the run that nobody is
+watching is exactly the one an operator later needs a record of.
+`job.failed` states whether another attempt is scheduled rather than leaving it
+to be inferred, so a retry and a dead-lettered job are distinguishable from the
+audit trail alone.
+
 ## 8. Payload rules
 
 The review-domain events — every `review.*`, `finding.*`, `artefact.*` and
 `screenshot.*` type above — have their envelope and payload shapes defined in
 `packages/protocol/schemas/review/v1.schema.json`, and are the only source for
-them. A payload written by a service and refused by that schema is a defect
-caught by the contract test of `docs/TESTING.md` section 2, which replays the
-stored rows through the generated decoder.
+them. The organisation, project and durable-job events —
+`organisation.created`, `project.created`, `project.updated`,
+`project.archived` and the three `job.*` types — have theirs in
+`packages/protocol/schemas/platform/v1.schema.json`, which also owns the
+envelope of section 2. A payload written by a service and refused by the schema
+that owns its type is a defect caught by the contract test of
+`docs/TESTING.md` section 2, which replays the stored rows through the
+generated decoder.
+
+Event names are a stable public contract, but the catalogue is additive within
+a schema version: a consumer that meets a name it does not recognise MUST
+ignore that event rather than fail. The names Stage 1 defines are recorded in
+the `event_types` vocabulary of the platform schema.
+
+A payload carrying a credential-shaped member — an authorisation header, a
+cookie, a token, a password, a private key — is **refused by the writer** rather
+than left to review. An event is append-only: a credential written into the
+audit trail cannot be taken back out without the cryptographic erasure of
+section 4, and by then it is in a backup. Recording the *identifier* of a
+credential is correct and expected; recording its value is a defect.
 
 - Payloads are versioned through `schema_version`.
 - Include stable IDs and state transitions.
@@ -262,18 +310,64 @@ Example:
 
 ## 9. Transactionality
 
-When a domain command changes authoritative state and creates an event, both operations should commit in one database transaction.
+When a domain command changes authoritative state and creates an event, both
+operations MUST commit in one database transaction. No code path may write
+domain state without also appending an event.
 
-External delivery occurs after commit through an outbox pattern.
+External delivery occurs after commit through an outbox pattern. Delivery
+cannot join the transaction — a socket write inside it would either block the
+commit or deliver an event that then rolled back — so the same transaction
+enqueues an `event_outbox` row, and a dispatcher discharges that obligation
+after commit. A process that dies between commit and delivery loses nothing,
+because the row survives it. The dispatcher claims with `FOR UPDATE SKIP
+LOCKED`, so several control-plane processes deliver an event exactly once
+between them without a broker.
+
+When the database is unavailable a state-changing request MUST be denied rather
+than proceed unaudited (`docs/ARCHITECTURE.md` section 14). The transaction
+never opens, so there is no partial state and no partial event.
 
 ## 10. Realtime delivery
 
-WebSocket subscribers authorise by organisation and project. Clients provide last seen sequence.
+```text
+/ws/v1/projects/:projectId/events
+```
+
+WebSocket subscribers authorise by organisation and project **before the
+upgrade completes**, so an unauthenticated subscriber and a subscriber scoped
+to another project never obtain a socket. A project outside the subscriber's
+scope is refused with `RESOURCE_NOT_FOUND`, exactly as an unknown identifier
+is: a refusal that said `AUTHORISATION_DENIED` would confirm that the project
+exists.
+
+The client opens by sending `stream.subscribe` with the last sequence it has
+applied. The messages of this channel — `stream.subscribe`,
+`stream.subscribed`, `stream.refresh_required`, `stream.heartbeat` and
+`stream.error` — are defined in
+`packages/protocol/schemas/platform/v1.schema.json`. An event envelope and a
+control message are told apart by one member: an event's `type` is an event
+name, a control message's `type` is a `stream.` discriminator.
 
 Server response on gap:
 
 - Replay retained events from sequence
 - Or instruct client to refresh state when replay window is exceeded
+
+The instruction is explicit — `stream.refresh_required`, carrying why, the
+sequence the stream is at and the oldest sequence still replayable. It is sent
+when the client's position is below the retained window, when it is ahead of
+the stream, and when the gap exceeds the replay bound the client or the server
+set. A silent jump would leave the client quietly wrong, which is worse than
+telling it to refetch.
+
+The handover from replay to live delivery loses nothing and repeats nothing:
+the server attaches to the live stream **before** it reads history, buffers
+what arrives meanwhile, and then drains that buffer discarding anything at or
+below the last replayed sequence.
+
+The same events are readable as pages at
+`GET /api/v1/projects/:projectId/activity`, which is what a client refetches
+from after a refresh instruction.
 
 ## 11. Webhooks and integrations
 

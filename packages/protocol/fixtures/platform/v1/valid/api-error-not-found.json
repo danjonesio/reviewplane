@@ -1,0 +1,9 @@
+{
+  "error": {
+    "code": "RESOURCE_NOT_FOUND",
+    "message": "The review was not found."
+  },
+  "meta": {
+    "request_id": "req_abcdef0123456789"
+  }
+}

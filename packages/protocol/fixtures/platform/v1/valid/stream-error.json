@@ -1,0 +1,6 @@
+{
+  "type": "stream.error",
+  "code": "RATE_LIMITED",
+  "message": "Too many subscriptions from this viewer session.",
+  "retryable": true
+}

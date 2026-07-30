@@ -1,0 +1,12 @@
+{
+  "error": {
+    "code": "VERSION_CONFLICT",
+    "message": "The finding changed since it was loaded.",
+    "details": {
+      "current_version": 8
+    }
+  },
+  "meta": {
+    "request_id": "req_abcdef0123456789"
+  }
+}

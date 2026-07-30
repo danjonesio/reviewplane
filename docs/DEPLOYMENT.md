@@ -242,6 +242,48 @@ Requirements:
 
 The application must expose a migration command and readiness must fail when required migrations are missing.
 
+### The migration command
+
+`reviewplane` is the operator command line, and it ships in the application
+image so the schema a deployment applies always matches the code that will read
+it.
+
+```bash
+reviewplane migrate            # apply every pending migration
+reviewplane migrate --status   # report the schema version and what is pending
+reviewplane serve              # the api role
+reviewplane jobs [--once]      # the jobs role
+reviewplane version            # the build this image carries
+```
+
+It reads `REVIEWPLANE_DATABASE_URL` or `REVIEWPLANE_DATABASE_URL_FILE` and
+nothing else, because an operator applying a schema has no gateway, no worker
+and no capability key.
+
+Exit codes are the interface: `0` success, `1` failure, `2` a configuration
+error the process cannot start with, and `3` from `migrate --status` when
+migrations are pending — so a deployment script can branch on "needs migrating"
+without parsing output.
+
+Migrations are forward-only, applied in file-name order, each in its own
+transaction, and recorded in `schema_migrations`. A PostgreSQL advisory lock
+serialises concurrent starts, so two processes coming up together cannot apply
+the same file twice. The reported **schema version** is the highest applied
+file name, because a file name is what an operator finds in the repository.
+
+`reviewplane serve` migrates before it opens its listener. A deployment that
+prefers to migrate separately — a Kubernetes job, an operator running the
+command by hand — is supported by the readiness gate below; `reviewplane jobs`
+refuses to start against a schema with pending migrations rather than run
+handlers against a database its code does not match.
+
+### The readiness gate
+
+`/health/ready` reports `not_ready` while any committed migration is
+unapplied, and its body names the pending files (`docs/OPERATIONS.md` section
+2). A process serving requests against a schema older than its code would fail
+request by request, which is worse than being left out of the rotation.
+
 ## 12. External object storage (`s3` artefact driver)
 
 The default installation stores artefacts on a local volume through the `filesystem` driver. Operators may configure the `s3` driver instead. Requirements:

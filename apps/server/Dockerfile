@@ -37,7 +37,22 @@ COPY --from=builder --chown=root:root /src/apps/server/migrations /app/migration
 RUN mkdir -p /var/lib/reviewplane/artefacts \
     && chown reviewplane:reviewplane /var/lib/reviewplane/artefacts
 
-ENV NODE_ENV=production \
+# The operator command line of docs/DEPLOYMENT.md section 11. It ships in this
+# image so that `reviewplane migrate` applies exactly the schema the code in
+# the same image expects.
+RUN ln -s /app/dist/cli.js /usr/local/bin/reviewplane \
+    && chmod +x /app/dist/cli.js
+
+# Build stamps reported by /version (docs/OPERATIONS.md section 2). They are
+# arguments rather than computed values, because only the build knows them.
+ARG REVIEWPLANE_VERSION=0.0.0-dev
+ARG REVIEWPLANE_REVISION=unknown
+ARG REVIEWPLANE_BUILT_AT=unknown
+
+ENV REVIEWPLANE_VERSION=${REVIEWPLANE_VERSION} \
+    REVIEWPLANE_REVISION=${REVIEWPLANE_REVISION} \
+    REVIEWPLANE_BUILT_AT=${REVIEWPLANE_BUILT_AT} \
+    NODE_ENV=production \
     REVIEWPLANE_ARTEFACT_PATH=/var/lib/reviewplane/artefacts \
     REVIEWPLANE_LISTEN_ADDRESS=0.0.0.0 \
     REVIEWPLANE_PORT=8080

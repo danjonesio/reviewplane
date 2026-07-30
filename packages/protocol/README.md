@@ -3,7 +3,7 @@
 The single versioned source for ReviewPlane protocol schemas, with generated
 TypeScript and Go models.
 
-At Stage 0 it covers five protocols:
+It covers six sources:
 
 - the version 1 **connector protocol** of `docs/CONNECTOR_PROTOCOL.md`, spoken
   between the Go connector, the Go tunnel gateway and the TypeScript control
@@ -32,10 +32,20 @@ At Stage 0 it covers five protocols:
   `MESSAGE_TYPE_VALUES` *is* the Stage 0 tool availability set of §14 and
   `PAYLOAD_MAX_BYTES` *is* the per-tool response bound of §13. A tool cannot be
   advertised without a result schema and a bound, because the generator refuses
-  a message without one.
+  a message without one;
+- the version 1 **platform foundation** of RVP-9: the opaque entity identifier
+  of `docs/DOMAIN_MODEL.md` §3, the response metadata, stable error codes and
+  refusal body of `docs/API.md` §5, the opaque pagination cursor of §6, the
+  idempotency and correlation headers, the event envelope of `docs/EVENTS.md`
+  §2 with the Stage 1 catalogue of §7, and the project event-stream messages of
+  `docs/API.md` §18.1. Its `x-protocol.messages` is keyed by the **event types
+  this source owns** — the organisation, project and durable-job events no
+  other source defines — because `docs/EVENTS.md` §8 makes the review source
+  the only definition of review-domain payloads, and one event type must have
+  one owner. It renders TypeScript **and** Go.
 
-The remaining API schemas (`docs/DEVELOPMENT.md` §3) are added by the issues
-that introduce those surfaces; they belong in this package, not in a service.
+Further API schemas (`docs/DEVELOPMENT.md` §3) are added by the issues that
+introduce those surfaces; they belong in this package, not in a service.
 
 ## Layout
 
@@ -43,11 +53,14 @@ that introduce those surfaces; they belong in this package, not in a service.
 schemas/<protocol>/v1.schema.json   the only place a message is defined
 fixtures/<protocol>/v1/             the cross-language corpus and its manifest
 fixtures/capability/v1/             the golden corpus for route-capability tokens
+fixtures/platform/v1/cursors.json   the golden corpus for pagination cursors
 src/                                hand-written runtime (frames, redaction, canonical JSON,
-                                    route capabilities, annotation geometry, MCP responses)
+                                    route capabilities, annotation geometry, MCP responses,
+                                    entity identifiers, cursors)
 src/generated/<protocol>/v1/        generated TypeScript models    DO NOT EDIT
-connectorv1/                        hand-written Go runtime, plus  *_gen.go  DO NOT EDIT
+connectorv1/, platformv1/           hand-written Go runtime, plus  *_gen.go  DO NOT EDIT
 tools/                              the generator and pnpm protocol:check
+tools/go-runtime/                   the Go runtime templates every Go package is rendered from
 ```
 
 Every schema source is listed in `tools/generate.ts` (`SCHEMA_SOURCES`), and
@@ -62,6 +75,7 @@ import { decodeBrowserFrame } from "@reviewplane/protocol/browser";
 import { decodeLiveViewFrame } from "@reviewplane/protocol/live-view";
 import { decodeReviewEvent, checkGeometryForType } from "@reviewplane/protocol/review";
 import { encodeMcpToolResponse, MESSAGE_TYPE_VALUES } from "@reviewplane/protocol/mcp";
+import { newEntityId, encodeCursor, decodeStreamMessage } from "@reviewplane/protocol/platform";
 ```
 
 Each protocol is a separate subpath export because all five declare an
@@ -111,6 +125,37 @@ the way in, with the violation reason `untrusted_content_mislabelled` and the
 wire code `POLICY_DENIED`. The server encodes every response through that
 function, so a handler cannot ship page-derived content under a trusted label
 even by mistake (ADR-0010, `docs/MCP_SPEC.md` §6).
+
+## Entity identifiers encode nothing
+
+`src/entity-id.ts` and `platformv1/entityid.go` mint the identifiers of
+`docs/DOMAIN_MODEL.md` §3. The suffix is 128 bits from the platform's
+cryptographic random source and nothing else: the document forbids encoding
+tenant, timestamp, database sequence or security-sensitive data, and a consumer
+that could read a creation time out of an identifier would come to depend on it.
+Stage 0 built the suffix from `Date.now().toString(36)` plus randomness, which
+carried exactly the timestamp §3 rules out.
+
+The prefix is a debugging convenience, never a check. `IDENTIFIER_PREFIXES`
+records the conventional prefix for each entity kind, and `isEntityId` validates
+length and character class alone — which is also all the schema bounds.
+
+## The Go runtime is generated, not copied
+
+Every generated Go package needs the same runtime: the validation and decoding
+primitives its validators and decoders call, the canonical writer its encoders
+build bytes with, and the redacted string type an `x-sensitive` field is typed
+as. Those are rendered from the templates in `tools/go-runtime/`, once per Go
+package, rather than hand-written once and copied. A second Go-rendering source
+would otherwise need a byte-identical copy of a canonical encoder, and two
+copies of a canonical encoder is precisely the drift this package exists to
+prevent. `pnpm protocol:check` re-renders them, so editing a committed copy
+fails the check.
+
+The generator also refuses a `\uXXXX` escape in a pattern for a source that
+renders Go: Go's RE2 spells the same code point `\x{XXXX}`, so such a pattern
+compiles in TypeScript and panics at package initialisation in Go. A bound that
+holds in one language and crashes the other is worse than no bound.
 
 ## Why the browser, live-view, review and MCP sources render TypeScript only
 

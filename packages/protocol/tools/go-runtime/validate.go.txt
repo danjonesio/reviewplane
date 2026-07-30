@@ -1,4 +1,4 @@
-package connectorv1
+package PROTOCOL_PACKAGE
 
 import (
 	"encoding/json"

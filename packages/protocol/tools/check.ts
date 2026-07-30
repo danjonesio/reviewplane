@@ -27,6 +27,7 @@ import {
   CONNECTOR_CORPUS,
   LIVE_VIEW_CORPUS,
   MCP_CORPUS,
+  PLATFORM_CORPUS,
   REVIEW_CORPUS,
   loadCanonicalEncodings,
   loadFixtureManifest,
@@ -34,6 +35,15 @@ import {
   type FixtureCorpus,
 } from "../src/fixtures.ts";
 import { decodeMcpToolResponse, encodeMcpToolResponse } from "../src/mcp-response.ts";
+import {
+  decodeApiErrorBody,
+  decodePlatformEvent,
+  decodeStreamMessage,
+  encodeApiErrorBody,
+  encodePlatformEvent,
+  encodeStreamMessage,
+} from "../src/platform-event.ts";
+import { checkCursorCorpus } from "./check-cursors.ts";
 import { decodeLiveViewFrame, encodeLiveViewFrame } from "../src/live-view-frame.ts";
 import { decodeReviewEvent, encodeReviewEvent } from "../src/review-event.ts";
 import {
@@ -161,6 +171,39 @@ const CODECS: Readonly<Record<string, Codec>> = {
       return result.ok ? null : { reason: result.error.reason, errorClass: result.error.errorClass };
     },
   },
+  platform_event: {
+    roundTrip(raw) {
+      const decoded = decodePlatformEvent(raw);
+      if (!decoded.ok) return { ok: false, message: `${decoded.error.reason}: ${decoded.error.message}` };
+      return { ok: true, encoded: encodePlatformEvent(decoded.value) };
+    },
+    refusal(raw) {
+      const result = decodePlatformEvent(raw);
+      return result.ok ? null : { reason: result.error.reason, errorClass: result.error.errorClass };
+    },
+  },
+  stream_message: {
+    roundTrip(raw) {
+      const decoded = decodeStreamMessage(raw);
+      if (!decoded.ok) return { ok: false, message: `${decoded.error.reason}: ${decoded.error.message}` };
+      return { ok: true, encoded: encodeStreamMessage(decoded.value) };
+    },
+    refusal(raw) {
+      const result = decodeStreamMessage(raw);
+      return result.ok ? null : { reason: result.error.reason, errorClass: result.error.errorClass };
+    },
+  },
+  api_error_response: {
+    roundTrip(raw) {
+      const decoded = decodeApiErrorBody(raw);
+      if (!decoded.ok) return { ok: false, message: `${decoded.error.reason}: ${decoded.error.message}` };
+      return { ok: true, encoded: encodeApiErrorBody(decoded.value) };
+    },
+    refusal(raw) {
+      const result = decodeApiErrorBody(raw);
+      return result.ok ? null : { reason: result.error.reason, errorClass: result.error.errorClass };
+    },
+  },
 };
 
 function codecFor(kind: string): Codec {
@@ -270,6 +313,8 @@ checkFixtures(BROWSER_CORPUS, "browser");
 checkFixtures(LIVE_VIEW_CORPUS, "live view");
 checkFixtures(REVIEW_CORPUS, "review");
 checkFixtures(MCP_CORPUS, "mcp");
+checkFixtures(PLATFORM_CORPUS, "platform");
+checkCursorCorpus(UPDATE, pass, fail);
 checkGo();
 
 if (failures.length > 0) {

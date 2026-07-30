@@ -76,12 +76,16 @@ export class IdempotencyStore {
    * `{replayed: false}` when this caller now owns the key and must run the
    * operation.
    */
-  async claim(scope: IdempotencyScope, digest: string): Promise<IdempotencyOutcome> {
+  async claim(scope: IdempotencyScope, digest: string, attempt = 0): Promise<IdempotencyOutcome> {
     const expiresAt = new Date(Date.now() + IDEMPOTENCY_TTL_SECONDS * 1000).toISOString();
+    // `organisation_id` is derived from the project rather than passed in, so
+    // the defence-in-depth column `docs/DOMAIN_MODEL.md` section 3 requires can
+    // never disagree with the project it is meant to corroborate.
     const inserted = await this.#pool.query(
       `INSERT INTO idempotency_keys
-         (project_id, actor_type, actor_id, tool, key, request_sha256, expires_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
+         (project_id, organisation_id, actor_type, actor_id, tool, key, request_sha256, expires_at)
+       SELECT $1, projects.organisation_id, $2, $3, $4, $5, $6, $7
+         FROM projects WHERE projects.id = $1
        ON CONFLICT (project_id, actor_type, actor_id, tool, key) DO NOTHING`,
       [scope.projectId, scope.actorType, scope.actorId, scope.tool, scope.key, digest, expiresAt],
     );
@@ -94,9 +98,17 @@ export class IdempotencyStore {
     );
     const row = existing.rows[0];
     if (row === undefined) {
-      // The row vanished between the insert and the read, which means an expiry
-      // sweep removed it. Treat it as a fresh claim rather than as a conflict.
-      return this.claim(scope, digest);
+      // Either the row vanished between the insert and the read, which an
+      // expiry sweep can do, or the project named by the scope does not exist
+      // and the insert selected nothing. One retry tells the two apart without
+      // an unbounded loop: a vanished row is claimable on the second pass, and
+      // a missing project is not.
+      if (attempt === 0) return this.claim(scope, digest, 1);
+      throw new ApiError(
+        "RESOURCE_NOT_FOUND",
+        "The project this idempotency key is scoped to was not found.",
+        { field: "project_id" },
+      );
     }
     if (row.request_sha256 !== digest) {
       throw new ApiError(

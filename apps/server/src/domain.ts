@@ -22,11 +22,40 @@
  * would make "separate process and route" a formality.
  */
 
-export { ApiError, notFound, type ErrorCode } from "./errors.ts";
-export { appendEvent, type ActorType, type EventActor, type EventCorrelation } from "./events/append.ts";
-export { newId } from "./ids.ts";
+export { API_ERROR_CODES, ApiError, apiData, apiError, notFound, type ErrorCode } from "./errors.ts";
+export {
+  appendEvent,
+  assertPayloadCarriesNoSecret,
+  recordStateChange,
+  EventPayloadError,
+  type ActorType,
+  type AppendedEvent,
+  type EventActor,
+  type EventCorrelation,
+  type EventPublisher,
+} from "./events/append.ts";
+export { EventBus, EventStreamReader, type StoredEvent } from "./events/stream.ts";
+export { OutboxDispatcher } from "./events/outbox.ts";
+export {
+  PROCESS_ROLES,
+  readBuildInfo,
+  registerHealthRoutes,
+  type BuildInfo,
+  type ProcessRole,
+} from "./health.ts";
+export {
+  DEFAULT_PAGE_LIMIT,
+  MAX_PAGE_LIMIT,
+  buildPage,
+  pageMeta,
+  readPageRequest,
+  type Page,
+  type PageRequest,
+} from "./http/pagination.ts";
+export { JobRunner, enqueueJob, type JobHandler, type JobKind, type JobRecord } from "./jobs/runner.ts";
+export { newEntityId, newId } from "./ids.ts";
 export { inTransaction } from "./db/pool.ts";
-export { migrate } from "./db/migrate.ts";
+export { migrate, migrationState, type MigrationState } from "./db/migrate.ts";
 
 export {
   AGENT_CAPABILITIES,

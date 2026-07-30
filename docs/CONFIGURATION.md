@@ -20,6 +20,9 @@ Stage 0 status: the server reads environment variables rather than the file belo
 | `REVIEWPLANE_HOST` | `0.0.0.0` | HTTP API listen address |
 | `REVIEWPLANE_PORT` | `8080` | HTTP API listen port |
 | `REVIEWPLANE_LOG_LEVEL` | `info` | `fatal`, `error`, `warn`, `info`, `debug`, `trace` or `silent` |
+| `REVIEWPLANE_VERSION` | `0.0.0-dev` | Reported by `/version`; stamped into the image at build time |
+| `REVIEWPLANE_REVISION` | `unknown` | Git revision reported by `/version` |
+| `REVIEWPLANE_BUILT_AT` | `unknown` | Build instant reported by `/version` |
 | `REVIEWPLANE_ORGANISATION_ID` | `org_default` | The organisation connectors enrol into; a token from another organisation is refused |
 | `REVIEWPLANE_ORGANISATION_NAME` | `ReviewPlane` | Display name for that organisation |
 | `REVIEWPLANE_CONNECTOR_HOST` | `0.0.0.0` | Connector listener address |

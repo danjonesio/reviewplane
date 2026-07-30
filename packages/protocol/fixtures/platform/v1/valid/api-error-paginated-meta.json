@@ -1,0 +1,13 @@
+{
+  "error": {
+    "code": "RATE_LIMITED",
+    "message": "Too many requests.",
+    "details": {
+      "retry_after_ms": 500
+    }
+  },
+  "meta": {
+    "request_id": "req_abcdef0123456789",
+    "next_cursor": "eyJ2ZXJzaW9uIjoxfQ"
+  }
+}

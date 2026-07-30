@@ -15,8 +15,10 @@ import type { Pool } from "pg";
 import { requireAdministrator } from "../../auth.ts";
 import { inTransaction } from "../../db/pool.ts";
 import { appendEvent } from "../../events/append.ts";
+import { EventStreamReader } from "../../events/stream.ts";
 import { ApiError, notFound } from "../../errors.ts";
-import { newId } from "../../ids.ts";
+import { buildPage, pageMeta, readPageRequest } from "../../http/pagination.ts";
+import { newEntityId } from "../../ids.ts";
 import type { ViewerPrincipal } from "../live/viewer-sessions.ts";
 
 export interface ProjectRoutesOptions {
@@ -32,6 +34,15 @@ export interface ProjectRoutesOptions {
 
 const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/u;
 
+interface ProjectListRow {
+  readonly id: string;
+  readonly organisation_id: string;
+  readonly name: string;
+  readonly slug: string;
+  readonly status: string;
+  readonly created_at: Date;
+}
+
 export async function registerProjectRoutes(
   app: FastifyInstance,
   options: ProjectRoutesOptions,
@@ -45,7 +56,7 @@ export async function registerProjectRoutes(
     if (!SLUG_PATTERN.test(slug)) {
       throw new ApiError("UNSUPPORTED_CAPABILITY", "slug must be lowercase, alphanumeric or hyphens.");
     }
-    const id = newId("org_");
+    const id = newEntityId("organisation");
     await pool.query("INSERT INTO organisations (id, name, slug) VALUES ($1, $2, $3)", [
       id,
       body.name ?? slug,
@@ -67,7 +78,7 @@ export async function registerProjectRoutes(
     ]);
     if (organisation.rows.length === 0) throw notFound("The organisation");
 
-    const id = newId("prj_");
+    const id = newEntityId("project");
     const record = await inTransaction(pool, async (client) => {
       await client.query(
         "INSERT INTO projects (id, organisation_id, name, slug) VALUES ($1, $2, $3, $4)",
@@ -78,7 +89,7 @@ export async function registerProjectRoutes(
         organisationId,
         projectId: id,
         actor: { type: "human_user", display: "bootstrap administrator" },
-        payload: { slug },
+        payload: { slug, name: body.name ?? slug },
       });
       return { id, slug, organisation_id: organisationId };
     });
@@ -95,16 +106,77 @@ export async function registerProjectRoutes(
   app.get("/api/v1/projects", async (request, reply) => {
     const principal = await requireViewer(request);
     const scoped = principal.projectIds === null ? null : [...principal.projectIds];
-    const rows =
-      scoped === null
-        ? await pool.query(
-            "SELECT id, organisation_id, name, slug, status FROM projects ORDER BY created_at DESC LIMIT 100",
-          )
-        : await pool.query(
-            "SELECT id, organisation_id, name, slug, status FROM projects WHERE id = ANY($1) ORDER BY created_at DESC LIMIT 100",
-            [scoped],
-          );
-    return reply.send({ data: rows.rows, meta: { request_id: request.id } });
+    const page = readPageRequest(request.query);
+    // Keyset pagination, ordered by the same pair the cursor carries. Reading
+    // `limit + 1` rows is how the endpoint knows whether another page exists
+    // without a second count query (`docs/API.md` section 6).
+    const rows = await pool.query<ProjectListRow>(
+      `SELECT id, organisation_id, name, slug, status, created_at
+         FROM projects
+        WHERE ($1::text[] IS NULL OR id = ANY($1))
+          AND ($2::text IS NULL OR (created_at, id) < ($2::timestamptz, $3::text))
+        ORDER BY created_at DESC, id DESC
+        LIMIT $4`,
+      [scoped, page.after?.sortKey ?? null, page.after?.id ?? null, page.limit + 1],
+    );
+    const built = buildPage(rows.rows, page, (row) => ({
+      sortKey: row.created_at.toISOString(),
+      id: row.id,
+    }));
+    return reply.send({
+      data: built.items.map(({ created_at: _createdAt, ...project }) => project),
+      meta: pageMeta(request.id, built.nextCursor),
+    });
+  });
+
+  /**
+   * The project activity timeline (`docs/API.md` section 8, `docs/EVENTS.md`
+   * section 1).
+   *
+   * The same events the WebSocket channel of section 18.1 delivers live, read
+   * as pages. A client that has been away longer than the replay window, or
+   * that has just been told to refresh, refetches here and then resumes the
+   * socket from the newest sequence it received.
+   *
+   * The project is resolved inside the viewer's scope, so a project the viewer
+   * may not see answers exactly as an unknown identifier does — the API never
+   * confirms that another organisation's project exists.
+   */
+  app.get("/api/v1/projects/:projectId/activity", async (request, reply) => {
+    const principal = await requireViewer(request);
+    const { projectId } = request.params as { projectId: string };
+    const scoped = principal.projectIds === null ? null : [...principal.projectIds];
+    const found = await pool.query<{ id: string; organisation_id: string }>(
+      `SELECT id, organisation_id FROM projects
+        WHERE id = $1 AND ($2::text[] IS NULL OR id = ANY($2))`,
+      [projectId, scoped],
+    );
+    const project = found.rows[0];
+    if (project === undefined) throw notFound("The project");
+    if (principal.organisationId !== null && principal.organisationId !== project.organisation_id) {
+      throw notFound("The project");
+    }
+
+    const page = readPageRequest(request.query);
+    const reader = new EventStreamReader(pool);
+    const position = await reader.position(project.id);
+    // The sort key is the sequence, rendered as fixed-width text so that a
+    // string comparison in the cursor orders the same way the number does.
+    const after = page.after === null ? position.currentSequence + 1 : Number(page.after.sortKey);
+    const rows = await pool.query<{ sequence: string; id: string }>(
+      `SELECT sequence, id FROM events
+        WHERE stream_key = $1 AND sequence < $2
+        ORDER BY sequence DESC
+        LIMIT $3`,
+      [project.id, after, page.limit + 1],
+    );
+    const envelopes = await reader.byIds(rows.rows.map((row) => row.id));
+    const ordered = [...envelopes].sort((left, right) => right.sequence - left.sequence);
+    const built = buildPage(ordered, page, (event) => ({
+      sortKey: String(event.sequence),
+      id: event.id,
+    }));
+    return reply.send({ data: built.items, meta: pageMeta(request.id, built.nextCursor) });
   });
 
   app.get("/api/v1/projects/:projectId", async (request, reply) => {

@@ -1,0 +1,23 @@
+{
+  "id": "evt_0123456789abcdef0123456789abcdef",
+  "schema_version": 1,
+  "sequence": 1,
+  "type": "project.created",
+  "occurred_at": "2026-07-30T11:24:22.182Z",
+  "recorded_at": "2026-07-30T11:24:22.193Z",
+  "organisation_id": "org_2f1c8ba0d9e34a7f8b6c5d4e3f2a1b09",
+  "project_id": "prj_9a8b7c6d5e4f30291827364554637281",
+  "actor": {
+    "type": "human_user",
+    "id": "usr_1111222233334444555566667777888",
+    "display": "Dan Jones"
+  },
+  "correlation": {
+    "request_id": "req_abcdef0123456789"
+  },
+  "payload": {
+    "slug": "s",
+    "name": "S"
+  },
+  "tenant": "acme"
+}

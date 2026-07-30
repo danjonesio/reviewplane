@@ -30,7 +30,11 @@ async function main(): Promise<void> {
 
   const pool = createPool(config.databaseUrl);
   const migration = await migrate(pool);
-  const built = await buildApp({ config, pool });
+  // `docs/ARCHITECTURE.md` section 4.2 allows one codebase to run several
+  // process roles, and the Compose deployment is a single container: this
+  // process is `api` and `jobs`. A deployment that separates them runs
+  // `reviewplane jobs` and starts this one with the role disabled.
+  const built = await buildApp({ config, pool, runJobs: true });
   built.app.log.info(
     { applied: migration.applied.length, already_applied: migration.alreadyApplied.length },
     "migrations complete",

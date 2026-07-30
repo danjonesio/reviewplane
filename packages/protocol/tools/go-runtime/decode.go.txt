@@ -1,0 +1,37 @@
+package PROTOCOL_PACKAGE
+
+// Decoding primitives used by the generated decoders. They assume the value has
+// already passed its validator, so they never panic on a type mismatch: a
+// mismatch yields the zero value instead.
+
+func decodeString(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
+func decodeInt(value any) int64 {
+	number, _ := asInt64(value)
+	return number
+}
+
+func decodeFloat(value any) float64 {
+	number, _ := asFloat64(value)
+	return number
+}
+
+func decodeBool(value any) bool {
+	boolean, _ := value.(bool)
+	return boolean
+}
+
+func decodeSlice[T any](value any, decode func(item any) T) []T {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	result := make([]T, 0, len(items))
+	for _, item := range items {
+		result = append(result, decode(item))
+	}
+	return result
+}

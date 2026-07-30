@@ -15,6 +15,11 @@ import { bearerToken, requireBootstrapAdministrator } from "./auth.ts";
 import type { LogDestination, ServerConfig } from "./config.ts";
 import type { Pool } from "./db/pool.ts";
 import { renderError } from "./errors.ts";
+import { registerEventStreamRoutes } from "./events/routes.ts";
+import { OutboxDispatcher } from "./events/outbox.ts";
+import { EventBus } from "./events/stream.ts";
+import { registerHealthRoutes, type BuildInfo } from "./health.ts";
+import { JobRunner } from "./jobs/runner.ts";
 import { AgentCredentialStore } from "./modules/agents/credentials.ts";
 import { IdempotencyStore } from "./modules/agents/idempotency.ts";
 import { registerAgentRoutes } from "./modules/agents/routes.ts";
@@ -72,6 +77,19 @@ export interface BuildAppOptions {
    * on the records the server actually emitted.
    */
   readonly logDestination?: LogDestination;
+  /** Reported by `/version`. Defaults to the build stamps in the environment. */
+  readonly build?: BuildInfo;
+  /**
+   * Runs the durable job runner in this process.
+   *
+   * `docs/ARCHITECTURE.md` section 4.2 allows one codebase to run several
+   * process roles, and a single-container deployment runs `api` and `jobs`
+   * together. A deployment that separates them starts `reviewplane jobs`
+   * instead and leaves this unset.
+   */
+  readonly runJobs?: boolean;
+  /** Shortens the outbox poll in tests, where a quarter second is an age. */
+  readonly outboxPollIntervalMs?: number;
 }
 
 export interface BuiltApp {
@@ -88,6 +106,12 @@ export interface BuiltApp {
   readonly agentSessions: AgentSessionStore;
   readonly workspaces: WorkspaceStore;
   readonly idempotency: IdempotencyStore;
+  /** In-process fan-out of committed events (`docs/EVENTS.md` §10). */
+  readonly events: EventBus;
+  /** Post-commit delivery of the outbox rows `appendEvent` writes. */
+  readonly outbox: OutboxDispatcher;
+  /** The durable job runner, present only when this process runs the role. */
+  readonly jobs: JobRunner | null;
   /** Starts every listener the server owns. */
   start(): Promise<void>;
   /** Stops every listener. The pool is owned by the caller. */
@@ -119,6 +143,31 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
   });
 
   app.setErrorHandler(renderError);
+
+  // `docs/OPERATIONS.md` section 2 names the three endpoints every service
+  // exposes. `/healthz` and `/readyz` remain as the Stage 0 names the Compose
+  // health checks and the edge gateway already use; removing them would be a
+  // deployment break for no gain, and both now answer from the same state the
+  // documented routes do.
+  const events = new EventBus();
+  const outbox = new OutboxDispatcher({
+    pool,
+    bus: events,
+    ...(options.outboxPollIntervalMs === undefined
+      ? {}
+      : { pollIntervalMs: options.outboxPollIntervalMs }),
+    logger: {
+      warn: (fields, message) => {
+        app.log.warn(fields, message);
+      },
+    },
+  });
+
+  registerHealthRoutes(app, {
+    role: "api",
+    pool,
+    ...(options.build === undefined ? {} : { build: options.build }),
+  });
   app.get("/healthz", async () => ({ status: "ok" }));
   app.get("/readyz", async (_request, reply) => {
     try {
@@ -297,6 +346,32 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     allowedOrigins: config.allowedOrigins,
     secureCookies: config.secureCookies,
   });
+  await registerEventStreamRoutes(app, {
+    pool,
+    bus: events,
+    viewerAuth,
+    allowedOrigins: config.allowedOrigins,
+  });
+
+  // The `jobs` role of `docs/ARCHITECTURE.md` section 4.2. A single-container
+  // deployment runs it beside the API; a deployment that separates the roles
+  // runs `reviewplane jobs` and leaves this null.
+  const jobs =
+    options.runJobs === true
+      ? new JobRunner({
+          pool,
+          handlers: {},
+          publisher: outbox,
+          logger: {
+            info: (fields, message) => {
+              app.log.info(fields, message);
+            },
+            error: (fields, message) => {
+              app.log.error(fields, message);
+            },
+          },
+        })
+      : null;
 
   return {
     app,
@@ -312,11 +387,18 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     agentSessions,
     workspaces,
     idempotency,
+    events,
+    outbox,
+    jobs,
     async start(): Promise<void> {
       await app.listen({ host: config.host, port: config.port });
       await connectors.start();
+      outbox.start();
+      jobs?.start();
     },
     async stop(): Promise<void> {
+      await jobs?.stop();
+      await outbox.stop();
       await connectors.stop();
       await app.close();
     },
