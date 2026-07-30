@@ -65,6 +65,11 @@ test("version 1 defines exactly the messages the issue scopes", () => {
       "heartbeat",
       "route.publish",
       "route.publish.ack",
+      // docs/CONNECTOR_PROTOCOL.md section 17, ADR-0018. The list is asserted in
+      // full rather than by membership so that adding a message type is a
+      // deliberate edit here as well as in the schema.
+      "connector.reconnect.request",
+      "connector.reconnect.response",
     ],
   );
 });
