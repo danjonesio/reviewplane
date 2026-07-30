@@ -44,9 +44,30 @@ networks:
   devnet:
     internal: true
 
+# Built images carry a fixed name, independent of the Compose project name.
+#
+# `deploy/compose/e2e/run.sh` gives every run its own project name so that two
+# runs cannot share containers, networks or volumes. Compose otherwise derives
+# an image tag from that name too, which would leave a fresh copy of every
+# image — nearly two gigabytes for the browser worker alone — behind after each
+# run. Naming the images here keeps exactly one copy of each.
+#
+# Set REVIEWPLANE_IMAGE_PREFIX when two runs must not share built images, for
+# example when they are building different revisions at the same time.
+
 volumes:
   postgres-data:
   artefact-data:
+  # The Vite fixture's own sources, seeded from the image the first time the
+  # volume is attached.
+  #
+  # `dev-fixture` runs with a read-only root filesystem, which is one of the
+  # `docs/SECURITY.md` §10 controls and is not relaxed for a fixture. RVP-14's
+  # hot-reload proof has to *edit a source file on the development machine*
+  # while it is running, so exactly one path is made writable and it is the one
+  # the proof edits. A bind mount of the repository would have done the same
+  # job while writing into the developer's checkout, which a test must not do.
+  dev-fixture-vite-src:
 
 services:
   postgres:
@@ -67,6 +88,7 @@ services:
       retries: 12
 
   server:
+    image: ${REVIEWPLANE_IMAGE_PREFIX:-reviewplane}/server:local
     build:
       context: ../..
       dockerfile: apps/server/Dockerfile
@@ -131,6 +153,7 @@ services:
       start_period: 30s
 
   browser-worker:
+    image: ${REVIEWPLANE_IMAGE_PREFIX:-reviewplane}/browser-worker:local
     build:
       context: ../..
       dockerfile: apps/browser-worker/Dockerfile
@@ -207,6 +230,7 @@ services:
   # manager, so the blast radius of the one process that terminates both
   # untrusted-ish sides is as small as an image can make it.
   tunnel-gateway:
+    image: ${REVIEWPLANE_IMAGE_PREFIX:-reviewplane}/tunnel-gateway:local
     build:
       context: ../..
       dockerfile: services/tunnel-gateway/Dockerfile
@@ -265,6 +289,7 @@ services:
   # not a container. It is containerised here so the end-to-end scenario can
   # run unattended.
   dev-fixture:
+    image: ${REVIEWPLANE_IMAGE_PREFIX:-reviewplane}/dev-fixture:local
     build:
       context: ../..
       dockerfile: examples/dev-fixture/Dockerfile
@@ -283,6 +308,15 @@ services:
       REVIEWPLANE_CONTROL_PLANE_CA_FILE: /etc/reviewplane/tls/connector-trust.pem
       REVIEWPLANE_ENROLMENT_TOKEN_FILE: /run/secrets/enrolment_token
       PORT: "4321"
+      # The Vite development server on 127.0.0.1:5173, beside the static
+      # application on 4321. It is what makes the RVP-14 hot-reload proof
+      # possible: a real dev server with a real file watcher and a real update
+      # socket. Set it to "0" for a run that only needs the static application.
+      REVIEWPLANE_FIXTURE_VITE: "1"
+      # Vite's dependency-optimisation cache, redirected onto the tmpfs below.
+      # The root filesystem is read-only, so the default cache directory inside
+      # the project is not writable and the dev server would fail to start.
+      VITE_CACHE_DIR: /tmp/vite-cache
     # Short syntax: `uid`, `gid` and `mode` on a secret reference are honoured
     # by Docker Swarm only. Plain Compose bind-mounts the file with the
     # permissions it has on the host, which is why generate-secrets.sh writes
@@ -297,9 +331,13 @@ services:
       # connector-config.yaml; the end-to-end script rewrites it with the real
       # identifier before this service starts.
       - ./connector-config.generated.yaml:/etc/reviewplane-connector/config.yaml:ro
+      # The one writable source path. RVP-14 edits a file here while the stack
+      # is running and watches the change reach central Chromium without a full
+      # page reload; every other path in this container stays read-only.
+      - dev-fixture-vite-src:/app/vite-app/src
     read_only: true
     tmpfs:
-      - /tmp:size=64m,mode=1777
+      - /tmp:size=128m,mode=1777
       - /var/lib/reviewplane-connector:size=16m,mode=0700,uid=10001,gid=10001
     cap_drop: [ALL]
     security_opt:
