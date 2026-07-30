@@ -461,9 +461,18 @@ The response is the only place the token value appears; the control plane stores
 }
 ```
 
-### Stage 0 authentication on this surface
+### Administrative authentication on this surface
 
-Human authentication is not yet built, so these endpoints require the bootstrap administrator token of `ARCHITECTURE.md` §11 as `Authorization: Bearer <token>`, compared in constant time and never logged. A connector credential — its identity, certificate, fingerprint or enrolment token — MUST NOT be accepted here (`TESTING.md` §10). Local accounts and sessions replace the bootstrap token when they land.
+These endpoints require the bootstrap administrator token of `ARCHITECTURE.md`
+§11 as `Authorization: Bearer <token>`, compared in constant time and never
+logged. A connector credential — its identity, certificate, fingerprint or
+enrolment token — MUST NOT be accepted here (`TESTING.md` §10).
+
+Local accounts arrived with section 4.0 and have not yet replaced the token on
+these connector routes: enrolling an environment from the web application is the
+connector-enrolment slice rather than this one. A human session therefore does
+not reach them today, and the token is what an operator and the end-to-end
+harness use.
 
 ## 10. Published-service endpoints
 
