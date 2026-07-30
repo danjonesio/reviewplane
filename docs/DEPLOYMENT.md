@@ -292,9 +292,10 @@ file name, because a file name is what an operator finds in the repository.
 
 `reviewplane serve` migrates before it opens its listener. A deployment that
 prefers to migrate separately — a Kubernetes job, an operator running the
-command by hand — is supported by the readiness gate below; `reviewplane jobs`
-refuses to start against a schema with pending migrations rather than run
-handlers against a database its code does not match.
+command by hand — is supported by the readiness gate below, which is what keeps
+traffic away from a process whose schema is behind its code. `reviewplane jobs`
+answers the same gate rather than migrating: it starts, reports itself not
+ready, and claims nothing until the schema catches up, as described above.
 
 ### The readiness gate
 

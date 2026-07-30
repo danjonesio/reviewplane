@@ -161,8 +161,15 @@ async function runJobs(pool: Pool, once: boolean): Promise<number> {
       },
     ],
   });
-  const address = await health.listen({ host: jobsHealthHost(), port: jobsHealthPort() });
-  write(`jobs role health endpoints on ${address}`);
+  const host = jobsHealthHost();
+  await health.listen({ host, port: jobsHealthPort() });
+  // The bound host, not Fastify's rendered address: `listen` formats a
+  // wildcard bind as a loopback URL, and an operator reading
+  // "http://127.0.0.1:8081" would conclude the probe is unreachable from
+  // outside the container when it is in fact reachable from anywhere.
+  const bound = health.server.address();
+  const boundPort = bound === null || typeof bound === "string" ? jobsHealthPort() : bound.port;
+  write(`jobs role health endpoints on ${host}:${String(boundPort)}`);
 
   const startWhenMigrated = async (): Promise<boolean> => {
     const state = await migrationState(pool).catch(() => null);

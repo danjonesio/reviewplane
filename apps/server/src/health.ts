@@ -156,27 +156,60 @@ export function registerHealthRoutes(app: FastifyInstance, options: HealthRoutes
 }
 
 /**
+ * Socket and resolver failure codes whose operand is a network address.
+ *
+ * Anchoring on these rather than trying to recognise an address anywhere in
+ * arbitrary text is deliberate: the shape `<syscall> <CODE> <address>` is what
+ * Node's `net` and `dns` layers emit and what the PostgreSQL driver passes
+ * through unchanged, and a rule that matched addresses in free text would
+ * eventually mangle a message that merely looked like one.
+ */
+const ADDRESS_BEARING_CODES = [
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "EHOSTDOWN",
+  "EADDRNOTAVAIL",
+  "ETIMEDOUT",
+  "ECONNRESET",
+] as const;
+
+const ADDRESS_OPERAND = new RegExp(`\\b(${ADDRESS_BEARING_CODES.join("|")})\\s+\\S+`, "gu");
+
+/**
  * Renders a failure for an operator without echoing a connection string, a
  * credential, a network address or a stack trace (`docs/SECURITY.md`
  * section 18).
  *
  * The address matters as well as the credential. `/health/ready` is the least
  * protected endpoint the process serves — a probe reaches it without
- * authenticating — and a driver's message routinely names the host and port it
- * failed to reach (`connect ECONNREFUSED 10.0.3.7:5432`). That is internal
- * topology, and an unauthenticated caller learning where the database lives is
- * a disclosure even though it is not a secret. The failure class is what an
- * operator needs; the address is in their own configuration.
+ * authenticating — and a driver's message routinely names the host it failed to
+ * reach, with a port (`connect ECONNREFUSED 10.0.3.7:5432`) or without one
+ * (`getaddrinfo ENOTFOUND db-primary.internal`). That is internal topology, and
+ * an unauthenticated caller learning where the database lives is a disclosure
+ * even though it is not a secret.
+ *
+ * Two properties survive the scrubbing, and both are load-bearing: no
+ * credential reaches the response, and the **failure class** does. An operator
+ * diagnosing this needs to know that the name did not resolve rather than that
+ * the port refused the connection; the address itself is in their own
+ * configuration.
  */
-function describeFailure(error: unknown): string {
+export function describeFailure(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   const maximum = 200;
   const scrubbed = message
+    // A connection string, which carries the credential as well as the address.
     .replaceAll(/(postgres(?:ql)?:\/\/)[^\s"']+/giu, "$1[redacted]")
-    // host:port, in either an IPv4 or a bracketed IPv6 form, and a bare
-    // hostname followed by a port.
+    // The operand of a socket or resolver failure: a host, with or without a
+    // port, in IPv4, bracketed IPv6 or hostname form.
+    .replaceAll(ADDRESS_OPERAND, "$1 [address redacted]")
+    // Belt and braces for an address quoted outside that shape. Both forms are
+    // unambiguous: a dotted or bracketed host followed by a port.
     .replaceAll(/\[[0-9A-Fa-f:]+\]:\d{1,5}/gu, "[address redacted]")
     .replaceAll(/\b(?:\d{1,3}\.){3}\d{1,3}:\d{1,5}\b/gu, "[address redacted]")
-    .replaceAll(/\b[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?:\d{1,5}\b/gu, "[address redacted]");
+    .replaceAll(/\b[A-Za-z0-9][A-Za-z0-9-]*(?:\.[A-Za-z0-9-]+)+:\d{1,5}\b/gu, "[address redacted]");
   return scrubbed.length > maximum ? `${scrubbed.slice(0, maximum)}...` : scrubbed;
 }

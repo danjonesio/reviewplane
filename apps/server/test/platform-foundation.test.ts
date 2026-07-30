@@ -29,7 +29,7 @@ import { MIGRATIONS_DIRECTORY, listMigrations, migrate, migrationState } from ".
 import { createPool, inTransaction } from "../src/db/pool.ts";
 import { EXIT_MIGRATIONS_PENDING, main as cli } from "../src/cli.ts";
 import { appendEvent, assertPayloadCarriesNoSecret, EventPayloadError, recordStateChange } from "../src/events/append.ts";
-import { registerHealthRoutes } from "../src/health.ts";
+import { describeFailure, registerHealthRoutes } from "../src/health.ts";
 import { newEntityId, newId } from "../src/ids.ts";
 import { TEST_BOOTSTRAP_TOKEN, testServerConfig } from "./support/config.ts";
 import { startMigratedDatabase, startPostgres, truncateAll, type MigratedDatabase } from "./support/postgres.ts";
@@ -687,6 +687,84 @@ describe("when the database is unavailable", () => {
       await pool.end().catch(() => undefined);
       await isolated.stop().catch(() => undefined);
     }
+  });
+
+  test("readiness never discloses the database address, in any failure shape", async () => {
+    // `/health/ready` is the least protected endpoint the process serves: a
+    // probe reaches it without authenticating. A driver's message names the
+    // host it failed to reach, with a port on a refused connection and without
+    // one on a resolver failure, so both shapes have to be scrubbed.
+    //
+    // Each case is driven through a real pool rather than asserted against a
+    // hand-written message, because the thing under test is what the driver
+    // actually says, not what this test remembers it saying.
+    const cases = [
+      { url: "postgres://v:v@127.0.0.1:59999/v", secrets: ["127.0.0.1", "59999"] },
+      { url: "postgres://v:v@[::1]:59998/v", secrets: ["::1", "59998"] },
+      {
+        url: "postgres://v:v@db-internal.corp.invalid:5432/v",
+        secrets: ["db-internal.corp.invalid", "corp.invalid"],
+      },
+      {
+        url: "postgresql://admin:s3cr3t@pg-primary.prod:6432/appdb",
+        secrets: ["pg-primary.prod", "s3cr3t", "admin", "6432"],
+      },
+    ];
+
+    for (const testCase of cases) {
+      const pool = createPool(testCase.url);
+      const app = Fastify({ logger: false });
+      registerHealthRoutes(app, { role: "api", pool });
+      try {
+        const response = await app.inject({ method: "GET", url: "/health/ready" });
+        assert.equal(response.statusCode, 503, testCase.url);
+        const detail = (
+          response.json() as { checks: Record<string, { detail?: string }> }
+        ).checks["database"]?.detail;
+        assert.ok(detail !== undefined, `no database detail for ${testCase.url}`);
+
+        for (const secret of testCase.secrets) {
+          assert.ok(
+            !detail.includes(secret),
+            `readiness disclosed ${JSON.stringify(secret)} for ${testCase.url}: ${detail}`,
+          );
+        }
+        assert.ok(
+          detail.includes("[address redacted]"),
+          `the address was not redacted for ${testCase.url}: ${detail}`,
+        );
+        // The failure class must survive: an operator needs to know that the
+        // name did not resolve rather than that the port refused it.
+        assert.match(detail, /ECONNREFUSED|ENOTFOUND|EAI_AGAIN/u, testCase.url);
+        process.stdout.write(`evidence: readiness detail for ${testCase.url} => ${detail}\n`);
+      } finally {
+        await app.close();
+        await pool.end().catch(() => undefined);
+      }
+    }
+  });
+
+  test("scrubbing an address does not mangle a message that merely looks like one", () => {
+    // The rule is anchored on the failure codes precisely so that ordinary
+    // prose survives it. A regression here would make every other readiness
+    // detail unreadable while nobody noticed.
+    assert.equal(
+      describeFailure(new Error("Connection terminated unexpectedly")),
+      "Connection terminated unexpectedly",
+    );
+    assert.equal(
+      describeFailure(new Error("timeout exceeded when establishing a connection")),
+      "timeout exceeded when establishing a connection",
+    );
+    assert.equal(
+      describeFailure(new Error("see docs/SECURITY.md section 18:5 for the rule")),
+      "see docs/SECURITY.md section 18:5 for the rule",
+    );
+    // A connection string carries the credential as well as the address.
+    assert.equal(
+      describeFailure(new Error("could not connect to postgres://admin:s3cr3t@pg.prod:6432/db")),
+      "could not connect to postgres://[redacted]",
+    );
   });
 
   test("appendEvent inside a failed transaction leaves no partial event", async () => {
