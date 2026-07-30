@@ -260,6 +260,9 @@ It reads `REVIEWPLANE_DATABASE_URL` or `REVIEWPLANE_DATABASE_URL_FILE` and
 nothing else, because an operator applying a schema has no gateway, no worker
 and no capability key.
 
+In a source checkout the same command runs as
+`pnpm --filter @reviewplane/server run cli -- migrate`, which needs no build.
+
 Exit codes are the interface: `0` success, `1` failure, `2` a configuration
 error the process cannot start with, and `3` from `migrate --status` when
 migrations are pending — so a deployment script can branch on "needs migrating"
