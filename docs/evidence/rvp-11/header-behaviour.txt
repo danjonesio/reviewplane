@@ -4,7 +4,7 @@ Observed header behaviour (docs/CONNECTOR_PROTOCOL.md section 13.1)
 Gateway host_header_mode: upstream (the default)
 
 Host received by the development service:  127.0.0.1:4321
-X-Forwarded-Host:                          svc-4d90e932a123424b9aaabec22a4fcf53.internal.invalid
+X-Forwarded-Host:                          svc-63abd52bf724442e8dd56166095319de.internal.invalid
 X-Forwarded-Proto:                         https
 X-Forwarded-For:                           (absent)
 

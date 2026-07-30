@@ -28,6 +28,9 @@ deploy/compose/secrets/*
 deploy/compose/tls/*
 !deploy/compose/tls/.gitkeep
 !deploy/compose/tls/README.md
+# The tunnel CA's private key. It is deliberately outside deploy/compose/tls,
+# which is bind-mounted into two containers.
+deploy/compose/ca/
 # The connector configuration run.sh rewrites with the generated project id.
 deploy/compose/connector-config.generated.yaml
 # Evidence from an end-to-end run. It is attached to a pull request, not

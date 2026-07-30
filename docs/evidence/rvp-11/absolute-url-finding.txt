@@ -9,7 +9,7 @@ listen address produces.
 
 Observed through the route:
   navigation ok:        True
-  settled URL:          https://svc-4d90e932a123424b9aaabec22a4fcf53.internal.invalid/absolute-url
+  settled URL:          https://svc-63abd52bf724442e8dd56166095319de.internal.invalid/absolute-url
   document status:      200
   document title:       Absolute URL — ReviewPlane dev fixture
 

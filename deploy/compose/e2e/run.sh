@@ -152,6 +152,12 @@ print(" ".join(offenders))
 # ---------------------------------------------------------------------------
 step "1. Start the Compose stack (docs/TESTING.md section 3 step 1)"
 # ---------------------------------------------------------------------------
+# A stack left running by REVIEWPLANE_E2E_KEEP_UP=1, or by an interrupted run,
+# would poison this one: step 0 regenerates the database password while the old
+# volume still holds the old one. Tearing down first makes the scenario
+# repeatable rather than dependent on how the last run ended.
+"${COMPOSE[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
+
 "${COMPOSE[@]}" build --quiet server browser-worker tunnel-gateway dev-fixture
 
 # The order is forced by two dependencies that only exist at run time.
@@ -190,7 +196,26 @@ chmod 644 "${COMPOSE_DIR}/tls/connector-trust.pem"
 info "wrote tls/connector-trust.pem (connector CA + tunnel CA)"
 
 "${COMPOSE[@]}" up -d --wait --wait-timeout 180 tunnel-gateway browser-worker \
-  || fail "the tunnel gateway and browser worker did not become healthy"
+  || fail "the tunnel gateway and browser worker did not start"
+
+# `up --wait` reports a service with no healthcheck as ready the moment its
+# container is running, and the gateway is a distroless image with no shell or
+# interpreter to run a probe in. So readiness is checked from a container that
+# does have one: the gateway's admin API answering is what proves its listeners
+# are bound, and waiting for it here removes a race the following steps would
+# otherwise lose intermittently.
+GATEWAY_READY=0
+for _ in $(seq 1 60); do
+  if "${COMPOSE[@]}" exec -T server node -e '
+      fetch("http://tunnel-gateway:8445/healthz")
+        .then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1));
+    ' 2>/dev/null; then
+    GATEWAY_READY=1
+    break
+  fi
+  sleep 1
+done
+[[ "${GATEWAY_READY}" -eq 1 ]] || fail "the tunnel gateway did not answer on its admin API"
 info "tunnel-gateway and browser-worker are up"
 
 # Nothing may be published to the host. This is Stage 0 exit criterion 5 stated
