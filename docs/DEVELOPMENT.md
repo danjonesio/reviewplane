@@ -113,7 +113,9 @@ Working today at the repository root: `pnpm install`, `pnpm build`, `pnpm lint`,
 
 `pnpm test:browser` is separate because it needs a Chromium and its system libraries, and because `docs/SECURITY.md` section 10 requires the Chromium sandbox to be enabled. It builds the worker image and runs the suite inside it under the same container controls `deploy/compose/compose.yaml` applies — non-root, `cap-drop ALL` plus `SYS_CHROOT`, the committed seccomp profile, and no network beyond the explicit internal networks the case under test needs — so a green run is evidence about the deployed posture rather than about a developer's machine.
 
-`pnpm test:e2e` runs `deploy/compose/e2e/run.sh`, the end-to-end scenario of `docs/TESTING.md` §3 steps 1 to 6: it brings up the Compose stack, enrols the connector fixture, starts the fixture development service on loopback, publishes it, starts a browser session and navigates to it. It needs Docker and roughly two minutes.
+`pnpm test:e2e` runs `deploy/compose/e2e/run.sh`, the end-to-end scenario of `docs/TESTING.md` §3 steps 1 to 6: it brings up the Compose stack, enrols the connector fixture, starts the fixture development services on loopback, publishes them, starts browser sessions and navigates to them. It then proves the tunnel capabilities `docs/ARCHITECTURE.md` §7.4 makes mandatory — a WebSocket echo, server-sent events with their arrival timing, and Vite hot module replacement applying a source edit made on the development machine without a full page reload — and records the performance baseline of `docs/TESTING.md` §12. It needs Docker and roughly four minutes.
+
+Each run takes its own Compose project name, so two runs on one machine do not share containers, networks or volumes; built images carry a fixed name so that a per-run project does not leave a copy of every image behind. `deploy/compose/README.md` records both and how to override them.
 
 ## 6. Configuration
 

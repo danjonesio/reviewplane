@@ -111,15 +111,24 @@ Required transition tests:
 - Loopback HTTP route
 - WebSocket hot reload route
 - Server-sent events
+- Chunked and otherwise streamed responses
+- Upgrade denied without a capability, with another project's capability, or on header-based route confusion
+- Upgrade to a protocol other than `websocket` refused
+- Closure propagated in both directions, browser-initiated and service-initiated
+- Long editing pause: an idle upgraded connection survives its configured window
 - Connector reconnect
 - Route expiry
-- Revocation during active stream
+- Revocation during active stream, including an already-upgraded connection
 - Destination host substitution rejected
 - Cross-project capability rejected
 - Link-local and metadata destination rejected
 - Stream and memory limits
-- Malformed frames
+- Malformed frames, in the data channel and on an upgraded connection
 - Slow consumer and backpressure
+
+A streaming test MUST assert on **arrival timing**, not only on the final body. Server-sent events fail in a specific and recognisable way when any hop buffers — every event arrives at once at stream close — and a test that compared only the assembled result would pass against exactly the implementation the capability exists to exclude.
+
+Both ends of the data channel MUST be given the same session configuration in a test harness. The initial flow-control window is a constant of the protocol rather than of a deployment (`CONNECTOR_PROTOCOL.md` §12.2), so a harness that gave the two ends different windows would produce a protocol violation instead of the backpressure the test was asking about.
 
 ## 7. Browser tests
 
@@ -215,6 +224,11 @@ Verify persisted artefacts and logs are redacted according to policy.
 | Human takeover during agent click | Ordered lease transition, no concurrent input |
 | Duplicate verification request | One verification record through idempotency |
 | Retention deletion partial failure | Retry, metadata not falsely tombstoned |
+| Development service closes a WebSocket | Closure reaches the browser with the service's close code and reason |
+| Connector disconnect during an open WebSocket | Connection closed, route answers `CONNECTOR_OFFLINE` |
+| Route revoked during an open WebSocket | Connection closed promptly, not at the next request |
+| Exceeding the stream limit with upgraded connections | `STREAM_LIMIT_EXCEEDED` |
+| Long editing pause with no traffic | Connection survives the configured idle window and closes past it |
 
 ## 12. Performance tests
 
@@ -230,6 +244,8 @@ Measure:
 - Object upload throughput
 
 Publish tested hardware and configuration.
+
+Tunnel throughput and hot-reload responsiveness are measured by the Compose scenario (`deploy/compose/e2e/run.sh`) and written to `evidence/performance-baseline.txt` on every run, alongside the configuration and the machine the figures came from. Hot-reload responsiveness is measured as the wall-clock time from the source edit landing on the development machine to the updated text being visible in central Chromium, which is the figure a user experiences; it therefore includes the file watcher, the bundler and the browser, not the tunnel alone. A baseline is a recorded number, not a threshold: `docs/ROADMAP.md` defers tuning, so the scenario records the figure and does not fail on it.
 
 ## 13. Upgrade tests
 

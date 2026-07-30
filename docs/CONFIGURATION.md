@@ -148,7 +148,11 @@ tunnel:
   max_streams_per_connector: 256
   max_streams_per_route: 64
   max_stream_bytes: 64MB
-  stream_ttl: 60s
+  stream_max_lifetime: 8h                # absolute bound; always clipped to the route's expiry
+  stream_idle_timeout: 60s               # no progress on a request/response stream
+  upgrade_idle_timeout: 15m              # no progress on an upgraded connection
+  sweep_interval: 5s
+  relay_buffer_bytes: 32768
   allowed_hosts:
     - 127.0.0.1
     - ::1
@@ -164,6 +168,8 @@ tunnel:
 ```
 
 Settings are supplied as `REVIEWPLANE_TUNNEL_`-prefixed environment variables, with the `_FILE` form of §7 for the control-plane token, the capability signing keys and the TLS material. Every setting is validated at startup and every problem is reported together.
+
+The three lifetime settings are not interchangeable, and `CONNECTOR_PROTOCOL.md` §13.3 records why. `stream_max_lifetime` is a backstop whose default equals `route_ttl_max`, so a stream is normally bounded by its route rather than by a clock; the idle timeouts are what close a stalled or abandoned stream. There are two of them because a request/response stream and an upgraded connection mean different things by silence: an editing pause on a hot-reload WebSocket is normal, and a minute of silence in the middle of an HTTP exchange is not. Setting `stream_max_lifetime` low is not a substitute for either, and MUST NOT be used as one: it would cut a server-sent-event stream or a working hot-reload connection.
 
 It must not contain a setting that trivially enables unrestricted proxying without an explicit high-risk mode and warning. Two settings widen the destination policy — `allow_non_loopback_destinations` and `allow_link_local_destinations` — and both default to false, are named for what they do and produce a startup warning naming what was widened. Neither lifts the bar on cloud metadata endpoints, which are refused ahead of the allow-list so that naming one in `allowed_hosts` cannot re-enable it.
 

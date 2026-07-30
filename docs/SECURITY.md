@@ -193,6 +193,16 @@ Required checks:
 - No arbitrary CONNECT, SOCKS or raw network forwarding for users
 - DNS resolution policy defined and restricted
 
+### Long-lived connections
+
+A route may carry an HTTP connection upgraded to a WebSocket, which is how development hot reload works (`ARCHITECTURE.md` §7.4). Such a connection lives for a review session rather than for one exchange, so three rules apply:
+
+- An upgraded connection MUST NOT extend the lifetime of the access that authorised it. Its deadline is clipped to its route's expiry, and route expiry or revocation closes it.
+- The handshake MUST present a valid session-scoped capability and pass the same route, project and browser-session checks as any other request. The upgrade path is not an authorisation bypass.
+- Only the `websocket` upgrade token is carried. Anything else is refused, because relaying a framing the gateway has never seen is the raw forwarding this section excludes.
+
+Frames carried on such a connection are browser-adjacent untrusted content (ADR-0010) and MUST NOT influence routing or destination selection.
+
 ### SSRF prevention
 
 The tunnel gateway must reject:
@@ -202,6 +212,8 @@ The tunnel gateway must reject:
 - Link-local and metadata targets unless explicitly allowed
 - Requests carrying another project's capability
 - Header-based route confusion
+
+Header handling MUST be normalised before the origin is resolved to a route, on the upgrade path exactly as on the ordinary one. Ordering is the control: a route-confusion header removed after a route had already been chosen would be removed from the wrong thing.
 
 ## 10. Browser-worker isolation
 
