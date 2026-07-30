@@ -1,0 +1,58 @@
+package PROTOCOL_PACKAGE
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+)
+
+// Redacted is the placeholder substituted for every sensitive value in a log,
+// debug or default JSON representation.
+const Redacted = "[redacted]"
+
+// SensitiveString holds a protocol field the schema marks x-sensitive, such as
+// an enrolment token or a session capability.
+//
+// docs/SECURITY.md section 18 forbids raw credentials in logs. Every default
+// representation of this type is redacted: fmt verbs, encoding/json and
+// log/slog all yield Redacted. The real value is reachable only through the
+// explicit Reveal call, which the generated canonical encoders use when they
+// build a wire frame.
+type SensitiveString string
+
+// Reveal returns the underlying secret. Only wire encoding may call it.
+func (s SensitiveString) Reveal() string { return string(s) }
+
+// String is redacted. It covers %v, %s and fmt.Print of a containing struct.
+func (s SensitiveString) String() string { return Redacted }
+
+// GoString is redacted. It covers %#v.
+func (s SensitiveString) GoString() string { return `"` + Redacted + `"` }
+
+// Format is redacted for every verb, including %q and %x, so that no format
+// string can print the secret by accident.
+func (s SensitiveString) Format(f fmt.State, verb rune) {
+	switch verb {
+	case 'q':
+		_, _ = io.WriteString(f, `"`+Redacted+`"`)
+	default:
+		_, _ = io.WriteString(f, Redacted)
+	}
+}
+
+// MarshalJSON is redacted. Structured loggers routinely marshal a value before
+// writing it, so the default JSON form must not carry the secret. The wire
+// form is produced by the generated canonical encoders instead.
+func (s SensitiveString) MarshalJSON() ([]byte, error) { return json.Marshal(Redacted) }
+
+// LogValue is redacted. It covers log/slog.
+func (s SensitiveString) LogValue() slog.Value { return slog.StringValue(Redacted) }
+
+var (
+	_ fmt.Stringer   = SensitiveString("")
+	_ fmt.GoStringer = SensitiveString("")
+	_ fmt.Formatter  = SensitiveString("")
+	_ json.Marshaler = SensitiveString("")
+	_ slog.LogValuer = SensitiveString("")
+)

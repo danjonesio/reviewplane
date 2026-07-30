@@ -1,0 +1,6 @@
+{
+  "type": "stream.refresh_required",
+  "reason": "replay_window_exceeded",
+  "current_sequence": 5000,
+  "earliest_available_sequence": 4000
+}

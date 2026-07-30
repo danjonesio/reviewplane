@@ -15,9 +15,11 @@ import {
   emitGoDecode,
   emitGoDispatch,
   emitGoEncode,
+  emitGoRuntime,
   emitGoTypes,
   emitGoValidate,
   goPackageName,
+  GO_RUNTIME_FILES,
 } from "./emit-go.ts";
 import {
   emitDecode,
@@ -42,6 +44,7 @@ export const SCHEMA_SOURCES: readonly string[] = [
   join(packageRoot, "schemas", "live_view", "v1.schema.json"),
   join(packageRoot, "schemas", "review", "v1.schema.json"),
   join(packageRoot, "schemas", "mcp", "v1.schema.json"),
+  join(packageRoot, "schemas", "platform", "v1.schema.json"),
 ];
 
 /** Retained for callers that only need the connector source. */
@@ -89,6 +92,9 @@ export function renderAll(model: ProtocolModel): Map<string, string> {
 
   if (model.languages.includes("go")) {
     const directory = goPackageName(model);
+    for (const runtime of GO_RUNTIME_FILES) {
+      files.set(join(directory, runtime.output), gofmt(emitGoRuntime(model, runtime.template)));
+    }
     files.set(join(directory, "types_gen.go"), gofmt(emitGoTypes(model)));
     files.set(join(directory, "validate_gen.go"), gofmt(emitGoValidate(model)));
     files.set(join(directory, "decode_gen.go"), gofmt(emitGoDecode(model)));

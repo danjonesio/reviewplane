@@ -36,6 +36,38 @@ Examples:
 - Tunnel gateway not ready when connector registry is unavailable
 - MCP not ready when authorisation backend is unavailable
 
+### Implemented today
+
+The `api`, `mcp` and `jobs` process roles answer all three routes from one
+implementation, so a dashboard reads the same thing for every container. The
+`api` and `mcp` roles serve them on their own listeners; the `jobs` role has no
+other listener and opens one for them alone, on
+`REVIEWPLANE_JOBS_HEALTH_PORT`. A background role that exposed nothing would
+give an operator no way to ask whether work is being done.
+
+Each role's readiness is the shared set — the database is reachable and every
+committed migration is applied — plus whatever that role owns. The `jobs` role
+adds one check: whether the runner is claiming jobs.
+
+`/health/live` touches nothing outside the process. A database outage MUST NOT
+make liveness fail: restarting would not fix it and would remove the process
+that is about to recover.
+
+`/health/ready` returns `200` with `{"status": "ready", ...}` or `503` with
+`{"status": "not_ready", ...}`. Its report names each check and, when
+migrations are pending, the file names — which is what an operator deciding
+whether to run `reviewplane migrate` will look for in the repository. A failure
+detail never carries a connection string, a credential or a stack trace
+(`docs/SECURITY.md` section 18).
+
+`/version` reports the version, the git revision, the build time, the process
+role and the protocol version. The build values are stamped into the image at
+build time and read from the environment, because the image is what carries the
+answer.
+
+`/healthz` and `/readyz` remain as the Stage 0 names the Compose health checks
+and the edge gateway use. They answer from the same state.
+
 ## 3. Service status command
 
 Provide:

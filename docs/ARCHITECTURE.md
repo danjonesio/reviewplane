@@ -81,6 +81,15 @@ One codebase may initially run multiple process roles:
 - `jobs`: durable background work
 - `realtime`: session event fan-out if separated later
 
+`reviewplane serve` runs `api`, and runs `jobs` beside it in a single-container
+deployment; `reviewplane jobs` runs the role alone where a deployment separates
+them. `realtime` is not separated: event fan-out runs in the `api` process,
+reading the outbox of §10, and separating it later changes which process runs
+the dispatcher rather than how an event reaches a subscriber. Every role answers
+`/health/live`, `/health/ready` and `/version` from one implementation
+(`docs/OPERATIONS.md` §2); the `jobs` role opens a listener for those routes
+alone, since it has no other.
+
 Responsibilities:
 
 - Projects, reviews, findings and policies
@@ -208,6 +217,18 @@ Responsibilities:
 - Cleanup of abandoned sessions and routes
 
 Initial durable jobs may use PostgreSQL row locking. A separate message broker is deferred until measured load requires it.
+
+The `jobs` table is that decision made concrete. A runner claims with
+`SELECT ... FOR UPDATE SKIP LOCKED`, so two runners never take the same row and
+adding a runner adds throughput rather than contention. A claim also takes a
+lease (`locked_until`): a runner whose transaction is rolled back by the server
+releases its lock at once, and a runner that vanishes without the database
+noticing costs a lease's delay instead of stranding the job — which is what §14's
+"recover durable jobs" asks of a control-plane restart. Attempts back off
+exponentially and a job that exhausts them is dead-lettered as `failed`.
+Enqueuing takes a transaction rather than a pool, so scheduling work and making
+the change that needs it commit together, and every terminal outcome writes a
+`job.*` event (`docs/EVENTS.md` §7).
 
 ## 5. Data architecture
 
@@ -527,6 +548,20 @@ Real-time updates:
 4. Clients resume using last seen sequence
 
 A PostgreSQL notification mechanism is acceptable initially. Later brokers must preserve event ordering semantics.
+
+The four steps are implemented as: `recordStateChange`, which commits the state
+change, the event and an `event_outbox` row in one transaction; the outbox
+dispatcher, which claims pending rows with `FOR UPDATE SKIP LOCKED` after
+commit; the in-process bus it delivers them to; and
+`/ws/v1/projects/:projectId/events`, which replays from a client's sequence and
+then hands over to live delivery.
+
+Step 2 is an optimisation rather than the mechanism: a commit nudges the
+dispatcher, and its absence delays delivery instead of losing it. That is what
+the outbox row buys — a process that dies between commit and delivery leaves the
+obligation behind, and the next dispatcher discharges it. Delivered rows are
+pruned, because the audit history is `events` and a second permanent copy of it
+would be a second thing to retain, redact and erase under `docs/EVENTS.md` §12.
 
 ## 11. Authentication and authorisation
 

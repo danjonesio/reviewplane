@@ -1,4 +1,8 @@
-/** Emits the generated Go models, validators, decoders and encoders. */
+/** Emits the generated Go models, validators, decoders, encoders and runtime. */
+
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   resolveRef,
@@ -682,4 +686,40 @@ function payloadTypeName(model: ProtocolModel, message: MessageSpec): string {
     throw new Error(`payload ${message.payloadDef} is not an object`);
   }
   return node.typeName;
+}
+
+/**
+ * The Go runtime every generated package needs: the validation and decoding
+ * primitives the generated validators and decoders call, the canonical writer
+ * the generated encoders build their bytes with, and the redacted string type
+ * an `x-sensitive` field is typed as.
+ *
+ * It is rendered rather than hand-written once per package because a second
+ * Go-rendering schema source would otherwise need a byte-identical copy of it,
+ * and two copies of a canonical encoder is exactly the drift ADR-0013 exists to
+ * prevent. The source of each file is one template under `tools/go-runtime/`,
+ * carrying `PROTOCOL_PACKAGE` where the package name goes; `pnpm
+ * protocol:check` re-renders it, so editing a committed copy fails the check.
+ */
+export const GO_RUNTIME_FILES: readonly { readonly output: string; readonly template: string }[] = [
+  { output: "canonical_gen.go", template: "canonical.go.txt" },
+  { output: "sensitive_gen.go", template: "sensitive.go.txt" },
+  { output: "validate_runtime_gen.go", template: "validate.go.txt" },
+  { output: "decode_runtime_gen.go", template: "decode.go.txt" },
+];
+
+const RUNTIME_DIRECTORY = join(dirname(fileURLToPath(import.meta.url)), "go-runtime");
+
+/** The placeholder a template carries where the package name belongs. */
+const PACKAGE_PLACEHOLDER = "PROTOCOL_PACKAGE";
+
+export function emitGoRuntime(model: ProtocolModel, templateName: string): string {
+  const template = readFileSync(join(RUNTIME_DIRECTORY, templateName), "utf8");
+  const packageLine = `package ${PACKAGE_PLACEHOLDER}`;
+  const index = template.indexOf(packageLine);
+  if (index === -1) {
+    throw new Error(`go runtime template ${templateName} has no "${packageLine}" clause`);
+  }
+  const body = template.slice(index + packageLine.length).replaceAll(PACKAGE_PLACEHOLDER, goPackageName(model));
+  return `${banner(model)}${body.replace(/^\n+/u, "\n")}`;
 }

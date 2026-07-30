@@ -139,6 +139,47 @@ Errors:
 }
 ```
 
+`meta` is the same shape on success and on refusal, so a caller quotes one
+identifier when reporting either. `request_id` is minted by the control plane
+when the caller supplies no `X-Request-Id`, and it is the correlation identifier
+that appears in the event records the request produced
+(`docs/ARCHITECTURE.md` section 15).
+
+The refusal body, the `meta` block and the stable code enumeration are defined
+once, in `packages/protocol/schemas/platform/v1.schema.json`, and generated into
+TypeScript and Go from there (ADR-0013). `data` is endpoint-specific and is
+therefore defined by the endpoint's own schema.
+
+`details` is a fixed vocabulary rather than a free object: `current_version` and
+`expected_version` for `VERSION_CONFLICT`, `current_epoch` for
+`CONTROL_EPOCH_STALE`, `candidates` for `PROJECT_CONTEXT_AMBIGUOUS`,
+`allowed_transitions` for a refused transition, `required_evidence` for
+`EVIDENCE_REQUIRED`, `missing_context` for an incomplete capture,
+`retry_after_ms` for `RATE_LIMITED`, and `field` and `reason` where one code
+covers several causes. Constraining it is what stops a handler attaching a
+request body or a credential to a refusal (`docs/SECURITY.md` section 18).
+
+A refusal MUST NOT disclose the existence of a resource in another project. A
+foreign identifier is answered `RESOURCE_NOT_FOUND`, never
+`AUTHORISATION_DENIED`, because the second answer confirms that the resource
+exists.
+
+### 5.1 Idempotency
+
+A state-changing request MAY carry `Idempotency-Key`. The key is scoped to the
+actor, the operation and the project (`docs/MCP_SPEC.md` section 10): replaying
+it with the same input returns the original result and runs the operation once,
+and reusing it with different input is refused with `IDEMPOTENCY_CONFLICT`. A
+duplicate that arrives while the first call is still in flight is answered
+`RATE_LIMITED` with `details.retry_after_ms` rather than allowed to run
+concurrently.
+
+### 5.2 Optimistic concurrency
+
+A write to a collaborative record carries `expected_version`. A mismatch is
+refused with `VERSION_CONFLICT` and `details.current_version`, so a caller can
+re-read and retry rather than guess.
+
 ## 6. Pagination
 
 Cursor format is opaque.
@@ -158,6 +199,19 @@ Response:
   }
 }
 ```
+
+`next_cursor` is absent on the last page rather than present and null. `limit`
+defaults to 50 and MUST NOT exceed 200; a value outside that range is refused
+with `VALIDATION_FAILED`.
+
+Pagination is keyset rather than offset: the cursor names the last row of the
+previous page. An offset shifts when a row is inserted, which would make a
+caller paging through a busy project silently skip rows.
+
+A cursor MUST be treated as opaque and MUST NOT be constructed, parsed or
+modified by a client. One the API did not issue is refused with
+`VALIDATION_FAILED` rather than treated as the first page: answering with a
+different page would lose rows without saying so.
 
 ## 7. Organisation endpoints
 
@@ -184,6 +238,12 @@ GET    /api/v1/projects/:projectId/activity
 ```
 
 Project deletion should initially archive and require a separate destructive purge flow.
+
+`GET /api/v1/projects` and `GET /api/v1/projects/:projectId/activity` are
+paginated per section 6. The activity endpoint is the project event timeline:
+the same envelopes the WebSocket channel of section 18.1 delivers live, newest
+first. Both resolve the project inside the caller's scope, so a project the
+caller may not see answers exactly as an unknown identifier does.
 
 ## 9. Environment and connector endpoints
 
@@ -593,6 +653,36 @@ POST   /api/v1/approvals/:approvalId/reject
 ```
 
 Client sends last sequence. Server emits event envelopes from `EVENTS.md`.
+
+Authentication and authorisation both complete **before the upgrade**, as they
+do on the live channel of section 18.2: an anonymous subscriber, a subscriber
+scoped to another project and an unknown project identifier are all refused with
+an HTTP status on the handshake, so no WebSocket exists for them and no event is
+transmitted. A project outside the subscriber's scope answers `404`
+`RESOURCE_NOT_FOUND`, identically to one that does not exist. The `Origin`
+header is checked against the configured allow list.
+
+The channel's messages are defined once, in
+`packages/protocol/schemas/platform/v1.schema.json`, and are not restated here:
+
+| Message | Direction | Purpose |
+|---|---|---|
+| `stream.subscribe` | subscriber to control plane | Opens the subscription at the last sequence the client applied, with the largest replay it will accept |
+| `stream.subscribed` | control plane to subscriber | Acceptance, stating the current sequence, the oldest replayable sequence and whether a replay follows |
+| *event envelope* | control plane to subscriber | One event of `docs/EVENTS.md` section 2, replayed or live |
+| `stream.refresh_required` | control plane to subscriber | The client's position cannot be replayed; it MUST refetch state and resume from `current_sequence` |
+| `stream.heartbeat` | control plane to subscriber | Liveness on a quiet project, carrying the sequence the stream is at |
+| `stream.error` | control plane to subscriber | A refusal on an open subscription, with a stable code from section 5 |
+
+An event envelope and a control message are distinguished by one member: an
+event's `type` is an event name, a control message's `type` is a `stream.`
+discriminator. A message that is neither is refused rather than ignored.
+
+A subscriber resumes without loss or duplication: the control plane attaches to
+live delivery before it replays history, and discards buffered events at or
+below the last replayed sequence. `GET /api/v1/projects/:projectId/activity`
+serves the same events as pages, and is what a client refetches from after a
+refresh instruction.
 
 ### 18.2 Browser live stream
 

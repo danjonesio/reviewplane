@@ -242,6 +242,68 @@ Requirements:
 
 The application must expose a migration command and readiness must fail when required migrations are missing.
 
+### The migration command
+
+`reviewplane` is the operator command line, and it ships in the application
+image so the schema a deployment applies always matches the code that will read
+it.
+
+```bash
+reviewplane migrate            # apply every pending migration
+reviewplane migrate --status   # report the schema version and what is pending
+reviewplane serve              # the api role
+reviewplane jobs [--once]      # the jobs role
+reviewplane version            # the build this image carries
+```
+
+`reviewplane jobs` serves `/health/live`, `/health/ready` and `/version` on
+`REVIEWPLANE_JOBS_HEALTH_PORT` (default `8081`, bound to
+`REVIEWPLANE_JOBS_HEALTH_HOST`, default `0.0.0.0`). A background role that
+exposed nothing would give an operator no way to ask whether work is being
+done, which is the question readiness exists to answer. Its readiness adds one
+check to the shared set: whether the runner is claiming jobs.
+
+Started against a schema that is behind its code, the role **starts and reports
+itself not ready** rather than exiting, and begins claiming when the schema
+catches up. Exiting would leave an orchestrator restarting it in a loop while a
+separate migration step ran; claiming would run handlers against a database
+their code does not match. `reviewplane jobs --once` is the exception: a
+one-shot run has nothing to wait for, so a pending schema is an error.
+
+It reads `REVIEWPLANE_DATABASE_URL` or `REVIEWPLANE_DATABASE_URL_FILE` and
+nothing else, because an operator applying a schema has no gateway, no worker
+and no capability key.
+
+In a source checkout the same command runs as
+`pnpm --filter @reviewplane/server run cli migrate`, which needs no build.
+There is no `--` separator: pnpm passes one through to the script, and the
+command line would then be asked to run a subcommand called `--`.
+
+Exit codes are the interface: `0` success, `1` failure, `2` a configuration
+error the process cannot start with, and `3` from `migrate --status` when
+migrations are pending — so a deployment script can branch on "needs migrating"
+without parsing output.
+
+Migrations are forward-only, applied in file-name order, each in its own
+transaction, and recorded in `schema_migrations`. A PostgreSQL advisory lock
+serialises concurrent starts, so two processes coming up together cannot apply
+the same file twice. The reported **schema version** is the highest applied
+file name, because a file name is what an operator finds in the repository.
+
+`reviewplane serve` migrates before it opens its listener. A deployment that
+prefers to migrate separately — a Kubernetes job, an operator running the
+command by hand — is supported by the readiness gate below, which is what keeps
+traffic away from a process whose schema is behind its code. `reviewplane jobs`
+answers the same gate rather than migrating: it starts, reports itself not
+ready, and claims nothing until the schema catches up, as described above.
+
+### The readiness gate
+
+`/health/ready` reports `not_ready` while any committed migration is
+unapplied, and its body names the pending files (`docs/OPERATIONS.md` section
+2). A process serving requests against a schema older than its code would fail
+request by request, which is worse than being left out of the rotation.
+
 ## 12. External object storage (`s3` artefact driver)
 
 The default installation stores artefacts on a local volume through the `filesystem` driver. Operators may configure the `s3` driver instead. Requirements:

@@ -1,0 +1,194 @@
+{
+  "protocol": "platform",
+  "version": 1,
+  "description": "Fixture corpus for the version 1 platform foundation: the event envelope of docs/EVENTS.md section 2 with the organisation, project and durable-job payloads this source owns, the project event-stream control messages of docs/API.md section 18.1, and the refusal body of docs/API.md section 5. Valid cases must decode and re-encode to the byte string recorded in canonical.json; invalid cases must be refused with the recorded reason. Both languages run this manifest, which is what makes the TypeScript control plane and any Go consumer one implementation rather than two that happen to agree today.",
+  "valid": [
+    {
+      "name": "organisation-created",
+      "kind": "platform_event",
+      "file": "valid/organisation-created.json",
+      "message_type": "organisation.created",
+      "note": "The first event a deployment records. It has no project_id, because an organisation precedes any project association, and the envelope makes that member optional for exactly this case."
+    },
+    {
+      "name": "project-created",
+      "kind": "platform_event",
+      "file": "valid/project-created.json",
+      "message_type": "project.created",
+      "note": "The event a project's stream begins at. The slug is recorded as a mutable alias beside the identifier, never instead of it (docs/DOMAIN_MODEL.md section 3)."
+    },
+    {
+      "name": "project-updated",
+      "kind": "platform_event",
+      "file": "valid/project-updated.json",
+      "message_type": "project.updated",
+      "note": "Names the fields that changed rather than restating the record: current state is queryable, and the audit question is what moved."
+    },
+    {
+      "name": "project-archived",
+      "kind": "platform_event",
+      "file": "valid/project-archived.json",
+      "message_type": "project.archived",
+      "note": "Previous and new state, which docs/EVENTS.md section 8 requires of a state change."
+    },
+    {
+      "name": "job-enqueued",
+      "kind": "platform_event",
+      "file": "valid/job-enqueued.json",
+      "message_type": "job.enqueued",
+      "note": "Durable work accepted. It is written in the same transaction as the state change that scheduled it, so the audit trail cannot show one without the other."
+    },
+    {
+      "name": "job-succeeded",
+      "kind": "platform_event",
+      "file": "valid/job-succeeded.json",
+      "message_type": "job.succeeded",
+      "note": "A completed job, with the attempt count so a retry that eventually worked is distinguishable from a first-time success."
+    },
+    {
+      "name": "job-failed-retrying",
+      "kind": "platform_event",
+      "file": "valid/job-failed-retrying.json",
+      "message_type": "job.failed",
+      "note": "A failed attempt that will be retried. retrying is stated rather than inferred, so an operator can tell a retry from a dead job without reading the runner's source."
+    },
+    {
+      "name": "stream-subscribe",
+      "kind": "stream_message",
+      "file": "valid/stream-subscribe.json",
+      "note": "The resume request of docs/API.md section 18.1: the last sequence the client applied, and the largest replay it is willing to receive."
+    },
+    {
+      "name": "stream-subscribed",
+      "kind": "stream_message",
+      "file": "valid/stream-subscribed.json",
+      "note": "Acceptance stating the current sequence and the oldest replayable one, so a client knows before any event whether its position is inside the window."
+    },
+    {
+      "name": "stream-refresh-required",
+      "kind": "stream_message",
+      "file": "valid/stream-refresh-required.json",
+      "note": "The explicit refresh instruction of docs/EVENTS.md section 10. A silent jump would leave the client quietly wrong."
+    },
+    {
+      "name": "stream-heartbeat",
+      "kind": "stream_message",
+      "file": "valid/stream-heartbeat.json",
+      "note": "Liveness on a quiet project, carrying the sequence so a missed event is detectable without waiting for the next one."
+    },
+    {
+      "name": "stream-error",
+      "kind": "stream_message",
+      "file": "valid/stream-error.json",
+      "note": "A refusal on an open subscription. Refusals that precede the upgrade are HTTP responses instead, so an unauthorised subscriber never obtains a socket."
+    },
+    {
+      "name": "api-error-version-conflict",
+      "kind": "api_error_response",
+      "file": "valid/api-error-version-conflict.json",
+      "note": "The exact body docs/API.md section 5 prints, including details.current_version so a caller can re-read and retry rather than guess."
+    },
+    {
+      "name": "api-error-not-found",
+      "kind": "api_error_response",
+      "file": "valid/api-error-not-found.json",
+      "note": "A refusal with no details. The member is absent rather than null, so a consumer testing for the key gets the same answer whichever handler produced it."
+    },
+    {
+      "name": "api-error-paginated-meta",
+      "kind": "api_error_response",
+      "file": "valid/api-error-paginated-meta.json",
+      "note": "meta carries next_cursor on a refusal as well as on a success, because meta is one shape (section 6)."
+    }
+  ],
+  "invalid": [
+    {
+      "name": "event-unknown-type",
+      "kind": "platform_event",
+      "file": "invalid/event-unknown-type.json",
+      "expect_reason": "unknown_message_type",
+      "expect_error_class": "UNSUPPORTED_CAPABILITY",
+      "note": "review.created is a real event type, owned by schemas/review/v1.schema.json. This codec refuses it rather than decoding it into a shape it does not define."
+    },
+    {
+      "name": "event-unsupported-schema-version",
+      "kind": "platform_event",
+      "file": "invalid/event-unsupported-schema-version.json",
+      "expect_reason": "unsupported_schema_version",
+      "expect_error_class": "UNSUPPORTED_CAPABILITY",
+      "note": "A future envelope version is refused outright rather than best-effort parsed."
+    },
+    {
+      "name": "event-sequence-zero",
+      "kind": "platform_event",
+      "file": "invalid/event-sequence-zero.json",
+      "expect_reason": "schema_violation",
+      "expect_error_class": "VALIDATION_FAILED",
+      "note": "A project stream starts at 1. Zero is the value a subscriber sends to mean it holds nothing, and it is never an event's position."
+    },
+    {
+      "name": "event-unknown-property",
+      "kind": "platform_event",
+      "file": "invalid/event-unknown-property.json",
+      "expect_reason": "schema_violation",
+      "expect_error_class": "VALIDATION_FAILED",
+      "note": "additionalProperties: false on the envelope is what stops a tenant hint, a header or a credential riding along beside the documented members."
+    },
+    {
+      "name": "event-actor-unknown-type",
+      "kind": "platform_event",
+      "file": "invalid/event-actor-unknown-type.json",
+      "expect_reason": "schema_violation",
+      "expect_error_class": "VALIDATION_FAILED",
+      "note": "The actor vocabulary of docs/EVENTS.md section 5 is closed. Actor identity is never inferred, and never invented."
+    },
+    {
+      "name": "event-payload-unknown-property",
+      "kind": "platform_event",
+      "file": "invalid/event-payload-unknown-property.json",
+      "expect_reason": "schema_violation",
+      "expect_error_class": "VALIDATION_FAILED",
+      "note": "docs/EVENTS.md section 8 forbids raw secrets and authorisation headers in a payload. A closed payload schema is what makes that a property of the audit trail rather than of a code review."
+    },
+    {
+      "name": "event-identifier-out-of-class",
+      "kind": "platform_event",
+      "file": "invalid/event-identifier-out-of-class.json",
+      "expect_reason": "schema_violation",
+      "expect_error_class": "VALIDATION_FAILED",
+      "note": "An identifier is bounded by length and character class. The prefix is never checked, and a space is never inside the class."
+    },
+    {
+      "name": "stream-unknown-type",
+      "kind": "stream_message",
+      "file": "invalid/stream-unknown-type.json",
+      "expect_reason": "unknown_message_type",
+      "expect_error_class": "UNSUPPORTED_CAPABILITY",
+      "note": "An unrecognised control message is refused rather than ignored, so a client speaking a later dialect learns that it is doing so."
+    },
+    {
+      "name": "stream-subscribe-negative-sequence",
+      "kind": "stream_message",
+      "file": "invalid/stream-subscribe-negative-sequence.json",
+      "expect_reason": "schema_violation",
+      "expect_error_class": "VALIDATION_FAILED",
+      "note": "A resume position below zero has no meaning, and accepting it would make the replay bound arithmetic answer a nonsense question."
+    },
+    {
+      "name": "api-error-unknown-code",
+      "kind": "api_error_response",
+      "file": "invalid/api-error-unknown-code.json",
+      "expect_reason": "schema_violation",
+      "expect_error_class": "VALIDATION_FAILED",
+      "note": "The code vocabulary is closed on the producing side. A client MUST tolerate a code it does not know; a server MUST NOT invent one."
+    },
+    {
+      "name": "api-error-unknown-detail",
+      "kind": "api_error_response",
+      "file": "invalid/api-error-unknown-detail.json",
+      "expect_reason": "schema_violation",
+      "expect_error_class": "VALIDATION_FAILED",
+      "note": "details is a fixed vocabulary rather than a free object, which is what stops a handler attaching a cookie or a request body to a refusal."
+    }
+  ]
+}

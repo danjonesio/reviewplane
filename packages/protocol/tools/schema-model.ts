@@ -837,6 +837,41 @@ function assertConsistency(model: ProtocolModel): void {
     const node = model.defs.get(defName);
     if (node === undefined) continue;
     assertNoPrivateKeyField(defName, node);
+    if (model.languages.includes("go")) assertGoCompatiblePatterns(defName, node);
+  }
+}
+
+/**
+ * Go's RE2 has no `\uXXXX` escape — it spells the same code point `\x{XXXX}` —
+ * so a pattern using one compiles in TypeScript and panics at package
+ * initialisation in Go. A bound that holds in one language and crashes the
+ * other is worse than no bound, so a source that renders Go is refused here
+ * rather than producing a package that will not load.
+ *
+ * A TypeScript-only source is left alone: its patterns have one consumer, and
+ * `x-protocol.languages` is what says so.
+ */
+function assertGoCompatiblePatterns(defName: string, node: Node, path = ""): void {
+  const where = `$defs.${defName}${path}`;
+  switch (node.kind) {
+    case "string":
+      if (node.pattern !== null && /\\u/u.test(node.pattern)) {
+        fail(
+          where,
+          'pattern uses a "\\u" escape, which Go\'s regexp package cannot compile; use a "\\x00"-style escape, which both languages accept',
+        );
+      }
+      return;
+    case "array":
+      assertGoCompatiblePatterns(defName, node.item, `${path}.items`);
+      return;
+    case "object":
+      for (const property of node.properties) {
+        assertGoCompatiblePatterns(defName, property.node, `${path}.properties.${property.name}`);
+      }
+      return;
+    default:
+      return;
   }
 }
 

@@ -13,35 +13,20 @@
 
 import { ERROR_CLASS_VALUES } from "@reviewplane/protocol";
 import type { ErrorClass } from "@reviewplane/protocol";
+import { ERROR_CLASS_VALUES as PLATFORM_ERROR_CODES } from "@reviewplane/protocol/platform";
+import type { ErrorClass as PlatformErrorCode } from "@reviewplane/protocol/platform";
 
-/** Codes from `docs/MCP_SPEC.md` §12 and `docs/API.md` §5. */
-export const API_ERROR_CODES = [
-  "AUTHENTICATION_REQUIRED",
-  "AUTHORISATION_DENIED",
-  "PROJECT_CONTEXT_AMBIGUOUS",
-  "PROJECT_CONTEXT_MISMATCH",
-  "RESOURCE_NOT_FOUND",
-  "RESOURCE_STALE",
-  "VERSION_CONFLICT",
-  "IDEMPOTENCY_CONFLICT",
-  "VALIDATION_FAILED",
-  "CONNECTOR_OFFLINE",
-  "PUBLISHED_SERVICE_UNAVAILABLE",
-  "BROWSER_CAPACITY_EXHAUSTED",
-  "BROWSER_SESSION_NOT_ACTIVE",
-  "BROWSER_COMMAND_TIMEOUT",
-  "CONTROL_NOT_OWNED",
-  "CONTROL_EPOCH_STALE",
-  "POLICY_DENIED",
-  "APPROVAL_REQUIRED",
-  "EVIDENCE_REQUIRED",
-  "ARTEFACT_UPLOAD_INCOMPLETE",
-  "UNSUPPORTED_CAPABILITY",
-  "RATE_LIMITED",
-  "INTERNAL_ERROR",
-] as const;
+/**
+ * Codes from `docs/MCP_SPEC.md` §12 and `docs/API.md` §5.
+ *
+ * Read from `packages/protocol` rather than restated here. `docs/MCP_SPEC.md`
+ * §12 names `schemas/platform/v1.schema.json` as the single source of the
+ * enumeration, and a second list in this file would be a second thing to keep in
+ * step with it — which is the drift `docs/DEVELOPMENT.md` §3 forbids.
+ */
+export const API_ERROR_CODES = PLATFORM_ERROR_CODES;
 
-export type ApiErrorCode = (typeof API_ERROR_CODES)[number] | ErrorClass;
+export type ApiErrorCode = PlatformErrorCode | ErrorClass;
 
 /**
  * The name the review, agent and MCP modules use for the same vocabulary.

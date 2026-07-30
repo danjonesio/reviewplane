@@ -100,18 +100,47 @@ export async function startMigratedDatabase(): Promise<MigratedDatabase> {
  * authority is created once when the app is built, and dropping it between
  * tests would leave the connector module without the identity it already
  * issued from.
+ *
+ * **The order of the event tables is load-bearing.** `TRUNCATE` takes an
+ * `ACCESS EXCLUSIVE` lock on each relation in the order it is written, and
+ * `appendEvent` takes a `ROW EXCLUSIVE` lock on `event_streams`, then `events`,
+ * then `event_outbox` — in that order. Listing them the other way round makes
+ * the two lock sequences exact opposites, so a write still in flight when a
+ * test tears its harness down deadlocks against the truncate rather than simply
+ * waiting for it. That is what a suite sees as a test that fails once every few
+ * runs, in a different place each time.
+ *
+ * The retry below is the belt to that braces: matching the writer's order fixes
+ * the cycle this code knows about, and a bounded retry keeps a future writer
+ * with a different order from turning the same mistake back into a flake.
  */
+const TRUNCATE_DEADLOCK_RETRIES = 3;
+
+/** PostgreSQL's `deadlock_detected`. */
+const DEADLOCK_DETECTED = "40P01";
+
 export async function truncateAll(pool: Pool): Promise<void> {
-  await pool.query(
-    `TRUNCATE idempotency_keys, verification_artefacts, verifications, comments,
-              annotations, findings, reviews, artefact_access_grants, artefacts,
-              control_leases, browser_sessions, browser_worker_projects,
-              browser_workers, agent_sessions, agent_credentials, workspaces,
-              viewer_sessions, route_capabilities, published_services, connectors,
-              connector_enrolment_tokens, environments, events, event_streams,
-              projects, organisations
-     RESTART IDENTITY CASCADE`,
-  );
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await pool.query(
+        `TRUNCATE idempotency_keys, jobs, verification_artefacts, verifications, comments,
+                  annotations, findings, reviews, artefact_access_grants, artefacts,
+                  control_leases, browser_sessions, browser_worker_projects,
+                  browser_workers, agent_sessions, agent_credentials, workspaces,
+                  viewer_sessions, route_capabilities, published_services, connectors,
+                  connector_enrolment_tokens, environments, event_streams, events,
+                  event_outbox, users, projects, organisations
+         RESTART IDENTITY CASCADE`,
+      );
+      return;
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code !== DEADLOCK_DETECTED || attempt >= TRUNCATE_DEADLOCK_RETRIES) throw error;
+      // A write that was in flight has now been rolled back by the deadlock
+      // detector, so the next attempt has nothing to contend with.
+      await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+    }
+  }
 }
 
 async function waitForReadiness(name: string): Promise<void> {

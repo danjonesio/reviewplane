@@ -121,7 +121,24 @@ export async function registerAgentRoutes(
   app.delete("/api/v1/agent-credentials/:credentialId", async (request, reply) => {
     admin(request);
     const { credentialId } = request.params as { credentialId: string };
-    await options.credentials.revoke(credentialId);
+    const revoked = await options.credentials.revoke(credentialId);
+    // Revocation is a permission change, which `docs/SECURITY.md` section 16
+    // requires an audit record for, per project the credential reached. A
+    // repeated revocation revokes nothing and therefore records nothing, so the
+    // route stays idempotent without producing a second event.
+    if (revoked !== null) {
+      for (const projectId of revoked.projectIds) {
+        await inTransaction(options.pool, async (client) => {
+          await appendEvent(client, {
+            type: "session.revoked",
+            organisationId: revoked.organisationId,
+            projectId,
+            actor: { type: "human_user", display: "bootstrap administrator" },
+            payload: { credential_id: credentialId, label: revoked.label, reason: "administrator_revoked" },
+          });
+        });
+      }
+    }
     return reply.status(204).send();
   });
 

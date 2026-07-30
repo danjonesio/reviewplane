@@ -30,6 +30,11 @@
       "types": "./dist/mcp.d.ts",
       "default": "./dist/mcp.js"
     },
+    "./platform": {
+      "development": "./src/platform.ts",
+      "types": "./dist/platform.d.ts",
+      "default": "./dist/platform.js"
+    },
     "./schemas/*": "./schemas/*",
     "./fixtures/*": "./fixtures/*"
   },

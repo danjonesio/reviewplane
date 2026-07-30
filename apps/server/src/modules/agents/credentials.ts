@@ -224,11 +224,34 @@ export class AgentCredentialStore {
     };
   }
 
-  async revoke(credentialId: string): Promise<void> {
-    await this.#pool.query(
-      "UPDATE agent_credentials SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL",
+  /**
+   * Revokes a credential, reporting what it was so the caller can audit it.
+   *
+   * Revocation is a permission change, and `docs/SECURITY.md` section 16
+   * requires an audit record for one. The record has to name the projects the
+   * credential reached, which are gone from the caller's view once the row is
+   * revoked — so they are returned here rather than looked up afterwards.
+   * `null` means there was nothing live to revoke, and a second call therefore
+   * produces no second event.
+   */
+  async revoke(credentialId: string): Promise<{
+    readonly organisationId: string;
+    readonly projectIds: readonly string[];
+    readonly label: string;
+  } | null> {
+    const rows = await this.#pool.query<{
+      organisation_id: string;
+      project_ids: string[];
+      label: string;
+    }>(
+      `UPDATE agent_credentials SET revoked_at = now()
+        WHERE id = $1 AND revoked_at IS NULL
+        RETURNING organisation_id, project_ids, label`,
       [credentialId],
     );
+    const row = rows.rows[0];
+    if (row === undefined) return null;
+    return { organisationId: row.organisation_id, projectIds: row.project_ids, label: row.label };
   }
 
   /**

@@ -31,9 +31,13 @@ Tests must prove the primary workflow, distributed protocol behaviour, security 
 - MCP tool schema snapshots
 - Connector message compatibility
 - Event payload compatibility
-- API OpenAPI compatibility
+- API envelope, error-code and pagination-cursor compatibility
 
 Contract tests for a protocol run one committed fixture corpus in every language that speaks it. For the connector protocol that corpus is `packages/protocol/fixtures/connector/v1/`: its manifest lists the frames that must be accepted, with their canonical encodings, and the frames that must be refused, with the reason each must report. `pnpm protocol:check` runs the corpus in both languages and additionally fails when either language's generated models differ from the schema source, which is the snapshot test for an unreviewed schema change.
+
+The platform corpus (`packages/protocol/fixtures/platform/v1/`) does the same for the event envelope of `docs/EVENTS.md` §2, the project event-stream control messages of `docs/API.md` §18.1 and the refusal body of §5. Beside it, `cursors.json` is the golden pagination-cursor corpus: each set of claims records the exact text both languages must produce, and each malformed cursor records the stable refusal it must report.
+
+The API's compatibility surface is therefore held by that corpus rather than by an OpenAPI document. The corpus is the stronger of the two here: it asserts the exact bytes both languages produce and the exact refusal each malformed message must report, which an OpenAPI snapshot does not. An OpenAPI document becomes worth generating when the route inventory is complete enough for one to describe the whole API rather than the part that happens to be built.
 
 ### Integration
 

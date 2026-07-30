@@ -61,7 +61,9 @@ Generate or validate Go and TypeScript models from one versioned source. Do not 
 
 The mechanism is ADR-0013. Each protocol version has one machine-readable source — for the connector protocol, `packages/protocol/schemas/connector/v1.schema.json` — from which `pnpm protocol:generate` renders the committed TypeScript and Go. `pnpm protocol:check` re-renders both in memory and fails when a committed file differs, so a change made in one language alone cannot land. It also runs the committed cross-language fixture corpus and the Go test suite. The Go toolchain is required for both commands, because the generator formats its Go output with `gofmt`.
 
-Connector-protocol messages, browser-worker messages (`packages/protocol/schemas/browser/v1.schema.json`) and live-view messages (`packages/protocol/schemas/live_view/v1.schema.json`) are implemented today. The remaining API, MCP and event schemas join the package as the issues that introduce those surfaces land.
+Connector-protocol messages, browser-worker messages (`packages/protocol/schemas/browser/v1.schema.json`), live-view messages (`packages/protocol/schemas/live_view/v1.schema.json`), the review domain (`schemas/review/v1.schema.json`), the MCP interface (`schemas/mcp/v1.schema.json`) and the platform foundation (`schemas/platform/v1.schema.json`) are implemented today. The platform source is where the API envelope, the stable error codes, the opaque entity identifier, the pagination cursor, the event envelope and the project event-stream messages live, and it renders both TypeScript and Go.
+
+The Go runtime the generated packages need — the validation and decoding primitives, the canonical writer and the redacted string type — is itself rendered, from the templates in `packages/protocol/tools/go-runtime/`. A second Go-rendering source would otherwise need a byte-identical hand-maintained copy of it, and two copies of a canonical encoder is exactly the drift ADR-0013 exists to prevent.
 
 Each schema source declares the languages it renders in its own `x-protocol.languages`, and `pnpm protocol:check` compares exactly that set. The browser-worker protocol declares `["typescript"]`: both its parties, `apps/server` and `apps/browser-worker`, are TypeScript, so a Go rendering would have no consumer. Declaring the set keeps the ADR-0013 guarantee exact rather than weakening it — when a Go component needs those messages the field changes and the check starts failing until the Go is committed.
 
@@ -156,6 +158,15 @@ Every action is pinned to a commit rather than a tag, because a tag is mutable a
 - Tested against realistic previous-version fixtures — the Stage 0 one is
   committed at `test/fixtures/stage0/` (`docs/TESTING.md` §13)
 - Do not perform expensive unbounded data migration during ordinary service startup without progress visibility
+
+Files are named `NNNN_lower_snake_case.sql`, so lexical order is apply order and
+two migrations written on different branches cannot claim an ambiguous
+position. `reviewplane migrate` applies them and reports the schema version
+(`docs/DEPLOYMENT.md` §11); `reviewplane migrate --status` reports what is
+pending without changing anything. The upgrade path is tested rather than
+assumed: `apps/server/test/platform-foundation.test.ts` migrates a database to
+the previous stage's head, seeds it as that stage would have, and then applies
+the newer migrations on top.
 
 ## 8. API development
 

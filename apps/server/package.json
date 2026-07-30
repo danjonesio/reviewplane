@@ -50,6 +50,8 @@
     "build": "tsc -p tsconfig.build.json",
     "dev": "node --conditions=development --watch src/main.ts",
     "start": "node dist/main.js",
+    "//cli": "The operator command line of docs/DEPLOYMENT.md section 11. The deployed image exposes it as `reviewplane`; in a checkout it is run through this script, which needs no build. A `bin` entry would make pnpm try to link dist/cli.js at install time, before anything has been built.",
+    "cli": "node --conditions=development src/cli.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --conditions=development --test --test-concurrency=1 \"test/**/*.test.ts\""
   },

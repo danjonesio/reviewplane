@@ -1,0 +1,12 @@
+{
+  "error": {
+    "code": "VERSION_CONFLICT",
+    "message": "no",
+    "details": {
+      "cookie": "session=1"
+    }
+  },
+  "meta": {
+    "request_id": "req_abcdef0123456789"
+  }
+}
