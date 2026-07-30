@@ -16,6 +16,10 @@ import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 
+import { migrate } from "../../src/db/migrate.ts";
+import { createPool } from "../../src/db/pool.ts";
+import type { Pool } from "../../src/db/pool.ts";
+
 const run = promisify(execFile);
 
 /** The pinned image. `docs/SECURITY.md` §19 requires pinned base images. */
@@ -51,6 +55,56 @@ export interface TestDatabase {
   readonly url: string;
   readonly containerName: string;
   stop(): Promise<void>;
+}
+
+/** A started database with the migrations applied and a pool open on it. */
+export interface MigratedDatabase extends TestDatabase {
+  readonly pool: Pool;
+}
+
+/**
+ * Starts a database, applies every committed migration and opens a pool.
+ *
+ * Tests that only need somewhere to write use this; tests that build their own
+ * pool, or that assert on the runner itself, use {@link startPostgres}.
+ */
+export async function startMigratedDatabase(): Promise<MigratedDatabase> {
+  const database = await startPostgres();
+  const pool = createPool(database.url);
+  try {
+    await migrate(pool);
+  } catch (error) {
+    await pool.end().catch(() => undefined);
+    await database.stop();
+    throw error;
+  }
+  return {
+    url: database.url,
+    containerName: database.containerName,
+    pool,
+    async stop(): Promise<void> {
+      await pool.end().catch(() => undefined);
+      await database.stop();
+    },
+  };
+}
+
+/**
+ * Removes every row the tests create.
+ *
+ * `connector_tls_material` is deliberately left alone: the certificate
+ * authority is created once when the app is built, and dropping it between
+ * tests would leave the connector module without the identity it already
+ * issued from.
+ */
+export async function truncateAll(pool: Pool): Promise<void> {
+  await pool.query(
+    `TRUNCATE artefacts, control_leases, browser_sessions, browser_worker_projects,
+              browser_workers, route_capabilities, published_services, connectors,
+              connector_enrolment_tokens, environments, events, event_streams,
+              projects, organisations
+     RESTART IDENTITY CASCADE`,
+  );
 }
 
 async function waitForReadiness(name: string): Promise<void> {

@@ -142,6 +142,7 @@ Do not emit every pointer movement as a durable event. High-frequency input may 
 - `screenshot.captured`
 - `artefact.upload_started`
 - `artefact.upload_completed`
+- `artefact.upload_failed`
 - `artefact.redacted`
 - `artefact.expired`
 - `trace.finalised`

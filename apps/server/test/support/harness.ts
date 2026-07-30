@@ -17,6 +17,7 @@ import type { ServerConfig } from "../../src/config.ts";
 import { migrate } from "../../src/db/migrate.ts";
 import { createPool, type Pool } from "../../src/db/pool.ts";
 import { loadConnectorModuleConfig, type ConnectorModuleConfig } from "../../src/modules/connectors/index.ts";
+import { testServerConfig } from "./config.ts";
 import { startPostgres, type TestDatabase } from "./postgres.ts";
 
 export const BOOTSTRAP_TOKEN = "test-bootstrap-token-0123456789abcdef";
@@ -126,23 +127,14 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
     ...(options.connectorEnvironment ?? {}),
   });
   const connectorConfig = loadConnectorModuleConfig(environment);
-  const config: ServerConfig = {
+  // The tunnel gateway and the browser worker are not part of this harness, so
+  // their endpoints keep the unroutable defaults: a test that reaches one fails
+  // rather than talking to something real.
+  const config: ServerConfig = testServerConfig({
     databaseUrl: database.url,
     bootstrapToken: BOOTSTRAP_TOKEN,
-    host: "127.0.0.1",
-    port: 0,
     logLevel: "debug",
-    // The tunnel gateway is not part of this harness. The URL is unroutable on
-    // purpose, so a test that reaches it fails rather than talking to something
-    // real, and the capability key is a fixed test key that signs nothing else.
-    gatewayControlUrl: "http://tunnel-gateway.invalid:8445",
-    gatewayControlToken: "harness-gateway-token-0123456789abcdef",
-    internalSuffix: "internal.invalid",
-    capabilityKeyId: "harness-a",
-    capabilityKey: new Uint8Array(32).fill(7),
-    capabilityTtlSeconds: 300,
-    routeTtlMaxSeconds: 8 * 60 * 60,
-  };
+  });
 
   let built = await buildApp({ config, pool, connectorConfig, logDestination: collector });
   await built.start();

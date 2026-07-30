@@ -221,6 +221,27 @@ Minimum controls:
 
 Browser sandboxing should remain enabled. Disabling Chromium sandbox requires an explicit unsupported or high-risk configuration warning.
 
+### 10.1 How the controls are applied
+
+The controls above are properties of the shipped container, not deployment advice:
+
+- The worker image creates a dedicated service user and runs as it. `deploy/compose/compose.yaml` mounts the root filesystem read-only and provides tmpfs mounts for the per-session profile directories only.
+- Every capability is dropped except `SYS_CHROOT`. Chromium's sandboxed zygote chroots itself into an empty directory inside its own user namespace, so removing that one capability is what forces the unsupported `--no-sandbox` configuration.
+- `deploy/compose/browser-worker-seccomp.json` is Docker's default profile with one change: `clone`, `clone3` and `unshare` no longer require `CAP_SYS_ADMIN`, because Chromium's sandbox is built on user namespaces. That set is the measured minimum — removing any one of the three stops either Node or the sandbox from starting, and `setns` is not needed and stays gated. Every other gate is unchanged.
+- A host that restricts unprivileged user namespaces (`kernel.apparmor_restrict_unprivileged_userns=1`) MUST grant the container the AppArmor `userns` permission or clear that sysctl. Disabling the Chromium sandbox is not the supported alternative.
+- Each browser session gets its own ephemeral profile directory and its own browser process. Termination removes the directory; nothing from a session survives it, and no state crosses between sessions or projects.
+- The worker restricts egress to the origin of the session's published service, at navigation and at subresource level. A session with no published service reaches nothing.
+- Every session carries a duration limit the worker enforces itself, so a session cannot outlive its allocation even if the control plane is unreachable.
+
+### 10.2 Worker credentials
+
+The worker holds two credentials and neither is an administrator token:
+
+- one it presents to the control plane, which identifies it and scopes it to its assigned projects;
+- one the control plane presents to the worker, which is a distinct value.
+
+Neither works in the other direction, and neither is accepted on an administrative endpoint. The worker holds no artefact-store credentials: captures are uploaded through the control-plane artefact API (ADR-0012).
+
 ## 11. Prompt-injection defence
 
 Browser-derived content is untrusted.

@@ -3,17 +3,14 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "ReviewPlane control-plane server: the authoritative HTTP API for projects, connectors, published services, reviews, findings, sessions and events.",
+  "description": "ReviewPlane control-plane server: the authoritative HTTP API for projects, connectors, published services, browser sessions, artefacts and events.",
   "main": "dist/main.js",
   "scripts": {
-    "prebuild": "pnpm --filter @reviewplane/protocol run build",
     "build": "tsc -p tsconfig.build.json",
-    "dev": "node --watch src/main.ts",
+    "dev": "node --conditions=development --watch src/main.ts",
     "start": "node dist/main.js",
-    "pretypecheck": "pnpm --filter @reviewplane/protocol run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "pretest": "pnpm --filter @reviewplane/protocol run build",
-    "test": "node --test \"test/**/*.test.ts\""
+    "test": "node --conditions=development --test \"test/**/*.test.ts\""
   },
   "dependencies": {
     "@fastify/websocket": "^11.2.0",

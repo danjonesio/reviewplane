@@ -1,0 +1,1401 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/danjonesio/reviewplane/schemas/browser/v1.schema.json",
+  "title": "ReviewPlane browser-worker protocol, version 1",
+  "description": "Single source for the version 1 browser-worker protocol: the mutually authenticated internal channel between the control-plane server and a central Chromium worker (docs/ARCHITECTURE.md sections 4.5, 6.4 and 11). TypeScript models, validators and canonical encoders are generated from this file. Hand-maintained equivalents in apps/server or apps/browser-worker are a review failure.",
+  "x-protocol": {
+    "name": "browser",
+    "version": 1,
+    "languages": ["typescript"],
+    "limits": {
+      "max_control_frame_bytes": 262144
+    },
+    "envelope_limit": "max_control_frame_bytes",
+    "channels": {
+      "control": "Worker identity, assignment and browser-session lifecycle.",
+      "commands": "Browser commands and their results.",
+      "events": "Worker-observed browser-session state changes."
+    },
+    "directions": ["control_plane_to_worker", "worker_to_control_plane"],
+    "messages": {
+      "worker.register": {
+        "channel": "control",
+        "direction": "worker_to_control_plane",
+        "payload": "worker_registration",
+        "description": "Worker announces its identity, browser build, capacity and sandbox posture (docs/ARCHITECTURE.md section 11, docs/SECURITY.md section 6.4)."
+      },
+      "worker.register.ack": {
+        "channel": "control",
+        "direction": "control_plane_to_worker",
+        "payload": "worker_registration_ack",
+        "description": "Control plane assigns the worker identity and the projects the worker may accept sessions for (docs/SECURITY.md section 6.4)."
+      },
+      "worker.heartbeat": {
+        "channel": "control",
+        "direction": "worker_to_control_plane",
+        "payload": "worker_heartbeat",
+        "description": "Periodic capacity and liveness report used to detect a crashed or orphaned worker (docs/ARCHITECTURE.md section 14)."
+      },
+      "browser_session.allocate": {
+        "channel": "control",
+        "direction": "control_plane_to_worker",
+        "payload": "session_allocate",
+        "description": "Instruction to allocate an isolated browser context with an ephemeral profile for one browser session (docs/DOMAIN_MODEL.md section 12, docs/ARCHITECTURE.md section 6.2)."
+      },
+      "browser_session.allocated": {
+        "channel": "control",
+        "direction": "worker_to_control_plane",
+        "payload": "session_allocated",
+        "description": "Worker reports the allocated context, browser build and initial control epoch."
+      },
+      "browser_session.status": {
+        "channel": "events",
+        "direction": "worker_to_control_plane",
+        "payload": "session_status_report",
+        "description": "Worker-observed lifecycle transition of a browser session (docs/DOMAIN_MODEL.md section 12, docs/EVENTS.md section 7)."
+      },
+      "browser_session.terminate": {
+        "channel": "control",
+        "direction": "control_plane_to_worker",
+        "payload": "session_terminate",
+        "description": "Instruction to close the context and destroy its ephemeral session data (docs/SECURITY.md section 10)."
+      },
+      "browser.command": {
+        "channel": "commands",
+        "direction": "control_plane_to_worker",
+        "payload": "browser_command",
+        "description": "One browser command. The envelope carries the browser session, controller identity, control epoch, sequence number and timestamp required by docs/ARCHITECTURE.md section 6.4."
+      },
+      "browser.command.result": {
+        "channel": "commands",
+        "direction": "worker_to_control_plane",
+        "payload": "browser_command_result",
+        "description": "Result of one browser command. Any page-derived content is labelled untrusted (ADR-0010, docs/SECURITY.md section 11)."
+      }
+    },
+    "error_classes": [
+      "PROTOCOL_UNSUPPORTED",
+      "AUTHENTICATION_REQUIRED",
+      "AUTHORISATION_DENIED",
+      "PROJECT_CONTEXT_MISMATCH",
+      "RESOURCE_NOT_FOUND",
+      "RESOURCE_STALE",
+      "BROWSER_CAPACITY_EXHAUSTED",
+      "BROWSER_SESSION_NOT_ACTIVE",
+      "CONTROL_NOT_OWNED",
+      "CONTROL_EPOCH_STALE",
+      "BROWSER_COMMAND_TIMEOUT",
+      "POLICY_DENIED",
+      "ARTEFACT_UPLOAD_INCOMPLETE",
+      "UNSUPPORTED_CAPABILITY",
+      "INTERNAL_ERROR"
+    ],
+    "violation_reasons": {
+      "frame_too_large": {
+        "error_class": null,
+        "description": "The encoded frame exceeded its byte bound. Detected on the raw bytes before deserialisation."
+      },
+      "malformed_json": {
+        "error_class": null,
+        "description": "The frame was not well-formed JSON, or was truncated."
+      },
+      "unsupported_protocol_version": {
+        "error_class": "PROTOCOL_UNSUPPORTED",
+        "description": "protocol_version was absent, not an integer, or not a version this build accepts."
+      },
+      "unknown_message_type": {
+        "error_class": "PROTOCOL_UNSUPPORTED",
+        "description": "type was absent or not a version 1 message type. Unknown types are rejected, never ignored."
+      },
+      "payload_too_large": {
+        "error_class": null,
+        "description": "The payload exceeded the byte bound declared for its message type. Snapshot and screenshot results are bounded here as well as by the worker, per docs/MCP_SPEC.md section 13."
+      },
+      "schema_violation": {
+        "error_class": null,
+        "description": "The frame parsed but did not satisfy the schema for its message type."
+      }
+    },
+    "schema_violation_codes": [
+      "type",
+      "required",
+      "forbidden",
+      "unknown_property",
+      "enum",
+      "const",
+      "pattern",
+      "too_short",
+      "too_long",
+      "too_small",
+      "too_large",
+      "too_few_items",
+      "too_many_items",
+      "duplicate_items",
+      "not_integer"
+    ],
+    "vocabularies": {
+      "interactive_commands": {
+        "description": "Commands that operate the page on behalf of a controller. They require the issuing controller to hold the current interactive control lease (docs/SECURITY.md section 7, ADR-0007).",
+        "values": ["navigate", "click", "type_text", "resize", "wait"]
+      },
+      "system_capture_commands": {
+        "description": "Non-interactive capture commands. A system controller may issue these without holding the interactive lease, and doing so never transfers or revokes it (docs/TESTING.md section 5).",
+        "values": ["snapshot", "take_screenshot"]
+      }
+    },
+    "identifier_prefixes": {
+      "message_id": "msg_",
+      "worker_id": "wkr_",
+      "browser_session_id": "brs_",
+      "project_id": "prj_",
+      "organisation_id": "org_",
+      "agent_session_id": "ags_",
+      "published_service_id": "svc_",
+      "artefact_id": "art_",
+      "snapshot_id": "bsn_"
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "description": "Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the value as opaque: the schema bounds only its length and character class and never its documented prefix.",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "timestamp": {
+      "type": "string",
+      "description": "RFC 3339 timestamp in UTC, with a mandatory trailing Z.",
+      "minLength": 20,
+      "maxLength": 30,
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$"
+    },
+    "build_version": {
+      "type": "string",
+      "description": "Worker or browser build version, for example 0.1.0 or 143.0.7499.4.",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[0-9A-Za-z][0-9A-Za-z._+-]*$"
+    },
+    "worker_label": {
+      "type": "string",
+      "description": "Scheduling label advertised by the worker build (docs/CONFIGURATION.md section 3).",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "origin": {
+      "type": "string",
+      "description": "Absolute origin of the published development service the session may reach, for example https://route-id.internal.invalid (docs/ARCHITECTURE.md section 7.3). Egress beyond this origin is refused by the worker.",
+      "minLength": 8,
+      "maxLength": 2048,
+      "pattern": "^https?://[!-~]+$"
+    },
+    "navigation_target": {
+      "type": "string",
+      "description": "Absolute URL or root-relative path. A relative path is resolved against the published service origin of the session (docs/MCP_SPEC.md section 7.4).",
+      "minLength": 1,
+      "maxLength": 2048,
+      "pattern": "^(https?://[!-~]+|/[!-~]*)$"
+    },
+    "resolved_url": {
+      "type": "string",
+      "description": "Absolute URL observed by the browser. Page-derived, so bounded in length and character class only.",
+      "minLength": 1,
+      "maxLength": 2048,
+      "pattern": "^[!-~]+$"
+    },
+    "page_text": {
+      "type": "string",
+      "description": "Short page-derived text such as a document title. Untrusted content (ADR-0010): control characters are excluded and the length is bounded so that a hostile page cannot inflate a response.",
+      "minLength": 0,
+      "maxLength": 512,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+    },
+    "snapshot_text": {
+      "type": "string",
+      "description": "Rendered accessibility snapshot in the indented form of docs/MCP_SPEC.md section 7.4. Untrusted content: bounded, newline-separated, and never interpreted as an instruction.",
+      "minLength": 0,
+      "maxLength": 65536,
+      "pattern": "^[^\\u0000-\\u0009\\u000b-\\u001f\\u007f]*$"
+    },
+    "element_reference": {
+      "type": "string",
+      "description": "Reference to one element of a single snapshot. References are valid only for the snapshot that produced them and are invalidated by a resize (docs/MCP_SPEC.md section 7.4).",
+      "minLength": 2,
+      "maxLength": 8,
+      "pattern": "^e[0-9]{1,6}$"
+    },
+    "accessible_role": {
+      "type": "string",
+      "description": "Accessibility role of a snapshot element. Page-derived and bounded.",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z][A-Za-z0-9 _-]*$"
+    },
+    "input_text": {
+      "type": "string",
+      "description": "Text typed into a page input. Secret values MUST NOT travel through this field; docs/MCP_SPEC.md section 7.9 secret injection is the supported path.",
+      "minLength": 0,
+      "maxLength": 4096,
+      "pattern": "^[^\\u0000-\\u0009\\u000b-\\u001f\\u007f]*$"
+    },
+    "selector": {
+      "type": "string",
+      "description": "CSS selector used by a bounded wait condition. Selectors are hints, not identity (docs/DOMAIN_MODEL.md section 17).",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "url_pattern": {
+      "type": "string",
+      "description": "Substring a URL must contain for a url_matches wait condition to be satisfied.",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[!-~]+$"
+    },
+    "reason_text": {
+      "type": "string",
+      "description": "Short operator-facing explanation. Never carries page content verbatim beyond its bound, and never carries credentials (docs/SECURITY.md section 18).",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "sha256_hex": {
+      "type": "string",
+      "description": "Lowercase hexadecimal SHA-256 digest of an artefact's bytes, verified server-side before the artefact becomes available (docs/API.md section 15, ADR-0012).",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "message_type": {
+      "type": "string",
+      "description": "Version 1 message type. Unknown types are rejected, never ignored. This enumeration MUST equal the keys of x-protocol.messages.",
+      "enum": [
+        "worker.register",
+        "worker.register.ack",
+        "worker.heartbeat",
+        "browser_session.allocate",
+        "browser_session.allocated",
+        "browser_session.status",
+        "browser_session.terminate",
+        "browser.command",
+        "browser.command.result"
+      ]
+    },
+    "error_class": {
+      "type": "string",
+      "description": "Stable error class. The browser-worker channel reuses the docs/MCP_SPEC.md section 12 codes so that a refusal reaches the agent unchanged, plus PROTOCOL_UNSUPPORTED for a frame this build cannot parse. This enumeration MUST equal x-protocol.error_classes.",
+      "enum": [
+        "PROTOCOL_UNSUPPORTED",
+        "AUTHENTICATION_REQUIRED",
+        "AUTHORISATION_DENIED",
+        "PROJECT_CONTEXT_MISMATCH",
+        "RESOURCE_NOT_FOUND",
+        "RESOURCE_STALE",
+        "BROWSER_CAPACITY_EXHAUSTED",
+        "BROWSER_SESSION_NOT_ACTIVE",
+        "CONTROL_NOT_OWNED",
+        "CONTROL_EPOCH_STALE",
+        "BROWSER_COMMAND_TIMEOUT",
+        "POLICY_DENIED",
+        "ARTEFACT_UPLOAD_INCOMPLETE",
+        "UNSUPPORTED_CAPABILITY",
+        "INTERNAL_ERROR"
+      ]
+    },
+    "controller_type": {
+      "type": "string",
+      "description": "Kind of controller holding or requesting browser control (docs/DOMAIN_MODEL.md section 13). Stage 0 issues leases to agent and system controllers only; human is present because ADR-0007 fixes the vocabulary.",
+      "enum": ["agent", "human", "system"]
+    },
+    "session_status": {
+      "type": "string",
+      "description": "Browser-session lifecycle status (docs/DOMAIN_MODEL.md section 12).",
+      "enum": [
+        "REQUESTED",
+        "ALLOCATING",
+        "READY",
+        "ACTIVE",
+        "PAUSED",
+        "DEGRADED",
+        "TERMINATING",
+        "TERMINATED",
+        "FAILED"
+      ]
+    },
+    "termination_reason": {
+      "type": "string",
+      "description": "Why a browser session is being terminated.",
+      "enum": [
+        "requested",
+        "duration_limit",
+        "capacity",
+        "policy",
+        "worker_shutdown",
+        "failure"
+      ]
+    },
+    "browser_type": {
+      "type": "string",
+      "description": "Browser engine. ADR-0001 fixes Chromium for the initial architecture.",
+      "enum": ["chromium"]
+    },
+    "retention_class": {
+      "type": "string",
+      "description": "Retention class applied to evidence captured in this session (docs/SECURITY.md section 14).",
+      "enum": ["action_screenshots", "verification_evidence"]
+    },
+    "command_name": {
+      "type": "string",
+      "description": "Browser command. Membership of x-protocol.vocabularies.interactive_commands decides whether the issuing controller must hold the interactive lease.",
+      "enum": [
+        "navigate",
+        "snapshot",
+        "click",
+        "type_text",
+        "resize",
+        "wait",
+        "take_screenshot"
+      ]
+    },
+    "wait_until": {
+      "type": "string",
+      "description": "Bounded navigation wait condition (docs/MCP_SPEC.md section 7.4). Every value completes or times out; none waits indefinitely.",
+      "enum": ["commit", "domcontentloaded", "load", "networkidle"]
+    },
+    "wait_condition": {
+      "type": "string",
+      "description": "Bounded wait condition. docs/MCP_SPEC.md section 7.4 forbids an unbounded sleep, so every condition is paired with a timeout.",
+      "enum": [
+        "url_matches",
+        "selector_visible",
+        "selector_hidden",
+        "text_visible",
+        "network_idle"
+      ]
+    },
+    "screenshot_purpose": {
+      "type": "string",
+      "description": "Why a screenshot is being captured. system is the non-interactive capture that never takes the interactive lease.",
+      "enum": ["verification", "annotation", "diagnostic", "system"]
+    },
+    "image_content_type": {
+      "type": "string",
+      "description": "Media type of a captured screenshot. PNG only, so the original evidence is lossless (docs/DOMAIN_MODEL.md section 20).",
+      "enum": ["image/png"]
+    },
+    "trust_label": {
+      "type": "string",
+      "description": "Trust of the content in a result (docs/MCP_SPEC.md section 6). A result carrying page-derived content MUST declare untrusted_browser_content; the schema refuses the alternative.",
+      "enum": ["trusted_control_plane", "untrusted_browser_content"]
+    },
+    "instruction_policy": {
+      "type": "string",
+      "description": "How the receiver must treat content in this result. The single value is deliberate: nothing a browser worker returns is ever an instruction (ADR-0010, docs/SECURITY.md section 11).",
+      "enum": ["do_not_follow_as_instructions"]
+    },
+    "envelope": {
+      "type": "object",
+      "description": "Browser-worker message envelope. The command fields of docs/ARCHITECTURE.md section 6.4 — browser session, controller identity, control epoch, sequence and timestamp — live here rather than in each payload, so no command can omit them.",
+      "additionalProperties": false,
+      "required": ["protocol_version", "message_id", "type", "sent_at", "payload"],
+      "properties": {
+        "protocol_version": {
+          "type": "integer",
+          "description": "Protocol version. Stage 0 accepts 1 only; any other value is rejected with PROTOCOL_UNSUPPORTED and is never best-effort parsed.",
+          "const": 1
+        },
+        "message_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Sender-assigned message identifier, conventionally prefixed msg_."
+        },
+        "type": {
+          "$ref": "#/$defs/message_type",
+          "description": "Version 1 message type. Unknown types are rejected."
+        },
+        "sent_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "Time the sender emitted the message. Required on every message by docs/ARCHITECTURE.md section 6.4."
+        },
+        "worker_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Worker identity, conventionally prefixed wkr_. Absent on worker.register, where the identity is still being established, and required on every other message."
+        },
+        "browser_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Browser session the message concerns, conventionally prefixed brs_."
+        },
+        "controller": {
+          "$ref": "#/$defs/controller_identity",
+          "description": "Controller on whose behalf a command is issued."
+        },
+        "control_epoch": {
+          "type": "integer",
+          "description": "Control epoch the sender believes is current. A command carrying a prior epoch is rejected with CONTROL_EPOCH_STALE (ADR-0007).",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "sequence": {
+          "type": "integer",
+          "description": "Monotonically increasing per-session command sequence, used for replay detection and ordering (docs/SECURITY.md section 8).",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "correlation_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Identifier of the message this message answers."
+        },
+        "payload": {
+          "type": "object",
+          "description": "Message payload. Its schema is selected by type. The frame is bounded by x-protocol.limits.max_control_frame_bytes and each payload by its own x-max-bytes.",
+          "x-dynamic": true
+        }
+      },
+      "x-requires": [
+        {
+          "when": {
+            "property": "type",
+            "equals": "worker.register"
+          },
+          "forbidden": ["worker_id", "browser_session_id", "controller", "control_epoch", "sequence"],
+          "detail": "registration precedes worker identity assignment"
+        },
+        {
+          "when": {
+            "property": "type",
+            "in": [
+              "worker.register.ack",
+              "worker.heartbeat",
+              "browser_session.allocate",
+              "browser_session.allocated",
+              "browser_session.status",
+              "browser_session.terminate",
+              "browser.command",
+              "browser.command.result"
+            ]
+          },
+          "required": ["worker_id"],
+          "detail": "every message after registration is attributed to a worker identity"
+        },
+        {
+          "when": {
+            "property": "type",
+            "in": [
+              "browser_session.allocate",
+              "browser_session.allocated",
+              "browser_session.status",
+              "browser_session.terminate",
+              "browser.command",
+              "browser.command.result"
+            ]
+          },
+          "required": ["browser_session_id"],
+          "detail": "session-scoped messages name their browser session"
+        },
+        {
+          "when": {
+            "property": "type",
+            "in": ["browser.command", "browser.command.result"]
+          },
+          "required": ["controller", "control_epoch", "sequence"],
+          "detail": "docs/ARCHITECTURE.md section 6.4 requires controller identity, control epoch and sequence on every browser command"
+        },
+        {
+          "when": {
+            "property": "type",
+            "in": ["browser.command.result"]
+          },
+          "required": ["correlation_id"],
+          "detail": "a result names the command it answers"
+        }
+      ]
+    },
+    "controller_identity": {
+      "type": "object",
+      "description": "Identity of the controller issuing a command (docs/DOMAIN_MODEL.md section 13, docs/ARCHITECTURE.md section 6.4).",
+      "additionalProperties": false,
+      "required": ["type", "id"],
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/controller_type",
+          "description": "Controller kind."
+        },
+        "id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Opaque controller identity, for example an agent session identifier."
+        }
+      }
+    },
+    "viewport": {
+      "type": "object",
+      "description": "Browser viewport in CSS pixels plus device pixel ratio (docs/API.md section 11). The required presets are 1440x900 and 390x844 (AGENTS.md Browser-facing work).",
+      "additionalProperties": false,
+      "required": ["width", "height", "device_scale_factor"],
+      "properties": {
+        "width": {
+          "type": "integer",
+          "description": "Viewport width in CSS pixels.",
+          "minimum": 240,
+          "maximum": 3840
+        },
+        "height": {
+          "type": "integer",
+          "description": "Viewport height in CSS pixels.",
+          "minimum": 240,
+          "maximum": 2160
+        },
+        "device_scale_factor": {
+          "type": "number",
+          "description": "Device pixel ratio. A screenshot is device_scale_factor times the CSS viewport in each dimension, which annotation geometry depends on (docs/DOMAIN_MODEL.md section 16).",
+          "minimum": 1,
+          "maximum": 4
+        }
+      }
+    },
+    "session_limits": {
+      "type": "object",
+      "description": "Limits the worker enforces itself, so a session cannot outlive or outgrow its allocation even if the control plane is unreachable (docs/ARCHITECTURE.md section 4.5, docs/CONFIGURATION.md section 3).",
+      "additionalProperties": false,
+      "required": [
+        "max_duration_seconds",
+        "default_timeout_ms",
+        "max_command_timeout_ms",
+        "screenshot_max_bytes",
+        "snapshot_max_nodes",
+        "snapshot_max_bytes"
+      ],
+      "properties": {
+        "max_duration_seconds": {
+          "type": "integer",
+          "description": "Wall-clock lifetime of the session. The worker terminates the context when it elapses.",
+          "minimum": 60,
+          "maximum": 28800
+        },
+        "default_timeout_ms": {
+          "type": "integer",
+          "description": "Timeout applied to a command that does not state one.",
+          "minimum": 100,
+          "maximum": 120000
+        },
+        "max_command_timeout_ms": {
+          "type": "integer",
+          "description": "Upper bound on any command timeout, so no command can wait indefinitely.",
+          "minimum": 100,
+          "maximum": 120000
+        },
+        "screenshot_max_bytes": {
+          "type": "integer",
+          "description": "Largest screenshot the worker will upload.",
+          "minimum": 65536,
+          "maximum": 20971520
+        },
+        "snapshot_max_nodes": {
+          "type": "integer",
+          "description": "Largest number of elements a snapshot may describe before it is truncated.",
+          "minimum": 1,
+          "maximum": 500
+        },
+        "snapshot_max_bytes": {
+          "type": "integer",
+          "description": "Largest rendered snapshot the worker will return before truncation (docs/MCP_SPEC.md section 13).",
+          "minimum": 1024,
+          "maximum": 65536
+        }
+      }
+    },
+    "worker_registration": {
+      "type": "object",
+      "description": "Worker self-description presented when it registers.",
+      "additionalProperties": false,
+      "x-max-bytes": 4096,
+      "required": [
+        "worker_name",
+        "worker_version",
+        "browser_type",
+        "browser_version",
+        "capacity",
+        "labels",
+        "sandbox_enabled",
+        "started_at"
+      ],
+      "properties": {
+        "worker_name": {
+          "$ref": "#/$defs/worker_label",
+          "description": "Operator-assigned worker name (docs/CONFIGURATION.md section 3)."
+        },
+        "worker_version": {
+          "$ref": "#/$defs/build_version",
+          "description": "Worker release version."
+        },
+        "browser_type": {
+          "$ref": "#/$defs/browser_type",
+          "description": "Browser engine the worker runs."
+        },
+        "browser_version": {
+          "$ref": "#/$defs/build_version",
+          "description": "Browser build version, recorded on every browser session (docs/DOMAIN_MODEL.md section 12)."
+        },
+        "capacity": {
+          "type": "integer",
+          "description": "Concurrent browser sessions this worker accepts. Exceeding it is refused with BROWSER_CAPACITY_EXHAUSTED.",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "labels": {
+          "type": "array",
+          "description": "Scheduling labels. Stage 0 has a single worker and does not schedule by label.",
+          "minItems": 0,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/worker_label"
+          }
+        },
+        "sandbox_enabled": {
+          "type": "boolean",
+          "description": "Whether the Chromium sandbox is enabled. docs/SECURITY.md section 10 requires it; a worker reporting false is a high-risk configuration the control plane records and refuses in Stage 0."
+        },
+        "started_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the worker process started."
+        }
+      }
+    },
+    "worker_registration_ack": {
+      "type": "object",
+      "description": "Assigns the worker identity and the projects it may serve.",
+      "additionalProperties": false,
+      "x-max-bytes": 32768,
+      "required": [
+        "accepted",
+        "assigned_projects",
+        "session_limits",
+        "heartbeat_interval_seconds"
+      ],
+      "properties": {
+        "accepted": {
+          "type": "boolean",
+          "description": "Whether the control plane accepted the worker."
+        },
+        "assigned_projects": {
+          "type": "array",
+          "description": "Projects this worker may accept sessions for. A session for any other project is refused with PROJECT_CONTEXT_MISMATCH (docs/SECURITY.md section 6.4).",
+          "minItems": 0,
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "session_limits": {
+          "$ref": "#/$defs/session_limits",
+          "description": "Default limits applied to sessions allocated to this worker."
+        },
+        "heartbeat_interval_seconds": {
+          "type": "integer",
+          "description": "How often the worker must heartbeat before the control plane treats it as lost.",
+          "minimum": 5,
+          "maximum": 300
+        },
+        "error": {
+          "$ref": "#/$defs/command_error",
+          "description": "Why registration was refused."
+        }
+      }
+    },
+    "worker_heartbeat": {
+      "type": "object",
+      "description": "Periodic worker capacity report.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["active_sessions", "capacity", "observed_at"],
+      "properties": {
+        "active_sessions": {
+          "type": "integer",
+          "description": "Browser sessions currently allocated on this worker.",
+          "minimum": 0,
+          "maximum": 64
+        },
+        "capacity": {
+          "type": "integer",
+          "description": "Concurrent browser sessions this worker accepts.",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "resident_memory_mb": {
+          "type": "integer",
+          "description": "Resident memory of the worker process tree, for capacity diagnosis.",
+          "minimum": 0,
+          "maximum": 1048576
+        },
+        "observed_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the values were sampled."
+        }
+      }
+    },
+    "session_allocate": {
+      "type": "object",
+      "description": "Allocation request for one isolated browser context.",
+      "additionalProperties": false,
+      "x-max-bytes": 8192,
+      "required": [
+        "organisation_id",
+        "project_id",
+        "viewport",
+        "control_epoch",
+        "controller",
+        "limits",
+        "retention_class"
+      ],
+      "properties": {
+        "organisation_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Owning organisation, carried for defence-in-depth filtering (docs/DOMAIN_MODEL.md section 3)."
+        },
+        "project_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Owning project. The worker refuses a project it is not assigned."
+        },
+        "agent_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Agent session the browser session serves, when one exists."
+        },
+        "published_service_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Published service the session may reach (docs/DOMAIN_MODEL.md section 10)."
+        },
+        "service_origin": {
+          "$ref": "#/$defs/origin",
+          "description": "Origin the published service is reachable at. Relative navigation resolves against it, and the worker refuses navigation to any other origin."
+        },
+        "viewport": {
+          "$ref": "#/$defs/viewport",
+          "description": "Initial viewport."
+        },
+        "control_epoch": {
+          "type": "integer",
+          "description": "Epoch of the initial control lease.",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "controller": {
+          "$ref": "#/$defs/controller_identity",
+          "description": "Controller the initial interactive lease is issued to."
+        },
+        "limits": {
+          "$ref": "#/$defs/session_limits",
+          "description": "Limits the worker enforces for this session."
+        },
+        "retention_class": {
+          "$ref": "#/$defs/retention_class",
+          "description": "Retention class recorded on evidence captured in this session."
+        }
+      }
+    },
+    "session_allocated": {
+      "type": "object",
+      "description": "Worker's response to an allocation request.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["status", "browser_type", "browser_version", "viewport", "allocated_at"],
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/session_status",
+          "description": "Status reached by the allocation, READY on success."
+        },
+        "browser_type": {
+          "$ref": "#/$defs/browser_type",
+          "description": "Browser engine of the allocated context."
+        },
+        "browser_version": {
+          "$ref": "#/$defs/build_version",
+          "description": "Browser build version, recorded on the session (docs/DOMAIN_MODEL.md section 12)."
+        },
+        "viewport": {
+          "$ref": "#/$defs/viewport",
+          "description": "Viewport the context was created with."
+        },
+        "allocated_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the context became usable."
+        },
+        "error": {
+          "$ref": "#/$defs/command_error",
+          "description": "Why allocation failed, when status is FAILED."
+        }
+      }
+    },
+    "session_status_report": {
+      "type": "object",
+      "description": "Worker-observed lifecycle transition.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["status", "occurred_at"],
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/session_status",
+          "description": "New status."
+        },
+        "previous_status": {
+          "$ref": "#/$defs/session_status",
+          "description": "Status the session left, included so the event records both sides of the transition (docs/EVENTS.md section 8)."
+        },
+        "reason": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Why the transition happened."
+        },
+        "control_epoch": {
+          "type": "integer",
+          "description": "Control epoch current at the transition.",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "current_controller": {
+          "$ref": "#/$defs/controller_identity",
+          "description": "Controller holding the interactive lease at the transition."
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the transition happened."
+        }
+      }
+    },
+    "session_terminate": {
+      "type": "object",
+      "description": "Instruction to end a session and destroy its ephemeral data.",
+      "additionalProperties": false,
+      "x-max-bytes": 1024,
+      "required": ["reason"],
+      "properties": {
+        "reason": {
+          "$ref": "#/$defs/termination_reason",
+          "description": "Why the session is ending."
+        },
+        "detail": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Operator-facing detail."
+        }
+      }
+    },
+    "navigate_params": {
+      "type": "object",
+      "description": "Input for navigate (docs/MCP_SPEC.md section 7.4).",
+      "additionalProperties": false,
+      "required": ["url", "wait_until"],
+      "properties": {
+        "url": {
+          "$ref": "#/$defs/navigation_target",
+          "description": "Absolute URL or root-relative path resolved against the published service origin."
+        },
+        "wait_until": {
+          "$ref": "#/$defs/wait_until",
+          "description": "Bounded wait condition."
+        }
+      }
+    },
+    "click_params": {
+      "type": "object",
+      "description": "Input for click. The reference must come from the current snapshot; a stale reference fails rather than clicking whatever now occupies that position.",
+      "additionalProperties": false,
+      "required": ["snapshot_id", "ref"],
+      "properties": {
+        "snapshot_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Snapshot the reference was issued by."
+        },
+        "ref": {
+          "$ref": "#/$defs/element_reference",
+          "description": "Element reference from that snapshot."
+        }
+      }
+    },
+    "type_text_params": {
+      "type": "object",
+      "description": "Input for type_text. Secret values MUST NOT be supplied here (docs/MCP_SPEC.md section 7.4).",
+      "additionalProperties": false,
+      "required": ["snapshot_id", "ref", "text"],
+      "properties": {
+        "snapshot_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Snapshot the reference was issued by."
+        },
+        "ref": {
+          "$ref": "#/$defs/element_reference",
+          "description": "Element reference from that snapshot."
+        },
+        "text": {
+          "$ref": "#/$defs/input_text",
+          "description": "Text to type."
+        },
+        "submit": {
+          "type": "boolean",
+          "description": "Whether to press Enter after typing."
+        }
+      }
+    },
+    "resize_params": {
+      "type": "object",
+      "description": "Input for resize. A resize invalidates every outstanding element reference (docs/MCP_SPEC.md section 7.4).",
+      "additionalProperties": false,
+      "required": ["viewport"],
+      "properties": {
+        "viewport": {
+          "$ref": "#/$defs/viewport",
+          "description": "New viewport."
+        }
+      }
+    },
+    "wait_params": {
+      "type": "object",
+      "description": "Input for wait. Every condition is bounded; there is no unbounded sleep.",
+      "additionalProperties": false,
+      "required": ["condition"],
+      "properties": {
+        "condition": {
+          "$ref": "#/$defs/wait_condition",
+          "description": "Condition to wait for."
+        },
+        "url_pattern": {
+          "$ref": "#/$defs/url_pattern",
+          "description": "Substring the URL must contain."
+        },
+        "selector": {
+          "$ref": "#/$defs/selector",
+          "description": "Selector whose state is awaited."
+        },
+        "text": {
+          "$ref": "#/$defs/page_text",
+          "description": "Text whose presence is awaited."
+        }
+      },
+      "x-requires": [
+        {
+          "when": {
+            "property": "condition",
+            "equals": "url_matches"
+          },
+          "required": ["url_pattern"],
+          "forbidden": ["selector", "text"],
+          "detail": "a url_matches condition is defined by its pattern alone"
+        },
+        {
+          "when": {
+            "property": "condition",
+            "in": ["selector_visible", "selector_hidden"]
+          },
+          "required": ["selector"],
+          "forbidden": ["url_pattern", "text"],
+          "detail": "a selector condition is defined by its selector alone"
+        },
+        {
+          "when": {
+            "property": "condition",
+            "equals": "text_visible"
+          },
+          "required": ["text"],
+          "forbidden": ["url_pattern", "selector"],
+          "detail": "a text condition is defined by its text alone"
+        },
+        {
+          "when": {
+            "property": "condition",
+            "equals": "network_idle"
+          },
+          "forbidden": ["url_pattern", "selector", "text"],
+          "detail": "network idleness has no target"
+        }
+      ]
+    },
+    "snapshot_params": {
+      "type": "object",
+      "description": "Input for snapshot. Both bounds are optional; the session limits supply the defaults.",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "max_nodes": {
+          "type": "integer",
+          "description": "Largest number of elements to describe.",
+          "minimum": 1,
+          "maximum": 500
+        },
+        "max_bytes": {
+          "type": "integer",
+          "description": "Largest rendered snapshot to return before truncation.",
+          "minimum": 1024,
+          "maximum": 65536
+        }
+      }
+    },
+    "screenshot_params": {
+      "type": "object",
+      "description": "Input for take_screenshot (docs/MCP_SPEC.md section 7.4).",
+      "additionalProperties": false,
+      "required": ["full_page", "persist", "purpose"],
+      "properties": {
+        "full_page": {
+          "type": "boolean",
+          "description": "Whether to capture beyond the viewport."
+        },
+        "persist": {
+          "type": "boolean",
+          "description": "Whether to upload the capture through the control-plane artefact API. A capture that is not persisted produces no artefact and no evidence."
+        },
+        "purpose": {
+          "$ref": "#/$defs/screenshot_purpose",
+          "description": "Why the capture is being taken."
+        }
+      }
+    },
+    "browser_command": {
+      "type": "object",
+      "description": "One browser command. Exactly one parameter object accompanies the command name; the schema forbids the others so a command cannot smuggle an unused parameter set.",
+      "additionalProperties": false,
+      "x-max-bytes": 16384,
+      "required": ["command", "timeout_ms"],
+      "properties": {
+        "command": {
+          "$ref": "#/$defs/command_name",
+          "description": "Command to run."
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "description": "Bound on how long the command may run. Exceeding it fails with BROWSER_COMMAND_TIMEOUT rather than waiting indefinitely.",
+          "minimum": 100,
+          "maximum": 120000
+        },
+        "navigate": {
+          "$ref": "#/$defs/navigate_params",
+          "description": "Parameters for navigate."
+        },
+        "click": {
+          "$ref": "#/$defs/click_params",
+          "description": "Parameters for click."
+        },
+        "type_text": {
+          "$ref": "#/$defs/type_text_params",
+          "description": "Parameters for type_text."
+        },
+        "resize": {
+          "$ref": "#/$defs/resize_params",
+          "description": "Parameters for resize."
+        },
+        "wait": {
+          "$ref": "#/$defs/wait_params",
+          "description": "Parameters for wait."
+        },
+        "snapshot": {
+          "$ref": "#/$defs/snapshot_params",
+          "description": "Parameters for snapshot."
+        },
+        "take_screenshot": {
+          "$ref": "#/$defs/screenshot_params",
+          "description": "Parameters for take_screenshot."
+        }
+      },
+      "x-requires": [
+        {
+          "when": {
+            "property": "command",
+            "equals": "navigate"
+          },
+          "required": ["navigate"],
+          "forbidden": ["click", "type_text", "resize", "wait", "snapshot", "take_screenshot"],
+          "detail": "a command carries only its own parameters"
+        },
+        {
+          "when": {
+            "property": "command",
+            "equals": "click"
+          },
+          "required": ["click"],
+          "forbidden": ["navigate", "type_text", "resize", "wait", "snapshot", "take_screenshot"],
+          "detail": "a command carries only its own parameters"
+        },
+        {
+          "when": {
+            "property": "command",
+            "equals": "type_text"
+          },
+          "required": ["type_text"],
+          "forbidden": ["navigate", "click", "resize", "wait", "snapshot", "take_screenshot"],
+          "detail": "a command carries only its own parameters"
+        },
+        {
+          "when": {
+            "property": "command",
+            "equals": "resize"
+          },
+          "required": ["resize"],
+          "forbidden": ["navigate", "click", "type_text", "wait", "snapshot", "take_screenshot"],
+          "detail": "a command carries only its own parameters"
+        },
+        {
+          "when": {
+            "property": "command",
+            "equals": "wait"
+          },
+          "required": ["wait"],
+          "forbidden": ["navigate", "click", "type_text", "resize", "snapshot", "take_screenshot"],
+          "detail": "a command carries only its own parameters"
+        },
+        {
+          "when": {
+            "property": "command",
+            "equals": "snapshot"
+          },
+          "forbidden": ["navigate", "click", "type_text", "resize", "wait", "take_screenshot"],
+          "detail": "a command carries only its own parameters"
+        },
+        {
+          "when": {
+            "property": "command",
+            "equals": "take_screenshot"
+          },
+          "required": ["take_screenshot"],
+          "forbidden": ["navigate", "click", "type_text", "resize", "wait", "snapshot"],
+          "detail": "a command carries only its own parameters"
+        }
+      ]
+    },
+    "command_error": {
+      "type": "object",
+      "description": "A refused or failed operation, reported with a stable code (docs/MCP_SPEC.md section 12).",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/error_class",
+          "description": "Stable error class."
+        },
+        "message": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Operator-facing explanation. Carries no credentials and no unbounded page content."
+        },
+        "retryable": {
+          "type": "boolean",
+          "description": "Whether retrying the same command could succeed."
+        },
+        "current_epoch": {
+          "type": "integer",
+          "description": "Epoch that is actually current, returned with CONTROL_EPOCH_STALE so the caller can refresh rather than guess (docs/MCP_SPEC.md section 5).",
+          "minimum": 0,
+          "maximum": 2147483647
+        }
+      }
+    },
+    "navigation_result": {
+      "type": "object",
+      "description": "Outcome of a navigation. Every field is page-derived and therefore untrusted.",
+      "additionalProperties": false,
+      "required": ["url", "redirected", "title"],
+      "properties": {
+        "url": {
+          "$ref": "#/$defs/resolved_url",
+          "description": "URL the browser settled on."
+        },
+        "http_status": {
+          "type": "integer",
+          "description": "Status of the main document response.",
+          "minimum": 100,
+          "maximum": 599
+        },
+        "redirected": {
+          "type": "boolean",
+          "description": "Whether the browser settled on a different URL than requested."
+        },
+        "title": {
+          "$ref": "#/$defs/page_text",
+          "description": "Document title, truncated to its bound."
+        }
+      }
+    },
+    "element_descriptor": {
+      "type": "object",
+      "description": "One element of a snapshot, addressable by reference until the snapshot is superseded.",
+      "additionalProperties": false,
+      "required": ["ref", "role"],
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/element_reference",
+          "description": "Reference valid for this snapshot only."
+        },
+        "role": {
+          "$ref": "#/$defs/accessible_role",
+          "description": "Accessibility role."
+        },
+        "name": {
+          "$ref": "#/$defs/page_text",
+          "description": "Accessible name, truncated to its bound."
+        }
+      }
+    },
+    "snapshot_result": {
+      "type": "object",
+      "description": "A bounded accessibility snapshot (docs/MCP_SPEC.md sections 7.4 and 13). Page-derived throughout.",
+      "additionalProperties": false,
+      "required": ["snapshot_id", "viewport", "node_count", "truncated", "text", "elements"],
+      "properties": {
+        "snapshot_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Identity of this snapshot. A reference is accepted only while it is the current snapshot."
+        },
+        "viewport": {
+          "$ref": "#/$defs/viewport",
+          "description": "Viewport the snapshot was taken at. A resize supersedes it."
+        },
+        "node_count": {
+          "type": "integer",
+          "description": "Number of elements described.",
+          "minimum": 0,
+          "maximum": 500
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "Whether the page had more content than the bounds allowed. A truncated snapshot is a summary, never a whole-page dump."
+        },
+        "text": {
+          "$ref": "#/$defs/snapshot_text",
+          "description": "Rendered snapshot."
+        },
+        "elements": {
+          "type": "array",
+          "description": "Machine-readable form of the same elements.",
+          "minItems": 0,
+          "maxItems": 500,
+          "items": {
+            "$ref": "#/$defs/element_descriptor"
+          }
+        }
+      }
+    },
+    "screenshot_result": {
+      "type": "object",
+      "description": "A screenshot that the control plane has verified and made available (docs/API.md section 15, ADR-0012).",
+      "additionalProperties": false,
+      "required": [
+        "artefact_id",
+        "sha256",
+        "size_bytes",
+        "content_type",
+        "viewport",
+        "full_page",
+        "captured_at"
+      ],
+      "properties": {
+        "artefact_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Artefact the capture was stored as. Present only once the control plane has verified size and hash."
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256_hex",
+          "description": "Digest the control plane verified."
+        },
+        "size_bytes": {
+          "type": "integer",
+          "description": "Byte length the control plane verified.",
+          "minimum": 1,
+          "maximum": 20971520
+        },
+        "content_type": {
+          "$ref": "#/$defs/image_content_type",
+          "description": "Media type of the stored bytes."
+        },
+        "viewport": {
+          "$ref": "#/$defs/viewport",
+          "description": "Viewport the capture was taken at."
+        },
+        "full_page": {
+          "type": "boolean",
+          "description": "Whether the capture extends beyond the viewport."
+        },
+        "captured_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the capture was taken."
+        }
+      }
+    },
+    "browser_command_result": {
+      "type": "object",
+      "description": "Result of one browser command. The trust rules below are enforced by the generated validators on both sides, so page-derived content cannot be returned without its untrusted label (ADR-0010).",
+      "additionalProperties": false,
+      "x-max-bytes": 196608,
+      "required": [
+        "ok",
+        "command",
+        "sequence",
+        "control_epoch",
+        "duration_ms",
+        "trust",
+        "instruction_policy"
+      ],
+      "properties": {
+        "ok": {
+          "type": "boolean",
+          "description": "Whether the command succeeded."
+        },
+        "command": {
+          "$ref": "#/$defs/command_name",
+          "description": "Command this result answers."
+        },
+        "sequence": {
+          "type": "integer",
+          "description": "Sequence number of the command this result answers.",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "control_epoch": {
+          "type": "integer",
+          "description": "Epoch current at the worker when the command ran.",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "duration_ms": {
+          "type": "integer",
+          "description": "How long the command took.",
+          "minimum": 0,
+          "maximum": 600000
+        },
+        "trust": {
+          "$ref": "#/$defs/trust_label",
+          "description": "Trust of the content in this result."
+        },
+        "instruction_policy": {
+          "$ref": "#/$defs/instruction_policy",
+          "description": "How the receiver must treat that content."
+        },
+        "error": {
+          "$ref": "#/$defs/command_error",
+          "description": "Why the command failed."
+        },
+        "navigation": {
+          "$ref": "#/$defs/navigation_result",
+          "description": "Navigation outcome. Page-derived."
+        },
+        "snapshot": {
+          "$ref": "#/$defs/snapshot_result",
+          "description": "Accessibility snapshot. Page-derived."
+        },
+        "screenshot": {
+          "$ref": "#/$defs/screenshot_result",
+          "description": "Verified screenshot artefact. Rendered from page content."
+        },
+        "viewport": {
+          "$ref": "#/$defs/viewport",
+          "description": "Viewport in force after the command."
+        }
+      },
+      "x-requires": [
+        {
+          "when": {
+            "property": "trust",
+            "equals": "trusted_control_plane"
+          },
+          "forbidden": ["navigation", "snapshot", "screenshot"],
+          "detail": "page-derived content must be labelled untrusted_browser_content (ADR-0010, docs/SECURITY.md section 11)"
+        }
+      ]
+    }
+  }
+}

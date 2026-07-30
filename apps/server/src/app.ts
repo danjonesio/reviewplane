@@ -11,12 +11,21 @@
 import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
 
-import { requireBootstrapAdministrator } from "./auth/bootstrap-token.ts";
+import { requireBootstrapAdministrator } from "./auth.ts";
 import type { LogDestination, ServerConfig } from "./config.ts";
 import type { Pool } from "./db/pool.ts";
 import { renderError } from "./errors.ts";
+import { registerArtefactRoutes } from "./modules/artefacts/routes.ts";
+import { ArtefactService } from "./modules/artefacts/service.ts";
+import { FilesystemArtefactStore } from "./modules/artefacts/store.ts";
+import type { ArtefactStore } from "./modules/artefacts/store.ts";
+import { registerBrowserSessionRoutes } from "./modules/browser-sessions/routes.ts";
+import { BrowserSessionService } from "./modules/browser-sessions/service.ts";
+import { BrowserWorkerClient } from "./modules/browser-sessions/worker-client.ts";
+import { WorkerRegistry } from "./modules/browser-sessions/workers.ts";
 import { createConnectorModule } from "./modules/connectors/index.ts";
 import type { ConnectorModule, ConnectorModuleConfig } from "./modules/connectors/index.ts";
+import { registerProjectRoutes } from "./modules/projects/routes.ts";
 import { STAGE_0_DESTINATION_POLICY } from "./modules/published-services/destination-policy.ts";
 import type { DestinationPolicy } from "./modules/published-services/destination-policy.ts";
 import { HttpTunnelGateway } from "./modules/published-services/gateway-client.ts";
@@ -29,6 +38,9 @@ export interface BuiltApp {
   readonly app: FastifyInstance;
   readonly connectors: ConnectorModule;
   readonly publishedServices: PublishedServiceService;
+  readonly artefacts: ArtefactService;
+  readonly sessions: BrowserSessionService;
+  readonly workers: WorkerRegistry;
   /** Starts every listener the server owns. */
   start(): Promise<void>;
   /** Stops every listener. The pool is owned by the caller. */
@@ -47,6 +59,10 @@ export interface BuildAppOptions {
    */
   readonly publisher?: RoutePublisher;
   readonly destinationPolicy?: DestinationPolicy;
+  /** Injected by tests; the filesystem driver is the default (ADR-0012). */
+  readonly artefactStore?: ArtefactStore;
+  /** Injected by tests so the worker channel can be driven in-process. */
+  readonly workerFetch?: typeof fetch;
   readonly now?: () => Date;
   /**
    * Where structured logs are written. Production leaves it unset, which sends
@@ -71,9 +87,10 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     requestIdHeader: "x-request-id",
     genReqId: () => `req_${Math.random().toString(36).slice(2, 14)}`,
     // docs/ARCHITECTURE.md section 4.1: request-size limits belong on the
-    // ingress path. 1 MiB is ample for the administrative JSON bodies this
-    // surface accepts.
-    bodyLimit: 1 << 20,
+    // ingress path. The largest legitimate body is an artefact upload, so the
+    // limit is that bound plus room for the surrounding request rather than a
+    // number chosen independently of what the API accepts.
+    bodyLimit: config.artefactMaxBytes + 65_536,
     // Trusting a proxy header would let a caller choose the address the server
     // attributes a request to. Nothing here needs the client address.
     trustProxy: false,
@@ -127,10 +144,44 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     authenticate: requireBootstrapAdministrator(config.bootstrapToken),
   });
 
+  const store = options.artefactStore ?? new FilesystemArtefactStore(config.artefactPath);
+  const artefacts = new ArtefactService(pool, store, config.artefactMaxBytes);
+  const workers = new WorkerRegistry(pool, config.workerCredential);
+  const workerClient = new BrowserWorkerClient({
+    endpoint: config.workerEndpoint,
+    credential: config.workerCommandCredential,
+    timeoutMs: config.workerRequestTimeoutMs,
+    ...(options.workerFetch === undefined ? {} : { fetchImplementation: options.workerFetch }),
+  });
+  const sessions = new BrowserSessionService(pool, workers, workerClient);
+
+  await registerProjectRoutes(app, {
+    pool,
+    bootstrapToken: config.bootstrapToken,
+    workerCredential: config.workerCredential,
+  });
+  await registerArtefactRoutes(app, {
+    pool,
+    artefacts,
+    workers,
+    bootstrapToken: config.bootstrapToken,
+    workerCredential: config.workerCredential,
+    maxBytes: config.artefactMaxBytes,
+  });
+  await registerBrowserSessionRoutes(app, {
+    sessions,
+    workers,
+    bootstrapToken: config.bootstrapToken,
+    workerCredential: config.workerCredential,
+  });
+
   return {
     app,
     connectors,
     publishedServices,
+    artefacts,
+    sessions,
+    workers,
     async start(): Promise<void> {
       await app.listen({ host: config.host, port: config.port });
       await connectors.start();

@@ -1,0 +1,19 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JSESSIONFAILED",
+  "type": "browser_session.status",
+  "sent_at": "2026-07-29T09:20:11.000Z",
+  "worker_id": "wkr_01JBROWSERWORKER01",
+  "browser_session_id": "brs_01JHOMEPAGEREVIEW",
+  "payload": {
+    "status": "FAILED",
+    "previous_status": "ACTIVE",
+    "reason": "browser process exited unexpectedly",
+    "control_epoch": 2,
+    "current_controller": {
+      "type": "agent",
+      "id": "ags_01JCLAUDECODE"
+    },
+    "occurred_at": "2026-07-29T09:20:10.870Z"
+  }
+}

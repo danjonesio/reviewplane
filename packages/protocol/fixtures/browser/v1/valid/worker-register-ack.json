@@ -1,0 +1,21 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JBROWSERREGACK",
+  "type": "worker.register.ack",
+  "sent_at": "2026-07-29T09:15:02.310Z",
+  "worker_id": "wkr_01JBROWSERWORKER01",
+  "correlation_id": "msg_01JBROWSERREGISTER",
+  "payload": {
+    "accepted": true,
+    "assigned_projects": ["prj_01JREFRESHSURPLUS"],
+    "session_limits": {
+      "max_duration_seconds": 7200,
+      "default_timeout_ms": 30000,
+      "max_command_timeout_ms": 120000,
+      "screenshot_max_bytes": 20971520,
+      "snapshot_max_nodes": 400,
+      "snapshot_max_bytes": 32768
+    },
+    "heartbeat_interval_seconds": 15
+  }
+}

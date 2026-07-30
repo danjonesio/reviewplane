@@ -231,6 +231,10 @@ Initial isolation:
 - No access to control-plane secrets
 - Explicit network routes only
 
+A browser session is allocated as a Playwright persistent context over its own ephemeral profile directory, which gives it its own browser process as well as its own context. That is one step short of the container-per-session option below and satisfies both the per-session temporary directory and the context-isolation requirements with one mechanism. Termination closes the browser and removes the directory.
+
+"Explicit network routes only" is enforced by the worker: navigation and subresource requests are restricted to the origin of the session's published service, so a session with no published service reaches nothing. `docs/SECURITY.md` section 10.1 records the container controls that carry the rest.
+
 Higher-assurance deployments may allocate one container or microVM per browser session later.
 
 ### 6.3 Live viewing
@@ -256,6 +260,8 @@ Human keyboard and pointer input is sent through the control plane to the worker
 - Timestamp
 
 Stale epochs are rejected.
+
+These five fields are the envelope of every browser command, not only of human input: they are declared once in `packages/protocol/schemas/browser/v1.schema.json` and required by the generated validators on both sides, so a command cannot omit one. The control plane checks them before dispatch and the worker checks them again before touching a page. An epoch that is not the current one is rejected whether it is older or newer, and a sequence number that is not greater than the last accepted one is rejected as a replay. Non-interactive system capture is authorised without the interactive lease and never transfers it.
 
 ## 7. Development-service routing
 
@@ -420,6 +426,8 @@ The mechanism is ADR-0014: a control-plane certificate authority, generated at b
 - Worker identity and mutual authentication
 - Commands signed or sent over mutually authenticated internal channels
 - Worker restricted to assigned projects and sessions
+
+Stage 0 implements the mutual authentication as two distinct credentials on an internal network, one per direction: the worker presents its own credential to the control-plane API, and the control plane presents a different credential to the worker's listener. Neither is an administrator token, neither works in the other direction, and neither is accepted on an administrative endpoint. A worker may only receive sessions for projects an administrator has assigned to it; an unassigned worker serves nothing. Mutual TLS replaces the shared credentials when remote worker nodes arrive in Stage 3.
 
 ## 12. Technology baseline
 

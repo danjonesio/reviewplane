@@ -62,11 +62,17 @@ function toConnector(row: ConnectorRow): ConnectorRecord {
   };
 }
 
-/** Ensures the Stage 0 organisation exists. */
+/**
+ * Ensures the Stage 0 organisation exists.
+ *
+ * The slug is derived from the identifier rather than from the display name: it
+ * is unique across the deployment, and a display name an operator can change
+ * must not be able to collide with another organisation's slug.
+ */
 export async function ensureOrganisation(pool: Pool, id: string, name: string): Promise<void> {
   await pool.query(
-    "insert into organisations (id, name) values ($1, $2) on conflict (id) do nothing",
-    [id, name],
+    "insert into organisations (id, name, slug) values ($1, $2, $3) on conflict (id) do nothing",
+    [id, name, id.toLowerCase().replaceAll(/[^a-z0-9-]/gu, "-")],
   );
 }
 

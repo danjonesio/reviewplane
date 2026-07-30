@@ -234,6 +234,7 @@ Requirements:
 GET    /api/v1/projects/:projectId/browser-sessions
 POST   /api/v1/projects/:projectId/browser-sessions
 GET    /api/v1/browser-sessions/:sessionId
+POST   /api/v1/browser-sessions/:sessionId/commands
 POST   /api/v1/browser-sessions/:sessionId/pause
 POST   /api/v1/browser-sessions/:sessionId/resume
 POST   /api/v1/browser-sessions/:sessionId/terminate
@@ -241,6 +242,31 @@ POST   /api/v1/browser-sessions/:sessionId/control/request
 POST   /api/v1/browser-sessions/:sessionId/control/release
 GET    /api/v1/browser-sessions/:sessionId/timeline
 ```
+
+Worker administration:
+
+```text
+GET    /api/v1/browser-workers
+PUT    /api/v1/browser-workers/:workerId/assignments
+```
+
+A worker serves only the projects an assignment names. There is no wildcard: an unassigned worker receives no sessions.
+
+### Command request
+
+```json
+{
+  "control_epoch": 12,
+  "controller": {"type": "agent", "id": "ags_..."},
+  "command": {
+    "command": "navigate",
+    "timeout_ms": 30000,
+    "navigate": {"url": "/checkout", "wait_until": "domcontentloaded"}
+  }
+}
+```
+
+The command body is the `browser_command` of `packages/protocol/schemas/browser/v1.schema.json`. A stale `control_epoch` returns `CONTROL_EPOCH_STALE` with the epoch that is current, and the command never reaches the worker. Responses carry the `browser_command_result`, whose `trust` and `instruction_policy` fields the schema requires on every result.
 
 ### Start request
 
@@ -305,6 +331,7 @@ Annotation changes preserve revision history even if the current projection hide
 
 ```text
 POST   /api/v1/projects/:projectId/artefacts/uploads
+POST   /api/v1/artefacts/:artefactId/content
 POST   /api/v1/artefacts/:artefactId/complete
 GET    /api/v1/artefacts/:artefactId
 GET    /api/v1/artefacts/:artefactId/content
@@ -318,6 +345,20 @@ DELETE /api/v1/artefacts/:artefactId
 3. Upload content.
 4. Complete with observed hash.
 5. Server verifies before making artefact available.
+
+Under the `filesystem` driver step 2 returns `upload_path`, the proxied endpoint above; the `s3` driver may return a presigned URL instead. Step 5 is the whole point of the flow: the server recomputes the digest of the bytes it stored and compares it with both the declared and the observed value. Until that succeeds the artefact stays `pending` or `uploaded`, `GET .../content` refuses with `ARTEFACT_UPLOAD_INCOMPLETE`, and no caller may treat it as evidence. A mismatch marks the artefact `failed` and records `artefact.upload_failed`.
+
+## 15.1 Internal worker channel
+
+Browser workers use a separate base path and a separate credential (`docs/ARCHITECTURE.md` section 11). These routes are not part of the human or integration API and are never reachable with an administrator token alone.
+
+```text
+POST /internal/v1/workers/register
+POST /internal/v1/workers/heartbeat
+POST /internal/v1/browser-sessions/:sessionId/status
+```
+
+Bodies are browser-protocol frames rather than ad-hoc JSON, so the envelope and payload are validated by the generated validator before any domain code runs. In the other direction the control plane calls the worker's own listener with a second, distinct credential.
 
 ## 16. Inbox endpoints
 

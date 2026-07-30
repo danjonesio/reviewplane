@@ -1,10 +1,10 @@
 /**
- * Access to the committed cross-language fixture corpus.
+ * Access to the committed cross-language fixture corpora.
  *
- * The corpus is part of the package rather than of the test suite: the Go
- * package, and later `services/connector` and `services/tunnel-gateway`, run
- * the same manifest so that all implementations are held to one set of
- * accepted and refused frames.
+ * A corpus is part of the package rather than of the test suite: the Go
+ * package, and later `services/connector`, `services/tunnel-gateway`,
+ * `apps/server` and `apps/browser-worker`, run the same manifest so that all
+ * implementations are held to one set of accepted and refused frames.
  */
 
 import { readFileSync } from "node:fs";
@@ -16,57 +16,93 @@ import type {
   ProtocolViolationReason,
 } from "./generated/connector/v1/types.ts";
 
-export type FixtureKind = "control_frame" | "data_stream_header";
+export type FixtureKind = "control_frame" | "data_stream_header" | "browser_frame";
 
-export interface ValidFixture {
+export interface ValidFixture<Type extends string = MessageType> {
   readonly name: string;
   readonly kind: FixtureKind;
   readonly file: string;
-  readonly message_type?: MessageType;
+  readonly message_type?: Type;
   readonly note?: string;
 }
 
-export interface InvalidFixture {
+export interface InvalidFixture<
+  Reason extends string = ProtocolViolationReason,
+  Class extends string = ErrorClass,
+> {
   readonly name: string;
   readonly kind: FixtureKind;
   readonly file: string;
-  readonly expect_reason: ProtocolViolationReason;
-  readonly expect_error_class?: ErrorClass;
+  readonly expect_reason: Reason;
+  readonly expect_error_class?: Class;
   readonly note?: string;
 }
 
-export interface FixtureManifest {
+export interface FixtureManifest<
+  Type extends string = MessageType,
+  Reason extends string = ProtocolViolationReason,
+  Class extends string = ErrorClass,
+> {
   readonly protocol: string;
   readonly version: number;
   readonly description: string;
-  readonly valid: readonly ValidFixture[];
-  readonly invalid: readonly InvalidFixture[];
+  readonly valid: readonly ValidFixture<Type>[];
+  readonly invalid: readonly InvalidFixture<Reason, Class>[];
 }
 
+/** One committed corpus: its directory, manifest and golden canonical bytes. */
+export interface FixtureCorpus {
+  readonly directory: string;
+  readonly manifestPath: string;
+  readonly canonicalPath: string;
+}
+
+function corpus(protocol: string, version: number): FixtureCorpus {
+  const directory = join(import.meta.dirname, "..", "fixtures", protocol, `v${String(version)}`);
+  return {
+    directory,
+    manifestPath: join(directory, "manifest.json"),
+    canonicalPath: join(directory, "canonical.json"),
+  };
+}
+
+/** Version 1 connector corpus. */
+export const CONNECTOR_CORPUS = corpus("connector", 1);
+
+/** Version 1 browser-worker corpus. */
+export const BROWSER_CORPUS = corpus("browser", 1);
+
 /** Directory holding the version 1 connector corpus. */
-export const FIXTURES_DIRECTORY = join(
-  import.meta.dirname,
-  "..",
-  "fixtures",
-  "connector",
-  "v1",
-);
+export const FIXTURES_DIRECTORY = CONNECTOR_CORPUS.directory;
 
-export const MANIFEST_PATH = join(FIXTURES_DIRECTORY, "manifest.json");
-export const CANONICAL_PATH = join(FIXTURES_DIRECTORY, "canonical.json");
+export const MANIFEST_PATH = CONNECTOR_CORPUS.manifestPath;
+export const CANONICAL_PATH = CONNECTOR_CORPUS.canonicalPath;
 
-export function loadFixtureManifest(): FixtureManifest {
-  return JSON.parse(readFileSync(MANIFEST_PATH, "utf8")) as FixtureManifest;
+export function loadFixtureManifest<
+  Type extends string = MessageType,
+  Reason extends string = ProtocolViolationReason,
+  Class extends string = ErrorClass,
+>(from: FixtureCorpus = CONNECTOR_CORPUS): FixtureManifest<Type, Reason, Class> {
+  return JSON.parse(readFileSync(from.manifestPath, "utf8")) as FixtureManifest<
+    Type,
+    Reason,
+    Class
+  >;
 }
 
 /** Raw fixture bytes, exactly as committed. */
-export function readFixture(fixture: { readonly file: string }): string {
-  return readFileSync(join(FIXTURES_DIRECTORY, fixture.file), "utf8");
+export function readFixture(
+  fixture: { readonly file: string },
+  from: FixtureCorpus = CONNECTOR_CORPUS,
+): string {
+  return readFileSync(join(from.directory, fixture.file), "utf8");
 }
 
 /** Golden canonical encodings, keyed by fixture name. */
-export function loadCanonicalEncodings(): Record<string, string> {
-  return JSON.parse(readFileSync(CANONICAL_PATH, "utf8")) as Record<string, string>;
+export function loadCanonicalEncodings(
+  from: FixtureCorpus = CONNECTOR_CORPUS,
+): Record<string, string> {
+  return JSON.parse(readFileSync(from.canonicalPath, "utf8")) as Record<string, string>;
 }
 
 /**

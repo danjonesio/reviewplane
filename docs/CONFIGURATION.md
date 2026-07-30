@@ -102,6 +102,34 @@ limits:
   screenshot_max_bytes: 20MB
 ```
 
+### 3.1 Settings implemented today
+
+The worker reads environment variables, with a `*_FILE` variant for every credential:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `REVIEWPLANE_WORKER_NAME` | `browser-worker-01` | Operator-assigned worker name |
+| `REVIEWPLANE_WORKER_LISTEN_ADDRESS` | `127.0.0.1` | Internal listener address |
+| `REVIEWPLANE_WORKER_PORT` | `8090` | Internal listener port; never published to the host |
+| `REVIEWPLANE_WORKER_CAPACITY` | `4` | Concurrent sessions before `BROWSER_CAPACITY_EXHAUSTED` |
+| `REVIEWPLANE_WORKER_LABELS` | `chromium` | Comma-separated scheduling labels |
+| `REVIEWPLANE_WORKER_SANDBOX` | `required` | `required`, or `disabled_high_risk` to accept the section 10 warning |
+| `REVIEWPLANE_WORKER_SESSION_ROOT` | `/var/lib/reviewplane/browser-sessions` | Parent of the per-session ephemeral profile directories |
+| `REVIEWPLANE_CONTROL_PLANE_URL` | `http://server:8080` | Control-plane API base URL |
+| `REVIEWPLANE_WORKER_CREDENTIAL` | none | Credential the worker presents to the control plane |
+| `REVIEWPLANE_WORKER_COMMAND_CREDENTIAL` | none | Credential the control plane must present to the worker |
+| `REVIEWPLANE_WORKER_DEFAULT_TIMEOUT_MS` | `30000` | Timeout for a command that states none |
+| `REVIEWPLANE_WORKER_MAX_COMMAND_TIMEOUT_MS` | `120000` | Upper bound on any command timeout |
+| `REVIEWPLANE_WORKER_SESSION_DURATION_SECONDS` | `7200` | Wall-clock session lifetime the worker enforces itself |
+| `REVIEWPLANE_WORKER_SCREENSHOT_MAX_BYTES` | `20971520` | Largest capture the worker will upload |
+| `REVIEWPLANE_WORKER_SNAPSHOT_MAX_NODES` | `400` | Largest number of elements a snapshot may describe |
+| `REVIEWPLANE_WORKER_SNAPSHOT_MAX_BYTES` | `32768` | Largest rendered snapshot before truncation |
+| `REVIEWPLANE_WORKER_HEARTBEAT_SECONDS` | `15` | Heartbeat interval |
+
+The two credentials have no defaults: the worker refuses to start without them. `disabled_high_risk` is the only way to disable the Chromium sandbox, and it logs the unsupported-configuration warning at startup. Limits requested by the control plane are clamped to these values rather than widening them, so a session cannot ask the worker to exceed what the operator configured.
+
+The control plane reads `REVIEWPLANE_LISTEN_ADDRESS`, `REVIEWPLANE_PORT`, `REVIEWPLANE_DATABASE_URL`, `REVIEWPLANE_BOOTSTRAP_TOKEN`, `REVIEWPLANE_WORKER_CREDENTIAL`, `REVIEWPLANE_WORKER_COMMAND_CREDENTIAL`, `REVIEWPLANE_WORKER_ENDPOINT`, `REVIEWPLANE_ARTEFACT_PATH` and `REVIEWPLANE_ARTEFACT_MAX_BYTES`, each with the same `*_FILE` support.
+
 ## 4. Tunnel-gateway configuration
 
 ```yaml

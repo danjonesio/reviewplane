@@ -127,10 +127,23 @@ export interface ServerConfig {
   readonly capabilityTtlSeconds: number;
   /** Longest route lifetime a publication may request, in seconds. */
   readonly routeTtlMaxSeconds: number;
+  /** Credential the Stage 0 browser worker presents to this server. */
+  readonly workerCredential: string;
+  /** Credential this server presents to the browser worker. */
+  readonly workerCommandCredential: string;
+  /** Base URL of the browser worker's internal listener. */
+  readonly workerEndpoint: string;
+  /** Filesystem artefact-store root (ADR-0012 default driver). */
+  readonly artefactPath: string;
+  readonly artefactMaxBytes: number;
+  readonly workerRequestTimeoutMs: number;
 }
 
 /** Minimum bootstrap-token length. A short administrator token is guessable. */
 export const MINIMUM_BOOTSTRAP_TOKEN_LENGTH = 32;
+
+/** Minimum length of a machine-to-machine credential. */
+export const MINIMUM_SERVICE_CREDENTIAL_LENGTH = 16;
 
 /** Minimum decoded length of a capability signing key. */
 export const MINIMUM_CAPABILITY_KEY_BYTES = 32;
@@ -192,6 +205,16 @@ export function loadServerConfig(environment: Environment = process.env): Server
     return decoded;
   }, new Uint8Array());
 
+  const workerEndpoint = problems.attempt(() => {
+    const value = optionalString(environment, "REVIEWPLANE_WORKER_ENDPOINT") ?? "http://browser-worker:8090";
+    if (!/^https?:\/\/[!-~]+$/u.test(value)) {
+      throw new ConfigurationError(
+        `REVIEWPLANE_WORKER_ENDPOINT must be an http or https URL, found ${JSON.stringify(value)}`,
+      );
+    }
+    return value.replace(/\/+$/u, "");
+  }, "http://browser-worker:8090");
+
   const config: ServerConfig = {
     databaseUrl: problems.attempt(() => requireString(environment, "REVIEWPLANE_DATABASE_URL"), ""),
     bootstrapToken: problems.attempt(
@@ -228,6 +251,39 @@ export function loadServerConfig(environment: Environment = process.env): Server
           maximum: 86_400,
         }),
       8 * 60 * 60,
+    ),
+    workerCredential: problems.attempt(
+      () =>
+        requireSecret(environment, "REVIEWPLANE_WORKER_CREDENTIAL", MINIMUM_SERVICE_CREDENTIAL_LENGTH),
+      "",
+    ),
+    workerCommandCredential: problems.attempt(
+      () =>
+        requireSecret(
+          environment,
+          "REVIEWPLANE_WORKER_COMMAND_CREDENTIAL",
+          MINIMUM_SERVICE_CREDENTIAL_LENGTH,
+        ),
+      "",
+    ),
+    workerEndpoint,
+    artefactPath:
+      optionalString(environment, "REVIEWPLANE_ARTEFACT_PATH") ?? "/var/lib/reviewplane/artefacts",
+    artefactMaxBytes: problems.attempt(
+      () =>
+        readInteger(environment, "REVIEWPLANE_ARTEFACT_MAX_BYTES", 20_971_520, {
+          minimum: 1024,
+          maximum: 104_857_600,
+        }),
+      20_971_520,
+    ),
+    workerRequestTimeoutMs: problems.attempt(
+      () =>
+        readInteger(environment, "REVIEWPLANE_WORKER_REQUEST_TIMEOUT_MS", 150_000, {
+          minimum: 1000,
+          maximum: 600_000,
+        }),
+      150_000,
     ),
   };
 

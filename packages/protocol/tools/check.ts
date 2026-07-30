@@ -1,16 +1,17 @@
 /**
- * `pnpm protocol:check` — proves that the schema, the generated models in both
- * languages and the committed fixture corpus still agree.
+ * `pnpm protocol:check` — proves that every schema source, the generated
+ * models in the languages it declares and the committed fixture corpora still
+ * agree.
  *
  * It fails when:
  *
- * 1. a generated TypeScript or Go file differs from what the schema renders,
+ * 1. a generated TypeScript or Go file differs from what its schema renders,
  *    which is how a change made in one language only is caught;
- * 2. a fixture the corpus says is valid is refused, or re-encodes to different
+ * 2. a fixture a corpus says is valid is refused, or re-encodes to different
  *    bytes than the committed canonical form;
- * 3. a fixture the corpus says is invalid is accepted, or refused for a
+ * 3. a fixture a corpus says is invalid is accepted, or refused for a
  *    different reason;
- * 4. the Go test suite, which runs the same corpus, fails.
+ * 4. the Go test suite, which runs the connector corpus, fails.
  *
  * The Go toolchain is required, as it is for any protocol work
  * (`docs/DEVELOPMENT.md` section 2).
@@ -20,11 +21,14 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 
+import { decodeBrowserFrame, encodeBrowserFrame } from "../src/browser-frame.ts";
 import {
-  CANONICAL_PATH,
+  BROWSER_CORPUS,
+  CONNECTOR_CORPUS,
   loadCanonicalEncodings,
   loadFixtureManifest,
   readFixture,
+  type FixtureCorpus,
 } from "../src/fixtures.ts";
 import {
   decodeControlFrame,
@@ -32,8 +36,7 @@ import {
   encodeControlFrame,
   encodeDataStreamHeaderFrame,
 } from "../src/frame.ts";
-import { packageRoot, renderAll, schemaPath } from "./generate.ts";
-import { loadProtocolModel } from "./schema-model.ts";
+import { packageRoot, renderEverySource } from "./generate.ts";
 
 const UPDATE = process.argv.includes("--update");
 
@@ -49,8 +52,7 @@ function pass(message: string): void {
 }
 
 function checkGeneratedFiles(): void {
-  const model = loadProtocolModel(schemaPath);
-  const rendered = renderAll(model);
+  const rendered = renderEverySource();
   for (const [relativePath, expected] of rendered) {
     const absolutePath = join(packageRoot, relativePath);
     let actual: string;
@@ -77,90 +79,117 @@ function checkGeneratedFiles(): void {
   }
 }
 
-function encodeFixture(fixture: { kind: string; file: string; name: string }): string | null {
-  const raw = readFixture(fixture);
-  if (fixture.kind === "data_stream_header") {
-    const decoded = decodeDataStreamHeaderFrame(raw);
-    if (!decoded.ok) {
-      fail(`valid fixture ${fixture.name} was refused: ${decoded.error.message}`);
-      return null;
-    }
-    return encodeDataStreamHeaderFrame(decoded.value);
-  }
-  const decoded = decodeControlFrame(raw);
-  if (!decoded.ok) {
-    fail(
-      `valid fixture ${fixture.name} was refused: ${decoded.error.reason}: ${decoded.error.message}`,
-    );
-    return null;
-  }
-  return encodeControlFrame(decoded.value);
+/**
+ * Decode-then-encode for one fixture kind. Keeping the codec beside the corpus
+ * means adding a protocol adds one entry here rather than a branch everywhere.
+ */
+interface Codec {
+  readonly roundTrip: (raw: string) => { ok: true; encoded: string } | { ok: false; message: string };
+  readonly refusal: (raw: string) => { reason: string; errorClass: string | null } | null;
 }
 
-function checkFixtures(): void {
-  const manifest = loadFixtureManifest();
+const CODECS: Readonly<Record<string, Codec>> = {
+  control_frame: {
+    roundTrip(raw) {
+      const decoded = decodeControlFrame(raw);
+      if (!decoded.ok) return { ok: false, message: `${decoded.error.reason}: ${decoded.error.message}` };
+      return { ok: true, encoded: encodeControlFrame(decoded.value) };
+    },
+    refusal(raw) {
+      const result = decodeControlFrame(raw);
+      return result.ok ? null : { reason: result.error.reason, errorClass: result.error.errorClass };
+    },
+  },
+  data_stream_header: {
+    roundTrip(raw) {
+      const decoded = decodeDataStreamHeaderFrame(raw);
+      if (!decoded.ok) return { ok: false, message: `${decoded.error.reason}: ${decoded.error.message}` };
+      return { ok: true, encoded: encodeDataStreamHeaderFrame(decoded.value) };
+    },
+    refusal(raw) {
+      const result = decodeDataStreamHeaderFrame(raw);
+      return result.ok ? null : { reason: result.error.reason, errorClass: result.error.errorClass };
+    },
+  },
+  browser_frame: {
+    roundTrip(raw) {
+      const decoded = decodeBrowserFrame(raw);
+      if (!decoded.ok) return { ok: false, message: `${decoded.error.reason}: ${decoded.error.message}` };
+      return { ok: true, encoded: encodeBrowserFrame(decoded.value) };
+    },
+    refusal(raw) {
+      const result = decodeBrowserFrame(raw);
+      return result.ok ? null : { reason: result.error.reason, errorClass: result.error.errorClass };
+    },
+  },
+};
+
+function codecFor(kind: string): Codec {
+  const codec = CODECS[kind];
+  if (codec === undefined) throw new Error(`no codec for fixture kind ${kind}`);
+  return codec;
+}
+
+function checkFixtures(corpus: FixtureCorpus, label: string): void {
+  const manifest = loadFixtureManifest<string, string, string>(corpus);
   const canonical: Record<string, string> = {};
 
   for (const fixture of manifest.valid) {
-    const encoded = encodeFixture(fixture);
-    if (encoded === null) continue;
-    canonical[fixture.name] = encoded;
+    const codec = codecFor(fixture.kind);
+    const raw = readFixture(fixture, corpus);
+    const first = codec.roundTrip(raw);
+    if (!first.ok) {
+      fail(`valid ${label} fixture ${fixture.name} was refused: ${first.message}`);
+      continue;
+    }
+    canonical[fixture.name] = first.encoded;
 
     // Re-decoding the canonical form must reproduce it exactly, so the
     // encoding is a fixed point rather than merely a first pass.
-    const second = fixture.kind === "data_stream_header"
-      ? (() => {
-          const again = decodeDataStreamHeaderFrame(encoded);
-          return again.ok ? encodeDataStreamHeaderFrame(again.value) : null;
-        })()
-      : (() => {
-          const again = decodeControlFrame(encoded);
-          return again.ok ? encodeControlFrame(again.value) : null;
-        })();
-    if (second !== encoded) {
-      fail(`valid fixture ${fixture.name} is not a canonical fixed point`);
+    const second = codec.roundTrip(first.encoded);
+    if (!second.ok || second.encoded !== first.encoded) {
+      fail(`valid ${label} fixture ${fixture.name} is not a canonical fixed point`);
       continue;
     }
-    pass(`valid fixture ${fixture.name} round-trips`);
+    pass(`valid ${label} fixture ${fixture.name} round-trips`);
   }
 
   for (const fixture of manifest.invalid) {
-    const raw = readFixture(fixture);
-    const result =
-      fixture.kind === "data_stream_header"
-        ? decodeDataStreamHeaderFrame(raw)
-        : decodeControlFrame(raw);
-    if (result.ok) {
-      fail(`invalid fixture ${fixture.name} was accepted`);
+    const codec = codecFor(fixture.kind);
+    const refusal = codec.refusal(readFixture(fixture, corpus));
+    if (refusal === null) {
+      fail(`invalid ${label} fixture ${fixture.name} was accepted`);
       continue;
     }
-    if (result.error.reason !== fixture.expect_reason) {
+    if (refusal.reason !== fixture.expect_reason) {
       fail(
-        `invalid fixture ${fixture.name} was refused as ${result.error.reason}, expected ${fixture.expect_reason}`,
+        `invalid ${label} fixture ${fixture.name} was refused as ${refusal.reason}, expected ${fixture.expect_reason}`,
       );
       continue;
     }
     const expectedClass = fixture.expect_error_class ?? null;
-    if (result.error.errorClass !== expectedClass) {
+    if (refusal.errorClass !== expectedClass) {
       fail(
-        `invalid fixture ${fixture.name} reported error class ${String(result.error.errorClass)}, expected ${String(expectedClass)}`,
+        `invalid ${label} fixture ${fixture.name} reported error class ${String(refusal.errorClass)}, expected ${String(expectedClass)}`,
       );
       continue;
     }
-    pass(`invalid fixture ${fixture.name} is refused as ${fixture.expect_reason}`);
+    pass(`invalid ${label} fixture ${fixture.name} is refused as ${fixture.expect_reason}`);
   }
 
   const serialised = `${JSON.stringify(canonical, null, 2)}\n`;
   if (UPDATE) {
-    writeFileSync(CANONICAL_PATH, serialised, "utf8");
-    process.stdout.write(`updated ${relative(packageRoot, CANONICAL_PATH)}\n`);
+    writeFileSync(corpus.canonicalPath, serialised, "utf8");
+    process.stdout.write(`updated ${relative(packageRoot, corpus.canonicalPath)}\n`);
     return;
   }
   let committed: Record<string, string>;
   try {
-    committed = loadCanonicalEncodings();
+    committed = loadCanonicalEncodings(corpus);
   } catch {
-    fail("fixtures/connector/v1/canonical.json is missing; run pnpm protocol:check --update");
+    fail(
+      `${relative(packageRoot, corpus.canonicalPath)} is missing; run pnpm protocol:check --update`,
+    );
     return;
   }
   for (const [name, expected] of Object.entries(canonical)) {
@@ -174,7 +203,7 @@ function checkFixtures(): void {
   }
   for (const name of Object.keys(committed)) {
     if (canonical[name] === undefined) {
-      fail(`canonical.json holds ${name}, which the manifest no longer lists`);
+      fail(`${label} canonical.json holds ${name}, which the manifest no longer lists`);
     }
   }
 }
@@ -197,7 +226,8 @@ function checkGo(): void {
 }
 
 checkGeneratedFiles();
-checkFixtures();
+checkFixtures(CONNECTOR_CORPUS, "connector");
+checkFixtures(BROWSER_CORPUS, "browser");
 checkGo();
 
 if (failures.length > 0) {

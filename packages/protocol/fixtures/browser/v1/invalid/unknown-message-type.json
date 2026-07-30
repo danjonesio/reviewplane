@@ -1,0 +1,9 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JUNKNOWN",
+  "type": "browser.evaluate_javascript",
+  "sent_at": "2026-07-29T09:16:04.000Z",
+  "worker_id": "wkr_01JBROWSERWORKER01",
+  "browser_session_id": "brs_01JHOMEPAGEREVIEW",
+  "payload": {}
+}

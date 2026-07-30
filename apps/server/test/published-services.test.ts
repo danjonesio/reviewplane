@@ -25,6 +25,7 @@ import type {
   TunnelGateway,
 } from "../src/modules/published-services/gateway-client.ts";
 import type { PublishedServiceService } from "../src/modules/published-services/service.ts";
+import { testServerConfig } from "./support/config.ts";
 import { startPostgres } from "./support/postgres.ts";
 import type { TestDatabase } from "./support/postgres.ts";
 
@@ -78,20 +79,12 @@ class RecordingGateway implements TunnelGateway {
 }
 
 function testConfig(databaseUrl: string): ServerConfig {
-  return {
-    host: "127.0.0.1",
-    port: 0,
+  return testServerConfig({
     databaseUrl,
     bootstrapToken: BOOTSTRAP_TOKEN,
-    gatewayControlUrl: "http://tunnel-gateway.invalid:8445",
-    gatewayControlToken: "unused-in-these-tests-0123456789abcd",
-    internalSuffix: "internal.invalid",
     capabilityKeyId: KEY_ID,
     capabilityKey: SIGNING_KEY,
-    capabilityTtlSeconds: 300,
-    routeTtlMaxSeconds: 8 * 60 * 60,
-    logLevel: "silent",
-  };
+  });
 }
 
 describe("published-service endpoints", () => {

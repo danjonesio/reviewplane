@@ -45,6 +45,7 @@ con_...   connector
 wsp_...   workspace
 svc_...   published service (route)
 ags_...   agent session
+wkr_...   browser worker
 brs_...   browser session
 rev_...   review
 fin_...   finding

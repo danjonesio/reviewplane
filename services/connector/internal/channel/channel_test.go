@@ -252,6 +252,20 @@ func TestChannelReconnectsAfterControlPlaneRestart(t *testing.T) {
 	if attempts[0] != 1 || attempts[1] != 2 || attempts[2] != 3 {
 		t.Fatalf("attempts = %v, want consecutive numbering", attempts)
 	}
+
+	// OnConnected fires on the connector's side of the dial, which can run
+	// before the far side has finished counting the connection. Waiting for the
+	// control plane keeps the assertion about what it accepted.
+	accepted := 0
+	countDeadline := time.Now().Add(10 * time.Second)
+	for {
+		accepted = h.server.Connections()
+		if accepted >= 3 || time.Now().After(countDeadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
 	cancel()
 	<-done
 
@@ -261,8 +275,8 @@ func TestChannelReconnectsAfterControlPlaneRestart(t *testing.T) {
 	if !strings.Contains(h.logs.String(), "\"retry_in\"") {
 		t.Fatal("the reconnect log does not report the backoff delay")
 	}
-	if got := h.server.Connections(); got < 3 {
-		t.Fatalf("the control plane accepted %d connections, want at least 3", got)
+	if accepted < 3 {
+		t.Fatalf("the control plane accepted %d connections, want at least 3", accepted)
 	}
 }
 

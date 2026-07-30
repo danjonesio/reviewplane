@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { credentialMatches } from "../src/auth/bootstrap-token.ts";
+import { credentialMatches } from "../src/auth.ts";
 import { loadServerConfig } from "../src/config.ts";
 import { API_ERROR_CODES, isStableErrorCode } from "../src/errors.ts";
 
@@ -48,7 +48,13 @@ test("configuration is validated at startup and names every problem", () => {
     () => loadServerConfig({}),
     (error: unknown) => {
       const message = String(error);
-      for (const setting of ["DATABASE_URL", "BOOTSTRAP_TOKEN", "CAPABILITY_SIGNING_KEY"]) {
+      for (const setting of [
+        "DATABASE_URL",
+        "BOOTSTRAP_TOKEN",
+        "CAPABILITY_SIGNING_KEY",
+        "WORKER_CREDENTIAL",
+        "WORKER_COMMAND_CREDENTIAL",
+      ]) {
         assert.ok(message.includes(setting), `the failure does not name ${setting}`);
       }
       return true;
@@ -56,29 +62,44 @@ test("configuration is validated at startup and names every problem", () => {
   );
 });
 
-test("a short administrator token or signing key is refused", () => {
-  const base = {
-    REVIEWPLANE_DATABASE_URL: "postgres://localhost/reviewplane",
-    REVIEWPLANE_BOOTSTRAP_TOKEN: "a".repeat(40),
-    REVIEWPLANE_TUNNEL_CONTROL_TOKEN: "b".repeat(40),
-    REVIEWPLANE_CAPABILITY_SIGNING_KEY: Buffer.alloc(32).toString("base64"),
-  };
-  assert.doesNotThrow(() => loadServerConfig(base));
-  assert.throws(() => loadServerConfig({ ...base, REVIEWPLANE_BOOTSTRAP_TOKEN: "short" }));
+/** Every required setting, at its documented minimum strength. */
+const COMPLETE_ENVIRONMENT = {
+  REVIEWPLANE_DATABASE_URL: "postgres://localhost/reviewplane",
+  REVIEWPLANE_BOOTSTRAP_TOKEN: "a".repeat(40),
+  REVIEWPLANE_TUNNEL_CONTROL_TOKEN: "b".repeat(40),
+  REVIEWPLANE_CAPABILITY_SIGNING_KEY: Buffer.alloc(32).toString("base64"),
+  REVIEWPLANE_WORKER_CREDENTIAL: "c".repeat(32),
+  REVIEWPLANE_WORKER_COMMAND_CREDENTIAL: "d".repeat(32),
+};
+
+test("a short credential or signing key is refused", () => {
+  assert.doesNotThrow(() => loadServerConfig(COMPLETE_ENVIRONMENT));
+  for (const weakened of [
+    { REVIEWPLANE_BOOTSTRAP_TOKEN: "short" },
+    { REVIEWPLANE_TUNNEL_CONTROL_TOKEN: "short" },
+    { REVIEWPLANE_WORKER_CREDENTIAL: "short" },
+    { REVIEWPLANE_WORKER_COMMAND_CREDENTIAL: "short" },
+    { REVIEWPLANE_CAPABILITY_SIGNING_KEY: Buffer.alloc(16).toString("base64") },
+  ]) {
+    assert.throws(
+      () => loadServerConfig({ ...COMPLETE_ENVIRONMENT, ...weakened }),
+      `${Object.keys(weakened)[0] ?? ""} was accepted`,
+    );
+  }
+});
+
+test("an unroutable worker endpoint is refused", () => {
   assert.throws(() =>
-    loadServerConfig({ ...base, REVIEWPLANE_CAPABILITY_SIGNING_KEY: Buffer.alloc(16).toString("base64") }),
+    loadServerConfig({ ...COMPLETE_ENVIRONMENT, REVIEWPLANE_WORKER_ENDPOINT: "browser-worker:8090" }),
   );
 });
 
 test("defaults are the documented ones", () => {
-  const config = loadServerConfig({
-    REVIEWPLANE_DATABASE_URL: "postgres://localhost/reviewplane",
-    REVIEWPLANE_BOOTSTRAP_TOKEN: "a".repeat(40),
-    REVIEWPLANE_TUNNEL_CONTROL_TOKEN: "b".repeat(40),
-    REVIEWPLANE_CAPABILITY_SIGNING_KEY: Buffer.alloc(32).toString("base64"),
-  });
+  const config = loadServerConfig(COMPLETE_ENVIRONMENT);
   assert.equal(config.internalSuffix, "internal.invalid");
   assert.equal(config.capabilityTtlSeconds, 300);
   assert.equal(config.routeTtlMaxSeconds, 8 * 60 * 60);
   assert.equal(config.port, 8080);
+  assert.equal(config.workerEndpoint, "http://browser-worker:8090");
+  assert.equal(config.artefactPath, "/var/lib/reviewplane/artefacts");
 });

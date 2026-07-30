@@ -5,6 +5,15 @@
     "lib": ["es2023"],
     "module": "nodenext",
     "moduleResolution": "nodenext",
+    // A workspace package is consumed from its TypeScript source during
+    // development and from its build output in a release. `pnpm typecheck`
+    // and `pnpm test` therefore work on a fresh clone with no prior build,
+    // which docs/DEVELOPMENT.md section 5 requires of a root command. Each
+    // package's `tsconfig.build.json` clears this so emit resolves the built
+    // output instead and never pulls another package's sources into its own
+    // output directory. At run time the matching flag is
+    // `node --conditions=development`.
+    "customConditions": ["development"],
     "moduleDetection": "force",
     "allowImportingTsExtensions": true,
     "rewriteRelativeImportExtensions": true,

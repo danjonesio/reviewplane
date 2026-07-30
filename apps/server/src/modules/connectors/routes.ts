@@ -11,7 +11,7 @@ import { X509Certificate } from "node:crypto";
 
 import type { FastifyInstance } from "fastify";
 
-import { requireBootstrapAdministrator } from "../../auth/bootstrap-token.ts";
+import { requireBootstrapAdministrator } from "../../auth.ts";
 import type { Pool } from "../../db/pool.ts";
 import { ApiError } from "../../errors.ts";
 import type { TlsMaterial } from "./certificate-authority.ts";

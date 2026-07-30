@@ -62,3 +62,9 @@ The §21 error-class enumeration is the wire vocabulary and is not extended by t
 
 - API, MCP tool and event schemas join this package under their own version directories as the issues that introduce those surfaces land.
 - When a second protocol version is needed, this ADR is amended with the negotiation rule; Stage 0 deliberately has none.
+
+## Amendment, 2026-07-30: languages are declared per source
+
+The browser-worker protocol (`schemas/browser/v1.schema.json`) added a second source whose two parties — `apps/server` and `apps/browser-worker` — are both TypeScript. Rendering Go for it would require extracting the hand-written Go runtime in `connectorv1/` into a shared package and regenerating every committed Go file to call it through exported names, for no consumer.
+
+Each source therefore declares `x-protocol.languages`, and `pnpm protocol:check` renders and compares exactly the set the source names. This does not weaken decision 1: a change made in one declared language still cannot land without the others. It makes the scope of that guarantee explicit in the schema rather than implicit in the generator, and adding a language later is a one-line change that turns the check red until the new output is committed.

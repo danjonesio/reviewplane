@@ -244,10 +244,10 @@ describe("registration exchange", () => {
     // Stage 0 is single-organisation, so a token minted elsewhere is out of
     // scope for this control plane.
     const issued = await issueEnrolmentToken(harness);
-    await harness.pool.query("insert into organisations (id, name) values ($1, $2) on conflict do nothing", [
-      "org_elsewhere",
-      "Another organisation",
-    ]);
+    await harness.pool.query(
+      "insert into organisations (id, name, slug) values ($1, $2, $3) on conflict do nothing",
+      ["org_elsewhere", "Another organisation", "org-elsewhere"],
+    );
     await harness.pool.query(
       "update connector_enrolment_tokens set organisation_id = $2 where id = $1",
       [issued.id, "org_elsewhere"],

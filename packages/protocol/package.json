@@ -6,14 +6,21 @@
   "description": "Single versioned source for ReviewPlane protocol schemas, with generated TypeScript and Go models.",
   "exports": {
     ".": {
+      "development": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./browser": {
+      "development": "./src/browser.ts",
+      "types": "./dist/browser.d.ts",
+      "default": "./dist/browser.js"
     },
     "./schemas/*": "./schemas/*",
     "./fixtures/*": "./fixtures/*"
   },
   "files": [
     "dist",
+    "src",
     "schemas",
     "fixtures"
   ],

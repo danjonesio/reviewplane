@@ -3,23 +3,59 @@
 The single versioned source for ReviewPlane protocol schemas, with generated
 TypeScript and Go models.
 
-At Stage 0 it covers the version 1 **connector protocol** of
-`docs/CONNECTOR_PROTOCOL.md`. API, MCP and event schemas
-(`docs/DEVELOPMENT.md` §3) are added by the issues that introduce those
-surfaces; they belong in this package, not in a service.
+At Stage 0 it covers two protocols:
+
+- the version 1 **connector protocol** of `docs/CONNECTOR_PROTOCOL.md`, spoken
+  between the Go connector, the Go tunnel gateway and the TypeScript control
+  plane;
+- the version 1 **browser-worker protocol** of `docs/ARCHITECTURE.md` §4.5,
+  §6.4 and §11, spoken between the control-plane server and a central Chromium
+  worker.
+
+API, MCP and event schemas (`docs/DEVELOPMENT.md` §3) are added by the issues
+that introduce those surfaces; they belong in this package, not in a service.
 
 ## Layout
 
 ```text
-schemas/connector/v1.schema.json   the only place a message is defined
-fixtures/connector/v1/             the cross-language corpus and its manifest
-fixtures/capability/v1/            the golden corpus for route-capability tokens
-src/                               hand-written runtime (frames, redaction, canonical JSON,
-                                   route capabilities)
-src/generated/connector/v1/        generated TypeScript models    DO NOT EDIT
-connectorv1/                       hand-written Go runtime, plus  *_gen.go  DO NOT EDIT
-tools/                             the generator and pnpm protocol:check
+schemas/<protocol>/v1.schema.json   the only place a message is defined
+fixtures/<protocol>/v1/             the cross-language corpus and its manifest
+fixtures/capability/v1/             the golden corpus for route-capability tokens
+src/                                hand-written runtime (frames, redaction, canonical JSON,
+                                    route capabilities)
+src/generated/<protocol>/v1/        generated TypeScript models    DO NOT EDIT
+connectorv1/                        hand-written Go runtime, plus  *_gen.go  DO NOT EDIT
+tools/                              the generator and pnpm protocol:check
 ```
+
+Every schema source is listed in `tools/generate.ts` (`SCHEMA_SOURCES`), and
+each source declares the languages it renders in its own
+`x-protocol.languages`.
+
+## Entry points
+
+```ts
+import { decodeControlFrame } from "@reviewplane/protocol";
+import { decodeBrowserFrame } from "@reviewplane/protocol/browser";
+```
+
+The browser protocol is a separate subpath export because both protocols
+declare an `Envelope`, a `MessageType` and a `LIMITS` block; a single namespace
+would make the two indistinguishable at a call site.
+
+## Why the browser protocol renders TypeScript only
+
+`x-protocol.languages` in `schemas/browser/v1.schema.json` is
+`["typescript"]`. Both parties to that protocol — `apps/server` and
+`apps/browser-worker` — are TypeScript, so a Go rendering would have no
+consumer, and producing one would mean extracting the hand-written Go runtime
+in `connectorv1/` into a shared package and regenerating every committed Go
+file to call it through exported names. ADR-0013's guarantee is that a change
+made in one language cannot land in another; scoping the languages in the
+schema keeps that guarantee exact rather than weakening it, because
+`pnpm protocol:check` renders and compares precisely the set the source
+declares. When a Go component needs these messages, the field changes to
+`["typescript", "go"]` and the check starts failing until the Go is committed.
 
 ## Commands
 
@@ -37,10 +73,14 @@ the generator runs `gofmt` so that the committed Go is byte-stable.
 
 These are checked mechanically, not by review alone.
 
-- **One source.** A message, channel, error class or bound exists only in
-  `schemas/connector/v1.schema.json`. `pnpm protocol:check` re-renders both
-  languages and fails if a committed file differs, so a change made in Go alone
-  — or in TypeScript alone — cannot land.
+- **One source.** A message, channel, error class or bound exists only in its
+  `schemas/<protocol>/v1.schema.json`. `pnpm protocol:check` re-renders every
+  language the source declares and fails if a committed file differs, so a
+  change made in Go alone — or in TypeScript alone — cannot land.
+- **A key is never written twice.** `JSON.parse` keeps the last of two
+  identically named keys and reports nothing, which would let a second
+  definition silently replace the first while a `$ref` still pointed at the
+  name. The loader scans the raw text and refuses any duplicate key.
 - **Every string, array, number and payload is bounded.** The generator refuses
   a schema with an unbounded string, an array without `maxItems`, a numeric
   field without `minimum`/`maximum`, or a message payload without
@@ -136,13 +176,25 @@ across the two languages. No protocol field needs one, and the TypeScript side
 refuses it, but the asymmetry is recorded here rather than left to be
 rediscovered.
 
+## The browser-worker protocol's trust rule is in the schema
+
+`browser_command_result` declares `trust` and `instruction_policy`, and an
+`x-requires` rule forbids `navigation`, `snapshot` and `screenshot` when
+`trust` is `trusted_control_plane`. `instruction_policy` is a single-valued
+enumeration. Together they make it structurally impossible to return
+page-derived content without the `untrusted_browser_content` label required by
+ADR-0010 and `docs/SECURITY.md` §11 — the generated validator on both sides of
+the channel refuses the frame, so the rule does not depend on either service
+remembering it.
+
 ## Adding or changing a message
 
-1. Edit `schemas/connector/v1.schema.json`.
-2. Run `pnpm protocol:generate` and commit the generated TypeScript and Go.
-3. Add a fixture to `fixtures/connector/v1/`, list it in `manifest.json` and
+1. Edit the relevant `schemas/<protocol>/v1.schema.json`.
+2. Run `pnpm protocol:generate` and commit the generated files.
+3. Add a fixture to `fixtures/<protocol>/v1/`, list it in `manifest.json` and
    run `pnpm protocol:check --update` to record its canonical encoding.
-4. Update `docs/CONNECTOR_PROTOCOL.md` in the same change.
+4. Update the matching normative document — `docs/CONNECTOR_PROTOCOL.md` or
+   `docs/ARCHITECTURE.md` and `docs/MCP_SPEC.md` — in the same change.
 
 A wire-compatibility break requires a new protocol version and an ADR, per
 `AGENTS.md` "Architecture changes". Stage 0 pins `protocol_version: 1` and does

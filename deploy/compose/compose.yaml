@@ -1,0 +1,157 @@
+# ReviewPlane single-host deployment (ADR-0008).
+#
+# Stage 0 shape. The rules `deploy/compose/README.md` records are enforced
+# here rather than left to the operator:
+#
+#   * only the gateway publishes host ports. Stage 0 has no gateway yet, so
+#     nothing is published: the server and the worker sit on an internal
+#     network and are reached from inside it.
+#   * Chromium runs in `browser-worker`, never in the API container.
+#   * no container mounts the Docker socket.
+#   * PostgreSQL is private; artefacts live on a private volume (ADR-0012).
+#   * secrets are mounted as files.
+#
+# The browser worker is the only component that executes untrusted page
+# content, so its service block carries the `docs/SECURITY.md` section 10
+# isolation controls: a non-root user, a read-only root filesystem, all
+# capabilities dropped except the one Chromium's own sandbox needs, a seccomp
+# profile that permits user-namespace creation and nothing else beyond
+# Docker's default, and no route to the internet.
+
+name: reviewplane
+
+networks:
+  # Reachable by the control plane and the worker only. `internal: true` means
+  # Docker attaches no gateway, so the worker cannot reach the internet even
+  # if a page asks it to.
+  browser:
+    internal: true
+  data:
+    internal: true
+
+volumes:
+  postgres-data:
+  artefact-data:
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    networks: [data]
+    environment:
+      POSTGRES_DB: reviewplane
+      POSTGRES_USER: reviewplane
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reviewplane -d reviewplane"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  server:
+    build:
+      context: ../..
+      dockerfile: apps/server/Dockerfile
+    restart: unless-stopped
+    networks: [data, browser]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      REVIEWPLANE_LISTEN_ADDRESS: 0.0.0.0
+      REVIEWPLANE_PORT: "8080"
+      REVIEWPLANE_DATABASE_URL_FILE: /run/secrets/database_url
+      REVIEWPLANE_BOOTSTRAP_TOKEN_FILE: /run/secrets/bootstrap_token
+      REVIEWPLANE_WORKER_CREDENTIAL_FILE: /run/secrets/worker_credential
+      REVIEWPLANE_WORKER_COMMAND_CREDENTIAL_FILE: /run/secrets/worker_command_credential
+      REVIEWPLANE_WORKER_ENDPOINT: http://browser-worker:8090
+      REVIEWPLANE_ARTEFACT_PATH: /var/lib/reviewplane/artefacts
+    secrets:
+      - database_url
+      - bootstrap_token
+      - worker_credential
+      - worker_command_credential
+    volumes:
+      - artefact-data:/var/lib/reviewplane/artefacts
+    # The control plane never gets the Docker socket (AGENTS.md).
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    user: "10001:10001"
+
+  browser-worker:
+    build:
+      context: ../..
+      dockerfile: apps/browser-worker/Dockerfile
+    restart: unless-stopped
+    # Only the browser network: no route to the data network, and
+    # `internal: true` means no route off the host either. The worker reaches
+    # a development service through the tunnel gateway once that lands, not
+    # through general egress.
+    networks: [browser]
+    environment:
+      REVIEWPLANE_WORKER_NAME: browser-worker-01
+      REVIEWPLANE_WORKER_LISTEN_ADDRESS: 0.0.0.0
+      REVIEWPLANE_WORKER_PORT: "8090"
+      REVIEWPLANE_WORKER_CAPACITY: "4"
+      # docs/SECURITY.md section 10: the Chromium sandbox stays enabled.
+      REVIEWPLANE_WORKER_SANDBOX: required
+      REVIEWPLANE_WORKER_SESSION_ROOT: /var/lib/reviewplane/browser-sessions
+      REVIEWPLANE_CONTROL_PLANE_URL: http://server:8080
+      REVIEWPLANE_WORKER_CREDENTIAL_FILE: /run/secrets/worker_credential
+      REVIEWPLANE_WORKER_COMMAND_CREDENTIAL_FILE: /run/secrets/worker_command_credential
+      REVIEWPLANE_WORKER_SESSION_DURATION_SECONDS: "7200"
+    secrets:
+      - worker_credential
+      - worker_command_credential
+    # No port is published to the host: the worker is reachable only from the
+    # control plane, and no Chromium debugging port is exposed anywhere
+    # (AGENTS.md "Mandatory engineering rules").
+    read_only: true
+    tmpfs:
+      # Per-session ephemeral profile directories. On a tmpfs they never touch
+      # the host disk, and they are removed on termination in any case.
+      - /var/lib/reviewplane/browser-sessions:size=2g,mode=0700,uid=10001,gid=10001
+      - /tmp:size=512m,mode=1777
+      - /home/reviewplane:size=64m,mode=0700,uid=10001,gid=10001
+    user: "10001:10001"
+    cap_drop: [ALL]
+    # Chromium's namespace sandbox chroots itself into an empty directory
+    # inside its new user namespace. That is the single capability it needs,
+    # and dropping it is what forces the unsupported --no-sandbox workaround.
+    cap_add: [SYS_CHROOT]
+    security_opt:
+      - no-new-privileges:true
+      # Docker's default profile with one change: clone, clone3 and unshare
+      # are ungated, because that is what Chromium's sandbox is built on.
+      # Every other gate, including CAP_SYS_ADMIN on mount, pivot_root and
+      # setns, is untouched. Without it Chromium reports "No usable sandbox".
+      - seccomp:./browser-worker-seccomp.json
+    # Chromium's shared-memory use is heavy; the default 64 MB /dev/shm makes
+    # renderers crash rather than making them safer.
+    shm_size: 1gb
+    mem_limit: 4g
+    pids_limit: 512
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8090/internal/v1/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password
+  database_url:
+    file: ./secrets/database_url
+  bootstrap_token:
+    file: ./secrets/bootstrap_token
+  worker_credential:
+    file: ./secrets/worker_credential
+  worker_command_credential:
+    file: ./secrets/worker_command_credential
