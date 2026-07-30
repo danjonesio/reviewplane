@@ -1,0 +1,22 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JQ8ZR3M4T5V6W7X8Y9Z0A1H6",
+  "type": "connector.registration.request",
+  "sent_at": "2026-07-28T10:59:12Z",
+  "connector_id": "con_01JQ8ZR3M4T5V6W7X8Y9Z0A1C2",
+  "payload": {
+    "enrolment_token": "MU5vbmNlLTAxSkFCQ0RFRkdISktMTU5PUFFSU1RVVg",
+    "public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEmqRr5nxYt5CtGkFxVJvR9K3nJ2H8Nn0mTgP1qF7CwXeR4bV2sYUu6ZmD9pKcQaLtXoJ3nBvA5rEsHdWy1IuMNw",
+    "environment": {
+      "name": "dev-ai-03",
+      "platform": "linux",
+      "architecture": "amd64"
+    },
+    "connector": {
+      "version": "0.1.0",
+      "capabilities": [
+        "http-tunnel"
+      ]
+    }
+  }
+}
