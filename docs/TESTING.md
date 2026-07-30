@@ -25,6 +25,14 @@ Tests must prove the primary workflow, distributed protocol behaviour, security 
 - Artefact upload and integrity
 - Job processing
 
+"With real database" makes the disposable database part of the suite's trusted computing base, so it carries requirements of its own (`apps/server/test/support/postgres.ts`, tested by `apps/server/test/test-database.test.ts`).
+
+Readiness MUST be established over the transport the tests use. The official PostgreSQL image runs a temporary server on the container's Unix socket, with no TCP listener, while it applies the environment and the init scripts; a probe run with `docker exec` is answered by that server and says ready while the real one does not exist yet. The caller then connects over TCP and is cut off mid-migration when the entrypoint swaps the servers. This is RVP-62, and the general rule it is an instance of: a readiness check that asks a different question from the caller is not a readiness check.
+
+Every wait in a fixture MUST be bounded in a way that can actually be reached. A deadline read only between attempts is not a bound when an attempt can block for ever, which is what an unbounded subprocess call in a poll loop produces: the run stalls instead of failing, and a stalled gate reports nothing at all. Subprocess invocations in fixtures MUST therefore carry their own timeout, and the bound SHOULD be tested rather than assumed.
+
+A fixture reset MUST NOT be able to deadlock against the code under test. A component's `stop()` returning is not the same instant as its last statement committing, so a reset that truncates while a straggler is writing will sooner or later meet the opposite lock order. Taking the locks with `NOWAIT` removes the possibility rather than the likelihood — a session that never waits for a lock cannot be in a deadlock cycle — and a bounded backoff handles contention. A reset that fails intermittently blames the test that was about to run rather than the one that caused it, which is the hardest failure in a suite to read.
+
 ### Contract
 
 - TypeScript and Go schema compatibility
