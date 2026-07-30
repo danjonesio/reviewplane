@@ -62,6 +62,24 @@ export type DestinationProtocol =
   | "https";
 
 /**
+ * Framing the stream carries after its header (docs/CONNECTOR_PROTOCOL.md section 13.3).
+ * request_response is one bounded HTTP exchange; upgrade is a connection the gateway has
+ * switched to another framing, such as WebSocket, and which therefore lives as long as its
+ * route allows rather than as long as one exchange takes. The connector reads it to choose
+ * a stream's idle window; it never influences which destination is opened, because the
+ * destination is fixed at publication and this header carries no host or port. Absent
+ * means request_response.
+ */
+export const STREAM_MODE_VALUES = [
+  "request_response",
+  "upgrade",
+] as const;
+
+export type StreamMode =
+  | "request_response"
+  | "upgrade";
+
+/**
  * Version 1 message type. Unknown types are rejected, never ignored. This enumeration MUST
  * equal the keys of x-protocol.messages.
  */
@@ -628,9 +646,14 @@ export interface DataStreamHeader {
    */
   readonly destination_protocol: DestinationProtocol;
   /**
-   * Absolute deadline after which the stream is closed.
+   * Absolute deadline after which the stream is closed. It never exceeds the expiry of the
+   * route the stream belongs to.
    */
   readonly deadline: Timestamp;
+  /**
+   * Framing carried after this header. Absent means request_response.
+   */
+  readonly stream_mode?: StreamMode;
 }
 
 /**

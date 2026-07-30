@@ -98,8 +98,26 @@ test("the data-stream header carries the fields of section 12 and no destination
       "stream_id",
       "destination_protocol",
       "deadline",
+      "stream_mode",
     ],
   );
+  // The property list is asserted whole rather than by exclusion, because what
+  // matters is that no host or port has appeared: docs/CONNECTOR_PROTOCOL.md
+  // §12 says the connector opens only the destination bound to route_id, and a
+  // field the browser side could fill in would be how that stopped being true.
+  const optional = header.properties
+    .filter((property) => property.optional)
+    .map((property) => property.name);
+  assert.deepEqual(optional, ["stream_mode"]);
+});
+
+test("stream_mode is a closed set naming exactly the two framings of section 13.3", () => {
+  // A mode this version does not define must be refused rather than treated as
+  // request_response, so that a future framing cannot be silently downgraded
+  // into one the connector would relay on different terms.
+  const mode = model.defs.get("stream_mode");
+  assert.ok(mode !== undefined && mode.kind === "string");
+  assert.deepEqual(mode.enumValues, ["request_response", "upgrade"]);
 });
 
 test("every string in the schema has an explicit size bound", () => {

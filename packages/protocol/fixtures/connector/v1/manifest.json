@@ -85,6 +85,12 @@
       "kind": "data_stream_header",
       "file": "valid/data-stream-header.json",
       "note": "The section 12 header fields. It carries no host or port: the connector opens only the destination already bound to route_id."
+    },
+    {
+      "name": "data-stream-header-upgrade",
+      "kind": "data_stream_header",
+      "file": "valid/data-stream-header-upgrade.json",
+      "note": "The section 13.3 upgraded stream: stream_mode selects the idle window the connector applies, and still carries no host or port. Its deadline is the route's expiry, not one exchange's."
     }
   ],
   "invalid": [
@@ -246,6 +252,13 @@
       "file": "invalid/data-stream-header-with-destination.json",
       "expect_reason": "schema_violation",
       "note": "The browser side cannot smuggle a destination host or port into the stream header (docs/CONNECTOR_PROTOCOL.md section 12, docs/SECURITY.md section 9)."
+    },
+    {
+      "name": "data-stream-header-unknown-mode",
+      "kind": "data_stream_header",
+      "file": "invalid/data-stream-header-unknown-mode.json",
+      "expect_reason": "schema_violation",
+      "note": "stream_mode is a closed set. A mode this version does not define is refused rather than treated as request_response, so a future framing cannot be silently downgraded into one this connector would relay on different terms."
     }
   ]
 }

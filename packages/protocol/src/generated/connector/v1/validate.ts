@@ -126,6 +126,19 @@ export function validateDestinationProtocol(value: unknown, path: string, out: S
 }
 
 /**
+ * Framing the stream carries after its header (docs/CONNECTOR_PROTOCOL.md section 13.3).
+ * request_response is one bounded HTTP exchange; upgrade is a connection the gateway has
+ * switched to another framing, such as WebSocket, and which therefore lives as long as its
+ * route allows rather than as long as one exchange takes. The connector reads it to choose
+ * a stream's idle window; it never influences which destination is opened, because the
+ * destination is fixed at publication and this header carries no host or port. Absent
+ * means request_response.
+ */
+export function validateStreamMode(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["request_response","upgrade"] });
+}
+
+/**
  * Version 1 message type. Unknown types are rejected, never ignored. This enumeration MUST
  * equal the keys of x-protocol.messages.
  */
@@ -536,7 +549,7 @@ export function validateRoutePublishAck(value: unknown, path: string, out: Schem
  * this header carries no host or port.
  */
 export function validateDataStreamHeader(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["route_id", "browser_session_id", "session_capability", "stream_id", "destination_protocol", "deadline"], ["route_id", "browser_session_id", "session_capability", "stream_id", "destination_protocol", "deadline"]);
+  const source = checkObject(value, path, out, ["route_id", "browser_session_id", "session_capability", "stream_id", "destination_protocol", "deadline", "stream_mode"], ["route_id", "browser_session_id", "session_capability", "stream_id", "destination_protocol", "deadline"]);
   if (source === null) return;
   if (source["route_id"] !== undefined) {
     validateIdentifier(source["route_id"], `${path}.route_id`, out);
@@ -555,5 +568,8 @@ export function validateDataStreamHeader(value: unknown, path: string, out: Sche
   }
   if (source["deadline"] !== undefined) {
     validateTimestamp(source["deadline"], `${path}.deadline`, out);
+  }
+  if (source["stream_mode"] !== undefined) {
+    validateStreamMode(source["stream_mode"], `${path}.stream_mode`, out);
   }
 }

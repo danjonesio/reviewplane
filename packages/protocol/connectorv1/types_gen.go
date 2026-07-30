@@ -52,6 +52,25 @@ const (
 // DestinationProtocolValues lists every value in declaration order.
 var DestinationProtocolValues = []DestinationProtocol{DestinationProtocolHTTP, DestinationProtocolHTTPS}
 
+// StreamMode is defined by the connector protocol schema.
+//
+// Framing the stream carries after its header (docs/CONNECTOR_PROTOCOL.md section
+// 13.3). request_response is one bounded HTTP exchange; upgrade is a connection the
+// gateway has switched to another framing, such as WebSocket, and which therefore
+// lives as long as its route allows rather than as long as one exchange takes. The
+// connector reads it to choose a stream's idle window; it never influences which
+// destination is opened, because the destination is fixed at publication and this
+// header carries no host or port. Absent means request_response.
+type StreamMode string
+
+const (
+	StreamModeRequestResponse StreamMode = "request_response"
+	StreamModeUpgrade         StreamMode = "upgrade"
+)
+
+// StreamModeValues lists every value in declaration order.
+var StreamModeValues = []StreamMode{StreamModeRequestResponse, StreamModeUpgrade}
+
 // MessageType is defined by the connector protocol schema.
 //
 // Version 1 message type. Unknown types are rejected, never ignored. This enumeration
@@ -497,8 +516,11 @@ type DataStreamHeader struct {
 	StreamID string `json:"stream_id"`
 	// Protocol spoken to the local destination.
 	DestinationProtocol DestinationProtocol `json:"destination_protocol"`
-	// Absolute deadline after which the stream is closed.
+	// Absolute deadline after which the stream is closed. It never exceeds the expiry of
+	// the route the stream belongs to.
 	Deadline string `json:"deadline"`
+	// Framing carried after this header. Absent means request_response.
+	StreamMode *StreamMode `json:"stream_mode,omitempty"`
 }
 
 // Payload is implemented by every version 1 message payload. The interface is closed:
