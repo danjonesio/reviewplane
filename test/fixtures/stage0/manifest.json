@@ -1,0 +1,158 @@
+{
+  "fixture": "reviewplane-stage0-installation",
+  "fixture_version": 1,
+  "description": "A Stage 0 ReviewPlane installation captured for the Stage 1 upgrade test (RVP-56, docs/TESTING.md section 13). It holds one project, the named review bugs-on-homepage, two human findings with normalised annotations, and one agent-submitted verification whose after screenshot is in the artefact store.",
+  "captured_at": "2026-07-30T19:56:14+00:00",
+  "product": {
+    "repository": "github.com/danjonesio/reviewplane",
+    "stage": "0",
+    "product_commit": "ccd3c9dc41a0c61ea3894580b92dde948fb5763a",
+    "capture_commit": "c34d3a0dbb910f187236041119489670f403ba82",
+    "product_tree_matches_capture_commit": true
+  },
+  "schema": {
+    "migration_head": "0054_idempotency_keys.sql",
+    "migrations_applied": 18,
+    "migrations": [
+      "0001_events.sql",
+      "0002_organisations_and_projects.sql",
+      "0003_connectors.sql",
+      "0020_published_services.sql",
+      "0021_route_capabilities.sql",
+      "0042_browser_workers.sql",
+      "0043_browser_sessions.sql",
+      "0044_artefacts.sql",
+      "0045_viewer_sessions.sql",
+      "0046_reviews.sql",
+      "0047_findings.sql",
+      "0048_annotations.sql",
+      "0049_artefact_metadata_and_grants.sql",
+      "0050_agent_credentials.sql",
+      "0051_workspaces.sql",
+      "0052_agent_sessions.sql",
+      "0053_comments_and_verifications.sql",
+      "0054_idempotency_keys.sql"
+    ]
+  },
+  "database": {
+    "file": "database.sql",
+    "format": "pg_dump plain SQL, schema and data, --column-inserts",
+    "postgres_image": "postgres:18-alpine",
+    "restore": "psql --dbname <empty database> --file database.sql",
+    "excluded_table_data": [
+      "connector_tls_material"
+    ],
+    "row_counts": {
+      "agent_credentials": 1,
+      "agent_sessions": 1,
+      "annotations": 3,
+      "artefact_access_grants": 6,
+      "artefacts": 3,
+      "browser_sessions": 3,
+      "browser_worker_projects": 1,
+      "browser_workers": 1,
+      "comments": 1,
+      "connector_enrolment_tokens": 0,
+      "connector_tls_material": 0,
+      "connectors": 0,
+      "control_leases": 3,
+      "environments": 0,
+      "event_streams": 1,
+      "events": 72,
+      "findings": 2,
+      "idempotency_keys": 9,
+      "organisations": 2,
+      "projects": 1,
+      "published_services": 3,
+      "reviews": 1,
+      "route_capabilities": 3,
+      "schema_migrations": 18,
+      "verification_artefacts": 1,
+      "verifications": 1,
+      "viewer_sessions": 0,
+      "workspaces": 1
+    }
+  },
+  "artefact_store": {
+    "driver": "filesystem",
+    "mode": "full",
+    "root": "artefacts",
+    "key_layout": "sha256/<first two hex characters>/<remaining 62>",
+    "objects": [
+      {
+        "artefact_id": "art_ms7xp0jqfdba4a7459fa36f9565a",
+        "kind": "screenshot",
+        "storage_key": "sha256/43/77b7be6795c14126745f66afe245f159c7d38cc4fe25620abca3bc3efd5f66",
+        "path": "artefacts/sha256/43/77b7be6795c14126745f66afe245f159c7d38cc4fe25620abca3bc3efd5f66",
+        "sha256": "4377b7be6795c14126745f66afe245f159c7d38cc4fe25620abca3bc3efd5f66",
+        "size_bytes": 41099
+      },
+      {
+        "artefact_id": "art_ms7xp0tn1ffc24eb3d6d16c2f614",
+        "kind": "screenshot",
+        "storage_key": "sha256/c1/dde412d399ffdd219636dfcdfcdac7730eb10dcd946cf1db8bbc25b1f69ffe",
+        "path": "artefacts/sha256/c1/dde412d399ffdd219636dfcdfcdac7730eb10dcd946cf1db8bbc25b1f69ffe",
+        "sha256": "c1dde412d399ffdd219636dfcdfcdac7730eb10dcd946cf1db8bbc25b1f69ffe",
+        "size_bytes": 22585
+      },
+      {
+        "artefact_id": "art_ms7xp17oddaeba25d7ed775adc0d",
+        "kind": "screenshot",
+        "storage_key": "sha256/50/cd48ab50da36fa44c97fc252bb638d575788352638b479e5c53703f93f8430",
+        "path": "artefacts/sha256/50/cd48ab50da36fa44c97fc252bb638d575788352638b479e5c53703f93f8430",
+        "sha256": "50cd48ab50da36fa44c97fc252bb638d575788352638b479e5c53703f93f8430",
+        "size_bytes": 40777
+      }
+    ]
+  },
+  "key_material": {
+    "included": false,
+    "excluded_table_data": [
+      "connector_tls_material"
+    ],
+    "note": "The connector certificate authority's private key is generated on first start and lives in connector_tls_material. Its rows are excluded from the dump, so a restore of this fixture generates a new authority. No cleartext credential is present: agent_credentials stores a SHA-256 of an expired throwaway token."
+  },
+  "contents": {
+    "organisation": {
+      "id": "org_ms7xozk0b9886e8e6a6753affefa",
+      "slug": "refresh"
+    },
+    "project": {
+      "id": "prj_ms7xozk6bb5bbe67bf1f185f706d",
+      "slug": "refresh-surplus"
+    },
+    "review": {
+      "id": "rev_ms7xp0ud798dfc9385a579d10d03",
+      "slug": "bugs-on-homepage",
+      "status": "AWAITING_HUMAN_REVIEW"
+    },
+    "findings": [
+      {
+        "id": "fin_ms7xp0una67e96ae314823d9e5db",
+        "status": "AWAITING_HUMAN_REVIEW",
+        "severity": "high",
+        "annotations": 2
+      },
+      {
+        "id": "fin_ms7xp0uyd2191a0bbe122c7b04d2",
+        "status": "OPEN",
+        "severity": "medium",
+        "annotations": 1
+      }
+    ],
+    "verification": {
+      "id": "ver_ms7xp18w8f424e2974f3752945dc",
+      "status": "submitted",
+      "after_artefact_id": "art_ms7xp17oddaeba25d7ed775adc0d"
+    }
+  },
+  "checksums": {
+    "algorithm": "sha256",
+    "files": {
+      "database.sql": "74700ae91d8dbf22047f4cb7052b3aebade587082f1ef5345cbb5adfcda6dc4a",
+      "artefacts/sha256/43/77b7be6795c14126745f66afe245f159c7d38cc4fe25620abca3bc3efd5f66": "4377b7be6795c14126745f66afe245f159c7d38cc4fe25620abca3bc3efd5f66",
+      "artefacts/sha256/c1/dde412d399ffdd219636dfcdfcdac7730eb10dcd946cf1db8bbc25b1f69ffe": "c1dde412d399ffdd219636dfcdfcdac7730eb10dcd946cf1db8bbc25b1f69ffe",
+      "artefacts/sha256/50/cd48ab50da36fa44c97fc252bb638d575788352638b479e5c53703f93f8430": "50cd48ab50da36fa44c97fc252bb638d575788352638b479e5c53703f93f8430"
+    }
+  }
+}
