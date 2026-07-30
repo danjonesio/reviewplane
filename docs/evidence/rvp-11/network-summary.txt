@@ -1,0 +1,29 @@
+Requests the development service received through the route
+==========================================================
+
+PATH                         STATUS HOST HEADER RECEIVED
+/                            200    127.0.0.1:4321
+/assets/site.css             200    127.0.0.1:4321
+/assets/site.js              200    127.0.0.1:4321
+/assets/logo.svg             200    127.0.0.1:4321
+/products                    200    127.0.0.1:4321
+/assets/site.css             200    127.0.0.1:4321
+/assets/site.js              200    127.0.0.1:4321
+/assets/logo.svg             200    127.0.0.1:4321
+/cross-origin                200    127.0.0.1:4321
+/assets/site.css             200    127.0.0.1:4321
+/assets/logo.svg             200    127.0.0.1:4321
+/assets/site.js              200    127.0.0.1:4321
+/absolute-url                200    127.0.0.1:4321
+/assets/site.css             200    127.0.0.1:4321
+/assets/site.js              200    127.0.0.1:4321
+/assets/logo.svg             200    127.0.0.1:4321
+/                            200    127.0.0.1:4321
+/assets/site.css             200    127.0.0.1:4321
+/assets/site.js              200    127.0.0.1:4321
+/assets/logo.svg             200    127.0.0.1:4321
+
+tunnelled requests: 20
+failed requests (status >= 400): 0
+distinct Host values seen: 127.0.0.1:4321
+distinct X-Forwarded-Host values seen: svc-4d90e932a123424b9aaabec22a4fcf53.internal.invalid
