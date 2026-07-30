@@ -23,11 +23,13 @@ deploy/
   airgap/
 docs/
 examples/
+test/
+  fixtures/
 ```
 
 The exact structure may be refined before code is created, but separation between control plane, browser execution and connector must remain.
 
-Existing today: `packages/protocol` (pnpm workspace member and Go module `github.com/danjonesio/reviewplane/packages/protocol`), `apps/server` (pnpm workspace member `@reviewplane/server`: control-plane HTTP API, connector channels, published services, browser-session orchestration, artefacts, reviews and agent sessions), `apps/mcp-server` (`@reviewplane/mcp-server`: the agent-facing MCP endpoint), `apps/browser-worker` (`@reviewplane/browser-worker`), `apps/web` (`@reviewplane/web`), `services/connector` (Go module `github.com/danjonesio/reviewplane/services/connector`), `services/tunnel-gateway` (Go module `github.com/danjonesio/reviewplane/services/tunnel-gateway`), `examples/dev-fixture` and `deploy/compose` (including the edge that serves the web build output). The workspace root carries `pnpm-workspace.yaml`, `tsconfig.base.json`, `eslint.config.js` and `go.work`. Go modules are listed in `go.work` so that a service resolves `packages/protocol` from the working tree rather than from a tag; add each new module there as it is created.
+Existing today: `packages/protocol` (pnpm workspace member and Go module `github.com/danjonesio/reviewplane/packages/protocol`), `apps/server` (pnpm workspace member `@reviewplane/server`: control-plane HTTP API, connector channels, published services, browser-session orchestration, artefacts, reviews and agent sessions), `apps/mcp-server` (`@reviewplane/mcp-server`: the agent-facing MCP endpoint), `apps/browser-worker` (`@reviewplane/browser-worker`), `apps/web` (`@reviewplane/web`), `services/connector` (Go module `github.com/danjonesio/reviewplane/services/connector`), `services/tunnel-gateway` (Go module `github.com/danjonesio/reviewplane/services/tunnel-gateway`), `examples/dev-fixture` and `deploy/compose` (including the edge that serves the web build output). `test/fixtures/` holds committed data fixtures that belong to no single package: `test/fixtures/stage0` is the frozen Stage 0 installation the Stage 1 upgrade test restores (`docs/TESTING.md` §13). The workspace root carries `pnpm-workspace.yaml`, `tsconfig.base.json`, `eslint.config.js` and `go.work`. Go modules are listed in `go.work` so that a service resolves `packages/protocol` from the working tree rather than from a tag; add each new module there as it is created.
 
 Inside a TypeScript application: `src/main.ts` is a thin entry point, `src/app.ts` (or `src/worker.ts`) is composition only, and domain code lives in `src/modules/<domain>/`. Shared files at `src/` are kept to the few things every module needs — configuration, identifiers, errors, authentication, events and the database pool. Migrations are plain SQL in `apps/server/migrations`, applied in lexical order exactly once by the runner in `src/db/migrate.ts`, which records applied file names in `schema_migrations`.
 
@@ -141,7 +143,8 @@ Each run takes its own Compose project name, so two runs on one machine do not s
 - Forward-only by default
 - Transactional where supported
 - Versioned and reviewable
-- Tested against realistic previous-version fixtures
+- Tested against realistic previous-version fixtures — the Stage 0 one is
+  committed at `test/fixtures/stage0/` (`docs/TESTING.md` §13)
 - Do not perform expensive unbounded data migration during ordinary service startup without progress visibility
 
 ## 8. API development
