@@ -31,6 +31,14 @@
     "./testing/config": {
       "//": "The one complete ServerConfig for tests. A second copy in another package would be a second thing to update when a setting is added.",
       "development": "./test/support/config.ts"
+    },
+    "./testing/tls": {
+      "//": "A loopback listener certificate and its ADR-0015 pin, issued by the product's own X.509 code so a test cannot pass against a shape the product would refuse.",
+      "development": "./test/support/listener-tls.ts"
+    },
+    "./testing/publishing": {
+      "//": "The route publisher and tunnel gateway doubles, so a test that needs a published service does not need a connector and a gateway process.",
+      "development": "./test/support/route-doubles.ts"
     }
   },
   "files": [

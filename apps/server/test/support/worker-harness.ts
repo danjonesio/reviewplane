@@ -32,15 +32,16 @@ import {
 } from "@reviewplane/protocol/live-view";
 
 import { buildApp, type BuiltApp } from "../../src/app.ts";
-import type {
-  GatewayRegisterRequest,
-  GatewayRouteView,
-  TunnelGateway,
-} from "../../src/modules/published-services/gateway-client.ts";
+import type { TunnelGateway } from "../../src/modules/published-services/gateway-client.ts";
 import type { RoutePublisher } from "../../src/modules/published-services/service.ts";
 import type { ServerConfig } from "../../src/config.ts";
 import { newId } from "../../src/ids.ts";
 import { testServerConfig } from "./config.ts";
+
+// The publication peers live in their own module so that another package can
+// reach them; they are re-exported here because every existing caller imports
+// them from this harness.
+export { AcceptingGateway, StubRoutePublisher } from "./route-doubles.ts";
 
 export const BOOTSTRAP_TOKEN = "bootstrap-token-for-tests";
 export const WORKER_CREDENTIAL = "worker-credential-for-tests";
@@ -110,46 +111,6 @@ export interface HarnessOptions {
   readonly publisher?: RoutePublisher;
   /** Substitutes the tunnel gateway, which this harness does not run. */
   readonly gateway?: TunnelGateway;
-}
-
-/**
- * A tunnel gateway that accepts every registration and remembers it.
- *
- * The gateway's own behaviour is tested exhaustively in
- * `services/tunnel-gateway`; a control-plane test that needs a publication to
- * reach `ready` needs a peer, not a second gateway to run.
- */
-export class AcceptingGateway implements TunnelGateway {
-  readonly registered: GatewayRegisterRequest[] = [];
-  readonly revokedRoutes: string[] = [];
-
-  register(request: GatewayRegisterRequest): Promise<GatewayRouteView> {
-    this.registered.push(request);
-    return Promise.resolve({
-      route_id: request.route_id,
-      project_id: request.project_id,
-      connector_id: request.connector_id,
-      public_alias: request.public_alias,
-      internal_origin: `https://${request.public_alias}.internal.invalid/`,
-      status: "ready",
-      expires_at: request.expires_at,
-      observed_destination: request.observed_destination,
-      connector_connected: true,
-      streams_opened: 0,
-      streams_active: 0,
-      bytes_to_destination: 0,
-      bytes_from_destination: 0,
-    });
-  }
-
-  revokeRoute(routeId: string): Promise<void> {
-    this.revokedRoutes.push(routeId);
-    return Promise.resolve();
-  }
-
-  revokeCapability(): Promise<void> {
-    return Promise.resolve();
-  }
 }
 
 const DEFAULT_ALLOCATION = {

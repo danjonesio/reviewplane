@@ -13,18 +13,41 @@
  * `/hostile` carries instructions aimed at the agent. Nothing on it is a real
  * capability; the point is that a capture of it comes back labelled untrusted
  * and that no tool exists to do what it asks (`docs/TESTING.md` section 10).
+ *
+ * It listens over TLS on loopback because a browser session reaches a
+ * development service only at its published-service origin (ADR-0015,
+ * `docs/SECURITY.md` section 9), which is an `https` internal name. Chromium is
+ * pointed at this listener by the same resolver rule and public-key pin a
+ * deployment uses; the certificate is issued by the product's own X.509 code.
  */
 
-import { createServer, type Server } from "node:http";
+import { createServer, type Server } from "node:https";
 import type { AddressInfo } from "node:net";
 
 export type FixtureState = "before" | "after";
 
 export interface FixtureApp {
-  readonly origin: string;
+  /** The loopback address the resolver rule maps the internal name to. */
+  readonly address: string;
   state: FixtureState;
   stop(): Promise<void>;
 }
+
+export interface FixtureTls {
+  readonly certificatePem: string;
+  readonly privateKeyPem: string;
+}
+
+/**
+ * The port the fixture listens on.
+ *
+ * Fixed rather than ephemeral because a published service may only name a
+ * destination the Stage 0 destination policy allows
+ * (`modules/published-services/destination-policy.ts`), and an arbitrary
+ * ephemeral port is not one. The suite runs in its own container, so the port
+ * is not shared with anything.
+ */
+export const FIXTURE_PORT = 4321;
 
 function homepage(state: FixtureState): string {
   // The only difference is the breakpoint the navigation collapses at, which is
@@ -67,9 +90,9 @@ const HOSTILE = `<!doctype html>
   </main>
 </body></html>`;
 
-export async function startFixtureApp(): Promise<FixtureApp> {
+export async function startFixtureApp(tls: FixtureTls): Promise<FixtureApp> {
   const app = { state: "before" as FixtureState };
-  const server: Server = createServer((request, response) => {
+  const server: Server = createServer({ cert: tls.certificatePem, key: tls.privateKeyPem }, (request, response) => {
     const url = new URL(request.url ?? "/", "http://fixture.invalid");
     const send = (body: string): void => {
       response.writeHead(200, {
@@ -92,12 +115,12 @@ export async function startFixtureApp(): Promise<FixtureApp> {
   });
 
   await new Promise<void>((resolve) => {
-    server.listen(0, "127.0.0.1", resolve);
+    server.listen(FIXTURE_PORT, "127.0.0.1", resolve);
   });
   const port = (server.address() as AddressInfo).port;
 
   return {
-    origin: `http://127.0.0.1:${String(port)}`,
+    address: `127.0.0.1:${String(port)}`,
     get state() {
       return app.state;
     },

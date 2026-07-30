@@ -34,10 +34,12 @@ import type { ServerConfig } from "@reviewplane/server/config";
 import { migrate, newId } from "@reviewplane/server/domain";
 import { testServerConfig } from "@reviewplane/server/testing/config";
 import { encodePng, sha256 } from "@reviewplane/server/testing/png";
+import { AcceptingGateway, StubRoutePublisher } from "@reviewplane/server/testing/publishing";
+import { issueLoopbackTls, type LoopbackTls } from "@reviewplane/server/testing/tls";
 
 import { buildMcpApp, type BuiltMcpApp } from "../../src/app.ts";
 import type { McpServerConfig } from "../../src/config.ts";
-import { startFixtureApp, type FixtureApp } from "./fixture-app.ts";
+import { FIXTURE_PORT, startFixtureApp, type FixtureApp } from "./fixture-app.ts";
 
 const REPO = join(import.meta.dirname, "..", "..", "..", "..");
 const MIGRATIONS = join(REPO, "apps", "server", "migrations");
@@ -56,6 +58,7 @@ let control: BuiltApp;
 let mcp: BuiltMcpApp;
 let worker: ChildProcess | null = null;
 let fixture: FixtureApp;
+let fixtureTls: LoopbackTls;
 let artefactRoot: string;
 let mcpOrigin: string;
 let controlOrigin: string;
@@ -84,12 +87,94 @@ async function waitFor(what: string, probe: () => Promise<boolean>): Promise<voi
   throw new Error(`${what} did not become ready within 60 seconds`);
 }
 
+interface OpenSession {
+  readonly id: string;
+  readonly control_epoch: number;
+  readonly service_origin: string;
+}
+
+/**
+ * Reserves a browser session, publishes the fixture to it, and allocates it.
+ *
+ * This is the `docs/API.md` section 11 order, and it is the order because the
+ * two facts depend on each other: the route must name the sessions it admits,
+ * and the session must learn its origin and its capability from the route.
+ * Asserting the origin came back from the allocation is what proves the caller
+ * did not choose it.
+ */
+async function openSession(
+  projectId: string,
+  organisationId: string,
+  extra: Readonly<Record<string, unknown>>,
+): Promise<OpenSession> {
+  const app = control.app;
+  const reserved = await app.inject({
+    method: "POST",
+    url: `/api/v1/projects/${projectId}/browser-sessions`,
+    headers: ADMIN,
+    payload: {
+      organisation_id: organisationId,
+      viewport: { width: 390, height: 844, device_scale_factor: 2 },
+      retention_class: "verification_evidence",
+      allocate: false,
+      ...extra,
+    },
+  });
+  assert.equal(reserved.statusCode, 201, reserved.body);
+  const sessionId = (reserved.json() as { data: { id: string } }).data.id;
+
+  // `protocol` describes the connector-to-destination hop, which is plain HTTP
+  // on loopback in a deployment; the TLS this suite's fixture serves stands in
+  // for the gateway leg the browser terminates against.
+  const published = await app.inject({
+    method: "POST",
+    url: `/api/v1/projects/${projectId}/published-services`,
+    headers: ADMIN,
+    payload: {
+      connector_id: "con_integration",
+      workspace_id: "wsp_integration",
+      local_host: "127.0.0.1",
+      local_port: FIXTURE_PORT,
+      protocol: "http",
+      ttl_seconds: 600,
+      allowed_browser_session_ids: [sessionId],
+    },
+  });
+  assert.equal(published.statusCode, 201, published.body);
+  const serviceId = (published.json() as { data: { id: string } }).data.id;
+
+  const allocated = await app.inject({
+    method: "POST",
+    url: `/api/v1/browser-sessions/${sessionId}/allocate`,
+    headers: ADMIN,
+    payload: { published_service_id: serviceId },
+  });
+  assert.equal(allocated.statusCode, 200, allocated.body);
+  const record = (allocated.json() as {
+    data: { id: string; control_epoch: number; service_origin: string; status: string };
+  }).data;
+  assert.equal(record.status, "READY", allocated.body);
+  assert.match(
+    record.service_origin,
+    /^https:\/\/svc-[0-9a-f]+\.internal\.invalid$/u,
+    "the session origin is the route's internal origin, not anything the caller asked for",
+  );
+  return {
+    id: record.id,
+    control_epoch: record.control_epoch,
+    service_origin: record.service_origin,
+  };
+}
+
 before(async () => {
   artefactRoot = await mkdtemp(join(tmpdir(), "reviewplane-integration-"));
   pool = new Pool({ connectionString: databaseUrl(), max: 8 });
   await migrate(pool, MIGRATIONS);
 
-  fixture = await startFixtureApp();
+  // ADR-0015: the browser reaches an internal origin by resolver rule and
+  // public-key pin, so the fixture has to be a TLS listener the pin names.
+  fixtureTls = issueLoopbackTls(["127.0.0.1", "localhost"]);
+  fixture = await startFixtureApp(fixtureTls);
 
   const serverConfig: ServerConfig = testServerConfig({
     host: "127.0.0.1",
@@ -102,7 +187,15 @@ before(async () => {
     artefactPath: artefactRoot,
     workerRequestTimeoutMs: 60000,
   });
-  control = await buildApp({ config: serverConfig, pool });
+  // Publication needs a connector and a tunnel gateway; neither belongs in a
+  // suite whose subject is the agent interface, and both have their own. The
+  // origin a session is bound to is still derived from the route record.
+  control = await buildApp({
+    config: serverConfig,
+    pool,
+    publisher: new StubRoutePublisher(),
+    gateway: new AcceptingGateway(),
+  });
   controlOrigin = await control.app.listen({ host: "127.0.0.1", port: 0 });
 
   const mcpConfig: McpServerConfig = {
@@ -150,6 +243,13 @@ async function startBrowserWorker(): Promise<void> {
         REVIEWPLANE_WORKER_CREDENTIAL: WORKER_CREDENTIAL,
         REVIEWPLANE_WORKER_COMMAND_CREDENTIAL: WORKER_COMMAND_CREDENTIAL,
         REVIEWPLANE_WORKER_SESSION_DURATION_SECONDS: "600",
+        // The deployed mechanism, minus the gateway hop: Chromium resolves the
+        // internal name to the fixture's own loopback listener and trusts that
+        // one public key (ADR-0015). Both settings are required together, and
+        // a worker with neither reaches no internal origin at all.
+        REVIEWPLANE_TUNNEL_INTERNAL_SUFFIX: "internal.invalid",
+        REVIEWPLANE_TUNNEL_GATEWAY_ADDRESS: fixture.address,
+        REVIEWPLANE_TUNNEL_CERTIFICATE_SPKI: fixtureTls.certificateSpki,
       },
       stdio: ["ignore", "pipe", "pipe"],
     },
@@ -241,21 +341,12 @@ test("steps 9 to 12: an MCP client retrieves bugs-on-homepage and submits after 
 
   // A browser session on the fixture application, and a human capture of the
   // defect. This is steps 1 to 8 compressed: the parts before this issue.
-  const humanSession = (
-    (
-      await app.inject({
-        method: "POST",
-        url: `/api/v1/projects/${projectId}/browser-sessions`,
-        headers: ADMIN,
-        payload: {
-          organisation_id: organisationId,
-          viewport: { width: 390, height: 844, device_scale_factor: 2 },
-          service_origin: fixture.origin,
-          retention_class: "verification_evidence",
-        },
-      })
-    ).json() as { data: { id: string; control_epoch: number } }
-  ).data;
+  //
+  // The session is reserved before the route is published and allocated after,
+  // because a session learns its origin and its capability from the route
+  // record and never from its caller (`docs/API.md` section 11): the route has
+  // to name the session, so the identifier has to exist first.
+  const humanSession = await openSession(projectId, organisationId, {});
 
   const navigate = await app.inject({
     method: "POST",
@@ -319,7 +410,7 @@ test("steps 9 to 12: an MCP client retrieves bugs-on-homepage and submits after 
           description: "The collapse breakpoint is 768px but the navigation still wraps at 880px.",
           severity: "high",
           source: "human",
-          url: `${fixture.origin}/`,
+          url: `${humanSession.service_origin}/`,
           viewport: { width: 390, height: 844, device_scale_factor: 2 },
           scroll_position: { x: 0, y: 0 },
           captured_commit: CAPTURED_COMMIT,
@@ -420,23 +511,10 @@ test("steps 9 to 12: an MCP client retrieves bugs-on-homepage and submits after 
   const status = await callTool("agent_session_status", {});
   const agentSessionId = (status["data"] as { agent_session_id: string }).agent_session_id;
 
-  const agentBrowser = (
-    (
-      await app.inject({
-        method: "POST",
-        url: `/api/v1/projects/${projectId}/browser-sessions`,
-        headers: ADMIN,
-        payload: {
-          organisation_id: organisationId,
-          viewport: { width: 390, height: 844, device_scale_factor: 2 },
-          service_origin: fixture.origin,
-          agent_session_id: agentSessionId,
-          controller: { type: "agent", id: agentSessionId },
-          retention_class: "verification_evidence",
-        },
-      })
-    ).json() as { data: { id: string; control_epoch: number } }
-  ).data;
+  const agentBrowser = await openSession(projectId, organisationId, {
+    agent_session_id: agentSessionId,
+    controller: { type: "agent", id: agentSessionId },
+  });
   await app.inject({
     method: "POST",
     url: `/api/v1/browser-sessions/${agentBrowser.id}/commands`,
