@@ -39,7 +39,15 @@ Examples:
 ### Implemented today
 
 The `api`, `mcp` and `jobs` process roles answer all three routes from one
-implementation, so a dashboard reads the same thing for every container.
+implementation, so a dashboard reads the same thing for every container. The
+`api` and `mcp` roles serve them on their own listeners; the `jobs` role has no
+other listener and opens one for them alone, on
+`REVIEWPLANE_JOBS_HEALTH_PORT`. A background role that exposed nothing would
+give an operator no way to ask whether work is being done.
+
+Each role's readiness is the shared set — the database is reachable and every
+committed migration is applied — plus whatever that role owns. The `jobs` role
+adds one check: whether the runner is claiming jobs.
 
 `/health/live` touches nothing outside the process. A database outage MUST NOT
 make liveness fail: restarting would not fix it and would remove the process

@@ -5,10 +5,13 @@
  * timestamp meaning or security-sensitive data and that consumers treat as
  * opaque. The prefix is a debugging convenience only: the protocol schema
  * bounds length and character class and never requires it.
+ *
+ * The minting itself is `@reviewplane/protocol/platform`, so this worker, the
+ * control plane and any Go component produce the same shape from one
+ * definition. Stage 0 built the suffix here from `Date.now().toString(36)` plus
+ * randomness, which carried exactly the creation time section 3 forbids while
+ * the comment above claimed it did not; nothing in this package orders by
+ * identifier, so there was no requirement to preserve.
  */
 
-import { randomBytes } from "node:crypto";
-
-export function newId(prefix: string): string {
-  return `${prefix}${Date.now().toString(36)}${randomBytes(10).toString("hex")}`;
-}
+export { newPrefixedId as newId } from "@reviewplane/protocol/platform";

@@ -256,12 +256,28 @@ reviewplane jobs [--once]      # the jobs role
 reviewplane version            # the build this image carries
 ```
 
+`reviewplane jobs` serves `/health/live`, `/health/ready` and `/version` on
+`REVIEWPLANE_JOBS_HEALTH_PORT` (default `8081`, bound to
+`REVIEWPLANE_JOBS_HEALTH_HOST`, default `0.0.0.0`). A background role that
+exposed nothing would give an operator no way to ask whether work is being
+done, which is the question readiness exists to answer. Its readiness adds one
+check to the shared set: whether the runner is claiming jobs.
+
+Started against a schema that is behind its code, the role **starts and reports
+itself not ready** rather than exiting, and begins claiming when the schema
+catches up. Exiting would leave an orchestrator restarting it in a loop while a
+separate migration step ran; claiming would run handlers against a database
+their code does not match. `reviewplane jobs --once` is the exception: a
+one-shot run has nothing to wait for, so a pending schema is an error.
+
 It reads `REVIEWPLANE_DATABASE_URL` or `REVIEWPLANE_DATABASE_URL_FILE` and
 nothing else, because an operator applying a schema has no gateway, no worker
 and no capability key.
 
 In a source checkout the same command runs as
-`pnpm --filter @reviewplane/server run cli -- migrate`, which needs no build.
+`pnpm --filter @reviewplane/server run cli migrate`, which needs no build.
+There is no `--` separator: pnpm passes one through to the script, and the
+command line would then be asked to run a subcommand called `--`.
 
 Exit codes are the interface: `0` success, `1` failure, `2` a configuration
 error the process cannot start with, and `3` from `migrate --status` when

@@ -23,7 +23,9 @@
  * This module is registered by every process role — `api`, `mcp` and `jobs` —
  * from one definition, because three roles answering the same three routes in
  * three slightly different shapes is how an operator's dashboard comes to mean
- * different things for different containers.
+ * different things for different containers. The `api` and `mcp` roles register
+ * it on the listener they already have; the `jobs` role has no other listener
+ * and opens one for these routes alone (`src/cli.ts`).
  */
 
 import type { FastifyInstance } from "fastify";
@@ -155,11 +157,26 @@ export function registerHealthRoutes(app: FastifyInstance, options: HealthRoutes
 
 /**
  * Renders a failure for an operator without echoing a connection string, a
- * credential or a stack trace (`docs/SECURITY.md` section 18).
+ * credential, a network address or a stack trace (`docs/SECURITY.md`
+ * section 18).
+ *
+ * The address matters as well as the credential. `/health/ready` is the least
+ * protected endpoint the process serves — a probe reaches it without
+ * authenticating — and a driver's message routinely names the host and port it
+ * failed to reach (`connect ECONNREFUSED 10.0.3.7:5432`). That is internal
+ * topology, and an unauthenticated caller learning where the database lives is
+ * a disclosure even though it is not a secret. The failure class is what an
+ * operator needs; the address is in their own configuration.
  */
 function describeFailure(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   const maximum = 200;
-  const scrubbed = message.replaceAll(/(postgres(?:ql)?:\/\/)[^\s"']+/giu, "$1[redacted]");
+  const scrubbed = message
+    .replaceAll(/(postgres(?:ql)?:\/\/)[^\s"']+/giu, "$1[redacted]")
+    // host:port, in either an IPv4 or a bracketed IPv6 form, and a bare
+    // hostname followed by a port.
+    .replaceAll(/\[[0-9A-Fa-f:]+\]:\d{1,5}/gu, "[address redacted]")
+    .replaceAll(/\b(?:\d{1,3}\.){3}\d{1,3}:\d{1,5}\b/gu, "[address redacted]")
+    .replaceAll(/\b[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?:\d{1,5}\b/gu, "[address redacted]");
   return scrubbed.length > maximum ? `${scrubbed.slice(0, maximum)}...` : scrubbed;
 }

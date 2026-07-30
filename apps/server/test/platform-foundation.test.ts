@@ -256,6 +256,64 @@ describe("reviewplane migrate and readiness", () => {
     }
   });
 
+  test("the jobs role serves the three endpoints and reports not-ready before migrating", async () => {
+    // `docs/OPERATIONS.md` section 2 requires every service to expose them, and
+    // a background role that exposed nothing would give an operator no way to
+    // ask whether work is being done. The role must also start against a schema
+    // that is behind its code and report the fact, rather than exiting into an
+    // orchestrator's restart loop while a separate migration step runs.
+    const fresh = await startPostgres();
+    const port = 18081 + Math.floor(Math.random() * 900);
+    process.env["REVIEWPLANE_DATABASE_URL"] = fresh.url;
+    process.env["REVIEWPLANE_JOBS_HEALTH_HOST"] = "127.0.0.1";
+    process.env["REVIEWPLANE_JOBS_HEALTH_PORT"] = String(port);
+    const role = cli(["jobs"]);
+    try {
+      const origin = `http://127.0.0.1:${String(port)}`;
+      await waitForListener(origin);
+
+      const live = await fetch(`${origin}/health/live`);
+      assert.equal(live.status, 200);
+      assert.equal(((await live.json()) as { role: string }).role, "jobs");
+
+      const version = await fetch(`${origin}/version`);
+      assert.equal(version.status, 200);
+      assert.equal(((await version.json()) as { role: string }).role, "jobs");
+
+      const notReady = await fetch(`${origin}/health/ready`);
+      assert.equal(notReady.status, 503, "the jobs role was ready against an unmigrated schema");
+      const body = (await notReady.json()) as {
+        status: string;
+        pending_migrations: number;
+        checks: Record<string, { status: string }>;
+      };
+      assert.equal(body.status, "not_ready");
+      assert.ok(body.pending_migrations > 0);
+      assert.equal(body.checks["job_runner"]?.status, "fail");
+
+      // Once the schema catches up the role starts claiming, and readiness
+      // follows without the process being restarted.
+      const pool = createPool(fresh.url);
+      await migrate(pool);
+      await pool.end();
+      const ready = await waitForReady(`${origin}/health/ready`);
+      assert.equal(ready.status, 200, "the jobs role never became ready after migrating");
+      assert.equal(
+        ((await ready.json()) as { checks: Record<string, { status: string }> }).checks[
+          "job_runner"
+        ]?.status,
+        "pass",
+      );
+    } finally {
+      process.emit("SIGTERM");
+      await role;
+      delete process.env["REVIEWPLANE_DATABASE_URL"];
+      delete process.env["REVIEWPLANE_JOBS_HEALTH_HOST"];
+      delete process.env["REVIEWPLANE_JOBS_HEALTH_PORT"];
+      await fresh.stop();
+    }
+  });
+
   test("the api, mcp and jobs roles all answer the three documented endpoints", async () => {
     // The `api` role is this app; the `mcp` role registers the same module in
     // `apps/mcp-server`, and the `jobs` role in the CLI. What is asserted here
@@ -649,6 +707,32 @@ describe("when the database is unavailable", () => {
     assert.equal(await countEvents(projectId), before);
   });
 });
+
+/** Polls until a listener accepts, so the test does not race the bind. */
+async function waitForListener(origin: string, timeoutMs = 15_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await fetch(`${origin}/health/live`);
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  throw new Error(`nothing was listening on ${origin} within ${String(timeoutMs)} ms`);
+}
+
+/** Polls readiness until it passes, so the test does not race the recheck. */
+async function waitForReady(url: string, timeoutMs = 30_000): Promise<Response> {
+  const deadline = Date.now() + timeoutMs;
+  let last = await fetch(url);
+  while (Date.now() < deadline) {
+    if (last.status === 200) return last;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    last = await fetch(url);
+  }
+  return last;
+}
 
 async function countEvents(projectId: string): Promise<number> {
   const rows = await postgres.pool.query<{ count: string }>(

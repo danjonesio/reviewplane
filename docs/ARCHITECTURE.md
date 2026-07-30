@@ -87,7 +87,8 @@ them. `realtime` is not separated: event fan-out runs in the `api` process,
 reading the outbox of §10, and separating it later changes which process runs
 the dispatcher rather than how an event reaches a subscriber. Every role answers
 `/health/live`, `/health/ready` and `/version` from one implementation
-(`docs/OPERATIONS.md` §2).
+(`docs/OPERATIONS.md` §2); the `jobs` role opens a listener for those routes
+alone, since it has no other.
 
 Responsibilities:
 

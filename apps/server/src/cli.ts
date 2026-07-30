@@ -26,11 +26,13 @@ import { readFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import Fastify from "fastify";
+
 import { buildApp } from "./app.ts";
 import { ConfigurationError, loadServerConfig } from "./config.ts";
 import { migrate, migrationState } from "./db/migrate.ts";
 import { createPool, type Pool } from "./db/pool.ts";
-import { readBuildInfo } from "./health.ts";
+import { readBuildInfo, registerHealthRoutes } from "./health.ts";
 import { JobRunner } from "./jobs/runner.ts";
 
 /** Exit code for `migrate --status` when the schema is behind the code. */
@@ -40,7 +42,8 @@ const USAGE = `reviewplane <command>
 
   migrate [--status]   apply pending database migrations, or report them
   serve                run the api role
-  jobs [--once]        run the jobs role
+  jobs [--once]        run the jobs role, serving /health/live, /health/ready
+                       and /version on REVIEWPLANE_JOBS_HEALTH_PORT (8081)
   version              print the build information
 
 Configuration is read from the environment; see docs/CONFIGURATION.md.
@@ -99,14 +102,18 @@ async function runServe(pool: Pool): Promise<number> {
   return 0;
 }
 
+/**
+ * How often the role re-checks whether the schema has caught up with its code.
+ *
+ * A deployment that migrates in a separate step starts this process against a
+ * schema that is briefly behind. Exiting would leave an orchestrator restarting
+ * it in a loop; claiming jobs would run handlers against a database their code
+ * does not match. So it starts, reports itself not ready, and begins work when
+ * the schema is current.
+ */
+const SCHEMA_RECHECK_INTERVAL_MS = 5_000;
+
 async function runJobs(pool: Pool, once: boolean): Promise<number> {
-  const state = await migrationState(pool);
-  if (state.pending.length > 0) {
-    process.stderr.write(
-      `the jobs role will not start against a schema with ${String(state.pending.length)} pending migration(s); run reviewplane migrate first\n`,
-    );
-    return 1;
-  }
   const runner = new JobRunner({
     pool,
     handlers: {},
@@ -119,17 +126,88 @@ async function runJobs(pool: Pool, once: boolean): Promise<number> {
       },
     },
   });
+
   if (once) {
+    const state = await migrationState(pool);
+    if (state.pending.length > 0) {
+      process.stderr.write(
+        `a one-shot run will not claim jobs against a schema with ${String(state.pending.length)} pending migration(s); run reviewplane migrate first\n`,
+      );
+      return 1;
+    }
     const done = await runner.drain();
     write(`ran ${String(done)} job(s)`);
     return 0;
   }
-  runner.start();
-  write(`jobs role running as ${runner.runnerId}`);
+
+  // `docs/OPERATIONS.md` section 2 requires every service to expose the three
+  // endpoints, and this role is a service: without a listener an operator has
+  // no way to ask whether background work is being done, which is exactly the
+  // question readiness exists to answer. The listener serves health alone.
+  const health = Fastify({ logger: false });
+  let claiming = false;
+  registerHealthRoutes(health, {
+    role: "jobs",
+    pool,
+    checks: [
+      {
+        name: "job_runner",
+        run: async () =>
+          Promise.resolve(
+            claiming
+              ? { ready: true, detail: `claiming as ${runner.runnerId}` }
+              : { ready: false, detail: "waiting for the schema to reach this build" },
+          ),
+      },
+    ],
+  });
+  const address = await health.listen({ host: jobsHealthHost(), port: jobsHealthPort() });
+  write(`jobs role health endpoints on ${address}`);
+
+  const startWhenMigrated = async (): Promise<boolean> => {
+    const state = await migrationState(pool).catch(() => null);
+    if (state === null || state.pending.length > 0) return false;
+    runner.start();
+    claiming = true;
+    write(`jobs role claiming as ${runner.runnerId}`);
+    return true;
+  };
+
+  let recheck: NodeJS.Timeout | null = null;
+  if (!(await startWhenMigrated())) {
+    write("jobs role is not ready: the schema is behind this build; run reviewplane migrate");
+    recheck = setInterval(() => {
+      void startWhenMigrated().then((started) => {
+        if (started && recheck !== null) {
+          clearInterval(recheck);
+          recheck = null;
+        }
+      });
+    }, SCHEMA_RECHECK_INTERVAL_MS);
+    recheck.unref();
+  }
+
   await waitForSignal(async () => {
+    if (recheck !== null) clearInterval(recheck);
     await runner.stop();
+    await health.close();
   });
   return 0;
+}
+
+/** Listen address for the jobs role's health endpoints. */
+function jobsHealthHost(): string {
+  return process.env["REVIEWPLANE_JOBS_HEALTH_HOST"] ?? "0.0.0.0";
+}
+
+function jobsHealthPort(): number {
+  const raw = process.env["REVIEWPLANE_JOBS_HEALTH_PORT"];
+  if (raw === undefined || raw === "") return 8081;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65535) {
+    throw new ConfigurationError("REVIEWPLANE_JOBS_HEALTH_PORT must be a port number.");
+  }
+  return parsed;
 }
 
 /** Resolves when the process is asked to stop, after running `shutdown`. */
