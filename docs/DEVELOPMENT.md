@@ -27,7 +27,9 @@ examples/
 
 The exact structure may be refined before code is created, but separation between control plane, browser execution and connector must remain.
 
-Existing today: `packages/protocol` (pnpm workspace member and Go module `github.com/danjonesio/reviewplane/packages/protocol`), plus the workspace root that carries `pnpm-workspace.yaml`, `tsconfig.base.json`, `eslint.config.js` and `go.work`. Go modules are listed in `go.work` so that a service resolves `packages/protocol` from the working tree rather than from a tag; add each new module there as it is created.
+Existing today: `packages/protocol` (pnpm workspace member and Go module `github.com/danjonesio/reviewplane/packages/protocol`), `apps/server`, `apps/browser-worker` and `deploy/compose`, plus the workspace root that carries `pnpm-workspace.yaml`, `tsconfig.base.json`, `eslint.config.js` and `go.work`. Go modules are listed in `go.work` so that a service resolves `packages/protocol` from the working tree rather than from a tag; add each new module there as it is created.
+
+Inside a TypeScript application: `src/main.ts` is a thin entry point, `src/app.ts` (or `src/worker.ts`) is composition only, and domain code lives in `src/modules/<domain>/`. Shared files at `src/` are kept to the few things every module needs — configuration, identifiers, errors, authentication, events and the database pool.
 
 ## 2. Toolchain direction
 
@@ -57,7 +59,9 @@ Generate or validate Go and TypeScript models from one versioned source. Do not 
 
 The mechanism is ADR-0013. Each protocol version has one machine-readable source — for the connector protocol, `packages/protocol/schemas/connector/v1.schema.json` — from which `pnpm protocol:generate` renders the committed TypeScript and Go. `pnpm protocol:check` re-renders both in memory and fails when a committed file differs, so a change made in one language alone cannot land. It also runs the committed cross-language fixture corpus and the Go test suite. The Go toolchain is required for both commands, because the generator formats its Go output with `gofmt`.
 
-Connector-protocol messages are implemented today. API, MCP and event schemas join the package as the issues that introduce those surfaces land.
+Connector-protocol messages and browser-worker messages (`packages/protocol/schemas/browser/v1.schema.json`) are implemented today. API, MCP and event schemas join the package as the issues that introduce those surfaces land.
+
+Each schema source declares the languages it renders in its own `x-protocol.languages`, and `pnpm protocol:check` compares exactly that set. The browser-worker protocol declares `["typescript"]`: both its parties, `apps/server` and `apps/browser-worker`, are TypeScript, so a Go rendering would have no consumer. Declaring the set keeps the ADR-0013 guarantee exact rather than weakening it — when a Go component needs those messages the field changes and the check starts failing until the Go is committed.
 
 ## 4. Local development modes
 
@@ -103,7 +107,11 @@ go vet ./...
 
 Prefer root orchestration commands that run the correct service-specific tooling.
 
-Working today at the repository root: `pnpm install`, `pnpm build`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm protocol:generate` and `pnpm protocol:check`. `go test ./...` and `go vet ./...` run from a module directory such as `packages/protocol`. The remaining scripts arrive with the surfaces they exercise.
+Working today at the repository root: `pnpm install`, `pnpm build`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm test:browser`, `pnpm protocol:generate` and `pnpm protocol:check`. `go test ./...` and `go vet ./...` run from a module directory such as `packages/protocol`. The remaining scripts arrive with the surfaces they exercise.
+
+`pnpm test` needs Docker: the `apps/server` suite starts a disposable PostgreSQL and removes it afterwards, because the artefact and event behaviour it covers is only meaningful against the real database.
+
+`pnpm test:browser` is separate because it needs a Chromium and its system libraries, and because `docs/SECURITY.md` section 10 requires the Chromium sandbox to be enabled. It builds the worker image and runs the suite inside it under the same container controls `deploy/compose/compose.yaml` applies — non-root, `cap-drop ALL` plus `SYS_CHROOT`, the committed seccomp profile, no network — so a green run is evidence about the deployed posture rather than about a developer's machine.
 
 ## 6. Configuration
 
@@ -139,6 +147,14 @@ Working today at the repository root: `pnpm install`, `pnpm build`, `pnpm lint`,
 - Validate control epoch for every interactive command
 - Treat snapshots and page text as untrusted
 - Bound all logs and snapshots
+
+In `apps/browser-worker` these read as:
+
+- `src/session/commands.ts` is the browser-command layer. It takes a session and a protocol command and returns a protocol result; it knows nothing about the control plane beyond an artefact-uploader interface, which is what lets the component tests drive it against `test/browser/fixture-app.ts` with no server running.
+- `src/session/control.ts` holds the epoch and lease arithmetic as pure functions, so the checks are unit-testable and the command path cannot skip one.
+- Page-derived strings pass through `src/session/untrusted.ts` before they reach a protocol validator or a log line. A page controls the length and byte content of its own titles and labels, so those are bounded and stripped of control characters at the boundary.
+- Every wait is bounded. Where Playwright provides no timeout — `page.evaluateHandle`, which runs the snapshot walk inside the page — the worker imposes one, because otherwise the page decides how long a command takes.
+- Element references resolve through Playwright handles held in the worker process, never through a marker written into the page and never through a global the page can reach. A page can detach the node, which makes the interaction fail; it cannot make a reference point somewhere else.
 
 ## 10. Connector development
 

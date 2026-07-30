@@ -618,6 +618,7 @@ Initial stable codes:
 - `BROWSER_SESSION_NOT_ACTIVE`
 - `CONTROL_NOT_OWNED`
 - `CONTROL_EPOCH_STALE`
+- `BROWSER_COMMAND_TIMEOUT`
 - `POLICY_DENIED`
 - `APPROVAL_REQUIRED`
 - `EVIDENCE_REQUIRED`
@@ -625,6 +626,10 @@ Initial stable codes:
 - `UNSUPPORTED_CAPABILITY`
 - `RATE_LIMITED`
 - `INTERNAL_ERROR`
+
+Adding a code is additive within a protocol version, and clients MUST tolerate a code they do not recognise. `BROWSER_COMMAND_TIMEOUT` reports a browser command that exceeded its declared bound; `docs/TESTING.md` section 11 requires that failure to be a stable code rather than an indefinite wait, and no existing code carried that meaning.
+
+`RESOURCE_STALE` is the code for an element reference from a superseded snapshot and for a replayed command sequence. Acting on a stale reference MUST fail with it rather than target whatever now occupies that position.
 
 ## 13. Bounded context
 

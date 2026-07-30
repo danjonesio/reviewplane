@@ -16,6 +16,7 @@
     "lint": "eslint .",
     "typecheck": "pnpm -r --if-present run typecheck",
     "test": "pnpm -r --if-present run test",
+    "test:browser": "pnpm --filter @reviewplane/browser-worker run test:browser:container",
     "test:integration": "pnpm -r --if-present run test:integration",
     "test:e2e": "pnpm -r --if-present run test:e2e",
     "protocol:generate": "pnpm --filter @reviewplane/protocol run generate",
