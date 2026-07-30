@@ -7,11 +7,18 @@
 
 import { createRouter } from "@tanstack/react-router";
 
+import { reviewRoute } from "./routes/review.tsx";
+import { reviewsRoute } from "./routes/reviews.tsx";
 import { rootRoute } from "./routes/root.tsx";
 import { sessionRoute } from "./routes/session.tsx";
 import { sessionsRoute } from "./routes/sessions.tsx";
 
-const routeTree = rootRoute.addChildren([sessionsRoute, sessionRoute]);
+const routeTree = rootRoute.addChildren([
+  sessionsRoute,
+  sessionRoute,
+  reviewsRoute,
+  reviewRoute,
+]);
 
 export const router = createRouter({
   routeTree,

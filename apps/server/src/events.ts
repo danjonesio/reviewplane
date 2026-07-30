@@ -37,6 +37,7 @@ export interface EventCorrelation {
   readonly agent_session_id?: string;
   readonly review_id?: string;
   readonly finding_id?: string;
+  readonly annotation_id?: string;
   readonly artefact_id?: string;
   readonly worker_id?: string;
 }

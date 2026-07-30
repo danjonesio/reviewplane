@@ -11,6 +11,10 @@
  * code rather than a status number.
  */
 
+import type { Annotation, Finding, Review } from "@reviewplane/protocol/review";
+
+export type { Annotation, Finding, Review };
+
 export interface ApiErrorBody {
   readonly error?: { readonly code?: string; readonly message?: string };
 }
@@ -86,6 +90,43 @@ export interface ViewerSession {
   readonly project_ids: readonly string[] | null;
 }
 
+/**
+ * Artefact metadata (`docs/UX_FLOWS.md` section 17).
+ *
+ * `content_rectangle` is the reference frame every annotation on this artefact
+ * is normalised against. It may be absent — an artefact the server could not
+ * measure — and the viewer must degrade rather than guess, because a guessed
+ * frame produces an overlay that looks right and is not.
+ */
+export interface ArtefactContentRectangle {
+  readonly width_px: number;
+  readonly height_px: number;
+}
+
+export interface Artefact {
+  readonly id: string;
+  readonly project_id: string;
+  readonly kind: string;
+  readonly state: string;
+  readonly content_type: string;
+  readonly size_bytes: number | null;
+  readonly sha256: string | null;
+  readonly storage_key: string | null;
+  readonly content_rectangle: ArtefactContentRectangle | null;
+  readonly redaction_state: string;
+  readonly retention_class: string;
+  readonly available_at: string | null;
+}
+
+export interface ArtefactGrant {
+  readonly grant_id: string;
+  readonly artefact_id: string;
+  /** Same-origin path that serves the bytes while the grant is live. */
+  readonly url: string;
+  readonly expires_at: string;
+  readonly expires_in_seconds: number;
+}
+
 export const api = {
   async currentViewer(): Promise<ViewerSession> {
     return request<ViewerSession>("/api/v1/auth/viewer-sessions/current");
@@ -114,6 +155,40 @@ export const api = {
 
   async browserSession(sessionId: string): Promise<BrowserSession> {
     return request<BrowserSession>(`/api/v1/browser-sessions/${encodeURIComponent(sessionId)}`);
+  },
+
+  async reviews(projectId: string): Promise<Review[]> {
+    return request<Review[]>(`/api/v1/projects/${encodeURIComponent(projectId)}/reviews`);
+  },
+
+  async review(reviewId: string): Promise<Review> {
+    return request<Review>(`/api/v1/reviews/${encodeURIComponent(reviewId)}`);
+  },
+
+  async findings(reviewId: string): Promise<Finding[]> {
+    return request<Finding[]>(`/api/v1/reviews/${encodeURIComponent(reviewId)}/findings`);
+  },
+
+  async annotations(findingId: string): Promise<Annotation[]> {
+    return request<Annotation[]>(
+      `/api/v1/findings/${encodeURIComponent(findingId)}/annotations`,
+    );
+  },
+
+  async artefact(artefactId: string): Promise<Artefact> {
+    return request<Artefact>(`/api/v1/artefacts/${encodeURIComponent(artefactId)}`);
+  },
+
+  /**
+   * Mints the short-lived grant that lets an `<img>` load one artefact
+   * (ADR-0019). The returned path is useless to anyone without this viewer's
+   * session cookie, so it is safe to put in an element attribute.
+   */
+  async artefactGrant(artefactId: string): Promise<ArtefactGrant> {
+    return request<ArtefactGrant>(
+      `/api/v1/artefacts/${encodeURIComponent(artefactId)}/grants`,
+      { method: "POST" },
+    );
   },
 };
 

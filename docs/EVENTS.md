@@ -152,9 +152,15 @@ and `AGENTS.md` requires that to leave an audit record.
 - `artefact.upload_started`
 - `artefact.upload_completed`
 - `artefact.upload_failed`
+- `artefact.access_granted`
 - `artefact.redacted`
 - `artefact.expired`
 - `trace.finalised`
+
+`artefact.access_granted` records that a subject was admitted to one artefact's
+bytes and until when (ADR-0019). Reading evidence is an access to the most
+sensitive data the product holds, and section 16 of `docs/SECURITY.md` requires
+it to leave a record.
 
 ### Review
 
@@ -207,6 +213,13 @@ and `AGENTS.md` requires that to leave an audit record.
 Never include secret values.
 
 ## 8. Payload rules
+
+The review-domain events — every `review.*`, `finding.*`, `artefact.*` and
+`screenshot.*` type above — have their envelope and payload shapes defined in
+`packages/protocol/schemas/review/v1.schema.json`, and are the only source for
+them. A payload written by a service and refused by that schema is a defect
+caught by the contract test of `docs/TESTING.md` section 2, which replays the
+stored rows through the generated decoder.
 
 - Payloads are versioned through `schema_version`.
 - Include stable IDs and state transitions.

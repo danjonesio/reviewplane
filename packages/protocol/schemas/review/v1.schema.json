@@ -1,0 +1,1741 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/danjonesio/reviewplane/schemas/review/v1.schema.json",
+  "title": "ReviewPlane review domain, version 1",
+  "description": "Single source for the durable review objects of docs/DOMAIN_MODEL.md sections 14 to 20 and the request bodies and audit events that carry them (docs/API.md sections 12 to 15, docs/EVENTS.md section 7). The review is the system of record (ADR-0004) and annotation geometry is stored apart from the original evidence (ADR-0006), so the shapes here are shared by the HTTP API today and by the MCP tools of docs/MCP_SPEC.md sections 7.6 and 7.7 next. TypeScript models, validators and canonical encoders are generated from this file; hand-maintained equivalents in apps/server or apps/web are a review failure.",
+  "x-protocol": {
+    "name": "review",
+    "version": 1,
+    "languages": ["typescript"],
+    "limits": {
+      "max_review_event_bytes": 32768,
+      "max_request_bytes": 32768
+    },
+    "envelope_limit": "max_review_event_bytes",
+    "channels": {
+      "review": "Review lifecycle: creation, naming and status.",
+      "finding": "Finding lifecycle, including annotation of a finding.",
+      "evidence": "Artefact upload and screenshot capture.",
+      "command": "Request bodies of the human and agent write API.",
+      "refusal": "Stable refusals carried back to a caller."
+    },
+    "directions": ["control_plane_to_client", "client_to_control_plane"],
+    "messages": {
+      "review.created": {
+        "channel": "review",
+        "direction": "control_plane_to_client",
+        "payload": "review_created",
+        "description": "A review exists. It is the durable record the rest of the loop hangs from (ADR-0004), so the event carries the captured source context that makes the review reproducible later."
+      },
+      "review.named": {
+        "channel": "review",
+        "direction": "control_plane_to_client",
+        "payload": "review_named",
+        "description": "A review received or changed its human-facing title and project-scoped slug. Separate from review.created because the slug is a mutable alias (docs/DOMAIN_MODEL.md section 3) whose history has to be readable."
+      },
+      "review.status_changed": {
+        "channel": "review",
+        "direction": "control_plane_to_client",
+        "payload": "review_status_changed",
+        "description": "A review moved between the statuses of docs/DOMAIN_MODEL.md section 14. The actor type is explicit because an agent may not move a review to ACCEPTED."
+      },
+      "finding.created": {
+        "channel": "finding",
+        "direction": "control_plane_to_client",
+        "payload": "finding_created",
+        "description": "A finding exists inside a review, with the captured context of docs/UX_FLOWS.md section 9 that makes it reproducible."
+      },
+      "finding.annotated": {
+        "channel": "finding",
+        "direction": "control_plane_to_client",
+        "payload": "finding_annotated",
+        "description": "An annotation was recorded against a finding's screenshot. The geometry is normalised to the artefact content rectangle and is stored apart from the original bytes (ADR-0006)."
+      },
+      "finding.status_changed": {
+        "channel": "finding",
+        "direction": "control_plane_to_client",
+        "payload": "finding_status_changed",
+        "description": "A finding moved between the statuses of docs/DOMAIN_MODEL.md section 15. A human-authored finding reaching RESOLVED requires a human actor; the denial is a domain rule, not a presentation rule."
+      },
+      "artefact.upload_started": {
+        "channel": "evidence",
+        "direction": "control_plane_to_client",
+        "payload": "artefact_upload_started",
+        "description": "An upload intent was recorded. The artefact is not evidence yet: it becomes available only after the control plane verifies size and digest (docs/API.md section 15)."
+      },
+      "artefact.upload_completed": {
+        "channel": "evidence",
+        "direction": "control_plane_to_client",
+        "payload": "artefact_upload_completed",
+        "description": "The stored bytes were verified against the declared size and digest and the artefact became available."
+      },
+      "artefact.upload_failed": {
+        "channel": "evidence",
+        "direction": "control_plane_to_client",
+        "payload": "artefact_upload_failed",
+        "description": "Verification failed. The artefact stays unavailable and the reason is recorded, because a finding without verified evidence must remain visibly without evidence."
+      },
+      "artefact.access_granted": {
+        "channel": "evidence",
+        "direction": "control_plane_to_client",
+        "payload": "artefact_access_granted",
+        "description": "A short-lived, subject-scoped grant was minted for one artefact (docs/SECURITY.md section 13, ADR-0012, ADR-0019). Reading evidence is an audited access, not an anonymous fetch."
+      },
+      "screenshot.captured": {
+        "channel": "evidence",
+        "direction": "control_plane_to_client",
+        "payload": "screenshot_captured",
+        "description": "A verified screenshot artefact exists, with the content rectangle that annotation geometry is normalised against."
+      }
+    },
+    "standalone": {
+      "review_create_request": {
+        "channel": "command",
+        "def": "review_create_request",
+        "max_bytes_limit": "max_request_bytes",
+        "description": "Body of POST /api/v1/projects/:projectId/reviews (docs/API.md section 12)."
+      },
+      "review_update_request": {
+        "channel": "command",
+        "def": "review_update_request",
+        "max_bytes_limit": "max_request_bytes",
+        "description": "Body of PATCH /api/v1/reviews/:reviewId. Carries expected_version, so a concurrent edit is refused rather than silently overwritten (docs/API.md section 13, docs/MCP_SPEC.md section 11)."
+      },
+      "finding_create_request": {
+        "channel": "command",
+        "def": "finding_create_request",
+        "max_bytes_limit": "max_request_bytes",
+        "description": "Body of POST /api/v1/reviews/:reviewId/findings. The captured context of docs/UX_FLOWS.md section 9 is required, because a finding without it is not reproducible later."
+      },
+      "finding_update_request": {
+        "channel": "command",
+        "def": "finding_update_request",
+        "max_bytes_limit": "max_request_bytes",
+        "description": "Body of PATCH /api/v1/findings/:findingId, including the status transition an agent may or may not perform."
+      },
+      "annotation_create_request": {
+        "channel": "command",
+        "def": "annotation_create_request",
+        "max_bytes_limit": "max_request_bytes",
+        "description": "Body of POST /api/v1/findings/:findingId/annotations. Geometry outside 0 to 1 is refused here rather than clamped, so a coordinate-frame mistake surfaces at the boundary instead of becoming a misplaced overlay."
+      },
+      "domain_error": {
+        "channel": "refusal",
+        "def": "domain_error",
+        "max_bytes_limit": "max_request_bytes",
+        "description": "The docs/API.md section 5 error object, carrying the stable code of docs/MCP_SPEC.md section 12."
+      }
+    },
+    "error_classes": [
+      "AUTHENTICATION_REQUIRED",
+      "AUTHORISATION_DENIED",
+      "PROJECT_CONTEXT_MISMATCH",
+      "RESOURCE_NOT_FOUND",
+      "RESOURCE_STALE",
+      "VERSION_CONFLICT",
+      "IDEMPOTENCY_CONFLICT",
+      "POLICY_DENIED",
+      "EVIDENCE_REQUIRED",
+      "ARTEFACT_UPLOAD_INCOMPLETE",
+      "UNSUPPORTED_CAPABILITY",
+      "RATE_LIMITED",
+      "INTERNAL_ERROR"
+    ],
+    "violation_reasons": {
+      "frame_too_large": {
+        "error_class": null,
+        "description": "The encoded event exceeded its byte bound. Detected on the raw bytes before deserialisation."
+      },
+      "malformed_json": {
+        "error_class": null,
+        "description": "The event was not well-formed JSON, or was truncated."
+      },
+      "unsupported_schema_version": {
+        "error_class": "UNSUPPORTED_CAPABILITY",
+        "description": "schema_version was absent, not an integer, or not a version this build accepts (docs/EVENTS.md section 2)."
+      },
+      "unknown_message_type": {
+        "error_class": "UNSUPPORTED_CAPABILITY",
+        "description": "type was absent or not a version 1 event type. Unknown types are rejected, never ignored."
+      },
+      "payload_too_large": {
+        "error_class": null,
+        "description": "The payload exceeded the byte bound declared for its event type."
+      },
+      "schema_violation": {
+        "error_class": null,
+        "description": "The event parsed but did not satisfy the schema for its type."
+      }
+    },
+    "schema_violation_codes": [
+      "type",
+      "required",
+      "forbidden",
+      "unknown_property",
+      "enum",
+      "const",
+      "pattern",
+      "too_short",
+      "too_long",
+      "too_small",
+      "too_large",
+      "too_few_items",
+      "too_many_items",
+      "duplicate_items",
+      "not_integer"
+    ],
+    "vocabularies": {
+      "geometry_by_annotation_type": {
+        "description": "Which geometry members each annotation type uses. The schema bounds every member to 0 to 1; this list fixes which of them a type requires and which it forbids, and is enforced by requireGeometryForType in src/annotation-geometry.ts because JSON Schema cannot condition a nested object on a sibling property. rectangle and ellipse are a box; point and numbered_marker are a position; arrow is a tail plus a head.",
+        "values": [
+          "rectangle:x,y,width,height",
+          "ellipse:x,y,width,height",
+          "arrow:x,y,x2,y2",
+          "point:x,y",
+          "numbered_marker:x,y"
+        ]
+      },
+      "reference_frame": {
+        "description": "The frame normalised geometry is expressed in. It is the artefact content rectangle of docs/DOMAIN_MODEL.md section 16: the full intrinsic pixel extent of the stored image, origin at its top-left. It is deliberately neither the viewport, nor the element, nor the rendered element box, because those three differ under zoom, container resize and a device-pixel-ratio change while the content rectangle does not.",
+        "values": ["artefact_content_rectangle"]
+      }
+    },
+    "identifier_prefixes": {
+      "review_id": "rev_",
+      "finding_id": "fin_",
+      "annotation_id": "ann_",
+      "artefact_id": "art_",
+      "verification_id": "ver_",
+      "event_id": "evt_",
+      "project_id": "prj_",
+      "organisation_id": "org_",
+      "browser_session_id": "brs_",
+      "workspace_id": "wsp_",
+      "agent_session_id": "ags_",
+      "grant_id": "agr_"
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "description": "Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the value as opaque: the schema bounds only its length and character class and never its documented prefix.",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "timestamp": {
+      "type": "string",
+      "description": "RFC 3339 timestamp in UTC, with a mandatory trailing Z.",
+      "minLength": 20,
+      "maxLength": 30,
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$"
+    },
+    "slug": {
+      "type": "string",
+      "description": "Project-scoped human alias for a review, for example bugs-on-homepage. Unique among active reviews of one project and not across projects (docs/DOMAIN_MODEL.md section 14). A slug is a mutable alias and never an identity.",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$"
+    },
+    "title_text": {
+      "type": "string",
+      "description": "Human-authored title. Rendered as text and never as markup.",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "body_text": {
+      "type": "string",
+      "description": "Human-authored or agent-authored prose: a description, instruction, acceptance criterion or resolution note. Rendered as text and never as markup.",
+      "minLength": 1,
+      "maxLength": 4000,
+      "pattern": "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f]+$"
+    },
+    "reason_text": {
+      "type": "string",
+      "description": "Short operator-facing explanation. Never carries credentials (docs/SECURITY.md section 18).",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "captured_url": {
+      "type": "string",
+      "description": "Absolute URL the finding was captured at. Page-derived and therefore untrusted (ADR-0010): bounded in length and character class, rendered as text, never executed.",
+      "minLength": 1,
+      "maxLength": 2048,
+      "pattern": "^[!-~]+$"
+    },
+    "branch_name": {
+      "type": "string",
+      "description": "Version-control branch the capture was taken from. Recorded so a review can be judged stale later (docs/DOMAIN_MODEL.md section 24), which Stage 0 does not yet compute.",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[!-~]+$"
+    },
+    "commit_sha": {
+      "type": "string",
+      "description": "Version-control commit the capture was taken from.",
+      "minLength": 7,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{7,64}$"
+    },
+    "sha256_hex": {
+      "type": "string",
+      "description": "Lowercase hexadecimal SHA-256 digest, as verified by the control plane.",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "storage_key": {
+      "type": "string",
+      "description": "Content-addressed artefact key. Derived from the digest the server computed and never from a user-entered name (ADR-0012, docs/ARCHITECTURE.md section 5.2), which is why path traversal through it is impossible rather than filtered.",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^sha256/[0-9a-f]{2}/[0-9a-f]{62}$"
+    },
+    "media_type": {
+      "type": "string",
+      "description": "Media type of stored artefact bytes. Bounded to the types Stage 0 stores; active markup is not among them (docs/SECURITY.md section 13).",
+      "enum": ["image/png", "image/jpeg", "application/json", "text/plain"]
+    },
+    "version_number": {
+      "type": "integer",
+      "description": "Optimistic-concurrency version. Every accepted mutation increments it by one; a caller presenting a stale value is refused with VERSION_CONFLICT (docs/API.md section 13, docs/MCP_SPEC.md section 11).",
+      "minimum": 1,
+      "maximum": 2147483647
+    },
+    "sequence_number": {
+      "type": "integer",
+      "description": "Position in the project event stream. Monotonic within a project and not globally (docs/EVENTS.md section 3).",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "marker_number": {
+      "type": "integer",
+      "description": "Ordinal shown inside a numbered marker, so the annotation list and the overlay name the same mark (docs/UX_FLOWS.md section 19).",
+      "minimum": 1,
+      "maximum": 999
+    },
+    "byte_size": {
+      "type": "integer",
+      "description": "Byte length the control plane verified.",
+      "minimum": 1,
+      "maximum": 104857600
+    },
+    "pixel_extent": {
+      "type": "integer",
+      "description": "A dimension in device pixels of the stored image.",
+      "minimum": 1,
+      "maximum": 32767
+    },
+    "css_pixel_offset": {
+      "type": "integer",
+      "description": "An offset in CSS pixels within the captured document.",
+      "minimum": 0,
+      "maximum": 1000000
+    },
+    "normalised_coordinate": {
+      "type": "number",
+      "description": "A coordinate normalised to the artefact content rectangle, inclusive of both bounds (docs/DOMAIN_MODEL.md section 16). A value outside the range is a coordinate-frame mistake and MUST be refused rather than clamped, because clamping turns a wrong frame into a plausible-looking overlay.",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "device_scale_factor": {
+      "type": "number",
+      "description": "Device pixel ratio of the capture. It scales the raster and never the normalised geometry, which is why an annotation lands on the same page region at ratio 1 and at ratio 2.",
+      "minimum": 1,
+      "maximum": 4
+    },
+    "actor_type": {
+      "type": "string",
+      "description": "Who acted (docs/EVENTS.md section 5). Actor identity is never inferred from display text alone, and the distinction between human_user and agent_session is what the acceptance authority rules of docs/DOMAIN_MODEL.md section 15 are decided on.",
+      "enum": [
+        "human_user",
+        "agent_session",
+        "connector",
+        "browser_worker",
+        "system",
+        "integration"
+      ]
+    },
+    "actor": {
+      "type": "object",
+      "description": "The actor of an event or a write. The type is always present, because an authority rule that depends on it must never fall back to a default.",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/actor_type",
+          "description": "Actor type."
+        },
+        "id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Identifier of the acting principal, where one exists."
+        },
+        "display": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Human-readable label. Never used to establish identity."
+        }
+      }
+    },
+    "review_status": {
+      "type": "string",
+      "description": "Review lifecycle status (docs/DOMAIN_MODEL.md section 14).",
+      "enum": [
+        "DRAFT",
+        "READY",
+        "ASSIGNED",
+        "IN_PROGRESS",
+        "AWAITING_HUMAN_REVIEW",
+        "CHANGES_REQUESTED",
+        "ACCEPTED",
+        "CANCELLED",
+        "ARCHIVED"
+      ]
+    },
+    "finding_status": {
+      "type": "string",
+      "description": "Finding lifecycle status (docs/DOMAIN_MODEL.md section 15).",
+      "enum": [
+        "OPEN",
+        "CLAIMED",
+        "IN_PROGRESS",
+        "BLOCKED",
+        "FIXED_UNVERIFIED",
+        "AWAITING_HUMAN_REVIEW",
+        "RESOLVED",
+        "REOPENED",
+        "WONT_FIX",
+        "DUPLICATE"
+      ]
+    },
+    "finding_severity": {
+      "type": "string",
+      "description": "Finding severity (docs/DOMAIN_MODEL.md section 15).",
+      "enum": ["critical", "high", "medium", "low", "suggestion"]
+    },
+    "finding_source": {
+      "type": "string",
+      "description": "Whether a human or an agent authored the finding. It is recorded on the first row rather than derived later, because the acceptance authority rule depends on it for the life of the finding.",
+      "enum": ["human", "agent"]
+    },
+    "annotation_type": {
+      "type": "string",
+      "description": "Annotation shape (docs/DOMAIN_MODEL.md section 16). freehand is listed in the domain model and is deliberately not implemented in Stage 0; its path versioning is a separate decision.",
+      "enum": ["rectangle", "ellipse", "arrow", "point", "numbered_marker"]
+    },
+    "artefact_kind": {
+      "type": "string",
+      "description": "Artefact kind (docs/DOMAIN_MODEL.md section 20).",
+      "enum": [
+        "screenshot",
+        "thumbnail",
+        "trace",
+        "har",
+        "video",
+        "dom_snapshot",
+        "accessibility_snapshot",
+        "console_log",
+        "network_log",
+        "review_export"
+      ]
+    },
+    "artefact_state": {
+      "type": "string",
+      "description": "Whether the artefact may be treated as evidence. Only available has been verified against the declared size and digest (docs/API.md section 15).",
+      "enum": ["pending", "uploaded", "available", "failed"]
+    },
+    "redaction_state": {
+      "type": "string",
+      "description": "Redaction applied to the stored bytes (docs/DOMAIN_MODEL.md section 20, docs/SECURITY.md section 14). Stage 0 records the state and runs no redaction, so an operator can tell an unredacted artefact from a redacted one rather than assuming.",
+      "enum": ["not_applied", "pending", "applied", "failed"]
+    },
+    "retention_class": {
+      "type": "string",
+      "description": "Retention bucket the artefact belongs to (docs/SECURITY.md section 14). Stage 0 stores the classification and runs no expiry job.",
+      "enum": [
+        "action_screenshots",
+        "browser_traces",
+        "session_video",
+        "console_and_network_logs",
+        "verification_evidence"
+      ]
+    },
+    "verification_status": {
+      "type": "string",
+      "description": "Status of a verification submission (docs/DOMAIN_MODEL.md section 19).",
+      "enum": ["submitted", "accepted", "rejected", "superseded"]
+    },
+    "message_type": {
+      "type": "string",
+      "description": "Version 1 event type. Unknown types are rejected, never ignored. This enumeration MUST equal the keys of x-protocol.messages.",
+      "enum": [
+        "review.created",
+        "review.named",
+        "review.status_changed",
+        "finding.created",
+        "finding.annotated",
+        "finding.status_changed",
+        "artefact.upload_started",
+        "artefact.upload_completed",
+        "artefact.upload_failed",
+        "artefact.access_granted",
+        "screenshot.captured"
+      ]
+    },
+    "error_class": {
+      "type": "string",
+      "description": "Stable refusal code, drawn from the docs/MCP_SPEC.md section 12 enumeration so a refusal reaches an agent with the same code the HTTP API reports. This enumeration MUST equal x-protocol.error_classes.",
+      "enum": [
+        "AUTHENTICATION_REQUIRED",
+        "AUTHORISATION_DENIED",
+        "PROJECT_CONTEXT_MISMATCH",
+        "RESOURCE_NOT_FOUND",
+        "RESOURCE_STALE",
+        "VERSION_CONFLICT",
+        "IDEMPOTENCY_CONFLICT",
+        "POLICY_DENIED",
+        "EVIDENCE_REQUIRED",
+        "ARTEFACT_UPLOAD_INCOMPLETE",
+        "UNSUPPORTED_CAPABILITY",
+        "RATE_LIMITED",
+        "INTERNAL_ERROR"
+      ]
+    },
+    "viewport": {
+      "type": "object",
+      "description": "Browser viewport in CSS pixels plus the device pixel ratio (docs/API.md section 11). Recorded on a finding so the capture can be reproduced at the size it was seen at.",
+      "additionalProperties": false,
+      "required": ["width", "height", "device_scale_factor"],
+      "properties": {
+        "width": {
+          "type": "integer",
+          "description": "Viewport width in CSS pixels.",
+          "minimum": 240,
+          "maximum": 3840
+        },
+        "height": {
+          "type": "integer",
+          "description": "Viewport height in CSS pixels.",
+          "minimum": 240,
+          "maximum": 2160
+        },
+        "device_scale_factor": {
+          "$ref": "#/$defs/device_scale_factor",
+          "description": "Device pixel ratio the capture was taken at."
+        }
+      }
+    },
+    "scroll_position": {
+      "type": "object",
+      "description": "Document scroll offset in CSS pixels at capture time. Without it a viewport-sized screenshot cannot be placed back on the page it came from.",
+      "additionalProperties": false,
+      "required": ["x", "y"],
+      "properties": {
+        "x": {
+          "$ref": "#/$defs/css_pixel_offset",
+          "description": "Horizontal scroll offset."
+        },
+        "y": {
+          "$ref": "#/$defs/css_pixel_offset",
+          "description": "Vertical scroll offset."
+        }
+      }
+    },
+    "content_rectangle": {
+      "type": "object",
+      "description": "The reference frame for every normalised coordinate: the intrinsic pixel extent of the stored image, origin at its top-left (docs/DOMAIN_MODEL.md section 16). A renderer converts once, at the edge, from this rectangle to whatever box it is drawing into; mixing CSS pixels, device pixels, the rendered element box and the intrinsic size is the usual cause of a misplaced overlay.",
+      "additionalProperties": false,
+      "required": ["width_px", "height_px"],
+      "properties": {
+        "width_px": {
+          "$ref": "#/$defs/pixel_extent",
+          "description": "Intrinsic width of the stored image in device pixels."
+        },
+        "height_px": {
+          "$ref": "#/$defs/pixel_extent",
+          "description": "Intrinsic height of the stored image in device pixels."
+        }
+      }
+    },
+    "css_pixel_box": {
+      "type": "object",
+      "description": "A rectangle in CSS pixels within the captured document, used only inside element context. Annotation geometry is never expressed this way.",
+      "additionalProperties": false,
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": {
+          "$ref": "#/$defs/css_pixel_offset",
+          "description": "Left edge."
+        },
+        "y": {
+          "$ref": "#/$defs/css_pixel_offset",
+          "description": "Top edge."
+        },
+        "width": {
+          "$ref": "#/$defs/css_pixel_offset",
+          "description": "Width."
+        },
+        "height": {
+          "$ref": "#/$defs/css_pixel_offset",
+          "description": "Height."
+        }
+      }
+    },
+    "annotation_geometry": {
+      "type": "object",
+      "description": "Normalised geometry in the exact shape of docs/DOMAIN_MODEL.md section 16, extended with the head of an arrow. Every member lies between 0 and 1 inclusive against the artefact content rectangle. Which members a type requires is fixed by x-protocol.vocabularies.geometry_by_annotation_type and enforced by requireGeometryForType, because JSON Schema cannot condition a nested object on the sibling type property.",
+      "additionalProperties": false,
+      "required": ["x", "y"],
+      "properties": {
+        "x": {
+          "$ref": "#/$defs/normalised_coordinate",
+          "description": "Left edge for a box, position for a point or marker, tail for an arrow."
+        },
+        "y": {
+          "$ref": "#/$defs/normalised_coordinate",
+          "description": "Top edge for a box, position for a point or marker, tail for an arrow."
+        },
+        "width": {
+          "$ref": "#/$defs/normalised_coordinate",
+          "description": "Box width. Required for rectangle and ellipse, forbidden for the other types."
+        },
+        "height": {
+          "$ref": "#/$defs/normalised_coordinate",
+          "description": "Box height. Required for rectangle and ellipse, forbidden for the other types."
+        },
+        "x2": {
+          "$ref": "#/$defs/normalised_coordinate",
+          "description": "Arrow head, horizontal. Required for arrow, forbidden for the other types."
+        },
+        "y2": {
+          "$ref": "#/$defs/normalised_coordinate",
+          "description": "Arrow head, vertical. Required for arrow, forbidden for the other types."
+        }
+      }
+    },
+    "element_context": {
+      "type": "object",
+      "description": "Optional semantic link to the element under the geometry (docs/DOMAIN_MODEL.md section 17). Selectors are hints, not permanent identity; reproduction must tolerate a changed DOM. Stage 0 stores what a caller supplies and computes nothing.",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "selector": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Selector that located the element. Page-derived and untrusted."
+        },
+        "selector_strategy": {
+          "type": "string",
+          "description": "How the selector was chosen.",
+          "enum": ["testid", "role", "text", "css", "xpath"]
+        },
+        "role": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Accessibility role."
+        },
+        "accessible_name": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Accessible name."
+        },
+        "text_excerpt": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Bounded excerpt of the element's text. Page-derived and untrusted: displayed as text and never followed as instructions (ADR-0010)."
+        },
+        "bounding_box_css_pixels": {
+          "$ref": "#/$defs/css_pixel_box",
+          "description": "Element box in CSS pixels at capture time."
+        },
+        "dom_fingerprint": {
+          "$ref": "#/$defs/sha256_hex",
+          "description": "Digest of the element's structure, so a later reproduction can tell that the DOM changed."
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "description": "A named review: the durable collaboration package and the system of record (docs/DOMAIN_MODEL.md section 14, ADR-0004). organisation_id and project_id are present on the record itself for defence-in-depth filtering (section 3).",
+      "additionalProperties": false,
+      "x-max-bytes": 8192,
+      "required": [
+        "id",
+        "organisation_id",
+        "project_id",
+        "slug",
+        "title",
+        "status",
+        "version",
+        "created_by",
+        "captured_branch",
+        "captured_commit",
+        "captured_workspace_id",
+        "source_browser_session_id",
+        "created_at",
+        "updated_at"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review identifier, conventionally prefixed rev_."
+        },
+        "organisation_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Owning organisation."
+        },
+        "project_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Owning project."
+        },
+        "slug": {
+          "$ref": "#/$defs/slug",
+          "description": "Project-scoped alias, unique among active reviews of this project."
+        },
+        "title": {
+          "$ref": "#/$defs/title_text",
+          "description": "Human-facing title."
+        },
+        "description": {
+          "$ref": "#/$defs/body_text",
+          "description": "Instruction to the agent that will resolve the review."
+        },
+        "status": {
+          "$ref": "#/$defs/review_status",
+          "description": "Lifecycle status."
+        },
+        "version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Optimistic-concurrency version."
+        },
+        "created_by": {
+          "$ref": "#/$defs/actor",
+          "description": "Actor that created the review."
+        },
+        "captured_branch": {
+          "$ref": "#/$defs/branch_name",
+          "description": "Branch the findings were captured from."
+        },
+        "captured_commit": {
+          "$ref": "#/$defs/commit_sha",
+          "description": "Commit the findings were captured from."
+        },
+        "captured_workspace_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Workspace the captured application was running in."
+        },
+        "source_browser_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Browser session the review was captured from. The review outlives it (ADR-0004); the reference records where it came from."
+        },
+        "finding_count": {
+          "type": "integer",
+          "description": "Findings currently in the review.",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "Creation time."
+        },
+        "updated_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "Time of the last accepted mutation."
+        },
+        "closed_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "Time the review reached a terminal status."
+        }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "description": "One actionable unit inside a review (docs/DOMAIN_MODEL.md section 15), carrying the captured context of docs/UX_FLOWS.md section 9 that makes it reproducible after the browser session has gone.",
+      "additionalProperties": false,
+      "x-max-bytes": 8192,
+      "required": [
+        "id",
+        "organisation_id",
+        "project_id",
+        "review_id",
+        "title",
+        "severity",
+        "status",
+        "source",
+        "version",
+        "created_by",
+        "url",
+        "viewport",
+        "scroll_position",
+        "captured_commit",
+        "screenshot_artefact_id",
+        "created_at",
+        "updated_at"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Finding identifier, conventionally prefixed fin_."
+        },
+        "organisation_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Owning organisation."
+        },
+        "project_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Owning project."
+        },
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review the finding belongs to."
+        },
+        "title": {
+          "$ref": "#/$defs/title_text",
+          "description": "Short statement of what is wrong."
+        },
+        "description": {
+          "$ref": "#/$defs/body_text",
+          "description": "Detail a reader needs in order to reproduce and judge the finding."
+        },
+        "severity": {
+          "$ref": "#/$defs/finding_severity",
+          "description": "Severity."
+        },
+        "status": {
+          "$ref": "#/$defs/finding_status",
+          "description": "Lifecycle status."
+        },
+        "source": {
+          "$ref": "#/$defs/finding_source",
+          "description": "Whether a human or an agent authored the finding. A human-authored finding can only be finally accepted by a human."
+        },
+        "version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Optimistic-concurrency version."
+        },
+        "created_by": {
+          "$ref": "#/$defs/actor",
+          "description": "Actor that created the finding."
+        },
+        "url": {
+          "$ref": "#/$defs/captured_url",
+          "description": "URL the finding was captured at."
+        },
+        "viewport": {
+          "$ref": "#/$defs/viewport",
+          "description": "Viewport and device pixel ratio at capture time."
+        },
+        "scroll_position": {
+          "$ref": "#/$defs/scroll_position",
+          "description": "Document scroll offset at capture time."
+        },
+        "captured_commit": {
+          "$ref": "#/$defs/commit_sha",
+          "description": "Commit the capture was taken from."
+        },
+        "screenshot_artefact_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Verified original screenshot the annotations are placed on. The original is immutable and stored apart from the overlay records (ADR-0006)."
+        },
+        "element_context": {
+          "$ref": "#/$defs/element_context",
+          "description": "Element the geometry refers to, where the caller resolved one."
+        },
+        "acceptance_criteria": {
+          "$ref": "#/$defs/body_text",
+          "description": "What a resolution has to demonstrate."
+        },
+        "claimed_by": {
+          "$ref": "#/$defs/actor",
+          "description": "Actor currently working the finding."
+        },
+        "annotation_count": {
+          "type": "integer",
+          "description": "Live annotations on the finding.",
+          "minimum": 0,
+          "maximum": 1000
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "Creation time."
+        },
+        "updated_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "Time of the last accepted mutation."
+        }
+      }
+    },
+    "annotation": {
+      "type": "object",
+      "description": "Structured geometry over an original artefact (docs/DOMAIN_MODEL.md section 16). It references the artefact rather than being drawn into it, which is what makes it editable, queryable and renderable at any size (ADR-0006).",
+      "additionalProperties": false,
+      "x-max-bytes": 4096,
+      "required": [
+        "id",
+        "organisation_id",
+        "project_id",
+        "finding_id",
+        "artefact_id",
+        "type",
+        "geometry",
+        "revision",
+        "created_by",
+        "created_at"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Annotation identifier, conventionally prefixed ann_."
+        },
+        "organisation_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Owning organisation."
+        },
+        "project_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Owning project."
+        },
+        "finding_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Finding the annotation belongs to."
+        },
+        "artefact_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Original artefact the geometry is normalised against."
+        },
+        "type": {
+          "$ref": "#/$defs/annotation_type",
+          "description": "Annotation shape."
+        },
+        "geometry": {
+          "$ref": "#/$defs/annotation_geometry",
+          "description": "Normalised geometry against the artefact content rectangle."
+        },
+        "label": {
+          "$ref": "#/$defs/title_text",
+          "description": "Text alternative for the mark, required by docs/UX_FLOWS.md section 19 so the annotation list conveys the same information as the canvas."
+        },
+        "marker_number": {
+          "$ref": "#/$defs/marker_number",
+          "description": "Ordinal shown inside a numbered marker."
+        },
+        "style_hint": {
+          "type": "string",
+          "description": "Advisory emphasis. A renderer that ignores it still produces a correct overlay, so it can never carry meaning that only appears visually.",
+          "enum": ["default", "critical", "informational"]
+        },
+        "revision": {
+          "$ref": "#/$defs/version_number",
+          "description": "Revision of this annotation. An edit records a new revision and retains the previous one (docs/API.md section 14)."
+        },
+        "created_by": {
+          "$ref": "#/$defs/actor",
+          "description": "Actor that created the revision."
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "Creation time of the revision."
+        },
+        "deleted_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the annotation was withdrawn. The row is retained; the current projection hides it."
+        }
+      }
+    },
+    "artefact": {
+      "type": "object",
+      "description": "Metadata for binary evidence stored outside PostgreSQL (docs/DOMAIN_MODEL.md section 20). PostgreSQL is authoritative for availability: only a verified artefact is evidence.",
+      "additionalProperties": false,
+      "x-max-bytes": 4096,
+      "required": [
+        "id",
+        "organisation_id",
+        "project_id",
+        "kind",
+        "state",
+        "content_type",
+        "redaction_state",
+        "retention_class",
+        "created_at"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Artefact identifier, conventionally prefixed art_."
+        },
+        "organisation_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Owning organisation."
+        },
+        "project_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Owning project."
+        },
+        "kind": {
+          "$ref": "#/$defs/artefact_kind",
+          "description": "What the bytes are."
+        },
+        "state": {
+          "$ref": "#/$defs/artefact_state",
+          "description": "Whether the artefact may be treated as evidence."
+        },
+        "storage_key": {
+          "$ref": "#/$defs/storage_key",
+          "description": "Content-addressed key. Absent until the bytes are stored."
+        },
+        "content_type": {
+          "$ref": "#/$defs/media_type",
+          "description": "Media type of the stored bytes."
+        },
+        "size_bytes": {
+          "$ref": "#/$defs/byte_size",
+          "description": "Byte length the server verified. Absent until verification succeeds."
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256_hex",
+          "description": "Digest the server recomputed from the stored bytes. Absent until verification succeeds."
+        },
+        "content_rectangle": {
+          "$ref": "#/$defs/content_rectangle",
+          "description": "Intrinsic pixel extent of an image artefact, which is the frame annotation geometry is normalised against."
+        },
+        "redaction_state": {
+          "$ref": "#/$defs/redaction_state",
+          "description": "Redaction applied to the stored bytes."
+        },
+        "retention_class": {
+          "$ref": "#/$defs/retention_class",
+          "description": "Retention bucket."
+        },
+        "browser_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Browser session the capture came from, where there was one."
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the upload intent was recorded."
+        },
+        "available_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When verification succeeded and the artefact became evidence."
+        },
+        "expires_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When retention removes the artefact, where a policy sets one."
+        }
+      }
+    },
+    "verification_reference": {
+      "type": "object",
+      "description": "A pointer to a verification submission and the before and after evidence it rests on (docs/DOMAIN_MODEL.md section 19). Stage 0 stores and serves the reference; submission and human acceptance are Stage 1, but the shape is fixed now so an agent's evidence has somewhere to land.",
+      "additionalProperties": false,
+      "x-max-bytes": 4096,
+      "required": ["verification_id", "finding_id", "status", "submitted_by", "submitted_at"],
+      "properties": {
+        "verification_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Verification identifier, conventionally prefixed ver_."
+        },
+        "finding_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Finding the verification concerns."
+        },
+        "status": {
+          "$ref": "#/$defs/verification_status",
+          "description": "Status of the submission."
+        },
+        "submitted_by": {
+          "$ref": "#/$defs/actor",
+          "description": "Actor that submitted it. An agent may submit; only a human may accept a human-authored finding."
+        },
+        "summary": {
+          "$ref": "#/$defs/body_text",
+          "description": "What was changed and how it was checked."
+        },
+        "branch": {
+          "$ref": "#/$defs/branch_name",
+          "description": "Branch the fix was made on."
+        },
+        "commit": {
+          "$ref": "#/$defs/commit_sha",
+          "description": "Commit the fix was made in."
+        },
+        "before_artefact_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Artefact showing the reproduced defect."
+        },
+        "after_artefact_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Artefact showing the state after the fix. A completion claim without one is refused with EVIDENCE_REQUIRED."
+        },
+        "submitted_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "Submission time."
+        },
+        "reviewed_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When a human decided."
+        }
+      }
+    },
+    "error_details": {
+      "type": "object",
+      "description": "Machine-readable detail for a refusal. Bounded rather than free-form, so a refusal cannot become a channel for arbitrary content.",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "current_version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version the record actually holds, returned with VERSION_CONFLICT."
+        },
+        "expected_version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version the caller presented."
+        },
+        "field": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Path of the offending field, where one field is at fault."
+        },
+        "missing_context": {
+          "type": "array",
+          "description": "Captured-context fields a rejected finding lacked (docs/UX_FLOWS.md section 9).",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/reason_text",
+            "description": "Name of a missing field."
+          }
+        },
+        "required_evidence": {
+          "type": "array",
+          "description": "Evidence a completion claim must carry, returned with EVIDENCE_REQUIRED.",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/reason_text",
+            "description": "Name of a missing piece of evidence."
+          }
+        },
+        "retry_after_ms": {
+          "type": "integer",
+          "description": "How long to wait before retrying, returned with RATE_LIMITED.",
+          "minimum": 0,
+          "maximum": 3600000
+        }
+      }
+    },
+    "domain_error": {
+      "type": "object",
+      "description": "The docs/API.md section 5 error object. The code is the stable vocabulary of docs/MCP_SPEC.md section 12; the message is for a human and is never parsed.",
+      "additionalProperties": false,
+      "x-max-bytes": 4096,
+      "required": ["code", "message"],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/error_class",
+          "description": "Stable refusal code."
+        },
+        "message": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Human-readable explanation."
+        },
+        "details": {
+          "$ref": "#/$defs/error_details",
+          "description": "Machine-readable detail."
+        }
+      }
+    },
+    "review_create_request": {
+      "type": "object",
+      "description": "Creates a named review inside a project. The captured source context is required, because a review that cannot say which branch, commit, workspace and session it came from cannot be judged against a later state of the code.",
+      "additionalProperties": false,
+      "x-max-bytes": 8192,
+      "required": [
+        "slug",
+        "title",
+        "captured_branch",
+        "captured_commit",
+        "captured_workspace_id",
+        "source_browser_session_id"
+      ],
+      "properties": {
+        "slug": {
+          "$ref": "#/$defs/slug",
+          "description": "Project-scoped alias, for example bugs-on-homepage."
+        },
+        "title": {
+          "$ref": "#/$defs/title_text",
+          "description": "Human-facing title."
+        },
+        "description": {
+          "$ref": "#/$defs/body_text",
+          "description": "Instruction to the agent that will resolve the review."
+        },
+        "status": {
+          "$ref": "#/$defs/review_status",
+          "description": "Initial status. Defaults to DRAFT; only DRAFT and READY may be requested at creation."
+        },
+        "captured_branch": {
+          "$ref": "#/$defs/branch_name",
+          "description": "Branch the findings were captured from."
+        },
+        "captured_commit": {
+          "$ref": "#/$defs/commit_sha",
+          "description": "Commit the findings were captured from."
+        },
+        "captured_workspace_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Workspace the captured application was running in."
+        },
+        "source_browser_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Browser session the review was captured from."
+        }
+      }
+    },
+    "review_update_request": {
+      "type": "object",
+      "description": "Updates a review. expected_version is mandatory: a collaborative record with two writers needs the refusal more than it needs the convenience.",
+      "additionalProperties": false,
+      "x-max-bytes": 8192,
+      "required": ["expected_version"],
+      "properties": {
+        "expected_version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version the caller last read. A mismatch is refused with VERSION_CONFLICT and the current version in the details."
+        },
+        "title": {
+          "$ref": "#/$defs/title_text",
+          "description": "New title."
+        },
+        "slug": {
+          "$ref": "#/$defs/slug",
+          "description": "New project-scoped alias."
+        },
+        "description": {
+          "$ref": "#/$defs/body_text",
+          "description": "New instruction."
+        },
+        "status": {
+          "$ref": "#/$defs/review_status",
+          "description": "Requested status."
+        }
+      }
+    },
+    "finding_create_request": {
+      "type": "object",
+      "description": "Creates a finding inside a review. Every field of the docs/UX_FLOWS.md section 9 captured-context list is required except element context, which the flow itself marks as best effort; a request missing one is refused rather than stored incomplete.",
+      "additionalProperties": false,
+      "x-max-bytes": 16384,
+      "required": [
+        "title",
+        "severity",
+        "source",
+        "url",
+        "viewport",
+        "scroll_position",
+        "captured_commit",
+        "screenshot_artefact_id"
+      ],
+      "properties": {
+        "title": {
+          "$ref": "#/$defs/title_text",
+          "description": "Short statement of what is wrong."
+        },
+        "description": {
+          "$ref": "#/$defs/body_text",
+          "description": "Detail a reader needs to reproduce and judge the finding."
+        },
+        "severity": {
+          "$ref": "#/$defs/finding_severity",
+          "description": "Severity."
+        },
+        "source": {
+          "$ref": "#/$defs/finding_source",
+          "description": "Whether a human or an agent authored the finding."
+        },
+        "url": {
+          "$ref": "#/$defs/captured_url",
+          "description": "URL the finding was captured at."
+        },
+        "viewport": {
+          "$ref": "#/$defs/viewport",
+          "description": "Viewport and device pixel ratio at capture time."
+        },
+        "scroll_position": {
+          "$ref": "#/$defs/scroll_position",
+          "description": "Document scroll offset at capture time."
+        },
+        "captured_commit": {
+          "$ref": "#/$defs/commit_sha",
+          "description": "Commit the capture was taken from."
+        },
+        "screenshot_artefact_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Verified original screenshot. It must be available, in the same project, before a finding may reference it."
+        },
+        "element_context": {
+          "$ref": "#/$defs/element_context",
+          "description": "Element the geometry refers to, where the caller resolved one. Stage 0 stores it and computes nothing."
+        },
+        "acceptance_criteria": {
+          "$ref": "#/$defs/body_text",
+          "description": "What a resolution has to demonstrate."
+        },
+        "annotations": {
+          "type": "array",
+          "description": "Annotations to record with the finding, in one transaction, so a finding and the geometry that explains it never exist apart.",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/annotation_create_request",
+            "description": "One annotation."
+          }
+        }
+      }
+    },
+    "finding_update_request": {
+      "type": "object",
+      "description": "Updates a finding. The status transition is checked against the authority rules of docs/DOMAIN_MODEL.md section 15 before anything is written.",
+      "additionalProperties": false,
+      "x-max-bytes": 8192,
+      "required": ["expected_version"],
+      "properties": {
+        "expected_version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version the caller last read."
+        },
+        "title": {
+          "$ref": "#/$defs/title_text",
+          "description": "New title."
+        },
+        "description": {
+          "$ref": "#/$defs/body_text",
+          "description": "New detail."
+        },
+        "severity": {
+          "$ref": "#/$defs/finding_severity",
+          "description": "New severity."
+        },
+        "status": {
+          "$ref": "#/$defs/finding_status",
+          "description": "Requested status."
+        },
+        "acceptance_criteria": {
+          "$ref": "#/$defs/body_text",
+          "description": "New acceptance criteria."
+        },
+        "resolution_note": {
+          "$ref": "#/$defs/body_text",
+          "description": "What was done, recorded with a transition towards resolution."
+        }
+      }
+    },
+    "annotation_create_request": {
+      "type": "object",
+      "description": "Records one annotation against a finding's original screenshot. Geometry is validated against 0 to 1 inclusive at this boundary and refused when it falls outside, never clamped.",
+      "additionalProperties": false,
+      "x-max-bytes": 4096,
+      "required": ["artefact_id", "type", "geometry", "label"],
+      "properties": {
+        "artefact_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Original artefact the geometry is normalised against. It must be the finding's screenshot."
+        },
+        "type": {
+          "$ref": "#/$defs/annotation_type",
+          "description": "Annotation shape."
+        },
+        "geometry": {
+          "$ref": "#/$defs/annotation_geometry",
+          "description": "Normalised geometry against the artefact content rectangle."
+        },
+        "label": {
+          "$ref": "#/$defs/title_text",
+          "description": "Text alternative for the mark. Required, because the annotation list is an equal alternative to the canvas rather than a fallback."
+        },
+        "marker_number": {
+          "$ref": "#/$defs/marker_number",
+          "description": "Ordinal for a numbered marker."
+        },
+        "style_hint": {
+          "type": "string",
+          "description": "Advisory emphasis.",
+          "enum": ["default", "critical", "informational"]
+        }
+      }
+    },
+    "review_created": {
+      "type": "object",
+      "description": "Payload of review.created.",
+      "additionalProperties": false,
+      "x-max-bytes": 8192,
+      "required": ["review"],
+      "properties": {
+        "review": {
+          "$ref": "#/$defs/review",
+          "description": "The review as created."
+        }
+      }
+    },
+    "review_named": {
+      "type": "object",
+      "description": "Payload of review.named.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["review_id", "slug", "title"],
+      "properties": {
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review named."
+        },
+        "slug": {
+          "$ref": "#/$defs/slug",
+          "description": "Slug now in force."
+        },
+        "title": {
+          "$ref": "#/$defs/title_text",
+          "description": "Title now in force."
+        },
+        "previous_slug": {
+          "$ref": "#/$defs/slug",
+          "description": "Slug replaced, where this was a rename."
+        }
+      }
+    },
+    "review_status_changed": {
+      "type": "object",
+      "description": "Payload of review.status_changed.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["review_id", "from", "to", "version"],
+      "properties": {
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review that moved."
+        },
+        "from": {
+          "$ref": "#/$defs/review_status",
+          "description": "Status before the transition."
+        },
+        "to": {
+          "$ref": "#/$defs/review_status",
+          "description": "Status after the transition."
+        },
+        "version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version after the transition."
+        },
+        "reason": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Why, where the caller supplied one."
+        }
+      }
+    },
+    "finding_created": {
+      "type": "object",
+      "description": "Payload of finding.created.",
+      "additionalProperties": false,
+      "x-max-bytes": 8192,
+      "required": ["finding"],
+      "properties": {
+        "finding": {
+          "$ref": "#/$defs/finding",
+          "description": "The finding as created."
+        }
+      }
+    },
+    "finding_annotated": {
+      "type": "object",
+      "description": "Payload of finding.annotated.",
+      "additionalProperties": false,
+      "x-max-bytes": 4096,
+      "required": ["annotation"],
+      "properties": {
+        "annotation": {
+          "$ref": "#/$defs/annotation",
+          "description": "The annotation as recorded."
+        }
+      }
+    },
+    "finding_status_changed": {
+      "type": "object",
+      "description": "Payload of finding.status_changed.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["finding_id", "review_id", "from", "to", "version", "source"],
+      "properties": {
+        "finding_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Finding that moved."
+        },
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review it belongs to."
+        },
+        "from": {
+          "$ref": "#/$defs/finding_status",
+          "description": "Status before the transition."
+        },
+        "to": {
+          "$ref": "#/$defs/finding_status",
+          "description": "Status after the transition."
+        },
+        "version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version after the transition."
+        },
+        "source": {
+          "$ref": "#/$defs/finding_source",
+          "description": "Who authored the finding, recorded on the transition so the authority rule that permitted it is legible in the audit trail."
+        },
+        "reason": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Why, where the caller supplied one."
+        }
+      }
+    },
+    "artefact_upload_started": {
+      "type": "object",
+      "description": "Payload of artefact.upload_started.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["artefact_id", "kind", "declared_size_bytes", "declared_sha256"],
+      "properties": {
+        "artefact_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Artefact the intent created."
+        },
+        "kind": {
+          "$ref": "#/$defs/artefact_kind",
+          "description": "Declared kind."
+        },
+        "declared_size_bytes": {
+          "$ref": "#/$defs/byte_size",
+          "description": "Size the uploader declared. It is a claim until the server verifies it."
+        },
+        "declared_sha256": {
+          "$ref": "#/$defs/sha256_hex",
+          "description": "Digest the uploader declared."
+        },
+        "content_type": {
+          "$ref": "#/$defs/media_type",
+          "description": "Declared media type."
+        }
+      }
+    },
+    "artefact_upload_completed": {
+      "type": "object",
+      "description": "Payload of artefact.upload_completed.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["artefact_id", "kind", "sha256", "size_bytes", "storage_key", "redaction_state"],
+      "properties": {
+        "artefact_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Artefact now available."
+        },
+        "kind": {
+          "$ref": "#/$defs/artefact_kind",
+          "description": "Kind."
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256_hex",
+          "description": "Digest the server recomputed from the stored bytes."
+        },
+        "size_bytes": {
+          "$ref": "#/$defs/byte_size",
+          "description": "Byte length the server measured."
+        },
+        "storage_key": {
+          "$ref": "#/$defs/storage_key",
+          "description": "Content-addressed key the bytes were filed under."
+        },
+        "redaction_state": {
+          "$ref": "#/$defs/redaction_state",
+          "description": "Redaction state recorded for the stored bytes."
+        },
+        "content_rectangle": {
+          "$ref": "#/$defs/content_rectangle",
+          "description": "Intrinsic pixel extent, for an image artefact."
+        }
+      }
+    },
+    "artefact_upload_failed": {
+      "type": "object",
+      "description": "Payload of artefact.upload_failed.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["artefact_id", "reason"],
+      "properties": {
+        "artefact_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Artefact that failed verification."
+        },
+        "reason": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Why verification failed."
+        },
+        "code": {
+          "$ref": "#/$defs/error_class",
+          "description": "Stable code the caller was refused with."
+        }
+      }
+    },
+    "artefact_access_granted": {
+      "type": "object",
+      "description": "Payload of artefact.access_granted.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["artefact_id", "grant_id", "subject", "expires_at"],
+      "properties": {
+        "artefact_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Artefact the grant admits to, and only that one."
+        },
+        "grant_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Grant identifier. It appears in the content path and is not a credential on its own: the caller must still authenticate as the grant's subject."
+        },
+        "subject": {
+          "$ref": "#/$defs/actor",
+          "description": "Principal the grant was minted for."
+        },
+        "expires_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the grant stops working."
+        }
+      }
+    },
+    "screenshot_captured": {
+      "type": "object",
+      "description": "Payload of screenshot.captured.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["artefact_id", "sha256", "size_bytes", "content_rectangle"],
+      "properties": {
+        "artefact_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Verified screenshot artefact."
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256_hex",
+          "description": "Digest the server verified."
+        },
+        "size_bytes": {
+          "$ref": "#/$defs/byte_size",
+          "description": "Byte length the server verified."
+        },
+        "content_rectangle": {
+          "$ref": "#/$defs/content_rectangle",
+          "description": "Intrinsic pixel extent, which is the frame annotation geometry is normalised against."
+        },
+        "viewport": {
+          "$ref": "#/$defs/viewport",
+          "description": "Viewport the capture was taken at."
+        }
+      }
+    },
+    "envelope": {
+      "type": "object",
+      "description": "The docs/EVENTS.md section 2 event envelope. Every event names the organisation and project it belongs to, its position in that project's stream, and the actor that caused it; the payload schema is selected by type.",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "schema_version",
+        "sequence",
+        "type",
+        "occurred_at",
+        "organisation_id",
+        "project_id",
+        "actor",
+        "payload"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Event identifier, conventionally prefixed evt_. Consumers deduplicate on it."
+        },
+        "schema_version": {
+          "type": "integer",
+          "description": "Envelope schema version. Stage 0 accepts 1 only; any other value is rejected rather than best-effort parsed.",
+          "const": 1
+        },
+        "sequence": {
+          "$ref": "#/$defs/sequence_number",
+          "description": "Monotonic position within the project stream."
+        },
+        "type": {
+          "$ref": "#/$defs/message_type",
+          "description": "Version 1 event type. Unknown types are rejected."
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the state change happened."
+        },
+        "recorded_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the event was written."
+        },
+        "organisation_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Owning organisation."
+        },
+        "project_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Owning project. Every read of this stream is filtered by it."
+        },
+        "actor": {
+          "$ref": "#/$defs/actor",
+          "description": "Actor that caused the change. Always explicit (docs/EVENTS.md section 5)."
+        },
+        "correlation": {
+          "$ref": "#/$defs/correlation",
+          "description": "Identifiers linking the event to the work that produced it."
+        },
+        "payload": {
+          "type": "object",
+          "description": "Event payload. Its schema is selected by type. The event is bounded by x-protocol.limits.max_review_event_bytes and each payload by its own x-max-bytes.",
+          "x-dynamic": true
+        }
+      }
+    },
+    "correlation": {
+      "type": "object",
+      "description": "Identifiers that link an event to the request, session and records it came from (docs/EVENTS.md section 2). It carries identifiers only: never a request body, a header or a credential (section 8).",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "request_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Request that produced the event."
+        },
+        "causation_event_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Event that caused this one."
+        },
+        "browser_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Browser session concerned."
+        },
+        "agent_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Agent session concerned."
+        },
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review concerned."
+        },
+        "finding_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Finding concerned."
+        },
+        "annotation_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Annotation concerned."
+        },
+        "artefact_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Artefact concerned."
+        }
+      }
+    }
+  }
+}

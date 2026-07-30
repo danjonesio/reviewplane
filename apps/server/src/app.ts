@@ -19,6 +19,8 @@ import { registerLiveRoutes, resolveViewer } from "./modules/live/routes.ts";
 import { ViewerSessionStore } from "./modules/live/viewer-sessions.ts";
 import { WorkerLiveClient } from "./modules/live/worker-live-client.ts";
 import { registerProjectRoutes } from "./modules/projects/routes.ts";
+import { registerReviewRoutes } from "./modules/reviews/routes.ts";
+import { ReviewService } from "./modules/reviews/service.ts";
 
 export interface BuildAppOptions {
   readonly config: ServerConfig;
@@ -33,6 +35,7 @@ export interface BuildAppOptions {
 export interface BuiltApp {
   readonly app: FastifyInstance;
   readonly artefacts: ArtefactService;
+  readonly reviews: ReviewService;
   readonly sessions: BrowserSessionService;
   readonly workers: WorkerRegistry;
   readonly viewers: ViewerSessionStore;
@@ -49,6 +52,7 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
 
   const store = options.artefactStore ?? new FilesystemArtefactStore(config.artefactPath);
   const artefacts = new ArtefactService(pool, store, config.artefactMaxBytes);
+  const reviews = new ReviewService(pool, artefacts);
   const workers = new WorkerRegistry(pool, config.workerCredential);
   const workerClient = new BrowserWorkerClient({
     endpoint: config.workerEndpoint,
@@ -92,7 +96,9 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     bootstrapToken: config.bootstrapToken,
     workerCredential: config.workerCredential,
     maxBytes: config.artefactMaxBytes,
+    viewerAuth,
   });
+  await registerReviewRoutes(app, { pool, reviews, viewerAuth });
   await registerBrowserSessionRoutes(app, {
     sessions,
     workers,
@@ -111,5 +117,5 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     secureCookies: config.secureCookies,
   });
 
-  return { app, artefacts, sessions, workers, viewers, relay };
+  return { app, artefacts, reviews, sessions, workers, viewers, relay };
 }

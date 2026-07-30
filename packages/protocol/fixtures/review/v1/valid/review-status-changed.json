@@ -1,0 +1,25 @@
+{
+  "id": "evt_01JREVIEWREADY",
+  "schema_version": 1,
+  "sequence": 43,
+  "type": "review.status_changed",
+  "occurred_at": "2026-07-30T10:12:04.118Z",
+  "recorded_at": "2026-07-30T10:12:04.126Z",
+  "organisation_id": "org_01JREFRESH",
+  "project_id": "prj_01JREFRESHSURPLUS",
+  "actor": {
+    "type": "human_user",
+    "id": "vwr_01JBOOTSTRAPADMIN",
+    "display": "bootstrap administrator"
+  },
+  "correlation": {
+    "review_id": "rev_01JBUGSONHOMEPAGE"
+  },
+  "payload": {
+    "review_id": "rev_01JBUGSONHOMEPAGE",
+    "from": "DRAFT",
+    "to": "READY",
+    "version": 2,
+    "reason": "Marked ready for the agent session."
+  }
+}

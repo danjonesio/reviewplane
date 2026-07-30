@@ -331,6 +331,23 @@ Redaction status must be recorded on artefacts.
 - Scan downloadable artefacts when configured
 - Do not render active HTML artefacts directly under the control-plane origin
 
+Content-type validation is performed on the bytes and not on the claim. The
+declared media type is what an uploader asserts; the leading bytes are what it
+actually sent. An SVG or an HTML document uploaded as an image is refused
+before anything is stored, so no artefact exists that a viewer could later be
+persuaded to render as active content. Display metadata such as a filename
+never reaches the storage key, which is content-addressed (ADR-0012); a value
+that is a path rather than a name is refused as well.
+
+Reading artefact content is an audited, subject-scoped access (ADR-0019). A
+caller mints a grant for one artefact and reads `/api/v1/artefact-content/`
+followed by the grant identifier; the grant names one artefact, one subject and
+a two-minute expiry, and the request must still authenticate as that subject.
+No route serves an artefact from its identifier, so a leaked artefact
+identifier — which appears in events, in exports and in MCP responses — grants
+nothing. The identifier in the URL is not a credential, which is what keeps
+section 18 satisfied while an `<img>` element can still load evidence.
+
 ## 14. Data retention
 
 Defaults should minimise sensitive persistence:

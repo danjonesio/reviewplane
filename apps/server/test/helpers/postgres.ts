@@ -128,6 +128,6 @@ export async function startPostgres(): Promise<DisposablePostgres> {
 /** Removes every row the tests create, in dependency order. */
 export async function truncateAll(pool: Pool): Promise<void> {
   await pool.query(
-    "TRUNCATE artefacts, control_leases, browser_sessions, browser_worker_projects, browser_workers, events, viewer_sessions, projects, organisations RESTART IDENTITY CASCADE",
+    "TRUNCATE annotations, findings, reviews, artefact_access_grants, artefacts, control_leases, browser_sessions, browser_worker_projects, browser_workers, events, viewer_sessions, projects, organisations RESTART IDENTITY CASCADE",
   );
 }

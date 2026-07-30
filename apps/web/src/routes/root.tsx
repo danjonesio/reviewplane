@@ -43,6 +43,9 @@ function Shell(): ReactElement {
             <Link to="/" className="underline-offset-4 hover:underline">
               Live sessions
             </Link>
+            <Link to="/reviews" className="underline-offset-4 hover:underline">
+              Reviews
+            </Link>
             {signedIn ? (
               <button
                 type="button"

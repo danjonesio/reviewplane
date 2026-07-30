@@ -227,6 +227,29 @@ GET    /api/v1/reviews/:reviewId/export
 
 Review accept checks that all required human-authored findings are resolved or explicitly waived.
 
+`POST /api/v1/projects/:projectId/reviews` requires the captured source context
+of `docs/DOMAIN_MODEL.md` section 14 — `captured_branch`, `captured_commit`,
+`captured_workspace_id` and `source_browser_session_id` — and a project-scoped
+`slug`. A review is created `DRAFT` or `READY`; every other status is reached
+by a transition. A slug that is already in use by an **active** review of the
+same project is refused with `IDEMPOTENCY_CONFLICT`; the same slug in another
+project is unrelated. Active means every status except `CANCELLED` and
+`ARCHIVED`, so a withdrawn review releases its name and an accepted one keeps
+it: an agent told to work on `bugs-on-homepage` must never face two candidates.
+
+`GET /api/v1/projects/:projectId/reviews?slug=...` is the named lookup an agent
+uses; it searches active reviews only.
+
+`ACCEPTED`, `CANCELLED` and `ARCHIVED` reviews are immutable except for
+archival metadata (`docs/DOMAIN_MODEL.md` section 14). An ordinary edit is
+refused with `POLICY_DENIED` rather than silently dropped. Only a `human_user`
+actor may move a review to `ACCEPTED`.
+
+The request and response bodies are the `review_create_request`,
+`review_update_request` and `review` schemas of
+`packages/protocol/schemas/review/v1.schema.json`, and the server validates
+against the generated validator before any domain code runs.
+
 ## 13. Finding endpoints
 
 ```text
@@ -242,17 +265,52 @@ POST   /api/v1/findings/:findingId/reopen
 POST   /api/v1/findings/:findingId/wont-fix
 ```
 
-Updates include `expected_version`.
+Updates include `expected_version`. A mismatch is refused with
+`VERSION_CONFLICT` and the version the record actually holds, so a caller can
+re-read and retry rather than guess.
+
+`POST /api/v1/reviews/:reviewId/findings` requires the captured context of
+`docs/UX_FLOWS.md` section 9: `url`, `viewport` including
+`device_scale_factor`, `scroll_position`, `captured_commit` and
+`screenshot_artefact_id`. A request missing any of them is refused with
+`UNSUPPORTED_CAPABILITY` and a `missing_context` list; a finding that cannot be
+reproduced later is not stored incomplete. `element_context` is optional
+because the flow itself marks it "if available". The screenshot artefact must
+already be `available` — an unverified artefact is refused with
+`ARTEFACT_UPLOAD_INCOMPLETE` — and must belong to the same project. Annotations
+may be supplied inline, and are then written in the same transaction as the
+finding.
+
+Status transitions are checked in this order: version, transition legality,
+actor authority, completion evidence. A human-authored finding cannot be set to
+`RESOLVED`, `WONT_FIX` or `DUPLICATE` by an agent
+(`AUTHORISATION_DENIED`); the transitions an agent may perform are the
+`docs/MCP_SPEC.md` section 7.7 list and nothing else (`POLICY_DENIED`);
+and a move to `FIXED_UNVERIFIED` without a resolution note is refused with
+`EVIDENCE_REQUIRED`. These are domain rules, enforced below the transport, so
+they hold for the MCP surface as well as for this one.
 
 ## 14. Annotation endpoints
 
 ```text
 POST   /api/v1/findings/:findingId/annotations
+GET    /api/v1/findings/:findingId/annotations
 PATCH  /api/v1/annotations/:annotationId
 DELETE /api/v1/annotations/:annotationId
 ```
 
 Annotation changes preserve revision history even if the current projection hides deleted revisions.
+`GET .../annotations` returns the current projection: the newest revision of
+each annotation, with withdrawn ones hidden. `?revisions=all` returns every
+revision, because the history is retained rather than overwritten.
+
+Geometry is normalised to the artefact content rectangle
+(`docs/DOMAIN_MODEL.md` section 16). Every member must lie between 0 and 1
+inclusive, and which members a type carries is fixed by that section. A value
+outside the range, or a member a type does not use, is **refused** with
+`UNSUPPORTED_CAPABILITY` and never clamped: a clamped coordinate produces an
+overlay that looks plausible and is in the wrong place. The annotation's
+`artefact_id` must be the finding's own screenshot.
 
 ## 15. Artefact endpoints
 
@@ -261,7 +319,8 @@ POST   /api/v1/projects/:projectId/artefacts/uploads
 POST   /api/v1/artefacts/:artefactId/content
 POST   /api/v1/artefacts/:artefactId/complete
 GET    /api/v1/artefacts/:artefactId
-GET    /api/v1/artefacts/:artefactId/content
+POST   /api/v1/artefacts/:artefactId/grants
+GET    /api/v1/artefact-content/:grantId
 DELETE /api/v1/artefacts/:artefactId
 ```
 
@@ -273,7 +332,44 @@ DELETE /api/v1/artefacts/:artefactId
 4. Complete with observed hash.
 5. Server verifies before making artefact available.
 
-Under the `filesystem` driver step 2 returns `upload_path`, the proxied endpoint above; the `s3` driver may return a presigned URL instead. Step 5 is the whole point of the flow: the server recomputes the digest of the bytes it stored and compares it with both the declared and the observed value. Until that succeeds the artefact stays `pending` or `uploaded`, `GET .../content` refuses with `ARTEFACT_UPLOAD_INCOMPLETE`, and no caller may treat it as evidence. A mismatch marks the artefact `failed` and records `artefact.upload_failed`.
+Under the `filesystem` driver step 2 returns `upload_path`, the proxied endpoint above; the `s3` driver may return a presigned URL instead. Step 5 is the whole point of the flow: the server recomputes the digest of the bytes it stored and compares it with both the declared and the observed value. Until that succeeds the artefact stays `pending` or `uploaded`, no grant may be minted for it — the attempt is refused with `ARTEFACT_UPLOAD_INCOMPLETE` — and no caller may treat it as evidence. A mismatch marks the artefact `failed` and records `artefact.upload_failed`.
+
+Verification also decides what the bytes are and how large the picture in them
+is. The declared media type is a claim; the leading bytes are evidence, and a
+mismatch — an SVG or an HTML document uploaded as `image/png` — is refused on
+upload with `UNSUPPORTED_CAPABILITY` and marks the artefact `failed`. For an
+image the server measures the intrinsic pixel extent and records it as
+`content_rectangle`, because that rectangle is the reference frame every
+annotation on the artefact is normalised against (`docs/DOMAIN_MODEL.md`
+section 16) and an uploader that could choose it could move every existing
+mark. `filename` on the intent is display metadata only: it never reaches the
+content-addressed storage key, and a value that is a path rather than a name is
+refused.
+
+### Reading content back
+
+Artefact bytes are reachable only through a short-lived, subject-bound grant
+(ADR-0019, ADR-0012, `docs/SECURITY.md` section 13). There is no route that
+serves an artefact from its identifier.
+
+```json
+{
+  "grant_id": "agr_...",
+  "artefact_id": "art_...",
+  "url": "/api/v1/artefact-content/agr_...",
+  "expires_at": "2026-07-30T10:14:04.118Z",
+  "expires_in_seconds": 120
+}
+```
+
+`GET /api/v1/artefact-content/:grantId` resolves the grant, authenticates the
+caller independently, and requires the caller to be the grant's subject. An
+unknown, expired or revoked grant is refused with `AUTHENTICATION_REQUIRED`; a
+live grant presented by another principal with `AUTHORISATION_DENIED`. The
+grant identifier therefore travels safely in a URL — which is what an `<img>`
+element needs — while the credential stays in the cookie or the `Authorization`
+header, as `docs/SECURITY.md` section 18 requires. Minting a grant records
+`artefact.access_granted`.
 
 ## 15.1 Internal worker channel
 

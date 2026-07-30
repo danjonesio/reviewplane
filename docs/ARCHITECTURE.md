@@ -223,6 +223,10 @@ Stores:
 
 Artefact keys are content-addressed and must not expose user-entered names. Where the `s3` driver issues presigned URLs, they must be short-lived and scoped; the `filesystem` driver serves artefacts through the server with equivalent short-lived, scoped access tokens.
 
+Those tokens are the access grants of ADR-0019: a caller mints one for a single artefact and reads it at `/api/v1/artefact-content/:grantId`, and the grant is bound to the subject that minted it, so the identifier in the URL is not a credential on its own. No route serves an artefact from its identifier under either driver.
+
+For an image artefact the store also records the **content rectangle** — the intrinsic pixel extent the server measured from the verified bytes. Annotation geometry is normalised against it (`docs/DOMAIN_MODEL.md` section 16), so it belongs with the artefact rather than being recomputed by every renderer.
+
 ### 5.3 Ephemeral data
 
 - Live browser frames

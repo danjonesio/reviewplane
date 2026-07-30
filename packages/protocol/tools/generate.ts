@@ -40,6 +40,7 @@ export const SCHEMA_SOURCES: readonly string[] = [
   join(packageRoot, "schemas", "connector", "v1.schema.json"),
   join(packageRoot, "schemas", "browser", "v1.schema.json"),
   join(packageRoot, "schemas", "live_view", "v1.schema.json"),
+  join(packageRoot, "schemas", "review", "v1.schema.json"),
 ];
 
 /** Retained for callers that only need the connector source. */

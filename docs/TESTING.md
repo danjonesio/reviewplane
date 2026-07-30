@@ -271,6 +271,20 @@ For each supported upgrade path:
 - Browser live surface reconnect
 - Before-and-after comparison
 
+Annotation alignment is proved in `apps/web/test/ui/annotation.browser.test.ts`,
+which owns the Stage 0 exit criterion "a screenshot annotation aligns after UI
+resize". Every case measures two things and requires them to agree: where the
+mark sits as a fraction of the rendered content rectangle, and what the
+screenshot itself shows at that same fraction. The fixture page paints a
+distinctly coloured region, the annotation claims exactly that region, and a
+mark that drifts by a few per cent lands on the background instead — so the
+suite cannot pass by proving only that an overlay exists somewhere. The
+conditions are 390x844 and 1440x900, device pixel ratio 1 and 2, an in-page
+container resize, a panel scroll and a zoom change. The contained-rectangle
+arithmetic is recomputed inside the test from `getBoundingClientRect` and
+`naturalWidth` rather than read from the component, so a mistake shared between
+renderer and test cannot cancel itself out.
+
 These live in `apps/web/test/ui/` and run with `pnpm test:ui`, which builds the
 bundle and drives it in a real Chromium against a stub control plane that
 speaks the generated live-view protocol. They are separate from `pnpm test` for

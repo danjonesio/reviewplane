@@ -374,6 +374,18 @@ Safe viewer supports:
 
 Active HTML is never rendered under the main application origin.
 
+The Stage 0 viewer implements the screenshot with toggleable annotations, three
+zoom levels (fit, 100%, 200%), and the metadata a reader needs in order to
+trust the picture: the content rectangle, the verified SHA-256 and the
+redaction state. Bytes are loaded through a short-lived access grant
+(ADR-0019), never from a path addressed by artefact identifier.
+
+When the overlay cannot be drawn — an artefact the server could not measure, or
+a renderer failure — the viewer says which of the two happened and keeps
+showing the original screenshot and the annotation list. Evidence that cannot
+be drawn on is still evidence, and section 18 forbids a blank panel where a
+specific cause exists.
+
 ## 18. Empty and failure states
 
 The UI must explain actionable causes:

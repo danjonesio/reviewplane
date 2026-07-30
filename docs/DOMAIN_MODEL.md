@@ -489,6 +489,46 @@ Coordinates are normalised to the artefact content rectangle:
 
 All values must be between 0 and 1. Rotation and path data are versioned by annotation type.
 
+#### The content rectangle
+
+The **artefact content rectangle** is the full intrinsic pixel extent of the
+stored image, origin at its top-left. It is recorded on the artefact
+(section 20) and measured by the server from the bytes it verified.
+
+It is deliberately neither the viewport, nor the element, nor the rendered
+image box. Those three change when a container is resized, a page is zoomed or
+the device pixel ratio changes; the content rectangle does not. A capture taken
+at 390x844 CSS pixels with a device pixel ratio of 2 has a content rectangle of
+780x1688 device pixels, and geometry normalised against it lands on the same
+part of the page whether it is later displayed at 234 CSS pixels wide or at
+780.
+
+A renderer MUST convert once, at its edge: from the box it is drawing into to
+the content rectangle inside that box, and then from normalised geometry to
+that rectangle. Nothing between those two steps may multiply a coordinate by a
+device pixel ratio or read an intrinsic pixel size.
+
+#### Members by type
+
+Every member is bounded to 0 to 1 inclusive. Which members a type carries is
+fixed:
+
+| Type | Members |
+|---|---|
+| `rectangle` | `x`, `y`, `width`, `height` |
+| `ellipse` | `x`, `y`, `width`, `height` (bounding box) |
+| `arrow` | `x`, `y` (tail), `x2`, `y2` (head) |
+| `point` | `x`, `y` |
+| `numbered_marker` | `x`, `y` |
+
+An arrow carries a second point rather than a signed delta so that no member
+ever has to leave the range. A member a type does not use MUST be absent.
+
+A value outside the range, or a member that does not belong to the type, MUST
+be **refused** at the API boundary and MUST NOT be clamped: an out-of-range
+coordinate means the producer used a different reference frame, and clamping
+turns that into an overlay that looks plausible and is in the wrong place.
+
 ## 17. Element context
 
 Optional semantic link to an element:
@@ -575,11 +615,25 @@ Metadata for binary evidence stored outside PostgreSQL.
 - `content_type`
 - `size_bytes`
 - `sha256`
+- `content_rectangle` (image artefacts: intrinsic `width_px` and `height_px`)
 - `encryption_key_reference`
 - `redaction_state`
 - `retention_class`
 - `created_at`
 - `expires_at`
+
+`content_rectangle` is measured by the server during verification, from the
+bytes it stored, and never taken from the uploader. It is the reference frame
+annotation geometry is normalised against (section 16), so an uploader able to
+choose it would be able to move every existing mark on the artefact. An image
+artefact that cannot be measured does not become `available`.
+
+`size_bytes`, `sha256` and `content_rectangle` are absent until verification
+succeeds. `state` — `pending`, `uploaded`, `available` or `failed` — is what
+says whether the artefact may be treated as evidence; only `available` may.
+
+Artefact content is reachable only through a short-lived, subject-bound access
+grant (ADR-0019). No route serves an artefact from its identifier.
 
 ### Initial kinds
 

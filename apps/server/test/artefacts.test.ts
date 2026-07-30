@@ -47,6 +47,26 @@ function digest(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+/**
+ * Reading bytes back takes two steps now (ADR-0019): mint a short-lived grant
+ * for one artefact, then read the grant's own path. There is no route that
+ * serves an artefact from its identifier.
+ */
+async function readContent(artefactId: string, token = BOOTSTRAP_TOKEN) {
+  const granted = await harness.built.app.inject({
+    method: "POST",
+    url: `/api/v1/artefacts/${artefactId}/grants`,
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (granted.statusCode !== 201) return granted;
+  const { url } = (granted.json() as { data: { url: string } }).data;
+  return harness.built.app.inject({
+    method: "GET",
+    url,
+    headers: { authorization: `Bearer ${token}` },
+  });
+}
+
 async function intent(projectId: string, overrides: Record<string, unknown> = {}) {
   return harness.built.app.inject({
     method: "POST",
@@ -78,12 +98,9 @@ test("an artefact becomes available only after the server verifies it", async ()
   });
   assert.equal((pending.json() as { data: { state: string } }).data.state, "pending");
 
-  // Content is not served for an unverified artefact.
-  const early = await harness.built.app.inject({
-    method: "GET",
-    url: `/api/v1/artefacts/${artefactId}/content`,
-    headers: { authorization: `Bearer ${BOOTSTRAP_TOKEN}` },
-  });
+  // Content is not served for an unverified artefact: no grant can be minted
+  // for one, so there is nothing to present at the content route.
+  const early = await readContent(artefactId);
   assert.equal(early.statusCode, 409);
   assert.equal((early.json() as { error: { code: string } }).error.code, "ARTEFACT_UPLOAD_INCOMPLETE");
 
@@ -97,11 +114,7 @@ test("an artefact becomes available only after the server verifies it", async ()
   assert.equal((uploaded.json() as { data: { state: string } }).data.state, "uploaded");
 
   // Still not available: the bytes are stored but not yet verified.
-  const beforeCompletion = await harness.built.app.inject({
-    method: "GET",
-    url: `/api/v1/artefacts/${artefactId}/content`,
-    headers: { authorization: `Bearer ${BOOTSTRAP_TOKEN}` },
-  });
+  const beforeCompletion = await readContent(artefactId);
   assert.equal(beforeCompletion.statusCode, 409);
 
   const completed = await harness.built.app.inject({
@@ -115,15 +128,11 @@ test("an artefact becomes available only after the server verifies it", async ()
   assert.equal(record.state, "available");
   assert.equal(record.sha256, digest(PNG));
 
-  const content = await harness.built.app.inject({
-    method: "GET",
-    url: `/api/v1/artefacts/${artefactId}/content`,
-    headers: { authorization: `Bearer ${BOOTSTRAP_TOKEN}` },
-  });
+  const content = await readContent(artefactId);
   assert.equal(content.statusCode, 200);
   assert.equal(content.headers["content-type"], "image/png");
-  assert.match(String(content.headers["content-disposition"]), /^attachment;/u);
   assert.equal(content.headers["x-content-type-options"], "nosniff");
+  assert.equal(content.headers["content-security-policy"], "default-src 'none'; sandbox");
   assert.equal(digest(content.rawPayload), digest(PNG));
 });
 

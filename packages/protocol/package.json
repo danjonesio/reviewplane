@@ -20,6 +20,11 @@
       "types": "./dist/live-view.d.ts",
       "default": "./dist/live-view.js"
     },
+    "./review": {
+      "development": "./src/review.ts",
+      "types": "./dist/review.d.ts",
+      "default": "./dist/review.js"
+    },
     "./schemas/*": "./schemas/*",
     "./fixtures/*": "./fixtures/*"
   },

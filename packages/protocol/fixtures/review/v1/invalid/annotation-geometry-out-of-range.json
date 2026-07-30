@@ -1,0 +1,44 @@
+{
+  "id": "evt_01JBADGEOMETRY",
+  "schema_version": 1,
+  "sequence": 50,
+  "type": "finding.annotated",
+  "occurred_at": "2026-07-30T10:12:04.118Z",
+  "recorded_at": "2026-07-30T10:12:04.126Z",
+  "organisation_id": "org_01JREFRESH",
+  "project_id": "prj_01JREFRESHSURPLUS",
+  "actor": {
+    "type": "human_user",
+    "id": "vwr_01JBOOTSTRAPADMIN",
+    "display": "bootstrap administrator"
+  },
+  "correlation": {
+    "finding_id": "fin_01JHEROOVERLAPS",
+    "annotation_id": "ann_01JHERORECTANGLE"
+  },
+  "payload": {
+    "annotation": {
+      "id": "ann_01JHERORECTANGLE",
+      "organisation_id": "org_01JREFRESH",
+      "project_id": "prj_01JREFRESHSURPLUS",
+      "finding_id": "fin_01JHEROOVERLAPS",
+      "artefact_id": "art_01JHOMEPAGESHOT",
+      "type": "rectangle",
+      "geometry": {
+        "x": 0.54,
+        "y": 0.02,
+        "width": 1.38,
+        "height": 0.11
+      },
+      "label": "Heading overlapping the basket button",
+      "style_hint": "critical",
+      "revision": 1,
+      "created_by": {
+        "type": "human_user",
+        "id": "vwr_01JBOOTSTRAPADMIN",
+        "display": "bootstrap administrator"
+      },
+      "created_at": "2026-07-30T10:12:44.318Z"
+    }
+  }
+}

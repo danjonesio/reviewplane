@@ -20,7 +20,8 @@ export type FixtureKind =
   | "control_frame"
   | "data_stream_header"
   | "browser_frame"
-  | "live_view_frame";
+  | "live_view_frame"
+  | "review_event";
 
 export interface ValidFixture<Type extends string = MessageType> {
   readonly name: string;
@@ -78,6 +79,9 @@ export const BROWSER_CORPUS = corpus("browser", 1);
 
 /** Version 1 live-view corpus. */
 export const LIVE_VIEW_CORPUS = corpus("live_view", 1);
+
+/** Version 1 review-domain corpus. */
+export const REVIEW_CORPUS = corpus("review", 1);
 
 /** Directory holding the version 1 connector corpus. */
 export const FIXTURES_DIRECTORY = CONNECTOR_CORPUS.directory;

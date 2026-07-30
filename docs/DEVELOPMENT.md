@@ -190,6 +190,19 @@ In `apps/web` these read as:
   that navigation and screenshot capture still work, and offers a reconnect.
 - Reduced motion is answered by running the stream in the low-rate mode and
   saying so, not only by disabling CSS transitions.
+- `src/components/AnnotationOverlay.tsx` converts coordinates exactly once, at
+  its edge: the stage's measured box becomes a content rectangle, and
+  normalised geometry is placed inside it. Nothing between those two steps
+  multiplies by a device pixel ratio or reads an intrinsic pixel size, which is
+  why the overlay survives a container resize, a zoom, a scroll and a
+  device-pixel-ratio change. The arithmetic is
+  `@reviewplane/protocol/review`'s, shared with the server that validates the
+  same geometry.
+- "Original evidence remains available when overlay rendering fails" is
+  specific too: `ArtefactViewer` names the cause — an artefact the server could
+  not measure, or a renderer failure caught by its error boundary — and keeps
+  the screenshot and the annotation list on screen. The annotation list is a
+  peer of the canvas rather than a fallback, so it is always rendered.
 
 ## 12. Feature flags
 
