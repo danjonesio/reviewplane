@@ -1,0 +1,13 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JQ8ZR3M4T5V6W7X8Y9Z0A1J4",
+  "type": "route.publish.ack",
+  "sent_at": "2026-07-28T11:00:02Z",
+  "connector_id": "con_01JQ8ZR3M4T5V6W7X8Y9Z0A1C2",
+  "payload": {
+    "route_id": "svc_01JQ8ZR3M4T5V6W7X8Y9Z0A1E2",
+    "status": "ready",
+    "observed_destination": "127.0.0.1:4321",
+    "error_class": "PORT_NOT_LISTENING"
+  }
+}

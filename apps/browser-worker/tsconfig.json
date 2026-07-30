@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    // The snapshot walker is serialised into the page and therefore refers to
+    // DOM types. The worker itself is a Node process; nothing outside
+    // `src/session/snapshot.ts` uses them.
+    "lib": ["es2023", "dom", "dom.iterable"],
+    "outDir": "dist",
+    "rootDir": "."
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

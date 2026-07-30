@@ -1,0 +1,11 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JLIVEVIEWERHB1",
+  "type": "live.viewer_heartbeat",
+  "sent_at": "2026-07-30T10:05:12.500Z",
+  "browser_session_id": "brs_01JHOMEPAGEREVIEW",
+  "payload": {
+    "observed_at": "2026-07-30T10:05:12.498Z",
+    "last_sequence_rendered": 601
+  }
+}

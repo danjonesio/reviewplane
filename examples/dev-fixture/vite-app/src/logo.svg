@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="Vite dev fixture">
+  <rect width="48" height="48" rx="10" fill="#5b3f9d"/>
+  <path d="M14 14h20l-10 20z" fill="#ffffff"/>
+  <circle cx="24" cy="19" r="4" fill="#f0c674"/>
+</svg>

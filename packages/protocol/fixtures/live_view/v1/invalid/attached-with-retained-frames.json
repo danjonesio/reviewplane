@@ -1,0 +1,16 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JLIVERETAINED",
+  "type": "live.attached",
+  "sent_at": "2026-07-30T10:04:11.000Z",
+  "browser_session_id": "brs_01JHOMEPAGEREVIEW",
+  "stream_id": "lvs_01JHOMEPAGESTREAM",
+  "payload": {
+    "project_id": "prj_01JREFRESHSURPLUS",
+    "mode": "session_room",
+    "format": "image/jpeg",
+    "retention": "30d",
+    "max_frame_bytes": 4194304,
+    "attached_at": "2026-07-30T10:04:10.994Z"
+  }
+}

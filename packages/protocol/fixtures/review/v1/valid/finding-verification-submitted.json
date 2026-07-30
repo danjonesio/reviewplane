@@ -1,0 +1,50 @@
+{
+  "id": "evt_01JVERIFICATIONSUBMITTED",
+  "schema_version": 1,
+  "sequence": 47,
+  "type": "finding.verification_submitted",
+  "occurred_at": "2026-07-30T10:13:02.114Z",
+  "recorded_at": "2026-07-30T10:13:02.119Z",
+  "organisation_id": "org_01JREFRESH",
+  "project_id": "prj_01JREFRESHSURPLUS",
+  "actor": {
+    "type": "agent_session",
+    "id": "ags_01JCLAUDECODE",
+    "display": "claude-code"
+  },
+  "correlation": {
+    "review_id": "rev_01JBUGSONHOMEPAGE",
+    "finding_id": "fin_01JHEROOVERLAPS",
+    "artefact_id": "art_01JHEROAFTER",
+    "agent_session_id": "ags_01JCLAUDECODE"
+  },
+  "payload": {
+    "verification": {
+      "verification_id": "ver_01JHEROFIX",
+      "finding_id": "fin_01JHEROOVERLAPS",
+      "status": "submitted",
+      "submitted_by": {
+        "type": "agent_session",
+        "id": "ags_01JCLAUDECODE",
+        "display": "claude-code"
+      },
+      "summary": "Changed the navigation collapse breakpoint to 900px.",
+      "branch": "redesign",
+      "commit": "b4c5d6e7f809192a3b4c5d6e7f809192a3b4c5d6",
+      "before_artefact_id": "art_01JHEROBEFORE",
+      "after_artefact_id": "art_01JHEROAFTER",
+      "tested_viewports": [
+        {"width": 390, "height": 844, "device_scale_factor": 2},
+        {"width": 1440, "height": 900, "device_scale_factor": 1}
+      ],
+      "checks": {
+        "reproduced_before": true,
+        "console_errors_reviewed": true,
+        "network_failures_reviewed": true,
+        "accessibility_checked": false
+      },
+      "artefact_ids": ["art_01JHEROBEFORE", "art_01JHEROAFTER"],
+      "submitted_at": "2026-07-30T10:13:02.114Z"
+    }
+  }
+}

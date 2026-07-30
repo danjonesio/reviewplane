@@ -1,0 +1,20 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JALLOCATED",
+  "type": "browser_session.allocated",
+  "sent_at": "2026-07-29T09:16:01.482Z",
+  "worker_id": "wkr_01JBROWSERWORKER01",
+  "browser_session_id": "brs_01JHOMEPAGEREVIEW",
+  "correlation_id": "msg_01JALLOCATE",
+  "payload": {
+    "status": "READY",
+    "browser_type": "chromium",
+    "browser_version": "143.0.7499.4",
+    "viewport": {
+      "width": 1440,
+      "height": 900,
+      "device_scale_factor": 1
+    },
+    "allocated_at": "2026-07-29T09:16:01.480Z"
+  }
+}

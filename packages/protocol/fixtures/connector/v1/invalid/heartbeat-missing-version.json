@@ -1,0 +1,13 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JQ8ZR3M4T5V6W7X8Y9Z0A1H4",
+  "type": "heartbeat",
+  "sent_at": "2026-07-28T11:00:00Z",
+  "connector_id": "con_01JQ8ZR3M4T5V6W7X8Y9Z0A1C2",
+  "payload": {
+    "status": "healthy",
+    "uptime_seconds": 1,
+    "active_routes": 0,
+    "active_streams": 0
+  }
+}

@@ -108,12 +108,22 @@ Names are stable public integration contracts.
 
 ### Agent session
 
+- `agent_credential.issued`
 - `agent_session.started`
 - `agent_session.waiting`
 - `agent_session.blocked`
 - `agent_session.completed`
 - `agent_session.failed`
 - `agent_session.disconnected`
+
+`agent_credential.issued` is a permission change and section 16 of
+`docs/SECURITY.md` requires an audit record for one. It names the projects and
+capabilities granted and the expiry, and never the token. It is recorded once per
+project the credential is bound to, because the event stream is per project.
+
+`agent_session.started` records the client's self-reported name and version, the
+capabilities the session was granted and the client capabilities it declared.
+The client's name is description and never an authorisation input.
 
 ### Browser session
 
@@ -134,17 +144,33 @@ Names are stable public integration contracts.
 - `browser.control_released`
 - `browser.command_rejected`
 - `browser.command_executed`
+- `browser.live_view_started`
+- `browser.live_view_stopped`
 
 Do not emit every pointer movement as a durable event. High-frequency input may be sampled or summarised.
+
+The live-view pair is per viewer attachment, not per frame. A frame is not an
+event, and a payload here never carries frame content: `started` records the
+mode, `stopped` records why the viewer left and how many frames it was sent and
+had dropped. They exist because a human watching a browser session is an access
+to the most sensitive data the product handles (`docs/SECURITY.md` section 14),
+and `AGENTS.md` requires that to leave an audit record.
 
 ### Evidence
 
 - `screenshot.captured`
 - `artefact.upload_started`
 - `artefact.upload_completed`
+- `artefact.upload_failed`
+- `artefact.access_granted`
 - `artefact.redacted`
 - `artefact.expired`
 - `trace.finalised`
+
+`artefact.access_granted` records that a subject was admitted to one artefact's
+bytes and until when (ADR-0019). Reading evidence is an access to the most
+sensitive data the product holds, and section 16 of `docs/SECURITY.md` requires
+it to leave a record.
 
 ### Review
 
@@ -165,6 +191,17 @@ Do not emit every pointer movement as a durable event. High-frequency input may 
 - `finding.status_changed`
 - `finding.comment_added`
 - `finding.verification_submitted`
+
+`review.claimed` and `finding.claimed` are separate from the status change
+beside them, because assignment and lifecycle are different facts: a claim says
+who is working, and the status says what stage the work is at. A human reading
+the timeline needs both.
+
+`finding.verification_submitted` carries the whole claim — summary, branch,
+commit, tested viewports, checks and every artefact identifier — with status
+`submitted`. The control plane has already verified that each artefact belongs
+to this project and to a browser session of this project before the event is
+written, so evidence from elsewhere never reaches the audit trail.
 - `finding.verification_accepted`
 - `finding.verification_rejected`
 - `finding.resolved`
@@ -197,6 +234,13 @@ Do not emit every pointer movement as a durable event. High-frequency input may 
 Never include secret values.
 
 ## 8. Payload rules
+
+The review-domain events — every `review.*`, `finding.*`, `artefact.*` and
+`screenshot.*` type above — have their envelope and payload shapes defined in
+`packages/protocol/schemas/review/v1.schema.json`, and are the only source for
+them. A payload written by a service and refused by that schema is a defect
+caught by the contract test of `docs/TESTING.md` section 2, which replays the
+stored rows through the generated decoder.
 
 - Payloads are versioned through `schema_version`.
 - Include stable IDs and state transitions.

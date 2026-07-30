@@ -1,0 +1,475 @@
+# ReviewPlane single-host deployment (ADR-0008).
+#
+# Stage 0 shape. The rules `deploy/compose/README.md` records are enforced
+# here rather than left to the operator:
+#
+#   * only the edge gateway publishes host ports. It serves the web
+#     application's static assets, proxies `/api` and `/mcp`, upgrades `/ws` to
+#     the control plane, and refuses the worker channel outright. The server,
+#     the MCP server, the tunnel gateway, the worker and PostgreSQL publish
+#     nothing.
+#   * Chromium runs in `browser-worker`, never in the API container.
+#   * no container mounts the Docker socket.
+#   * PostgreSQL is private; artefacts live on a private volume (ADR-0012).
+#   * secrets are mounted as files.
+#
+# The browser worker is the only component that executes untrusted page
+# content, so its service block carries the `docs/SECURITY.md` section 10
+# isolation controls: a non-root user, a read-only root filesystem, all
+# capabilities dropped except the one Chromium's own sandbox needs, a seccomp
+# profile that permits user-namespace creation and nothing else beyond
+# Docker's default, and no route to the internet.
+
+name: reviewplane
+
+# Every network but `frontend` is `internal: true`, so Docker attaches no
+# gateway to it and nothing on it can reach the internet.
+# `docs/ARCHITECTURE.md` section 6.2 permits "explicit network routes only", and
+# these are the whole set: a component that is not on a network with a peer
+# cannot reach that peer at all, which is a stronger statement than any firewall
+# rule.
+#
+# `frontend` is the single exception and exists because publishing a host port
+# requires one. Docker publishes a port by translating it into the container's
+# address on a bridge that has a gateway, and `internal: true` is precisely the
+# absence of one — a container on internal networks only gets no port mapping at
+# all, silently. The edge gateway is the one component whose job is to be
+# reachable from outside (section 4.1), so it is the one component that has it;
+# everything it proxies to stays internal and reachable only through it.
+networks:
+  # Control plane and browser worker. The worker is on this and nothing else,
+  # except the tunnel network it needs to reach the gateway.
+  browser:
+    internal: true
+  # Control plane and PostgreSQL.
+  data:
+    internal: true
+  # The browser worker's route to the tunnel gateway's browser-facing listener,
+  # and the control plane's route to the gateway's admin API. The worker has no
+  # route to the development environment: it reaches a published service only
+  # through the gateway, which is what makes the route a capability for one
+  # destination rather than network reach.
+  tunnel:
+    internal: true
+  # The development environment's outbound route to the control plane (for
+  # enrolment) and to the gateway (for its data channel). The connector dials
+  # out on both; nothing dials in.
+  devnet:
+    internal: true
+  # The edge gateway to the control plane and the MCP server. Internal: the edge
+  # reaches them over this network and never over the host, and neither of them
+  # gains a route to anywhere else by being on it.
+  edge:
+    internal: true
+  # The edge gateway's own published port, and the only network in this file
+  # that is not internal. Its only member is `gateway`. See the note above
+  # `networks:` for why a published port cannot be served from an internal one.
+  frontend:
+    internal: false
+
+# Built images carry a fixed name, independent of the Compose project name.
+#
+# `deploy/compose/e2e/run.sh` gives every run its own project name so that two
+# runs cannot share containers, networks or volumes. Compose otherwise derives
+# an image tag from that name too, which would leave a fresh copy of every
+# image — nearly two gigabytes for the browser worker alone — behind after each
+# run. Naming the images here keeps exactly one copy of each.
+#
+# Set REVIEWPLANE_IMAGE_PREFIX when two runs must not share built images, for
+# example when they are building different revisions at the same time.
+
+volumes:
+  postgres-data:
+  artefact-data:
+  # The Vite fixture's own sources, seeded from the image the first time the
+  # volume is attached.
+  #
+  # `dev-fixture` runs with a read-only root filesystem, which is one of the
+  # `docs/SECURITY.md` §10 controls and is not relaxed for a fixture. RVP-14's
+  # hot-reload proof has to *edit a source file on the development machine*
+  # while it is running, so exactly one path is made writable and it is the one
+  # the proof edits. A bind mount of the repository would have done the same
+  # job while writing into the developer's checkout, which a test must not do.
+  dev-fixture-vite-src:
+  caddy-data:
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    networks: [data]
+    environment:
+      POSTGRES_DB: reviewplane
+      POSTGRES_USER: reviewplane
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reviewplane -d reviewplane"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # The only service with a published port. It serves `apps/web`'s build
+  # output, proxies `/api`, upgrades `/ws` and refuses `/internal`
+  # (`docs/ARCHITECTURE.md` section 4.1).
+  gateway:
+    image: ${REVIEWPLANE_IMAGE_PREFIX:-reviewplane}/gateway:local
+    build:
+      context: ../..
+      dockerfile: deploy/compose/gateway/Dockerfile
+    restart: unless-stopped
+    # `frontend` carries the published port; `edge` carries the two upstreams.
+    # The gateway is the only member of `frontend`, so it is the only container
+    # in the stack with a route off the host.
+    networks: [frontend, edge]
+    depends_on:
+      - server
+      - mcp-server
+    ports:
+      - "${REVIEWPLANE_GATEWAY_PORT:-8443}:8443"
+    environment:
+      # The name the site is served under. A site address with no name gives
+      # Caddy's internal authority no subject to issue a certificate for, and
+      # every handshake fails; `localhost` is the single-host default and an
+      # operator serving a real host names it here.
+      REVIEWPLANE_GATEWAY_DOMAIN: ${REVIEWPLANE_GATEWAY_DOMAIN:-localhost}
+      # `internal` is Caddy's own authority. An operator with a certificate
+      # sets the two paths it and its key are mounted at.
+      REVIEWPLANE_GATEWAY_TLS: ${REVIEWPLANE_GATEWAY_TLS:-internal}
+    volumes:
+      - caddy-data:/data
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt:
+      - no-new-privileges:true
+
+  server:
+    image: ${REVIEWPLANE_IMAGE_PREFIX:-reviewplane}/server:local
+    build:
+      context: ../..
+      dockerfile: apps/server/Dockerfile
+    restart: unless-stopped
+    networks: [data, browser, tunnel, devnet, edge]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      REVIEWPLANE_HOST: 0.0.0.0
+      REVIEWPLANE_PORT: "8080"
+      REVIEWPLANE_DATABASE_URL_FILE: /run/secrets/database_url
+      REVIEWPLANE_BOOTSTRAP_TOKEN_FILE: /run/secrets/bootstrap_token
+      REVIEWPLANE_WORKER_CREDENTIAL_FILE: /run/secrets/worker_credential
+      REVIEWPLANE_WORKER_COMMAND_CREDENTIAL_FILE: /run/secrets/worker_command_credential
+      REVIEWPLANE_WORKER_ENDPOINT: http://browser-worker:8090
+      REVIEWPLANE_ARTEFACT_PATH: /var/lib/reviewplane/artefacts
+      # The control plane mints route capabilities; the gateway verifies them.
+      # Both read the same key, which is why it is one secret and not two.
+      REVIEWPLANE_CAPABILITY_SIGNING_KEY_FILE: /run/secrets/capability_signing_key
+      REVIEWPLANE_CAPABILITY_KEY_ID: stage0-a
+      REVIEWPLANE_TUNNEL_CONTROL_URL: http://tunnel-gateway:8445
+      REVIEWPLANE_TUNNEL_CONTROL_TOKEN_FILE: /run/secrets/tunnel_control_token
+      REVIEWPLANE_INTERNAL_SUFFIX: internal.invalid
+      # The connector listener the development environment enrols against.
+      REVIEWPLANE_CONNECTOR_HOST: 0.0.0.0
+      REVIEWPLANE_CONNECTOR_PORT: "8443"
+      REVIEWPLANE_CONNECTOR_PUBLIC_URL: wss://server:8443
+      # The data channel terminates at the tunnel gateway, not here: the control
+      # plane never carries tunnelled bytes (docs/ARCHITECTURE.md section 4.6).
+      REVIEWPLANE_CONNECTOR_DATA_URL: wss://tunnel-gateway:8444/connector/data
+      REVIEWPLANE_CONNECTOR_TLS_HOSTS: server,localhost,127.0.0.1
+      # Origins a browser may open the live WebSocket from. It is the edge
+      # gateway's public URL: a viewer's page is served from there and nowhere
+      # else.
+      REVIEWPLANE_ALLOWED_ORIGINS: ${REVIEWPLANE_PUBLIC_ORIGIN:-https://localhost:8443}
+      # The edge gateway terminates TLS, so the viewer session cookie is Secure.
+      REVIEWPLANE_SECURE_COOKIES: "true"
+    # Short syntax: `uid`, `gid` and `mode` on a secret reference are honoured
+    # by Docker Swarm only. Plain Compose bind-mounts the file with the
+    # permissions it has on the host, which is why generate-secrets.sh writes
+    # them readable by the service user rather than 0600.
+    secrets:
+      - database_url
+      - bootstrap_token
+      - worker_credential
+      - worker_command_credential
+      - capability_signing_key
+      - tunnel_control_token
+    volumes:
+      - artefact-data:/var/lib/reviewplane/artefacts
+    # The control plane never gets the Docker socket (AGENTS.md).
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    user: "10001:10001"
+    # Without this, `docker compose up --wait` returns as soon as the process
+    # exists, which is before it has applied migrations and bound its listener.
+    # Anything that then talks to the API races it and loses.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  # The agent-facing interface. It is a separate process and route from the
+  # control-plane API (`docs/ARCHITECTURE.md` section 4.4) and reaches the
+  # gateway on `/mcp/*` only.
+  #
+  # It joins `data` because it translates MCP tools into domain commands
+  # directly, and `browser` because `browser_take_screenshot` sends a command to
+  # the worker. It is the same trust zone as `server`, which is why it may hold
+  # the worker command credential — and it is *not* given the bootstrap token,
+  # because an agent-facing process has no administrative work to do.
+  mcp-server:
+    image: ${REVIEWPLANE_IMAGE_PREFIX:-reviewplane}/mcp-server:local
+    build:
+      context: ../..
+      dockerfile: apps/mcp-server/Dockerfile
+    restart: unless-stopped
+    networks: [data, browser, edge]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      REVIEWPLANE_MCP_LISTEN_ADDRESS: 0.0.0.0
+      REVIEWPLANE_MCP_PORT: "8081"
+      REVIEWPLANE_MCP_PATH: /mcp/v1
+      REVIEWPLANE_DATABASE_URL_FILE: /run/secrets/database_url
+      REVIEWPLANE_WORKER_COMMAND_CREDENTIAL_FILE: /run/secrets/worker_command_credential
+      REVIEWPLANE_WORKER_ENDPOINT: http://browser-worker:8090
+      REVIEWPLANE_ARTEFACT_PATH: /var/lib/reviewplane/artefacts
+      REVIEWPLANE_API_PATH_PREFIX: /api/v1
+    secrets:
+      - database_url
+      - worker_command_credential
+    volumes:
+      # Read-only: the MCP server serves evidence and never writes it. The
+      # browser worker uploads through the control-plane API (ADR-0012).
+      - artefact-data:/var/lib/reviewplane/artefacts:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    user: "10001:10001"
+
+  browser-worker:
+    image: ${REVIEWPLANE_IMAGE_PREFIX:-reviewplane}/browser-worker:local
+    build:
+      context: ../..
+      dockerfile: apps/browser-worker/Dockerfile
+    restart: unless-stopped
+    # The browser network reaches the control plane; the tunnel network reaches
+    # the gateway. Neither reaches the data network, the development
+    # environment or the internet. A published service is reachable only
+    # through the gateway, so the route is a capability for one destination
+    # rather than network reach (ADR-0015).
+    networks: [browser, tunnel]
+    environment:
+      REVIEWPLANE_WORKER_NAME: browser-worker-01
+      REVIEWPLANE_WORKER_LISTEN_ADDRESS: 0.0.0.0
+      REVIEWPLANE_WORKER_PORT: "8090"
+      REVIEWPLANE_WORKER_CAPACITY: "4"
+      # docs/SECURITY.md section 10: the Chromium sandbox stays enabled.
+      REVIEWPLANE_WORKER_SANDBOX: required
+      REVIEWPLANE_WORKER_SESSION_ROOT: /var/lib/reviewplane/browser-sessions
+      REVIEWPLANE_CONTROL_PLANE_URL: http://server:8080
+      REVIEWPLANE_WORKER_CREDENTIAL_FILE: /run/secrets/worker_credential
+      REVIEWPLANE_WORKER_COMMAND_CREDENTIAL_FILE: /run/secrets/worker_command_credential
+      REVIEWPLANE_WORKER_SESSION_DURATION_SECONDS: "7200"
+      # ADR-0015: the internal origin is a reserved TLD with no DNS and a
+      # certificate no public authority can vouch for. Chromium is given a
+      # static mapping to the gateway and a pin for exactly its public key.
+      # Both are set together or the worker refuses to start.
+      REVIEWPLANE_INTERNAL_SUFFIX: internal.invalid
+      REVIEWPLANE_TUNNEL_GATEWAY_ADDRESS: tunnel-gateway:8443
+      REVIEWPLANE_TUNNEL_CERTIFICATE_SPKI: ${REVIEWPLANE_TUNNEL_CERTIFICATE_SPKI:?run deploy/compose/e2e/generate-tls.sh first}
+    # Short syntax: `uid`, `gid` and `mode` on a secret reference are honoured
+    # by Docker Swarm only. Plain Compose bind-mounts the file with the
+    # permissions it has on the host, which is why generate-secrets.sh writes
+    # them readable by the service user rather than 0600.
+    secrets:
+      - worker_credential
+      - worker_command_credential
+    # No port is published to the host: the worker is reachable only from the
+    # control plane, and no Chromium debugging port is exposed anywhere
+    # (AGENTS.md "Mandatory engineering rules").
+    read_only: true
+    tmpfs:
+      # Per-session ephemeral profile directories. On a tmpfs they never touch
+      # the host disk, and they are removed on termination in any case.
+      - /var/lib/reviewplane/browser-sessions:size=2g,mode=0700,uid=10001,gid=10001
+      - /tmp:size=512m,mode=1777
+      - /home/reviewplane:size=64m,mode=0700,uid=10001,gid=10001
+    user: "10001:10001"
+    cap_drop: [ALL]
+    # Chromium's namespace sandbox chroots itself into an empty directory
+    # inside its new user namespace. That is the single capability it needs,
+    # and dropping it is what forces the unsupported --no-sandbox workaround.
+    cap_add: [SYS_CHROOT]
+    security_opt:
+      - no-new-privileges:true
+      # Docker's default profile with one change: clone, clone3 and unshare
+      # are ungated, because that is what Chromium's sandbox is built on.
+      # Every other gate, including CAP_SYS_ADMIN on mount, pivot_root and
+      # setns, is untouched. Without it Chromium reports "No usable sandbox".
+      - seccomp:./browser-worker-seccomp.json
+    # Chromium's shared-memory use is heavy; the default 64 MB /dev/shm makes
+    # renderers crash rather than making them safer.
+    shm_size: 1gb
+    mem_limit: 4g
+    pids_limit: 512
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8090/internal/v1/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+
+  # The tunnel gateway: the only component that publishes a host port, and the
+  # only one both the browser worker and the development environment can reach.
+  # It is a static binary in a distroless image with no shell and no package
+  # manager, so the blast radius of the one process that terminates both
+  # untrusted-ish sides is as small as an image can make it.
+  tunnel-gateway:
+    image: ${REVIEWPLANE_IMAGE_PREFIX:-reviewplane}/tunnel-gateway:local
+    build:
+      context: ../..
+      dockerfile: services/tunnel-gateway/Dockerfile
+    restart: unless-stopped
+    networks: [tunnel, devnet]
+    depends_on:
+      server:
+        condition: service_started
+    environment:
+      # Browser-facing listener. The worker resolves every *.internal.invalid
+      # name here (ADR-0015).
+      REVIEWPLANE_TUNNEL_LISTEN_ADDRESS: 0.0.0.0:8443
+      # Connector data channel, mutually authenticated against the connector CA.
+      REVIEWPLANE_TUNNEL_CONNECTOR_LISTEN_ADDRESS: 0.0.0.0:8444
+      # Admin API and metrics, reachable from the control plane only.
+      REVIEWPLANE_TUNNEL_ADMIN_LISTEN_ADDRESS: 0.0.0.0:8445
+      REVIEWPLANE_TUNNEL_INTERNAL_SUFFIX: internal.invalid
+      REVIEWPLANE_TUNNEL_ADMIN_TOKEN_FILE: /run/secrets/tunnel_control_token
+      REVIEWPLANE_TUNNEL_CAPABILITY_KEYS_FILE: /run/secrets/capability_keys
+      REVIEWPLANE_TUNNEL_CONNECTOR_CA_FILE: /etc/reviewplane/tls/connector-ca.pem
+      REVIEWPLANE_TUNNEL_TLS_CERT_FILE: /etc/reviewplane/tls/gateway.crt
+      REVIEWPLANE_TUNNEL_TLS_KEY_FILE: /etc/reviewplane/tls/gateway.key
+      # docs/CONNECTOR_PROTOCOL.md section 13: header rewriting is fixed in
+      # configuration, never decided per request. `upstream` is the default
+      # because a development server's DNS-rebinding protection accepts
+      # loopback and refuses an unfamiliar name.
+      REVIEWPLANE_TUNNEL_HOST_HEADER_MODE: ${REVIEWPLANE_TUNNEL_HOST_HEADER_MODE:-upstream}
+      REVIEWPLANE_TUNNEL_FORWARDED_HEADER_MODE: standard
+    # Short syntax: `uid`, `gid` and `mode` on a secret reference are honoured
+    # by Docker Swarm only. Plain Compose bind-mounts the file with the
+    # permissions it has on the host, which is why generate-secrets.sh writes
+    # them readable by the service user rather than 0600.
+    secrets:
+      - tunnel_control_token
+      - capability_keys
+    volumes:
+      # Generated by deploy/compose/e2e/generate-tls.sh and never committed.
+      - ./tls:/etc/reviewplane/tls:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    user: "10001:10001"
+
+  # The development environment: an agent's VM, standing in for a real one.
+  #
+  # It runs the loopback fixture application and the connector beside it, and
+  # publishes NO port: `docs/PROJECT.md` section 9 and Stage 0 exit criterion 5
+  # say no inbound port is required on a development VM, and this service block
+  # is where that claim is either true or a lie. There is deliberately no
+  # `ports:` key and no `expose:`.
+  #
+  # In production the connector is a static binary on a developer's machine,
+  # not a container. It is containerised here so the end-to-end scenario can
+  # run unattended.
+  dev-fixture:
+    image: ${REVIEWPLANE_IMAGE_PREFIX:-reviewplane}/dev-fixture:local
+    build:
+      context: ../..
+      dockerfile: examples/dev-fixture/Dockerfile
+    profiles: [e2e]
+    networks: [devnet]
+    depends_on:
+      server:
+        condition: service_started
+      tunnel-gateway:
+        condition: service_started
+    environment:
+      REVIEWPLANE_CONTROL_PLANE_URL: https://server:8443
+      # The trust bundle, not the connector CA alone: the connector dials two
+      # peers with two different authorities, and this value becomes the
+      # connector's --ca-file, which overrides the configuration file.
+      REVIEWPLANE_CONTROL_PLANE_CA_FILE: /etc/reviewplane/tls/connector-trust.pem
+      REVIEWPLANE_ENROLMENT_TOKEN_FILE: /run/secrets/enrolment_token
+      PORT: "4321"
+      # The Vite development server on 127.0.0.1:5173, beside the static
+      # application on 4321. It is what makes the RVP-14 hot-reload proof
+      # possible: a real dev server with a real file watcher and a real update
+      # socket. Set it to "0" for a run that only needs the static application.
+      REVIEWPLANE_FIXTURE_VITE: "1"
+      # Vite's dependency-optimisation cache, redirected onto the tmpfs below.
+      # The root filesystem is read-only, so the default cache directory inside
+      # the project is not writable and the dev server would fail to start.
+      VITE_CACHE_DIR: /tmp/vite-cache
+    # Short syntax: `uid`, `gid` and `mode` on a secret reference are honoured
+    # by Docker Swarm only. Plain Compose bind-mounts the file with the
+    # permissions it has on the host, which is why generate-secrets.sh writes
+    # them readable by the service user rather than 0600.
+    secrets:
+      - enrolment_token
+    volumes:
+      - ./tls:/etc/reviewplane/tls:ro
+      # The generated copy, not the template: a project identifier is minted by
+      # the control plane, and the connector refuses a publication for a project
+      # it does not serve. generate-secrets.sh seeds it from
+      # connector-config.yaml; the end-to-end script rewrites it with the real
+      # identifier before this service starts.
+      - ./connector-config.generated.yaml:/etc/reviewplane-connector/config.yaml:ro
+      # The one writable source path. RVP-14 edits a file here while the stack
+      # is running and watches the change reach central Chromium without a full
+      # page reload; every other path in this container stays read-only.
+      - dev-fixture-vite-src:/app/vite-app/src
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+      - /var/lib/reviewplane-connector:size=16m,mode=0700,uid=10001,gid=10001
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    user: "10001:10001"
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password
+  database_url:
+    file: ./secrets/database_url
+  bootstrap_token:
+    file: ./secrets/bootstrap_token
+  worker_credential:
+    file: ./secrets/worker_credential
+  worker_command_credential:
+    file: ./secrets/worker_command_credential
+  # One key, two readers: the control plane signs a capability with it and the
+  # gateway verifies with it. The gateway's form carries the key identifier
+  # because it holds a keyring and has to select by `kid`.
+  capability_signing_key:
+    file: ./secrets/capability_signing_key
+  capability_keys:
+    file: ./secrets/capability_keys
+  tunnel_control_token:
+    file: ./secrets/tunnel_control_token
+  enrolment_token:
+    file: ./secrets/enrolment_token

@@ -1,0 +1,50 @@
+# Connector configuration for the end-to-end development-environment fixture
+# (docs/CONNECTOR_PROTOCOL.md section 20).
+#
+# This is what an operator writes on a real development VM, with the fixture's
+# values filled in. It is mounted read-only into the dev-fixture container.
+
+control_plane:
+  url: https://server:8443
+  tls:
+    # The connector trust bundle: the control-plane CA that the control plane
+    # serves its certificate from, and the tunnel gateway's own certificate.
+    # The connector dials both peers, so it needs both anchors. run.sh writes
+    # it from the API before starting this container, so the connector verifies
+    # the control plane rather than trusting whatever answers.
+    ca_file: /etc/reviewplane/tls/connector-trust.pem
+
+identity:
+  data_dir: /var/lib/reviewplane-connector
+
+heartbeat:
+  interval: 5s
+
+workspaces:
+  # Workspace discovery is Stage 1 (section 9), so the identifier a publication
+  # names is configured. The path is where the fixture application lives.
+  - id: wsp_fixture
+    path: /opt/reviewplane/dev-fixture
+    project: prj_fixture
+
+publication:
+  # The connector's own say over what it will carry, enforced independently of
+  # the control plane and of the gateway (section 11). Loopback only, and only
+  # the two ports the fixture applications bind.
+  allowed_hosts:
+    - 127.0.0.1
+  allowed_ports:
+    - 4321
+    - 5173
+  max_routes: 4
+  allowed_projects:
+    - prj_fixture
+
+privacy:
+  report_changed_paths: true
+  report_process_details: false
+  discover_workspaces: false
+
+logging:
+  level: debug
+  format: json

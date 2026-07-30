@@ -1,0 +1,53 @@
+{
+  "name": "@reviewplane/protocol",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Single versioned source for ReviewPlane protocol schemas, with generated TypeScript and Go models.",
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./browser": {
+      "development": "./src/browser.ts",
+      "types": "./dist/browser.d.ts",
+      "default": "./dist/browser.js"
+    },
+    "./live-view": {
+      "development": "./src/live-view.ts",
+      "types": "./dist/live-view.d.ts",
+      "default": "./dist/live-view.js"
+    },
+    "./review": {
+      "development": "./src/review.ts",
+      "types": "./dist/review.d.ts",
+      "default": "./dist/review.js"
+    },
+    "./mcp": {
+      "development": "./src/mcp.ts",
+      "types": "./dist/mcp.d.ts",
+      "default": "./dist/mcp.js"
+    },
+    "./schemas/*": "./schemas/*",
+    "./fixtures/*": "./fixtures/*"
+  },
+  "files": [
+    "dist",
+    "src",
+    "schemas",
+    "fixtures"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "generate": "node tools/generate.ts",
+    "check": "node tools/check.ts",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "test:go": "go test ./...",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2"
+  }
+}

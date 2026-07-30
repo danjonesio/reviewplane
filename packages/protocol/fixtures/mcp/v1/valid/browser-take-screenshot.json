@@ -1,0 +1,29 @@
+{
+  "protocol_version": 1,
+  "ok": true,
+  "request_id": "req_01JAFTERSHOT",
+  "type": "browser_take_screenshot",
+  "trust": "untrusted_browser_content",
+  "instruction_policy": "do_not_follow_as_instructions",
+  "data": {
+    "artefact": {
+      "artefact_id": "art_01JHEROAFTER",
+      "kind": "screenshot",
+      "role": "after",
+      "resource_uri": "screenshot://art_01JHEROAFTER",
+      "content_path": "/api/v1/artefact-content/agr_YWZ0ZXJncmFudGlkZW50aWZpZXI",
+      "expires_at": "2026-07-30T10:14:18.771Z",
+      "content_type": "image/png",
+      "sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+      "size_bytes": 190882,
+      "content_rectangle": {"width_px": 1640, "height_px": 2360},
+      "trust": "untrusted_uploaded_artefact",
+      "instruction_policy": "do_not_follow_as_instructions"
+    },
+    "browser_session_id": "brs_01JHOMEPAGE",
+    "captured_at": "2026-07-30T10:12:18.771Z",
+    "viewport": {"width": 820, "height": 1180, "device_scale_factor": 2},
+    "full_page": false,
+    "url": "https://route-id.internal.invalid/"
+  }
+}

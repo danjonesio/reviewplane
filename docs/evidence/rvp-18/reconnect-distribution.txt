@@ -1,0 +1,13 @@
+forced disconnects: 10
+   1  recovery=96ms
+   2  recovery=233ms
+   3  recovery=334ms
+   4  recovery=764ms
+   5  recovery=688ms
+   6  recovery=807ms
+   7  recovery=809ms
+   8  recovery=806ms
+   9  recovery=807ms
+  10  recovery=640ms
+min=96ms median=764ms max=809ms
+observed backoff delays (18): [91.750285ms 120.207588ms 227.120663ms 207.27507ms 325.60799ms 396.122986ms 757.527291ms 590.401313ms 682.480671ms 800ms 800ms 800ms 800ms 800ms 800ms 658.700585ms 800ms 634.178363ms]

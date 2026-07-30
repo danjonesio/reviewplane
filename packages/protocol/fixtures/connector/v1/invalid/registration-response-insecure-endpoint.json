@@ -1,0 +1,19 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JQ8ZR3M4T5V6W7X8Y9Z0A1H9",
+  "type": "connector.registration.response",
+  "sent_at": "2026-07-28T10:59:13Z",
+  "payload": {
+    "connector_id": "con_01JQ8ZR3M4T5V6W7X8Y9Z0A1C2",
+    "signed_identity": {
+      "certificate": "MIIBkTCB+wIJAJ2xQYqQ0m0PMAoGCCqGSM49BAMCMBUxEzARBgNVBAMMCnJldmlld3BsYW5lMB4XDTI2MDcyODEwMDAwMFoXDTI3MDcyODEwMDAwMFowFTETMBEGA1UEAwwKcmV2aWV3cGxhbmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASapGvmfFi3kK0aQXFUm9H0recnYfw2fSZOA/WoXsLBd5HhtXaxhS7pmYP2kpxBou1egnecG8DmsSwd1bLUi4w3",
+      "certificate_fingerprint": "sha256:9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c",
+      "expires_at": "2027-07-28T10:59:13Z"
+    },
+    "control_plane_endpoints": {
+      "control_url": "ws://agents.example.internal/connector/control",
+      "data_url": "wss://agents.example.internal/connector/data"
+    },
+    "policy_digest": "sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483"
+  }
+}

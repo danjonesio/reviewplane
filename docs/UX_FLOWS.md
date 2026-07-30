@@ -141,6 +141,13 @@ Recommended layout:
 └──────────────────────────────────────────────────────────────┘
 ```
 
+Stage 0 implements the browser surface and the session facts beside it — status,
+current URL, viewport, browser build, control epoch and the live stream's own
+delivered and dropped counts. The activity, findings, approvals, comments,
+console, network, Git, screenshot and trace panels are not built yet, and
+neither is takeover; the layout above is the shape they grow into rather than a
+description of what exists.
+
 ### Browser surface overlays
 
 - Agent pointer: blue
@@ -367,6 +374,18 @@ Safe viewer supports:
 
 Active HTML is never rendered under the main application origin.
 
+The Stage 0 viewer implements the screenshot with toggleable annotations, three
+zoom levels (fit, 100%, 200%), and the metadata a reader needs in order to
+trust the picture: the content rectangle, the verified SHA-256 and the
+redaction state. Bytes are loaded through a short-lived access grant
+(ADR-0019), never from a path addressed by artefact identifier.
+
+When the overlay cannot be drawn — an artefact the server could not measure, or
+a renderer failure — the viewer says which of the two happened and keeps
+showing the original screenshot and the annotation list. Evidence that cannot
+be drawn on is still evidence, and section 18 forbids a blank panel where a
+specific cause exists.
+
 ## 18. Empty and failure states
 
 The UI must explain actionable causes:
@@ -383,6 +402,16 @@ The UI must explain actionable causes:
 
 Avoid generic "something went wrong" when a stable error code exists.
 
+The live surface implements this as a closed set. `failure_state` in
+`packages/protocol/schemas/live_view/v1.schema.json` enumerates the causes a
+viewer can be shown, and the web application holds one title and one action for
+each: what happened, and what the reader can do about it. A stream that fails
+therefore shows a named cause over the last frame rather than a blank canvas,
+and it says which capabilities remain — a session whose live capture is
+unavailable is still usable for navigation and screenshot capture. A stream
+that connects but stops painting says so as well, because a frozen picture is
+indistinguishable from a still page.
+
 ## 19. Accessibility
 
 - Full keyboard navigation for review and annotation controls
@@ -392,6 +421,15 @@ Avoid generic "something went wrong" when a stable error code exists.
 - Reduced-motion support
 - Live-region announcements for control changes
 - Annotation list as a non-canvas alternative
+
+On the live surface this means: a skip link and one landmark per region; every
+control reachable and operable by keyboard, with a focus outline the page
+provides itself rather than relying on a browser default; the stream's state
+written as words in a polite live region and repeated in a badge that carries a
+text label beside its colour; a text alternative on the canvas naming the
+session and viewport it shows; and reduced motion answered by dropping the
+stream to the low frame rate and saying so, rather than by continuing to
+animate at twenty frames a second. `docs/TESTING.md` section 15 holds the tests.
 
 ## 20. Mobile
 

@@ -1,0 +1,19 @@
+# Build context exclusions. Keeping node_modules out matters for more than
+# speed: the image must install from the committed lockfile rather than
+# inherit whatever a developer's working tree happens to hold
+# (docs/SECURITY.md section 19).
+**/node_modules
+**/dist
+**/.turbo
+**/*.tsbuildinfo
+.git
+.github
+.claude
+coverage
+test-results
+playwright-report
+blob-report
+deploy/compose/secrets
+docs
+examples
+*.log

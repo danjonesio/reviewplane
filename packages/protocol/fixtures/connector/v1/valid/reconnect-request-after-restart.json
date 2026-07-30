@@ -1,0 +1,15 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JQ8ZR3M4T5V6W7X8Y9Z0A1K3",
+  "type": "connector.reconnect.request",
+  "sent_at": "2026-07-28T11:05:01Z",
+  "connector_id": "con_01JQ8ZR3M4T5V6W7X8Y9Z0A1C2",
+  "payload": {
+    "connector_version": "0.1.0",
+    "capabilities": [],
+    "active_routes": [],
+    "active_streams": [],
+    "known_agent_sessions": [],
+    "workspace_head_state": []
+  }
+}

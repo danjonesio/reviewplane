@@ -7,7 +7,17 @@
 
 ## Status
 
-This repository is at project-definition stage. The documents under `docs/` are the initial product and architecture baseline. Implementations must not silently diverge from them.
+Stage 0 implementation has begun. The documents under `docs/` remain the product and architecture baseline, and implementations must not silently diverge from them.
+
+Implemented so far: `packages/protocol`, the single versioned source for protocol schemas, with generated TypeScript and Go models (ADR-0013). Everything else is still documentation and deployment scaffolding.
+
+```bash
+pnpm install
+pnpm lint && pnpm typecheck && pnpm test
+pnpm protocol:check
+```
+
+Node 24, pnpm 11 and Go 1.26 are required; see `docs/DEVELOPMENT.md`.
 
 ## Product in one sentence
 
@@ -83,7 +93,7 @@ The proposed repository structure is:
 └── CLAUDE.md
 ```
 
-Only documentation and deployment scaffolding are expected until implementation begins.
+Directories appear as the work that needs them lands. `packages/protocol` exists today; the rest are still proposed.
 
 ## Normative language
 

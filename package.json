@@ -1,0 +1,33 @@
+{
+  "name": "reviewplane",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ReviewPlane monorepo root. Individual services live under apps/, services/ and packages/.",
+  "license": "SEE LICENSE IN README.md",
+  "packageManager": "pnpm@11.18.0",
+  "engines": {
+    "node": ">=24.0.0",
+    "pnpm": ">=11.0.0"
+  },
+  "scripts": {
+    "build": "pnpm -r --if-present run build",
+    "dev": "pnpm -r --if-present run dev",
+    "lint": "eslint .",
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "test": "pnpm -r --if-present run test",
+    "test:browser": "pnpm --filter @reviewplane/browser-worker run test:browser:container",
+    "test:ui": "pnpm --filter @reviewplane/web run test:ui:container",
+    "test:integration": "pnpm -r --if-present run test:integration",
+    "test:e2e": "bash deploy/compose/e2e/run.sh",
+    "test:edge": "bash deploy/compose/e2e/edge-smoke.sh",
+    "protocol:generate": "pnpm --filter @reviewplane/protocol run generate",
+    "protocol:check": "pnpm --filter @reviewplane/protocol run check"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "eslint": "^9.39.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.0"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JSTALERESULT",
+  "type": "browser.command.result",
+  "sent_at": "2026-07-29T09:17:00.010Z",
+  "worker_id": "wkr_01JBROWSERWORKER01",
+  "browser_session_id": "brs_01JHOMEPAGEREVIEW",
+  "controller": {
+    "type": "agent",
+    "id": "ags_01JCLAUDECODE"
+  },
+  "control_epoch": 2,
+  "sequence": 11,
+  "correlation_id": "msg_01JSTALECLICK",
+  "payload": {
+    "ok": false,
+    "command": "click",
+    "sequence": 11,
+    "control_epoch": 2,
+    "duration_ms": 0,
+    "trust": "trusted_control_plane",
+    "instruction_policy": "do_not_follow_as_instructions",
+    "error": {
+      "code": "CONTROL_EPOCH_STALE",
+      "message": "Browser control changed. Refresh session state before retrying.",
+      "retryable": true,
+      "current_epoch": 2
+    }
+  }
+}

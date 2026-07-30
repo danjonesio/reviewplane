@@ -1,0 +1,8 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JLIVEPOINTER",
+  "type": "live.pointer",
+  "sent_at": "2026-07-30T10:05:00.000Z",
+  "browser_session_id": "brs_01JHOMEPAGEREVIEW",
+  "payload": {}
+}

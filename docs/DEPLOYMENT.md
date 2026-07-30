@@ -67,6 +67,26 @@ Artefacts default to the filesystem driver on the `artefact_data` volume; no obj
 
 Production files must pin exact supported versions or immutable digests. Examples may use placeholders until release automation exists.
 
+The stack in `deploy/compose/` implements the `gateway`, `server`, `mcp-server`,
+`browser-worker`, `tunnel-gateway` and `postgres` rows today, plus the
+`dev-fixture` development environment the end-to-end scenario publishes. `mcp-server` is the `mcp` row: it is
+built from `apps/mcp-server/Dockerfile` as its own image rather than a second
+command on the server image, so the two processes can be scaled, restarted and
+read in logs independently (ADR-0020). It joins `data` and `browser` because it
+translates MCP tools into domain commands and sends captures to the worker, and
+`edge` so that the gateway can route `/mcp/*` to it,
+mounts the artefact volume read-only because it serves evidence and never writes
+it, and is not given the bootstrap token because an agent-facing process has no
+administrative work to do. The gateway routes `/mcp/*` to it and `/api/*` to the
+server; neither route reaches the other process.
+
+Its gateway image builds
+`apps/web` and serves the result, because ADR-0011 removed the server-rendering
+process and left static assets as the gateway's responsibility
+(`docs/ARCHITECTURE.md` §4.1). It publishes one host port, defaulting to 8443
+with TLS from Caddy's internal certificate authority so that a fresh install is
+HTTPS before an operator has obtained a certificate.
+
 ## 4. Networks
 
 Recommended:
@@ -79,9 +99,27 @@ control  api, mcp, jobs, tunnel-gateway, browser-worker
 browser  browser-worker, tunnel-gateway
 ```
 
-Only the gateway publishes host ports by default.
+Only the gateway publishes host ports by default, on the one non-internal
+network, and `REVIEWPLANE_GATEWAY_DOMAIN` MUST name the host it is served under:
+a site address that names no host gives the certificate authority no subject to
+issue for and fails every TLS handshake (`docs/CONFIGURATION.md` §3.2).
 
 PostgreSQL, browser debugging ports and tunnel internals remain private.
+
+`deploy/compose/` collapses this to five internal networks — `edge`, `data`,
+`browser`, `tunnel` and `devnet` — plus `frontend`, which is the only one that
+is not internal and whose only member is the gateway. Docker publishes a host
+port by translating it into the container's address on a bridge that has a
+gateway, and `internal: true` is the absence of one, so a container on internal
+networks only gets no port mapping and gets none silently. The component whose
+job is to be reachable from outside is the one that has a route off the host.
+Stage 0 has no separate authentication or control service to separate. `mcp-server` sits on `edge` so
+the gateway can reach it, `data` for the domain it commands, and `browser` for
+captures. `tunnel` carries the browser worker's route to the tunnel gateway and
+the control plane's route to its admin API; `devnet` carries the development
+environment's outbound connections. The browser worker is on `browser` and
+`tunnel` only, so it reaches a published service through a gateway route and by
+no other path.
 
 ## 5. Volumes
 
@@ -90,6 +128,9 @@ postgres_data
 artefact_data
 gateway_data
 ```
+
+`deploy/compose/` names these `postgres-data`, `artefact-data` and `caddy-data`,
+and adds one more for the development fixture's own sources.
 
 Browser profiles use ephemeral container storage unless project policy enables reusable authentication state.
 

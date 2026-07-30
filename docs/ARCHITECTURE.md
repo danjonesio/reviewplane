@@ -52,6 +52,27 @@ Responsibilities:
 
 A bundled Caddy configuration is the preferred default. Bring-your-own reverse proxy remains supported.
 
+The bundled configuration is `deploy/compose/gateway/`. It is the only service
+in the Compose stack that publishes a host port, and it is deliberately thin: it
+holds no credential, reaches no database and gets no Docker socket.
+
+- `/api/*` and `/ws/*` proxy to the control plane, the second carrying
+  WebSocket upgrades. Idle timeouts are long enough for a live viewer watching
+  a quiet page.
+- Everything else is served from the web application's build output, with an
+  unknown path falling back to the document because routing is client-side
+  (ADR-0011).
+- `/internal/*` is refused outright. That path is the browser-worker channel of
+  `docs/API.md` section 15.1, and a misconfigured network must not be able to
+  turn it into a reachable API.
+- The security headers include a content-security policy that permits `self`
+  only, plus `blob:` and `data:` images so a live frame can be decoded. The
+  policy is strict enough to be worth having precisely because ADR-0011 forbids
+  loading anything from another host.
+- The web application is built inside the gateway image, since ADR-0011 removed
+  the server-rendering process and the component that serves static files is
+  this one.
+
 ### 4.2 Server
 
 One codebase may initially run multiple process roles:
@@ -82,6 +103,20 @@ Preferred initial stack (ADR-0011):
 
 The build output is static assets served by the gateway; the web application has no server-side rendering process. All surfaces, including the live session room and annotation canvas, are client-rendered React using the HTTP API and WebSocket channels.
 
+`apps/web` exists today with two surfaces: a list of active browser sessions
+and a session's live view. Routing is code-declared TanStack Router, server
+state is TanStack Query, and the live channel is a framework-free client in
+`src/live/client.ts` so that reconnect, stall detection and the
+metadata-to-payload pairing can be tested without a browser — and so that the
+annotation overlay of a later issue has the frame's declared dimensions and
+sequence to work from.
+
+Live frames are painted into a canvas. Page-derived content is decoded as an
+image and drawn; no page-derived markup is ever inserted into the document
+(ADR-0010). `pnpm --filter @reviewplane/web build` fails when the produced
+bundle would fetch from another host, so ADR-0011's no-CDN requirement is a
+property of the artefact rather than of review.
+
 ### 4.4 MCP server
 
 Responsibilities:
@@ -94,6 +129,20 @@ Responsibilities:
 - Label browser-derived content as untrusted
 
 It may share packages and deployment image with the server but should be a separate process and route.
+
+Stage 0 implements it as `apps/mcp-server`: its own process, its own container,
+its own gateway route at `/mcp/*`, and its own image built from the same
+workspace (ADR-0020). It shares the *domain* rather than the deployment: it
+imports `@reviewplane/server/domain` and calls the same `ReviewService` and the
+same authority rules the HTTP API calls, so a rule such as "an agent may not
+finally dispose of a human-authored finding" has one implementation and two
+callers.
+
+It is the same trust zone as the server — it holds a database connection and the
+worker command credential — and a smaller one in the way that matters: it never
+reads the administrator bootstrap token, so the agent-facing process cannot
+present one. Its artefact volume is mounted read-only, because evidence is
+written by the worker through the control-plane API and only read here.
 
 ### 4.5 Browser worker
 
@@ -119,9 +168,16 @@ Responsibilities:
 - Register published local services
 - Route browser requests using session-scoped capabilities
 - Apply destination restrictions and expiry
-- Record bytes, errors and route lifecycle
+- Carry HTTP upgrades and streamed responses (§7.4)
+- Record bytes, errors, upgraded connections and route lifecycle
 
-It must not become an unrestricted SOCKS or general network proxy.
+It must not become an unrestricted SOCKS or general network proxy. It therefore exposes no CONNECT method, refuses an absolute-form request target, and has no code path that takes an upstream destination from a request: the destination comes from the route registry alone. Carrying an HTTP upgrade does not weaken that: only the `websocket` token is carried, the handshake runs the same authorisation checks as any request, and after the switch the gateway relays bytes without letting them influence routing.
+
+It serves three listeners, and the separation is a control rather than a convenience: the browser-facing listener is the only one a deployment publishes, the connector listener terminates mutually authenticated data channels, and the control listener carrying the route-registration API and metrics binds to loopback by default.
+
+Connector identity is derived from the verified client-certificate chain issued by the control plane's certificate authority; the gateway holds only the authority's root and never issues. Where in the certificate the identifier is read from is configuration, so that the issuing side can change without a gateway release.
+
+The gateway holds no database connection. Route registrations arrive from the control plane, and route lifecycle is emitted as structured audit records; the durable event rows of §10 belong to the control plane, which owns the project event sequence.
 
 ### 4.7 Connector
 
@@ -188,6 +244,10 @@ Stores:
 
 Artefact keys are content-addressed and must not expose user-entered names. Where the `s3` driver issues presigned URLs, they must be short-lived and scoped; the `filesystem` driver serves artefacts through the server with equivalent short-lived, scoped access tokens.
 
+Those tokens are the access grants of ADR-0019: a caller mints one for a single artefact and reads it at `/api/v1/artefact-content/:grantId`, and the grant is bound to the subject that minted it, so the identifier in the URL is not a credential on its own. No route serves an artefact from its identifier under either driver.
+
+For an image artefact the store also records the **content rectangle** — the intrinsic pixel extent the server measured from the verified bytes. Annotation geometry is normalised against it (`docs/DOMAIN_MODEL.md` section 16), so it belongs with the artefact rather than being recomputed by every renderer.
+
 ### 5.3 Ephemeral data
 
 - Live browser frames
@@ -196,6 +256,17 @@ Artefact keys are content-addressed and must not expose user-entered names. Wher
 - In-flight tunnel buffers
 
 Ephemeral data must not be persisted unless a configured recording policy converts it into an artefact.
+
+For live frames specifically, "must not be persisted" is enforced by the shape
+of the code rather than by a retention job. A frame exists as a value between
+the CDP callback and a socket write: the worker never writes one to its
+filesystem or hands one to the artefact uploader, the control plane never
+writes one to PostgreSQL or to the artefact store, and neither logs one. Stage
+0 implements no recording policy at all, so there is no configuration that can
+turn a frame into an artefact; when one arrives it must be an explicit,
+audited conversion rather than a flag on this path. `docs/TESTING.md` sections
+7 and 10 hold the tests that check the filesystem, the database and the
+artefact store after a sustained viewing session.
 
 ## 6. Browser topology
 
@@ -225,6 +296,10 @@ Initial isolation:
 - No access to control-plane secrets
 - Explicit network routes only
 
+A browser session is allocated as a Playwright persistent context over its own ephemeral profile directory, which gives it its own browser process as well as its own context. That is one step short of the container-per-session option below and satisfies both the per-session temporary directory and the context-isolation requirements with one mechanism. Termination closes the browser and removes the directory.
+
+"Explicit network routes only" is enforced by the worker: navigation and subresource requests are restricted to the origin of the session's published service, so a session with no published service reaches nothing. `docs/SECURITY.md` section 10.1 records the container controls that carry the rest.
+
 Higher-assurance deployments may allocate one container or microVM per browser session later.
 
 ### 6.3 Live viewing
@@ -239,6 +314,41 @@ Use CDP screencast frames or equivalent browser-worker capture:
 
 Live frames are ephemeral and delivered over authenticated WebSockets.
 
+### 6.3.1 How the rates and the drop policy are implemented
+
+The path is worker to control plane to viewer, and each hop has one job.
+
+**The worker produces.** A CDP screencast is started per browser session, at
+most one at a time. Its scheduler (`apps/browser-worker/src/session/quality.ts`)
+owns rate, encoder quality and dimensions, and never leaves the band its mode
+declares: 10 to 20 frames per second for `session_room`, 2 to 5 for
+`thumbnail`. A viewer request may lower a ceiling — a viewer that cannot
+consume the floor is better served slowly than not at all — and can never
+raise one. Chromium paints when it likes, so frames arriving faster than the
+target interval are acknowledged and declined; a declined frame never becomes
+part of the stream and never takes a sequence number, which keeps the drop rate
+a statement about the viewer rather than about the page's paint rate. Frames
+that do enter the stream sit in a buffer two frames deep; when it is full the
+oldest goes, and the count of discarded frames rides on the next delivered
+frame's metadata.
+
+**The transport between them** is an HTTP response body rather than a
+WebSocket, framed as a one-byte record kind, a four-byte big-endian length and
+the bytes. It carries the same `live_view` messages the viewer receives, so
+there is one message definition and not two. Abandoning that response is the
+only way to stop the producer: there is no "stop" message, which means a
+control plane that crashes cannot leave a worker streaming to nobody. A viewer
+quality request travels as a separate short request rather than upstream on
+this body, so nothing can interleave with a frame payload.
+
+**The control plane relays.** One worker stream per browser session is fanned
+out to every attached viewer, so a second viewer costs the worker nothing.
+Each viewer is bounded independently: a viewer with bytes still outstanding
+does not receive the current frame and its drop counter advances. That costs a
+constant amount of memory per viewer, always favours the newest frame, and
+stops one slow viewer thinning the stream for the others. When the last viewer
+detaches the worker stream is closed immediately rather than swept by a timer.
+
 ### 6.4 Human input
 
 Human keyboard and pointer input is sent through the control plane to the worker. Every command includes:
@@ -250,6 +360,8 @@ Human keyboard and pointer input is sent through the control plane to the worker
 - Timestamp
 
 Stale epochs are rejected.
+
+These five fields are the envelope of every browser command, not only of human input: they are declared once in `packages/protocol/schemas/browser/v1.schema.json` and required by the generated validators on both sides, so a command cannot omit one. The control plane checks them before dispatch and the worker checks them again before touching a page. An epoch that is not the current one is rejected whether it is older or newer, and a sequence number that is not greater than the last accepted one is rejected as a replay. Non-interactive system capture is authorised without the interactive lease and never transfers it.
 
 ## 7. Development-service routing
 
@@ -278,26 +390,51 @@ flowchart LR
 - Audited
 - Revocable immediately
 
-The browser should receive an internal origin such as:
+The browser receives an internal origin:
 
 ```text
-https://route-id.internal.invalid/
+https://public-alias.internal.invalid/
 ```
 
-The gateway maps this origin to the connector route. The implementation must preserve Host and origin behaviour predictably and support WebSockets for modern dev servers.
+The leftmost label is the published service's `public_alias` (`DOMAIN_MODEL.md` §10), not its identifier: a conventional `svc_` identifier is not a valid DNS label. The alias MUST be a DNS label and MUST be unique across the deployment, and it is validated at registration rather than normalised at request time, so the mapping from origin to route is total and injective.
+
+The gateway resolves an origin by dropping any port, dropping a trailing dot and lowercasing; what remains MUST be exactly one label followed by the configured suffix. Anything else resolves to no route. Host and origin handling MUST be deterministic and documented; the forwarding rules are in `CONNECTOR_PROTOCOL.md` §13.
+
+"Revocable immediately" includes connections that are already open. A route that expires or is revoked closes every stream it is carrying, including an HTTP connection that has been upgraded to a WebSocket, and no stream's deadline may exceed its route's expiry. A long-lived connection is not a way to hold access open past the route that authorised it (ADR-0017, `CONNECTOR_PROTOCOL.md` §13.3).
+
+### 7.5 What the publication path does today
+
+The publication half of §7.2 is implemented and is exercised end to end against the real connector binary by `apps/server/test/route-publication.test.ts`:
+
+1. `POST /api/v1/projects/:projectId/published-services` validates the destination against the control plane's own policy before any row exists (`SECURITY.md` §9), writes the record as `requested` and records `published_service.requested`.
+2. The control plane sends `route.publish` down the control channel the connector already holds open, and waits, bounded, for the acknowledgement (`CONNECTOR_PROTOCOL.md` §11). No channel is `CONNECTOR_OFFLINE`; no answer is `CONTROL_PLANE_UNAVAILABLE`.
+3. The connector validates independently against its own configuration, probes the destination within a bounded startup grace, and answers `ready` with the destination it observed or `rejected` with a stable class.
+4. Only then is the route registered with the tunnel gateway, the record becomes `ready`, and `published_service.ready` is recorded. A refusal at any step leaves the record `failed` carrying the class, never free text.
+
+The connector opens no listening socket at any point, which the same test asserts with `ss -ltnp` while a route is being carried.
+
+Capabilities are minted by the control plane and verified by the gateway. A capability is opaque to its bearer, binds route, project and browser session, expires, and is revocable individually as well as through its route.
+
+The browser worker receives its session's capability in the allocation message and presents it as `X-ReviewPlane-Capability` on every request to the session's origin, and on no other request. The gateway strips the whole `X-ReviewPlane-` namespace before forwarding, so the credential never reaches the development service. How Chromium resolves an internal origin and trusts the gateway's certificate is ADR-0015.
 
 ### 7.4 Application compatibility
 
-The tunnel must support:
+The tunnel must support HTTP/1.1, WebSockets, HTTP streaming, server-sent events and development hot reload. Every one of them is implemented and has a passing integration test; nothing in this list is aspirational.
 
-- HTTP/1.1
-- WebSockets
-- HTTP streaming
-- Server-sent events
-- Development hot reload
-- Configurable upstream TLS
+| Capability | State | Proven by |
+|---|---|---|
+| HTTP/1.1 | Implemented | `services/tunnel-gateway/internal/gatewayhttp/proxy_test.go`, and the Compose scenario `deploy/compose/e2e/run.sh` |
+| WebSockets | Implemented | `services/tunnel-gateway/internal/gatewayhttp/websocket_test.go`; a browser-driven echo in the Compose scenario |
+| HTTP streaming | Implemented | `services/tunnel-gateway/internal/gatewayhttp/streaming_test.go`, chunked delivery asserted on arrival timing |
+| Server-sent events | Implemented | the same file, asserted on arrival timing rather than final content |
+| Development hot reload | Implemented | the Compose scenario applies a source edit on the development machine to a page in central Chromium without a full reload |
+| Configurable upstream TLS | Not implemented | Stage 0 targets plain loopback HTTP. The destination policy accepts `https` and the connector opens a TCP socket either way, but nothing negotiates TLS to the development service. |
 
-HTTP/2 and additional protocols may be added later.
+The hot-reload case is the one that matters most and is the easiest to get quietly wrong: if the update socket fails, the page in Chromium stops updating while still looking live, so a human annotates a stale render and an agent verifies against one.
+
+An HTTP upgrade is carried as `websocket` and nothing else. HTTP/2 and QUIC are deferred; an `h2c` upgrade is refused with `UNSUPPORTED_CAPABILITY` rather than partially supported. gRPC, WebTransport and raw TCP forwarding are excluded — the last permanently, by `SECURITY.md` §9.
+
+`CONNECTOR_PROTOCOL.md` §13.3 records the header modes, the timeout and buffer values and the closure semantics; ADR-0017 records why the lifetime model is an idle window bounded by the route rather than a flat lifetime.
 
 ## 8. Agent integration
 
@@ -311,6 +448,12 @@ Supported connection forms:
 - Remote authenticated HTTP endpoint
 
 The local bridge is preferred where the CLI client handles local MCP configuration more reliably. It authenticates to the control plane using scoped device or session credentials.
+
+Stage 0 ships the remote endpoint only (ADR-0020). The connector exists, but it
+publishes development services and carries tunnelled bytes; it issues no agent
+credential, so there is nothing for a local bridge to obtain one from yet. The
+bridge, when it arrives, authenticates to the same endpoint with the same
+credentials; it is a transport in front of this interface and not a second one.
 
 ### 8.2 Agent knowledge
 
@@ -338,6 +481,18 @@ Agent sessions advertise capabilities such as:
 ```
 
 The control plane must degrade clearly when a client cannot consume image resources or managed notifications.
+
+Stage 0 negotiates through query parameters on the MCP endpoint URL, because
+MCP's own handshake has nowhere to carry them (`docs/MCP_SPEC.md` section 3.2),
+and reports the negotiated result back in `agent_session_status`. Degradation is
+a warning on a successful call and never a failure: a client that cannot consume
+image content still retrieves the review, still claims the finding, still
+captures the after screenshot and still submits verification, receiving resource
+links, digests and an `image_content_unsupported` warning instead of pixels
+(`docs/MCP_SPEC.md` section 14.2).
+
+`managed_messages` is `false` and `review_inbox` is `false` in Stage 0. Both are
+stated rather than left to be discovered.
 
 ## 9. Review architecture
 
@@ -397,17 +552,33 @@ Later:
 - mTLS or cryptographically bound channel
 - Revocation support
 
+The mechanism is ADR-0014: a control-plane certificate authority, generated at bootstrap and persisted server-side, issues one X.509 client certificate per connector. Its private key never leaves the control plane; the CA certificate is exported so that the tunnel gateway can verify the same identities. Stage 0 terminates the connector channels on a dedicated mutually authenticated listener rather than behind the shared gateway of §4.1, because the human API does not request client certificates.
+
 ### Agent
 
 - Agent session token bound to connector, project and capabilities
 - Short lifetime
 - Not reusable as a human token
 
+Stage 0 implements this as an administrator-issued agent credential (ADR-0020):
+a bearer token prefixed `rpa_`, stored only as a digest, bound to one
+organisation and a non-empty set of projects, carrying a non-empty capability
+set, and expiring at most 24 hours after issue. The connector binding arrives
+with the connector.
+
+"Not reusable as a human token" is symmetric and enforced in three places: the
+administrative API refuses an `rpa_` token by shape before any lookup, the agent
+credential store resolves nothing that is not an agent credential, and the
+viewer-session store resolves nothing that is not a viewer session. Neither
+principal can be presented as the other.
+
 ### Browser worker
 
 - Worker identity and mutual authentication
 - Commands signed or sent over mutually authenticated internal channels
 - Worker restricted to assigned projects and sessions
+
+Stage 0 implements the mutual authentication as two distinct credentials on an internal network, one per direction: the worker presents its own credential to the control-plane API, and the control plane presents a different credential to the worker's listener. Neither is an administrator token, neither works in the other direction, and neither is accepted on an administrative endpoint. A worker may only receive sessions for projects an administrator has assigned to it; an unassigned worker serves nothing. Mutual TLS replaces the shared credentials when remote worker nodes arrive in Stage 3.
 
 ## 12. Technology baseline
 
@@ -425,7 +596,7 @@ Initial preferred technologies:
 | Artefact store | Filesystem driver default; S3-compatible driver optional |
 | Realtime | WebSockets |
 | Deployment | OCI containers and Docker Compose |
-| Schemas | JSON Schema or equivalent generated TypeScript/Go models |
+| Schemas | JSON Schema 2020-12 in `packages/protocol`, with generated TypeScript and Go models (ADR-0013) |
 
 Specific libraries require ADR when they shape public interfaces or operational dependencies.
 
@@ -477,6 +648,12 @@ Kubernetes is not an MVP requirement.
 - Retain review and session metadata
 - Attempt bounded reconnect
 - Do not redirect traffic to a different environment silently
+
+Unavailable is not revoked. The published-service record survives the outage, and a route that has not expired and is still authorised resumes under the same identifier when the connector returns (`CONNECTOR_PROTOCOL.md` §17), so an outage costs a pause rather than a re-publication. A request made while the connector is gone fails with `CONNECTOR_OFFLINE` or `PUBLISHED_SERVICE_UNAVAILABLE` (`MCP_SPEC.md` §12) — including a request that was already in flight when the channel dropped, which fails with the same code rather than a generic upstream error and never hangs. Affected browser sessions become `DEGRADED` (`DOMAIN_MODEL.md` §12) and return to a usable status when reconciliation continues their route; they are never terminated by a connector outage.
+
+"Do not redirect traffic to a different environment silently" is enforced at the reconciliation, not only at publication: a connector that reconnects claiming a destination the record does not name has that route closed rather than continued, and a connector that reconnects under a different identity inherits no routes at all.
+
+The reconnect is bounded and jittered (`DEVELOPMENT.md` §10). The attempt counter that grows the backoff bounds *consecutive* failures rather than the connector's lifetime: a channel that stayed up longer than the longest backoff delay ends the incident, so a connector connected for hours does not retry its next unrelated drop at the maximum delay. A channel that is accepted and immediately dropped does not reset it, so a flapping peer is still backed off from.
 
 ### Browser worker crash
 

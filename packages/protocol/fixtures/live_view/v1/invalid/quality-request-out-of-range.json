@@ -1,0 +1,12 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JLIVEQGREEDY",
+  "type": "live.quality_request",
+  "sent_at": "2026-07-30T10:05:00.000Z",
+  "browser_session_id": "brs_01JHOMEPAGEREVIEW",
+  "payload": {
+    "mode": "session_room",
+    "max_fps": 240,
+    "requested_at": "2026-07-30T10:04:59.998Z"
+  }
+}

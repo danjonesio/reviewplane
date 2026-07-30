@@ -1,0 +1,48 @@
+Tunnel performance baseline (docs/TESTING.md section 12)
+========================================================
+
+Recorded by deploy/compose/e2e/run.sh on 2026-07-30T07:37:55Z
+
+Measurements
+------------
+  Tunnel throughput, browser fetch through the route: bulk: done bytes=4194304 ms=107 mbps=313.9
+  Hot reload, source save to applied update visible:  449ms
+
+What the hot-reload figure includes
+-----------------------------------
+  It is wall-clock from the edit landing on the development machine to the
+  updated text being visible in central Chromium, which is what a user
+  experiences. It therefore includes the file watcher (polling every 200ms),
+  the bundler, the update WebSocket through the tunnel, the browser applying
+  the module, and the control-plane round trip that observes it. It is not a
+  measurement of the tunnel alone, and it MUST NOT be read as one.
+
+Configuration under test
+------------------------
+  Gateway stream_idle_timeout        60s (default)
+  Gateway upgrade_idle_timeout       15m (default)
+  Gateway stream_max_lifetime        8h  (default, clipped to route expiry)
+  Gateway relay_buffer_bytes         32768 (default, per direction)
+  Flow-control window                262144 bytes per direction (protocol constant)
+  Route TTL requested                3600s
+  Host header mode                   upstream (default)
+  Forwarded header mode              standard (default)
+
+Machine
+-------
+  Linux 7.0.0-28-generic x86_64 GNU/Linux
+  CPUs: 3
+  Memory: 9.0 GiB
+  Docker: 29.6.2
+
+Gateway counters at the end of the run
+--------------------------------------
+  reviewplane_tunnel_bytes_total{direction="from_destination"} 1.6026372e+07
+  reviewplane_tunnel_bytes_total{direction="to_destination"} 40795
+  reviewplane_tunnel_requests_total{code="ok"} 53
+  reviewplane_tunnel_streams_total{outcome="completed"} 53
+  reviewplane_tunnel_streams_total{outcome="opened"} 54
+  reviewplane_tunnel_upgrades_open 1
+  reviewplane_tunnel_upgrades_total{outcome="closed"} 1
+  reviewplane_tunnel_upgrades_total{outcome="requested"} 2
+  reviewplane_tunnel_upgrades_total{outcome="switched"} 2

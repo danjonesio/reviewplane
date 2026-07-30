@@ -1,0 +1,15 @@
+Observed header behaviour (docs/CONNECTOR_PROTOCOL.md section 13.1)
+==================================================================
+
+Gateway host_header_mode: upstream (the default)
+
+Host received by the development service:  127.0.0.1:4321
+X-Forwarded-Host:                          svc-63abd52bf724442e8dd56166095319de.internal.invalid
+X-Forwarded-Proto:                         https
+X-Forwarded-For:                           (absent)
+
+The development service is told it is itself, which is what satisfies a
+development server host check. The internal origin reaches it only through
+X-Forwarded-Host, and no X-Forwarded-For is added at all: the client is a
+browser worker inside the control-plane zone and its address is internal
+topology the development service has no use for.

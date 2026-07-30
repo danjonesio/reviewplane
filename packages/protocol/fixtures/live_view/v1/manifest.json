@@ -1,0 +1,137 @@
+{
+  "protocol": "live_view",
+  "version": 1,
+  "description": "Fixture corpus for the version 1 live-view channel of docs/API.md section 18.2. Valid cases must decode and re-encode to the byte string recorded in canonical.json; invalid cases must be refused with the recorded reason. The corpus deliberately contains no binary frame payload: the payload is a separate transport message described only by the live.frame metadata that precedes it, and a fixture carrying image bytes inside JSON would encode exactly the shape this protocol forbids.",
+  "valid": [
+    {
+      "name": "stream-attached",
+      "kind": "live_view_frame",
+      "file": "valid/stream-attached.json",
+      "message_type": "live.attached",
+      "note": "The first message an authorised viewer sees. It names the project the viewer was authorised against and states retention never, so ADR-0009 is visible on the wire rather than only in a document."
+    },
+    {
+      "name": "frame-metadata-session-room",
+      "kind": "live_view_frame",
+      "file": "valid/frame-metadata-session-room.json",
+      "message_type": "live.frame",
+      "note": "Session-room metadata at the 1440x900 preset. byte_length describes the binary message that follows; the bytes are not here."
+    },
+    {
+      "name": "frame-metadata-thumbnail-after-drops",
+      "kind": "live_view_frame",
+      "file": "valid/frame-metadata-thumbnail-after-drops.json",
+      "message_type": "live.frame",
+      "note": "Thumbnail mode at reduced dimensions, reporting three frames dropped since the previous delivery. A sequence gap is expected behaviour under docs/ARCHITECTURE.md section 6.3, not an error."
+    },
+    {
+      "name": "quality-state-viewer-falling-behind",
+      "kind": "live_view_frame",
+      "file": "valid/quality-state-viewer-falling-behind.json",
+      "message_type": "live.quality",
+      "note": "The scheduler's own decision, still inside the 10 to 20 band for session_room. The viewer is told what was applied, not what it asked for."
+    },
+    {
+      "name": "quality-request-thumbnail",
+      "kind": "live_view_frame",
+      "file": "valid/quality-request-thumbnail.json",
+      "message_type": "live.quality_request",
+      "note": "A viewer request. Every field is advisory; docs/API.md section 18.2 leaves the worker scheduler authoritative."
+    },
+    {
+      "name": "stream-heartbeat",
+      "kind": "live_view_frame",
+      "file": "valid/stream-heartbeat.json",
+      "message_type": "live.heartbeat",
+      "note": "Carries the sent, dropped, depth and capacity figures docs/TESTING.md section 12 requires to be measurable, and a fractional measured rate."
+    },
+    {
+      "name": "viewer-heartbeat",
+      "kind": "live_view_frame",
+      "file": "valid/viewer-heartbeat.json",
+      "message_type": "live.viewer_heartbeat",
+      "note": "Viewer progress. The rendered sequence trailing the sent sequence is what identifies a slow viewer."
+    },
+    {
+      "name": "session-state-capture-unavailable",
+      "kind": "live_view_frame",
+      "file": "valid/session-state-capture-unavailable.json",
+      "message_type": "live.session_state",
+      "note": "An ACTIVE session with live_capture false: the degraded case of docs/DEVELOPMENT.md section 11, where navigation and screenshots still work and only the live stream is missing."
+    },
+    {
+      "name": "error-worker-failed",
+      "kind": "live_view_frame",
+      "file": "valid/error-worker-failed.json",
+      "message_type": "live.error",
+      "note": "A stream failure carrying both the stable code and the docs/UX_FLOWS.md section 18 state the page must show. retryable false, so the viewer must not reconnect in a loop."
+    },
+    {
+      "name": "error-rate-limited",
+      "kind": "live_view_frame",
+      "file": "valid/error-rate-limited.json",
+      "message_type": "live.error",
+      "note": "The docs/API.md section 19 live-viewer limit, returned with the retry hint that section requires."
+    }
+  ],
+  "invalid": [
+    {
+      "name": "attached-with-retained-frames",
+      "kind": "live_view_frame",
+      "file": "invalid/attached-with-retained-frames.json",
+      "expect_reason": "schema_violation",
+      "note": "ADR-0009 and docs/SECURITY.md section 14 fix live_frames: never. retention is a single-valued enumeration, so a stream cannot advertise a retention period even by mistake."
+    },
+    {
+      "name": "frame-without-stream-id",
+      "kind": "live_view_frame",
+      "file": "invalid/frame-without-stream-id.json",
+      "expect_reason": "schema_violation",
+      "note": "Frames name the stream instance they belong to, so a viewer can discard a frame from a producer run it no longer follows rather than painting it."
+    },
+    {
+      "name": "frame-payload-over-bound",
+      "kind": "live_view_frame",
+      "file": "invalid/frame-payload-over-bound.json",
+      "expect_reason": "schema_violation",
+      "note": "byte_length is bounded by max_frame_payload_bytes in the schema, so the relay refuses an oversized frame before it reads one."
+    },
+    {
+      "name": "frame-with-embedded-payload",
+      "kind": "live_view_frame",
+      "file": "invalid/frame-with-embedded-payload.json",
+      "expect_reason": "schema_violation",
+      "note": "docs/API.md section 18.2 separates metadata from payload. additionalProperties false is what stops a base64 field being added back later without a schema change."
+    },
+    {
+      "name": "session-state-url-with-control-characters",
+      "kind": "live_view_frame",
+      "file": "invalid/session-state-url-with-control-characters.json",
+      "expect_reason": "schema_violation",
+      "note": "The URL is page-derived (ADR-0010). A terminal escape sequence cannot travel through it into an operator's log."
+    },
+    {
+      "name": "quality-request-out-of-range",
+      "kind": "live_view_frame",
+      "file": "invalid/quality-request-out-of-range.json",
+      "expect_reason": "schema_violation",
+      "note": "A viewer cannot ask for a rate outside the declared bound, so a viewer-driven resource attack has to get past the schema first (docs/API.md section 19)."
+    },
+    {
+      "name": "unknown-message-type",
+      "kind": "live_view_frame",
+      "file": "invalid/unknown-message-type.json",
+      "expect_reason": "unknown_message_type",
+      "expect_error_class": "PROTOCOL_UNSUPPORTED",
+      "note": "Human takeover is out of scope for this channel; a pointer message is rejected here, never ignored. Input arrives on /ws/v1/browser-sessions/:sessionId/control when it arrives at all."
+    },
+    {
+      "name": "unknown-protocol-version",
+      "kind": "live_view_frame",
+      "file": "invalid/unknown-protocol-version.json",
+      "expect_reason": "unsupported_protocol_version",
+      "expect_error_class": "PROTOCOL_UNSUPPORTED",
+      "note": "Stage 0 pins version 1 and does not best-effort parse a later one."
+    }
+  ]
+}
