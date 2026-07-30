@@ -1,6 +1,9 @@
 go 1.26.5
 
 // Modules developed together in this repository. Future Go services
-// (services/connector, services/tunnel-gateway) are added here so that they
-// resolve packages/protocol from the working tree rather than from a tag.
-use ./packages/protocol
+// (services/tunnel-gateway) are added here so that they resolve
+// packages/protocol from the working tree rather than from a tag.
+use (
+	./packages/protocol
+	./services/connector
+)
