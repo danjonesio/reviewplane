@@ -214,6 +214,7 @@ describe("administrator bootstrap", () => {
     const body = second.json() as { error: { code: string; details?: { reason?: string } } };
     assert.equal(body.error.code, "AUTHENTICATION_REQUIRED");
     assert.equal(body.error.details?.reason, "install_token_consumed");
+    process.stdout.write(`evidence: bootstrap reuse refused ${second.body}\n`);
 
     // The refused attempt changed nothing: the address is still the first one.
     const user = await postgres.pool.query<{ email: string }>(
@@ -288,6 +289,9 @@ describe("administrator bootstrap", () => {
     assert.equal(logins.length, 1);
     assert.equal(logins[0]?.payload["method"], "install_token");
     assert.equal(logins[0]?.payload["user_id"], account.userId);
+    process.stdout.write(
+      `evidence: authentication.login_succeeded ${JSON.stringify(logins[0]?.payload)}\n`,
+    );
   });
 });
 
@@ -465,6 +469,7 @@ describe("security", () => {
     });
     assert.equal(missing.statusCode, 403, missing.body);
     assert.equal((missing.json() as { error: { code: string } }).error.code, "AUTHORISATION_DENIED");
+    process.stdout.write(`evidence: CSRF rejection ${missing.body}\n`);
 
     const wrong = await built.app.inject({
       method: "POST",

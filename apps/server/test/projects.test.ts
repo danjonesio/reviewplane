@@ -117,6 +117,7 @@ describe("creating a project", () => {
 
     const created = await eventsOfType(postgres.pool, project.id, "project.created");
     assert.equal(created[0]?.payload["repository_canonical"], "github.com/example/refresh-surplus");
+    process.stdout.write(`evidence: project.created ${JSON.stringify(created[0]?.payload)}\n`);
   });
 
   test("several clone URLs for one repository are accepted; for two they are not", async () => {
@@ -278,6 +279,9 @@ describe("managing projects", () => {
       events[0]?.payload["new_canonical"],
       "git.example.internal:2222/platform/refresh-surplus",
     );
+    process.stdout.write(
+      `evidence: project.repository_changed ${JSON.stringify(events[0]?.payload)}\n`,
+    );
 
     // Setting the same repository again — spelled differently, without the
     // scheme's default suffix — is not a move and records nothing.
@@ -436,6 +440,8 @@ describe("project authorisation", () => {
       (foreign.json() as { error: { code: string; message: string } }).error,
       (invented.json() as { error: { code: string; message: string } }).error,
     );
+    process.stdout.write(`evidence: cross-project denial ${foreign.body}\n`);
+    process.stdout.write(`evidence: unknown identifier  ${invented.body}\n`);
 
     // Nor can it enumerate: the list holds its own project and nothing else.
     const list = await built.app.inject({ method: "GET", url: "/api/v1/projects", headers });
