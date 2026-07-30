@@ -243,12 +243,18 @@ export const KNOWN_CAPABILITIES = [
   "local-mcp-bridge",
 ] as const;
 
+/**
+ * Platforms known at this protocol version.
+ */
 export const KNOWN_PLATFORMS = [
   "linux",
   "darwin",
   "windows",
 ] as const;
 
+/**
+ * Architectures known at this protocol version.
+ */
 export const KNOWN_ARCHITECTURES = [
   "amd64",
   "arm64",

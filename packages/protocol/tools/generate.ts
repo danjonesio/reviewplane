@@ -17,6 +17,7 @@ import {
   emitGoEncode,
   emitGoTypes,
   emitGoValidate,
+  goPackageName,
 } from "./emit-go.ts";
 import {
   emitDecode,
@@ -29,10 +30,19 @@ import {
 import { loadProtocolModel, type ProtocolModel } from "./schema-model.ts";
 
 export const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-export const schemaPath = join(packageRoot, "schemas", "connector", "v1.schema.json");
 
-const TS_OUTPUT_DIR = join("src", "generated", "connector", "v1");
-const GO_OUTPUT_DIR = "connectorv1";
+/**
+ * Every schema source in the package. One entry per protocol version; the
+ * languages a source renders are declared in its own `x-protocol.languages`,
+ * so an omission is a property of the schema rather than of this list.
+ */
+export const SCHEMA_SOURCES: readonly string[] = [
+  join(packageRoot, "schemas", "connector", "v1.schema.json"),
+  join(packageRoot, "schemas", "browser", "v1.schema.json"),
+];
+
+/** Retained for callers that only need the connector source. */
+export const schemaPath = SCHEMA_SOURCES[0] as string;
 
 export class GofmtUnavailableError extends Error {}
 
@@ -52,36 +62,65 @@ function normaliseTypeScript(source: string): string {
   return `${collapsed}\n`;
 }
 
-/** Renders every generated file. Keys are paths relative to the package root. */
+/**
+ * TypeScript output directory for a source, mirroring the schema path so a
+ * generated file and its source are found from one another.
+ */
+function typeScriptOutputDir(model: ProtocolModel): string {
+  return join("src", "generated", model.name, `v${String(model.version)}`);
+}
+
+/** Renders every generated file for one source, keyed by package-relative path. */
 export function renderAll(model: ProtocolModel): Map<string, string> {
   const files = new Map<string, string>();
 
-  files.set(join(TS_OUTPUT_DIR, "types.ts"), normaliseTypeScript(emitTypes(model)));
-  files.set(join(TS_OUTPUT_DIR, "validate.ts"), normaliseTypeScript(emitValidate(model)));
-  files.set(join(TS_OUTPUT_DIR, "decode.ts"), normaliseTypeScript(emitDecode(model)));
-  files.set(join(TS_OUTPUT_DIR, "encode.ts"), normaliseTypeScript(emitEncode(model)));
-  files.set(join(TS_OUTPUT_DIR, "dispatch.ts"), normaliseTypeScript(emitDispatch(model)));
-  files.set(join(TS_OUTPUT_DIR, "index.ts"), normaliseTypeScript(emitIndex(model)));
+  if (model.languages.includes("typescript")) {
+    const directory = typeScriptOutputDir(model);
+    files.set(join(directory, "types.ts"), normaliseTypeScript(emitTypes(model)));
+    files.set(join(directory, "validate.ts"), normaliseTypeScript(emitValidate(model)));
+    files.set(join(directory, "decode.ts"), normaliseTypeScript(emitDecode(model)));
+    files.set(join(directory, "encode.ts"), normaliseTypeScript(emitEncode(model)));
+    files.set(join(directory, "dispatch.ts"), normaliseTypeScript(emitDispatch(model)));
+    files.set(join(directory, "index.ts"), normaliseTypeScript(emitIndex(model)));
+  }
 
-  files.set(join(GO_OUTPUT_DIR, "types_gen.go"), gofmt(emitGoTypes(model)));
-  files.set(join(GO_OUTPUT_DIR, "validate_gen.go"), gofmt(emitGoValidate(model)));
-  files.set(join(GO_OUTPUT_DIR, "decode_gen.go"), gofmt(emitGoDecode(model)));
-  files.set(join(GO_OUTPUT_DIR, "encode_gen.go"), gofmt(emitGoEncode(model)));
-  files.set(join(GO_OUTPUT_DIR, "dispatch_gen.go"), gofmt(emitGoDispatch(model)));
+  if (model.languages.includes("go")) {
+    const directory = goPackageName(model);
+    files.set(join(directory, "types_gen.go"), gofmt(emitGoTypes(model)));
+    files.set(join(directory, "validate_gen.go"), gofmt(emitGoValidate(model)));
+    files.set(join(directory, "decode_gen.go"), gofmt(emitGoDecode(model)));
+    files.set(join(directory, "encode_gen.go"), gofmt(emitGoEncode(model)));
+    files.set(join(directory, "dispatch_gen.go"), gofmt(emitGoDispatch(model)));
+  }
 
   return files;
 }
 
+/** Renders every source in the package, keyed by package-relative path. */
+export function renderEverySource(): Map<string, string> {
+  const files = new Map<string, string>();
+  for (const source of SCHEMA_SOURCES) {
+    for (const [relativePath, contents] of renderAll(loadProtocolModel(source))) {
+      if (files.has(relativePath)) {
+        throw new Error(`two schema sources both render ${relativePath}`);
+      }
+      files.set(relativePath, contents);
+    }
+  }
+  return files;
+}
+
 function main(): void {
-  const model = loadProtocolModel(schemaPath);
-  const files = renderAll(model);
+  const files = renderEverySource();
   for (const [relativePath, contents] of files) {
     const absolutePath = join(packageRoot, relativePath);
     mkdirSync(dirname(absolutePath), { recursive: true });
     writeFileSync(absolutePath, contents, "utf8");
     process.stdout.write(`wrote ${relativePath}\n`);
   }
-  process.stdout.write(`generated ${files.size} files from ${model.title}\n`);
+  process.stdout.write(
+    `generated ${String(files.size)} files from ${String(SCHEMA_SOURCES.length)} schema sources\n`,
+  );
 }
 
 if (process.argv[1] !== undefined && resolvePath(process.argv[1]) === fileURLToPath(import.meta.url)) {

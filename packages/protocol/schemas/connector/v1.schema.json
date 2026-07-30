@@ -6,6 +6,7 @@
   "x-protocol": {
     "name": "connector",
     "version": 1,
+    "languages": ["typescript", "go"],
     "limits": {
       "max_control_frame_bytes": 65536,
       "max_data_stream_header_bytes": 4096
@@ -115,14 +116,25 @@
       "duplicate_items",
       "not_integer"
     ],
-    "known_capabilities": [
-      "http-tunnel",
-      "websocket-tunnel",
-      "git-context",
-      "local-mcp-bridge"
-    ],
-    "known_platforms": ["linux", "darwin", "windows"],
-    "known_architectures": ["amd64", "arm64"],
+    "vocabularies": {
+      "known_capabilities": {
+        "description": "Capabilities known at this protocol version. Unknown capabilities are accepted so that a newer connector is classified rather than rejected.",
+        "values": [
+          "http-tunnel",
+          "websocket-tunnel",
+          "git-context",
+          "local-mcp-bridge"
+        ]
+      },
+      "known_platforms": {
+        "description": "Platforms known at this protocol version.",
+        "values": ["linux", "darwin", "windows"]
+      },
+      "known_architectures": {
+        "description": "Architectures known at this protocol version.",
+        "values": ["amd64", "arm64"]
+      }
+    },
     "identifier_prefixes": {
       "message_id": "msg_",
       "connector_id": "con_",

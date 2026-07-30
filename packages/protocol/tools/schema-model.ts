@@ -9,15 +9,20 @@
 
 import { readFileSync } from "node:fs";
 
-export interface ProtocolLimits {
-  readonly max_control_frame_bytes: number;
-  readonly max_data_stream_header_bytes: number;
-}
+/**
+ * Byte bounds declared by `x-protocol.limits`, in declaration order. Each
+ * protocol names its own limits; `x-protocol.envelope_limit` says which one
+ * bounds an envelope frame.
+ */
+export type ProtocolLimits = ReadonlyMap<string, number>;
+
+/** Languages the generator renders for a schema source. */
+export type TargetLanguage = "typescript" | "go";
 
 export interface MessageSpec {
   readonly type: string;
   readonly channel: string;
-  readonly direction: "connector_to_control_plane" | "control_plane_to_connector";
+  readonly direction: string;
   readonly payloadDef: string;
   readonly description: string;
 }
@@ -26,8 +31,14 @@ export interface StandaloneSpec {
   readonly name: string;
   readonly channel: string;
   readonly def: string;
-  readonly maxBytesLimit: keyof ProtocolLimits;
+  readonly maxBytesLimit: string;
   readonly description: string;
+}
+
+/** A documented list of values a protocol names but does not validate against. */
+export interface VocabularySpec {
+  readonly description: string;
+  readonly values: readonly string[];
 }
 
 export interface ViolationReasonSpec {
@@ -127,20 +138,30 @@ export interface EnumType {
 
 export interface ProtocolModel {
   readonly sourcePath: string;
+  /** Package-relative path, as it appears in the generated-file banner. */
+  readonly sourceRelative: string;
   readonly sourceText: string;
   readonly name: string;
   readonly version: number;
   readonly title: string;
+  /** Languages rendered from this source. Declared, so an omission is visible. */
+  readonly languages: readonly TargetLanguage[];
   readonly limits: ProtocolLimits;
+  /** Key of `limits` that bounds an envelope frame of this protocol. */
+  readonly envelopeLimit: string;
   readonly channels: ReadonlyMap<string, string>;
+  /** Sender roles a message may declare, in declaration order. */
+  readonly directions: readonly string[];
   readonly messages: readonly MessageSpec[];
   readonly standalone: readonly StandaloneSpec[];
   readonly errorClasses: readonly string[];
   readonly violationReasons: readonly ViolationReasonSpec[];
   readonly schemaViolationCodes: readonly string[];
-  readonly knownCapabilities: readonly string[];
-  readonly knownPlatforms: readonly string[];
-  readonly knownArchitectures: readonly string[];
+  /**
+   * Named lists of values a protocol documents but does not validate against,
+   * such as the connector's known capabilities. Emitted in declaration order.
+   */
+  readonly vocabularies: ReadonlyMap<string, VocabularySpec>;
   readonly identifierPrefixes: ReadonlyMap<string, string>;
   readonly defs: ReadonlyMap<string, Node>;
   /** `$defs` order, preserved so generated output is deterministic. */
@@ -182,6 +203,28 @@ const DOCUMENT_KEYS = new Set([
   "x-protocol",
   "$defs",
 ]);
+
+const PROTOCOL_KEYS = new Set([
+  "name",
+  "version",
+  "languages",
+  "limits",
+  "envelope_limit",
+  "channels",
+  "directions",
+  "messages",
+  "standalone",
+  "error_classes",
+  "violation_reasons",
+  "schema_violation_codes",
+  "vocabularies",
+  "identifier_prefixes",
+]);
+
+const TARGET_LANGUAGES: ReadonlySet<string> = new Set(["typescript", "go"]);
+
+/** Default sender roles, kept for a schema that does not declare its own. */
+const DEFAULT_DIRECTIONS = ["connector_to_control_plane", "control_plane_to_connector"];
 
 type Json = Record<string, unknown>;
 
@@ -430,6 +473,9 @@ function parseNode(
             rule["forbidden"] === undefined
               ? []
               : asStringArray(rule["forbidden"], `${ruleWhere}.forbidden`);
+          if (required.length === 0 && forbidden.length === 0) {
+            fail(ruleWhere, "a conditional rule must require or forbid at least one property");
+          }
           for (const name of [...required, ...forbidden]) {
             if (!propertySpecs.some((property) => property.name === name)) {
               fail(ruleWhere, `rule references undeclared property "${name}"`);
@@ -466,12 +512,87 @@ function parseNode(
   }
 }
 
+/**
+ * `JSON.parse` keeps the last of two identically named keys and reports
+ * nothing, so a definition written twice silently replaces the first — and a
+ * `$ref` pointing at the replaced one then resolves to something of a
+ * different kind. Since the schema is the single source of truth, a duplicate
+ * key anywhere in it is an error rather than something a fixture discovers
+ * later.
+ *
+ * The scan walks the raw text because the duplicate no longer exists in the
+ * parsed document. It is formatting-independent: a string token is a key when
+ * the innermost open container is an object and the token is followed by a
+ * colon.
+ */
+function assertNoDuplicateKeys(sourceText: string): void {
+  const containers: { isObject: boolean; keys: Set<string> }[] = [];
+  let index = 0;
+
+  const readString = (): string => {
+    // Positioned on the opening quote.
+    let value = "";
+    index += 1;
+    while (index < sourceText.length) {
+      const character = sourceText[index] as string;
+      if (character === "\\") {
+        value += sourceText.slice(index, index + 2);
+        index += 2;
+        continue;
+      }
+      if (character === '"') {
+        index += 1;
+        return value;
+      }
+      value += character;
+      index += 1;
+    }
+    return value;
+  };
+
+  while (index < sourceText.length) {
+    const character = sourceText[index] as string;
+    if (character === '"') {
+      const token = readString();
+      let lookahead = index;
+      while (lookahead < sourceText.length && /\s/u.test(sourceText[lookahead] as string)) {
+        lookahead += 1;
+      }
+      const container = containers[containers.length - 1];
+      if (container !== undefined && container.isObject && sourceText[lookahead] === ":") {
+        if (container.keys.has(token)) {
+          fail(`"${token}"`, "the same key is declared twice in one object");
+        }
+        container.keys.add(token);
+      }
+      continue;
+    }
+    if (character === "{") containers.push({ isObject: true, keys: new Set() });
+    else if (character === "[") containers.push({ isObject: false, keys: new Set() });
+    else if (character === "}" || character === "]") containers.pop();
+    index += 1;
+  }
+}
+
+/**
+ * Renders the package-relative path used in the generated-file banner, so a
+ * reader of a generated file can find the one source it came from.
+ */
+function packageRelativePath(sourcePath: string): string {
+  const marker = `${"/"}schemas${"/"}`;
+  const index = sourcePath.lastIndexOf(marker);
+  if (index === -1) return sourcePath;
+  return `schemas/${sourcePath.slice(index + marker.length)}`;
+}
+
 export function loadProtocolModel(sourcePath: string): ProtocolModel {
   const sourceText = readFileSync(sourcePath, "utf8");
+  assertNoDuplicateKeys(sourceText);
   const document = asObject(JSON.parse(sourceText), "document");
   checkKeys(document, "document", DOCUMENT_KEYS);
 
   const protocol = asObject(document["x-protocol"], "x-protocol");
+  checkKeys(protocol, "x-protocol", PROTOCOL_KEYS);
   const defsRaw = asObject(document["$defs"], "$defs");
   const defNames = new Set(Object.keys(defsRaw));
 
@@ -487,17 +608,40 @@ export function loadProtocolModel(sourcePath: string): ProtocolModel {
     defOrder.push(defName);
   }
 
+  // Declared rather than inferred: a source that renders only one language is
+  // a deliberate scoping decision, and the reader of the schema must see it.
+  const languages: TargetLanguage[] = asStringArray(
+    protocol["languages"],
+    "x-protocol.languages",
+  ).map((language) => {
+    if (!TARGET_LANGUAGES.has(language)) {
+      fail("x-protocol.languages", `unknown target language "${language}"`);
+    }
+    return language as TargetLanguage;
+  });
+  if (languages.length === 0) fail("x-protocol.languages", "at least one language is required");
+
   const limitsRaw = asObject(protocol["limits"], "x-protocol.limits");
-  const limits: ProtocolLimits = {
-    max_control_frame_bytes: asInteger(
-      limitsRaw["max_control_frame_bytes"],
-      "x-protocol.limits.max_control_frame_bytes",
-    ),
-    max_data_stream_header_bytes: asInteger(
-      limitsRaw["max_data_stream_header_bytes"],
-      "x-protocol.limits.max_data_stream_header_bytes",
-    ),
-  };
+  const limits = new Map<string, number>();
+  for (const [limitName, rawLimit] of Object.entries(limitsRaw)) {
+    limits.set(limitName, asInteger(rawLimit, `x-protocol.limits.${limitName}`));
+  }
+  if (limits.size === 0) fail("x-protocol.limits", "at least one byte bound is required");
+
+  const envelopeLimit =
+    protocol["envelope_limit"] === undefined
+      ? "max_control_frame_bytes"
+      : asString(protocol["envelope_limit"], "x-protocol.envelope_limit");
+  if (!limits.has(envelopeLimit)) {
+    fail("x-protocol.envelope_limit", `"${envelopeLimit}" is not declared in x-protocol.limits`);
+  }
+  const envelopeBound = limits.get(envelopeLimit) as number;
+
+  const directions =
+    protocol["directions"] === undefined
+      ? DEFAULT_DIRECTIONS
+      : asStringArray(protocol["directions"], "x-protocol.directions");
+  if (directions.length === 0) fail("x-protocol.directions", "at least one direction is required");
 
   const channelsRaw = asObject(protocol["channels"], "x-protocol.channels");
   const channels = new Map<string, string>();
@@ -514,9 +658,7 @@ export function loadProtocolModel(sourcePath: string): ProtocolModel {
     const channel = asString(spec["channel"], `${where}.channel`);
     if (!channels.has(channel)) fail(where, `unknown channel "${channel}"`);
     const direction = asString(spec["direction"], `${where}.direction`);
-    if (direction !== "connector_to_control_plane" && direction !== "control_plane_to_connector") {
-      fail(where, `unknown direction "${direction}"`);
-    }
+    if (!directions.includes(direction)) fail(where, `unknown direction "${direction}"`);
     const payloadDef = asString(spec["payload"], `${where}.payload`);
     const payloadNode = defs.get(payloadDef);
     if (payloadNode === undefined) fail(where, `unknown payload definition "${payloadDef}"`);
@@ -524,7 +666,7 @@ export function loadProtocolModel(sourcePath: string): ProtocolModel {
     if (payloadNode.maxBytes === null) {
       fail(where, "every message payload needs an explicit x-max-bytes bound");
     }
-    if (payloadNode.maxBytes > limits.max_control_frame_bytes) {
+    if (payloadNode.maxBytes > envelopeBound) {
       fail(where, "payload bound exceeds the control-frame bound");
     }
     messages.push({
@@ -536,7 +678,10 @@ export function loadProtocolModel(sourcePath: string): ProtocolModel {
     });
   }
 
-  const standaloneRaw = asObject(protocol["standalone"], "x-protocol.standalone");
+  const standaloneRaw =
+    protocol["standalone"] === undefined
+      ? {}
+      : asObject(protocol["standalone"], "x-protocol.standalone");
   const standalone: StandaloneSpec[] = [];
   for (const [name, rawSpec] of Object.entries(standaloneRaw)) {
     const where = `x-protocol.standalone.${name}`;
@@ -550,10 +695,9 @@ export function loadProtocolModel(sourcePath: string): ProtocolModel {
     if (defNode.kind !== "object") fail(where, "definition must be an object");
     if (defNode.maxBytes === null) fail(where, "standalone message needs an explicit x-max-bytes bound");
     const maxBytesLimit = asString(spec["max_bytes_limit"], `${where}.max_bytes_limit`);
-    if (maxBytesLimit !== "max_control_frame_bytes" && maxBytesLimit !== "max_data_stream_header_bytes") {
-      fail(where, `unknown limit "${maxBytesLimit}"`);
-    }
-    if (defNode.maxBytes > limits[maxBytesLimit]) {
+    const transportBound = limits.get(maxBytesLimit);
+    if (transportBound === undefined) fail(where, `unknown limit "${maxBytesLimit}"`);
+    if (defNode.maxBytes > transportBound) {
       fail(where, "definition bound exceeds its transport bound");
     }
     standalone.push({
@@ -584,10 +728,26 @@ export function loadProtocolModel(sourcePath: string): ProtocolModel {
     });
   }
 
-  const identifierPrefixesRaw = asObject(
-    protocol["identifier_prefixes"],
-    "x-protocol.identifier_prefixes",
-  );
+  const vocabulariesRaw =
+    protocol["vocabularies"] === undefined
+      ? {}
+      : asObject(protocol["vocabularies"], "x-protocol.vocabularies");
+  const vocabularies = new Map<string, VocabularySpec>();
+  for (const [vocabularyName, rawVocabulary] of Object.entries(vocabulariesRaw)) {
+    const where = `x-protocol.vocabularies.${vocabularyName}`;
+    const spec = asObject(rawVocabulary, where);
+    checkKeys(spec, where, new Set(["description", "values"]));
+    vocabularies.set(vocabularyName, {
+      description:
+        spec["description"] === undefined ? "" : asString(spec["description"], `${where}.description`),
+      values: asStringArray(spec["values"], `${where}.values`),
+    });
+  }
+
+  const identifierPrefixesRaw =
+    protocol["identifier_prefixes"] === undefined
+      ? {}
+      : asObject(protocol["identifier_prefixes"], "x-protocol.identifier_prefixes");
   const identifierPrefixes = new Map<string, string>();
   for (const [field, prefix] of Object.entries(identifierPrefixesRaw)) {
     identifierPrefixes.set(field, asString(prefix, `x-protocol.identifier_prefixes.${field}`));
@@ -595,12 +755,16 @@ export function loadProtocolModel(sourcePath: string): ProtocolModel {
 
   const model: ProtocolModel = {
     sourcePath,
+    sourceRelative: packageRelativePath(sourcePath),
     sourceText,
     name: asString(protocol["name"], "x-protocol.name"),
     version: asInteger(protocol["version"], "x-protocol.version"),
     title: asString(document["title"], "title"),
+    languages,
     limits,
+    envelopeLimit,
     channels,
+    directions,
     messages,
     standalone,
     errorClasses,
@@ -609,12 +773,7 @@ export function loadProtocolModel(sourcePath: string): ProtocolModel {
       protocol["schema_violation_codes"],
       "x-protocol.schema_violation_codes",
     ),
-    knownCapabilities: asStringArray(protocol["known_capabilities"], "x-protocol.known_capabilities"),
-    knownPlatforms: asStringArray(protocol["known_platforms"], "x-protocol.known_platforms"),
-    knownArchitectures: asStringArray(
-      protocol["known_architectures"],
-      "x-protocol.known_architectures",
-    ),
+    vocabularies,
     identifierPrefixes,
     defs,
     defOrder,

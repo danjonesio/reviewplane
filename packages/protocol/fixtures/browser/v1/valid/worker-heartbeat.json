@@ -1,0 +1,13 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JHEARTBEAT",
+  "type": "worker.heartbeat",
+  "sent_at": "2026-07-29T09:16:17.000Z",
+  "worker_id": "wkr_01JBROWSERWORKER01",
+  "payload": {
+    "active_sessions": 1,
+    "capacity": 4,
+    "resident_memory_mb": 812,
+    "observed_at": "2026-07-29T09:16:16.998Z"
+  }
+}
