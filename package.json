@@ -15,7 +15,7 @@
     "dev": "pnpm -r --if-present run dev",
     "lint": "eslint .",
     "typecheck": "pnpm -r --if-present run typecheck",
-    "test": "pnpm -r --if-present run test",
+    "test": "pnpm -r --workspace-concurrency=1 --if-present run test",
     "test:browser": "pnpm --filter @reviewplane/browser-worker run test:browser:container",
     "test:ui": "pnpm --filter @reviewplane/web run test:ui:container",
     "test:integration": "pnpm -r --if-present run test:integration",

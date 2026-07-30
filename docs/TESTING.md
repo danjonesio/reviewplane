@@ -113,6 +113,13 @@ reachable peer is its database, with a unique name per run.
 Steps 1 to 4 need the connector, and steps 13 to 15 need human acceptance and
 review export; both arrive in Stage 1.
 
+These three harnesses build images and run Chromium, so they run nightly and on
+demand in `.github/workflows/container-harnesses.yml` rather than on every pull
+request; a pull request that needs their evidence carries the `ci:harnesses`
+label. The root gates of `docs/DEVELOPMENT.md` section 5 run on every pull
+request in `.github/workflows/ci.yml`. Neither workflow gates a release yet: see
+section 16.
+
 ## 4. Domain tests
 
 Required transition tests:
@@ -390,3 +397,11 @@ A release cannot ship when:
 - Browser worker runs with unsupported insecure defaults
 - Critical dependency vulnerability lacks documented mitigation
 - Protocol compatibility tests fail
+
+No release pipeline enforces this list yet. `.github/workflows/ci.yml` runs the
+root gates of `docs/DEVELOPMENT.md` section 5 on every pull request, which
+covers the protocol compatibility check, and
+`.github/workflows/container-harnesses.yml` runs the end-to-end and browser
+harnesses nightly; the remaining conditions have no automated owner. RVP-57
+builds the release pipeline that makes every condition above blocking, and the
+list here is its specification rather than a description of what runs today.
