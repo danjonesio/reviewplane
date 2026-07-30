@@ -37,6 +37,26 @@ and refuses `/internal` outright so that a misconfigured network cannot expose
 the browser-worker channel. It holds no credential, reaches neither PostgreSQL
 nor the worker, and mounts no Docker socket.
 
+`pnpm test:edge` (`e2e/edge-smoke.sh`) builds and starts it and asserts those
+properties from outside, over TLS, through the published port. It exists
+because every other suite runs *behind* the gateway, so nothing else notices
+when the gateway itself is broken — and three separate ways of being broken had
+accumulated before it was written:
+
+- The site address was `:8443`, which binds the port and names no subject.
+  Caddy's internal authority had nothing to issue a certificate for and every
+  handshake ended in an internal-error alert. `REVIEWPLANE_GATEWAY_DOMAIN` now
+  names the site, defaulting to `localhost`.
+- The service was on internal networks only. Docker publishes a port by
+  translating it into the container's address on a bridge with a gateway, which
+  is exactly what `internal: true` removes, so the mapping was silently never
+  created. The gateway is now also on `frontend`, the one non-internal network.
+- `/healthz` and the `/internal` refusal were written as bare `respond`
+  directives above the catch-all `handle`. Caddy sorts `handle` before
+  `respond`, so the catch-all matched first and terminated: both routes served
+  the application document instead. Every branch is now a `handle`, evaluated in
+  written order.
+
 ## MCP server
 
 `mcp-server` is the agent-facing process (`docs/ARCHITECTURE.md` §4.4,
@@ -57,9 +77,21 @@ from another host, so an image cannot be produced from one that would.
 
 Stage 0 terminates TLS with Caddy's internal certificate authority, so a fresh
 install is HTTPS from first boot and the viewer session cookie can be `Secure`.
-An operator terminating TLS elsewhere replaces the `tls` directive and points
-`REVIEWPLANE_PUBLIC_ORIGIN` at their own address; that value is also the origin
-the control plane accepts a live-view WebSocket upgrade from.
+Three settings govern it, all documented in `docs/CONFIGURATION.md` §3.2:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `REVIEWPLANE_GATEWAY_DOMAIN` | `localhost` | The name the site is served under |
+| `REVIEWPLANE_GATEWAY_PORT` | `8443` | Host port the container's 8443 is published on |
+| `REVIEWPLANE_GATEWAY_TLS` | `internal` | `internal`, an ACME email, or a certificate and key path pair |
+
+An operator serving a real host sets `REVIEWPLANE_GATEWAY_DOMAIN` and points
+`REVIEWPLANE_PUBLIC_ORIGIN` at the same address; that value is also the origin
+the control plane accepts a live-view WebSocket upgrade from, so a deployment
+where the two disagree serves a page the API then refuses. An operator with
+their own certificate mounts it and sets `REVIEWPLANE_GATEWAY_TLS` to the two
+paths, separated by a space. One who terminates TLS in front of the container
+fronts it instead and changes nothing here.
 
 ## Browser-worker isolation
 
@@ -186,9 +218,9 @@ Kubernetes secrets, or pre-create the files owned by the service user.
 
 ### Network topology
 
-Every network is `internal: true`, so Docker attaches no gateway to any of them
-and no container can reach the internet. `docs/ARCHITECTURE.md` §6.2 permits
-"explicit network routes only", and these five are the whole set:
+Every network but `frontend` is `internal: true`, so Docker attaches no gateway
+to it and nothing on it can reach the internet. `docs/ARCHITECTURE.md` §6.2
+permits "explicit network routes only", and these six are the whole set:
 
 | Network | Members | Why |
 |---|---|---|
@@ -196,7 +228,17 @@ and no container can reach the internet. `docs/ARCHITECTURE.md` §6.2 permits
 | `browser` | server, mcp-server, browser-worker | The control plane and the agent endpoint command the worker. |
 | `tunnel` | server, tunnel-gateway, browser-worker | The worker reaches published services only through the tunnel gateway; the control plane reaches the gateway's admin API. |
 | `devnet` | server, tunnel-gateway, dev-fixture | The development environment dials out to enrol and to open its data channel. Nothing dials in. |
-| `edge` | gateway, server, mcp-server | The edge gateway is the only service with a published host port, and it reaches the two HTTP processes over this network rather than over the host. |
+| `edge` | gateway, server, mcp-server | The edge gateway reaches the two HTTP processes over this network rather than over the host, and neither gains a route anywhere else by being on it. |
+| `frontend` | gateway | **Not** internal, and the only network here that is not. See below. |
+
+`frontend` is the single exception to the rule above, and it exists because a
+published host port requires it: Docker publishes a port by translating it into
+the container's address on a bridge that has a gateway, and `internal: true` is
+precisely the absence of one. A container on internal networks only gets no port
+mapping at all, and gets it silently — `docker port` simply reports nothing. The
+edge gateway is the one component whose job is to be reachable from outside
+(`docs/ARCHITECTURE.md` §4.1), so it is the one component that has a route off
+the host; everything it proxies to stays internal and reachable only through it.
 
 The browser worker is on `browser` and `tunnel`. It has no route to `devnet`,
 so it cannot reach the development environment except through a route the

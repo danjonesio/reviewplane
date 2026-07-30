@@ -34,5 +34,20 @@ COPY deploy/compose/gateway/Caddyfile /etc/caddy/Caddyfile
 
 EXPOSE 8443
 
+ENV REVIEWPLANE_GATEWAY_DOMAIN=localhost
+
+# The probe presents the site's name in SNI and resolves it to loopback.
+#
+# Both halves are load-bearing. A named site has no certificate for any other
+# name, and Caddy does not fall back to the one it holds: a probe that dialled
+# `https://127.0.0.1:8443` would be answered with a TLS internal-error alert and
+# would report a healthy gateway as unhealthy. A Host header alone does not fix
+# it, because the handshake fails before a header is sent. `--resolve` is why
+# this works for a real domain too, which does not resolve inside the container.
+#
+# --insecure: the internal authority is not in this image's trust store, and
+# what the probe is asserting is that the gateway answers, not who signed it.
 HEALTHCHECK --interval=15s --timeout=5s --retries=4 \
-    CMD wget --quiet --spider --no-check-certificate https://127.0.0.1:8443/healthz || exit 1
+    CMD curl --fail --silent --insecure --max-time 4 \
+        --resolve "${REVIEWPLANE_GATEWAY_DOMAIN}:8443:127.0.0.1" \
+        "https://${REVIEWPLANE_GATEWAY_DOMAIN}:8443/healthz" || exit 1

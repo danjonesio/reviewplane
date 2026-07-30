@@ -185,6 +185,41 @@ administrator credential cannot leak one. It does not run migrations either: the
 control-plane server owns the schema, and two processes racing to migrate one
 database is a failure mode with no upside.
 
+### 3.2 Edge-gateway environment
+
+The edge gateway (`docs/ARCHITECTURE.md` section 4.1) is the only component that
+publishes a host port. It holds no credential and reaches no database, so its
+whole configuration is where it listens and what it serves TLS with:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `REVIEWPLANE_GATEWAY_DOMAIN` | `localhost` | The name the site is served under |
+| `REVIEWPLANE_GATEWAY_PORT` | `8443` | Host port the container's 8443 is published on |
+| `REVIEWPLANE_GATEWAY_TLS` | `internal` | What terminates TLS |
+
+`REVIEWPLANE_GATEWAY_DOMAIN` MUST name the host the product is reached at. It is
+not decoration: a site address that names no host binds the port and gives the
+certificate authority no subject to issue for, so every TLS handshake ends in an
+internal-error alert and no request is ever routed. The default is `localhost`,
+which Caddy's internal authority issues for and which a single-host install
+answers on. Set it together with `REVIEWPLANE_PUBLIC_ORIGIN`, which the control
+plane reads as the origin a live WebSocket may be opened from (§2): a
+deployment where the two disagree serves a page the API then refuses.
+
+`REVIEWPLANE_GATEWAY_TLS` takes one of three forms:
+
+- `internal` — Caddy's own certificate authority. A fresh install is HTTPS
+  before an operator has obtained a certificate, at the cost of a warning until
+  the authority's root is trusted. This is the Stage 0 default.
+- two paths, separated by a space — a certificate and its private key, mounted
+  into the container. This is the form a deployment with its own certificate
+  uses.
+- an email address — an ACME account, for a publicly resolvable host.
+
+An operator who terminates TLS in front of the container puts their own proxy
+there instead; nothing in this file has to change for that, because the gateway
+is then reached over the internal network rather than the published port.
+
 ## 4. Tunnel-gateway configuration
 
 ```yaml

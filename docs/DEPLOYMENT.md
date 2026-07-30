@@ -99,13 +99,21 @@ control  api, mcp, jobs, tunnel-gateway, browser-worker
 browser  browser-worker, tunnel-gateway
 ```
 
-Only the gateway publishes host ports by default.
+Only the gateway publishes host ports by default, on the one non-internal
+network, and `REVIEWPLANE_GATEWAY_DOMAIN` MUST name the host it is served under:
+a site address that names no host gives the certificate authority no subject to
+issue for and fails every TLS handshake (`docs/CONFIGURATION.md` §3.2).
 
 PostgreSQL, browser debugging ports and tunnel internals remain private.
 
 `deploy/compose/` collapses this to five internal networks — `edge`, `data`,
-`browser`, `tunnel` and `devnet` — because Stage 0 has no separate
-authentication or control service to separate. `mcp-server` sits on `edge` so
+`browser`, `tunnel` and `devnet` — plus `frontend`, which is the only one that
+is not internal and whose only member is the gateway. Docker publishes a host
+port by translating it into the container's address on a bridge that has a
+gateway, and `internal: true` is the absence of one, so a container on internal
+networks only gets no port mapping and gets none silently. The component whose
+job is to be reachable from outside is the one that has a route off the host.
+Stage 0 has no separate authentication or control service to separate. `mcp-server` sits on `edge` so
 the gateway can reach it, `data` for the domain it commands, and `browser` for
 captures. `tunnel` carries the browser worker's route to the tunnel gateway and
 the control plane's route to its admin API; `devnet` carries the development

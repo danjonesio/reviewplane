@@ -16,7 +16,12 @@
 # What it deliberately does not do: reach the browser worker, the tunnel
 # gateway or PostgreSQL. `/internal/v1/*` is the worker channel
 # (`docs/API.md` section 15.1) and is never routed from the internet.
-
+#
+# `deploy/compose/e2e/edge-smoke.sh` (`pnpm test:edge`) starts this file and
+# asserts the four properties below that do not need an upstream: TLS, the
+# document, the `/internal` refusal and the headers. Every other suite runs
+# behind the gateway rather than through it, so without that gate a mistake in
+# this file is invisible.
 {
 	admin off
 	servers {
@@ -29,8 +34,23 @@
 	}
 }
 
-:8443 {
-	tls internal
+# The site address carries a name, and that is load-bearing rather than
+# cosmetic. A bare `:8443` binds the port but names no subject, so the
+# certificate authority has nothing to issue for and every TLS handshake ends in
+# an internal-error alert — the port is open, the process is running, and
+# nothing below this line is ever reached. `localhost` is the single-host
+# default the internal authority issues for; `REVIEWPLANE_GATEWAY_DOMAIN` names
+# the real host anywhere else, and must agree with `REVIEWPLANE_PUBLIC_ORIGIN`
+# on the control plane, which is the origin a live-view socket may be opened
+# from.
+{$REVIEWPLANE_GATEWAY_DOMAIN:localhost}:8443 {
+	# `internal` is Caddy's own authority: HTTPS on first boot with nothing to
+	# obtain. An operator with their own certificate sets
+	# REVIEWPLANE_GATEWAY_TLS to the two paths the certificate and its key are
+	# mounted at, separated by a space; an ACME account email is the third
+	# accepted form. One who terminates TLS in front of this container fronts it
+	# instead and leaves this alone.
+	tls {$REVIEWPLANE_GATEWAY_TLS:internal}
 
 	log {
 		output stdout
@@ -52,16 +72,30 @@
 		-Server
 	}
 
+	# Every branch below is a `handle`, including the two that only answer, and
+	# they are written in the order they are meant to be tried.
+	#
+	# This is not a style choice. `handle` blocks are mutually exclusive and are
+	# evaluated in written order, but a bare `respond` is a different directive
+	# and is sorted by Caddy's own directive order — which puts `handle` first.
+	# A `respond /healthz` written above a catch-all `handle` is therefore
+	# evaluated below it and never fires: the catch-all matches everything,
+	# terminates, and the liveness route and the `/internal` refusal silently
+	# become the single-page application document. Both did.
+
 	# Liveness of the gateway itself. It answers without reaching the server, so
 	# a failing control plane is diagnosed as a failing control plane.
-	respond /healthz "ok" 200
+	handle /healthz {
+		respond "ok" 200
+	}
 
 	# The worker channel is internal. Refusing it here means a misconfigured
 	# network cannot turn into an exposed worker API.
-	respond /internal/* 404
+	handle /internal/* {
+		respond 404
+	}
 
-	@api path /api/*
-	handle @api {
+	handle /api/* {
 		request_body {
 			# Artefact upload is the largest human-facing body (docs/API.md
 			# section 15); everything else is metadata.
@@ -73,8 +107,7 @@
 	# WebSocket upgrades. Caddy proxies the upgrade transparently; the size
 	# bound belongs to the control plane, which applies the protocol's own
 	# message limit (docs/API.md section 19).
-	@ws path /ws/*
-	handle @ws {
+	handle /ws/* {
 		reverse_proxy server:8080
 	}
 
@@ -83,8 +116,7 @@
 	# docs/ARCHITECTURE.md section 4.4 asks for: a misconfiguration that exposed
 	# the human API cannot expose the agent one as a side effect, and the two
 	# have different bodies, different credentials and different limits.
-	@mcp path /mcp/*
-	handle @mcp {
+	handle /mcp/* {
 		request_body {
 			# An MCP request is a JSON-RPC message. Nothing an agent sends is
 			# large: evidence travels the other way, as a link.

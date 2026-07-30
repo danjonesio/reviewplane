@@ -22,11 +22,20 @@
 
 name: reviewplane
 
-# Every network is `internal: true`, so Docker attaches no gateway to any of
-# them and no container can reach the internet. `docs/ARCHITECTURE.md` section
-# 6.2 permits "explicit network routes only", and these four are the whole set:
-# a component that is not on a network with a peer cannot reach that peer at
-# all, which is a stronger statement than any firewall rule.
+# Every network but `frontend` is `internal: true`, so Docker attaches no
+# gateway to it and nothing on it can reach the internet.
+# `docs/ARCHITECTURE.md` section 6.2 permits "explicit network routes only", and
+# these are the whole set: a component that is not on a network with a peer
+# cannot reach that peer at all, which is a stronger statement than any firewall
+# rule.
+#
+# `frontend` is the single exception and exists because publishing a host port
+# requires one. Docker publishes a port by translating it into the container's
+# address on a bridge that has a gateway, and `internal: true` is precisely the
+# absence of one — a container on internal networks only gets no port mapping at
+# all, silently. The edge gateway is the one component whose job is to be
+# reachable from outside (section 4.1), so it is the one component that has it;
+# everything it proxies to stays internal and reachable only through it.
 networks:
   # Control plane and browser worker. The worker is on this and nothing else,
   # except the tunnel network it needs to reach the gateway.
@@ -47,11 +56,16 @@ networks:
   # out on both; nothing dials in.
   devnet:
     internal: true
-  # The edge gateway to the control plane and the MCP server. Also internal: the
-  # edge is the only service with a published port, and it reaches them over this
-  # network rather than over the host.
+  # The edge gateway to the control plane and the MCP server. Internal: the edge
+  # reaches them over this network and never over the host, and neither of them
+  # gains a route to anywhere else by being on it.
   edge:
     internal: true
+  # The edge gateway's own published port, and the only network in this file
+  # that is not internal. Its only member is `gateway`. See the note above
+  # `networks:` for why a published port cannot be served from an internal one.
+  frontend:
+    internal: false
 
 # Built images carry a fixed name, independent of the Compose project name.
 #
@@ -106,12 +120,24 @@ services:
       context: ../..
       dockerfile: deploy/compose/gateway/Dockerfile
     restart: unless-stopped
-    networks: [edge]
+    # `frontend` carries the published port; `edge` carries the two upstreams.
+    # The gateway is the only member of `frontend`, so it is the only container
+    # in the stack with a route off the host.
+    networks: [frontend, edge]
     depends_on:
       - server
       - mcp-server
     ports:
       - "${REVIEWPLANE_GATEWAY_PORT:-8443}:8443"
+    environment:
+      # The name the site is served under. A site address with no name gives
+      # Caddy's internal authority no subject to issue a certificate for, and
+      # every handshake fails; `localhost` is the single-host default and an
+      # operator serving a real host names it here.
+      REVIEWPLANE_GATEWAY_DOMAIN: ${REVIEWPLANE_GATEWAY_DOMAIN:-localhost}
+      # `internal` is Caddy's own authority. An operator with a certificate
+      # sets the two paths it and its key are mounted at.
+      REVIEWPLANE_GATEWAY_TLS: ${REVIEWPLANE_GATEWAY_TLS:-internal}
     volumes:
       - caddy-data:/data
     cap_drop: [ALL]

@@ -20,6 +20,7 @@
     "test:ui": "pnpm --filter @reviewplane/web run test:ui:container",
     "test:integration": "pnpm -r --if-present run test:integration",
     "test:e2e": "bash deploy/compose/e2e/run.sh",
+    "test:edge": "bash deploy/compose/e2e/edge-smoke.sh",
     "protocol:generate": "pnpm --filter @reviewplane/protocol run generate",
     "protocol:check": "pnpm --filter @reviewplane/protocol run check"
   },
