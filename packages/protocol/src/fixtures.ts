@@ -68,3 +68,68 @@ export function readFixture(fixture: { readonly file: string }): string {
 export function loadCanonicalEncodings(): Record<string, string> {
   return JSON.parse(readFileSync(CANONICAL_PATH, "utf8")) as Record<string, string>;
 }
+
+/**
+ * A minting case of the capability corpus: claims in, exact token out.
+ *
+ * The token is a golden value. Both languages must produce it byte for byte,
+ * which is what makes the control plane's minting and the tunnel gateway's
+ * verification one implementation rather than two that happen to agree today.
+ */
+export interface CapabilityMintFixture {
+  readonly name: string;
+  readonly key_id: string;
+  readonly capability_id: string;
+  readonly route_id: string;
+  readonly project_id: string;
+  readonly browser_session_id: string;
+  readonly issued_at: number;
+  readonly expires_at: number;
+  readonly token: string;
+  readonly note?: string;
+}
+
+/** A verification case: a token, an instant and the outcome required of it. */
+export interface CapabilityVerifyFixture {
+  readonly name: string;
+  readonly token: string;
+  readonly now: number;
+  readonly expect: string;
+  readonly claims?: {
+    readonly key_id: string;
+    readonly capability_id: string;
+    readonly route_id: string;
+    readonly project_id: string;
+    readonly browser_session_id: string;
+    readonly issued_at: number;
+    readonly expires_at: number;
+  };
+  readonly note?: string;
+}
+
+export interface CapabilityManifest {
+  readonly protocol: string;
+  readonly version: number;
+  readonly description: string;
+  /** Fixture signing keys, base64, keyed by key identifier. Never deployed. */
+  readonly keys: Readonly<Record<string, string>>;
+  /** The key identifiers the verification cases assume a verifier holds. */
+  readonly verifier_keyring: readonly string[];
+  readonly mint: readonly CapabilityMintFixture[];
+  readonly verify: readonly CapabilityVerifyFixture[];
+}
+
+/** Directory holding the version 1 route-capability corpus. */
+export const CAPABILITY_FIXTURES_DIRECTORY = join(
+  import.meta.dirname,
+  "..",
+  "fixtures",
+  "capability",
+  "v1",
+);
+
+export const CAPABILITY_MANIFEST_PATH = join(CAPABILITY_FIXTURES_DIRECTORY, "manifest.json");
+
+export function loadCapabilityManifest(): CapabilityManifest {
+  return JSON.parse(readFileSync(CAPABILITY_MANIFEST_PATH, "utf8")) as CapabilityManifest;
+}

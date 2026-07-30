@@ -10,6 +10,7 @@
 
 export * from "./generated/connector/v1/index.ts";
 export * from "./canonical.ts";
+export * from "./capability.ts";
 export * from "./frame.ts";
 export * from "./sensitive.ts";
 export * from "./validate-runtime.ts";
