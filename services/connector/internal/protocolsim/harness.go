@@ -479,7 +479,7 @@ func (h *Harness) GetRoute(routeID, path string) Response {
 	if err != nil {
 		return Response{Code: classify(err)}
 	}
-	stream.SetDeadline(time.Now().Add(20 * time.Second))
+	stream.SetPolicyDeadline(time.Now().Add(20 * time.Second))
 	defer func() { _ = stream.Close() }()
 
 	request := "GET " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"

@@ -56,9 +56,19 @@ type clock struct {
 	now time.Time
 }
 
-func newClock() *clock {
-	return &clock{now: time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)}
-}
+// defaultClockOrigin is a fixed instant, and deliberately not "now".
+//
+// A harness clock seeded from the wall clock would hide the class of bug this
+// origin exists to catch: policy instants must never reach a real socket, and
+// they only look interchangeable while the two clocks agree. This origin is in
+// the past for every run after the day it names, so any code that hands a
+// policy instant to the kernel fails immediately and visibly. See
+// datachannel.SocketDeadline.
+var defaultClockOrigin = time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+
+func newClock() *clock { return newClockAt(defaultClockOrigin) }
+
+func newClockAt(origin time.Time) *clock { return &clock{now: origin} }
 
 func (c *clock) Now() time.Time {
 	c.mu.Lock()
@@ -149,6 +159,10 @@ type harnessOptions struct {
 	skipConnect  bool
 	maxRoutes    int
 	connectorTLS func(*tls.Config)
+	// clockOrigin moves the harness clock's starting instant. The zero value
+	// means defaultClockOrigin; a test sets it to prove that behaviour does not
+	// depend on where the injected clock happens to sit relative to the real one.
+	clockOrigin time.Time
 	// wrapConn lets a test observe the data channel's frames without changing
 	// how the gateway or the connector behave.
 	wrapConn func(datachannel.MessageConn) datachannel.MessageConn
@@ -156,9 +170,13 @@ type harnessOptions struct {
 
 func newHarness(t *testing.T, options harnessOptions) *harness {
 	t.Helper()
+	origin := options.clockOrigin
+	if origin.IsZero() {
+		origin = defaultClockOrigin
+	}
 	h := &harness{
 		t:           t,
-		clock:       newClock(),
+		clock:       newClockAt(origin),
 		logs:        &bytes.Buffer{},
 		authority:   testca.New(t, "reviewplane-stage0-connector-ca"),
 		routes:      datachannel.NewRouteTable(),

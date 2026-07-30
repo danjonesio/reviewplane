@@ -134,7 +134,7 @@ func (p *Proxy) forwardUpgrade(
 		p.refuse(w, r, requestID, &denial{status, code, reason})
 		return
 	}
-	stream.SetDeadline(deadline)
+	stream.SetPolicyDeadline(deadline)
 
 	// The terminator is what makes revocation reach a connection that is
 	// already switched. docs/ARCHITECTURE.md section 7.3 requires a route to be
@@ -225,7 +225,13 @@ func (p *Proxy) forwardUpgrade(
 	// The connection may not outlive its route, and after the hijack net/http
 	// enforces nothing on it. The deadline is the stream's, which is already
 	// clipped to the route's expiry.
-	_ = client.SetDeadline(deadline)
+	//
+	// It is a policy instant and this is a real socket, so what crosses is the
+	// lifetime still remaining rather than the instant itself. The two agree
+	// whenever the injected clock is the real one, which is every deployment;
+	// they do not agree under a test clock, and a socket cannot be told about a
+	// test clock.
+	_ = client.SetDeadline(datachannel.SocketDeadline(deadline, p.config.Now))
 
 	p.metrics.Count(metrics.Upgrades, "outcome", "switched")
 	p.metrics.SetGauge(metrics.UpgradesActive, float64(p.upgradesOpen.Add(1)))

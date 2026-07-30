@@ -140,7 +140,7 @@ func TestAnUpgradedStreamIsClosedAtItsDeadlineEvenWhileBusy(t *testing.T) {
 	if _, err := connector.Accept(); err != nil {
 		t.Fatalf("accept: %v", err)
 	}
-	stream.SetDeadline(now.Add(time.Hour))
+	stream.SetPolicyDeadline(now.Add(time.Hour))
 
 	clock.set(now.Add(2 * time.Hour))
 	closed := gateway.EnforceDeadlines(clock.Now())

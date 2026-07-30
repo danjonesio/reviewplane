@@ -455,7 +455,7 @@ func (p *Proxy) forward(
 		p.refuse(w, r, requestID, &denial{status, code, reason})
 		return 0, 0, 0, nil
 	}
-	stream.SetDeadline(deadline)
+	stream.SetPolicyDeadline(deadline)
 
 	handle, attachErr := p.routes.AttachStream(route.RouteID, func(class connectorv1.ErrorClass) {
 		_ = stream.Reset(class)

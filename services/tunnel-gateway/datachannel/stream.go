@@ -77,22 +77,49 @@ func (s *Stream) Counters() (sent int64, received int64) {
 	return s.sentBytes, s.receivedBytes
 }
 
-// SetDeadline records the absolute instant after which the stream must be
+// SetPolicyDeadline records the absolute instant after which the stream must be
 // closed. docs/CONNECTOR_PROTOCOL.md section 12 puts a deadline on every
 // stream; enforcing it here means a stalled transfer is closed and counted
 // rather than left open.
-func (s *Stream) SetDeadline(deadline time.Time) {
+//
+// "Policy" names the clock the instant belongs to. It is read against the
+// injected clock the sweep is driven with — EnforceDeadlines takes its `now`
+// from the caller — so a test can move a route's expiry without sleeping. It is
+// therefore NOT interchangeable with net.Conn.SetDeadline, which the kernel
+// compares against the real clock and nothing else. Crossing that boundary goes
+// through SocketDeadline.
+func (s *Stream) SetPolicyDeadline(deadline time.Time) {
 	s.mu.Lock()
 	s.deadline = deadline
 	s.deadlineSet = true
 	s.mu.Unlock()
 }
 
-// Deadline reports the absolute deadline and whether one is set.
-func (s *Stream) Deadline() (time.Time, bool) {
+// PolicyDeadline reports the absolute deadline and whether one is set. The
+// instant is on the policy clock; see SetPolicyDeadline.
+func (s *Stream) PolicyDeadline() (time.Time, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.deadline, s.deadlineSet
+}
+
+// SocketDeadline translates a policy instant into one an operating-system
+// socket can enforce.
+//
+// A stream's deadline is computed on an injected clock, because route expiry is
+// policy and a test has to be able to move it without sleeping for hours. A
+// socket deadline is an absolute instant the kernel compares against the real
+// clock, and it is the only clock the kernel has. Handing it a policy instant
+// works only while the two clocks agree, which is exactly the condition an
+// injected clock removes: the instant is already in the past, the deadline
+// fires as the first byte arrives, and a healthy connection is reset.
+//
+// What means the same thing in both frames is the time still remaining, so that
+// is what crosses the boundary. A deadline that has already passed on the
+// policy clock stays passed here, which is what an expired or revoked route
+// requires: the socket must be unusable, not renewed.
+func SocketDeadline(policy time.Time, now func() time.Time) time.Time {
+	return time.Now().Add(policy.Sub(now()))
 }
 
 // Mode reports the framing the stream carries. A header that names none is
