@@ -11,6 +11,30 @@
 
 ## 2. Server configuration areas
 
+Stage 0 status: the server reads environment variables rather than the file below, and validates them at startup. The mounted configuration file arrives with the surfaces that need its remaining sections. `*_FILE` indirection is already supported for every required value, per §7.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `REVIEWPLANE_DATABASE_URL` | required | PostgreSQL connection string |
+| `REVIEWPLANE_BOOTSTRAP_TOKEN` | required | Bootstrap administrator token, at least 32 characters (`ARCHITECTURE.md` §11) |
+| `REVIEWPLANE_HOST` | `0.0.0.0` | HTTP API listen address |
+| `REVIEWPLANE_PORT` | `8080` | HTTP API listen port |
+| `REVIEWPLANE_LOG_LEVEL` | `info` | `fatal`, `error`, `warn`, `info`, `debug`, `trace` or `silent` |
+| `REVIEWPLANE_ORGANISATION_ID` | `org_default` | The organisation connectors enrol into; a token from another organisation is refused |
+| `REVIEWPLANE_ORGANISATION_NAME` | `ReviewPlane` | Display name for that organisation |
+| `REVIEWPLANE_CONNECTOR_HOST` | `0.0.0.0` | Connector listener address |
+| `REVIEWPLANE_CONNECTOR_PORT` | `8443` | Connector listener port (mutually authenticated) |
+| `REVIEWPLANE_CONNECTOR_PUBLIC_URL` | `wss://<first TLS host>:<port>` | Base the registration response advertises |
+| `REVIEWPLANE_CONNECTOR_TLS_HOSTS` | `localhost,127.0.0.1` | Names and addresses the listener certificate covers |
+| `REVIEWPLANE_CONNECTOR_TLS_CERT_FILE` | issued from the connector CA | Operator-supplied listener certificate; set with the key file |
+| `REVIEWPLANE_CONNECTOR_TLS_KEY_FILE` | issued from the connector CA | Operator-supplied listener private key |
+| `REVIEWPLANE_CONNECTOR_IDENTITY_TTL_DAYS` | `365` | Lifetime of an issued device identity |
+| `REVIEWPLANE_ENROLMENT_TOKEN_TTL_SECONDS` | `3600` | Default enrolment-token expiry |
+| `REVIEWPLANE_CONNECTOR_HEARTBEAT_INTERVAL_SECONDS` | `15` | Expected connector heartbeat interval |
+| `REVIEWPLANE_CONNECTOR_DEGRADED_AFTER_SECONDS` | `45` | Silence after which `ACTIVE` becomes `DEGRADED` |
+| `REVIEWPLANE_CONNECTOR_DISCONNECTED_AFTER_SECONDS` | `90` | Silence after which `DEGRADED` becomes `DISCONNECTED` |
+| `REVIEWPLANE_CONNECTOR_MONITOR_INTERVAL_SECONDS` | `5` | How often the heartbeat state machine sweeps |
+
 ```yaml
 server:
   public_url: https://app.agents.example.internal

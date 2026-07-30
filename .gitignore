@@ -35,3 +35,6 @@ Thumbs.db
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Connector identity data written by a local test run
+services/connector/reviewplane-connector

@@ -27,7 +27,9 @@ examples/
 
 The exact structure may be refined before code is created, but separation between control plane, browser execution and connector must remain.
 
-Existing today: `packages/protocol` (pnpm workspace member and Go module `github.com/danjonesio/reviewplane/packages/protocol`), plus the workspace root that carries `pnpm-workspace.yaml`, `tsconfig.base.json`, `eslint.config.js` and `go.work`. Go modules are listed in `go.work` so that a service resolves `packages/protocol` from the working tree rather than from a tag; add each new module there as it is created.
+Existing today: `packages/protocol` (pnpm workspace member and Go module `github.com/danjonesio/reviewplane/packages/protocol`), `apps/server` (control-plane HTTP API and connector channels) and `services/connector` (Go module `github.com/danjonesio/reviewplane/services/connector`), plus the workspace root that carries `pnpm-workspace.yaml`, `tsconfig.base.json`, `eslint.config.js` and `go.work`. Go modules are listed in `go.work` so that a service resolves `packages/protocol` from the working tree rather than from a tag; add each new module there as it is created.
+
+`apps/server` is organised so that domains can land independently: `src/main.ts` is a thin entry point, `src/app.ts` is composition only, and each domain lives under `src/modules/<domain>/`. Migrations are plain SQL in `apps/server/migrations`, applied in lexical order exactly once by the runner in `src/db/migrate.ts`, which records applied file names in `schema_migrations`.
 
 ## 2. Toolchain direction
 
@@ -103,7 +105,9 @@ go vet ./...
 
 Prefer root orchestration commands that run the correct service-specific tooling.
 
-Working today at the repository root: `pnpm install`, `pnpm build`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm protocol:generate` and `pnpm protocol:check`. `go test ./...` and `go vet ./...` run from a module directory such as `packages/protocol`. The remaining scripts arrive with the surfaces they exercise.
+Working today at the repository root: `pnpm install`, `pnpm build`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm protocol:generate` and `pnpm protocol:check`. `go test ./...` and `go vet ./...` run from a module directory such as `packages/protocol` or `services/connector`. The remaining scripts arrive with the surfaces they exercise.
+
+`apps/server`'s tests start a disposable PostgreSQL container and remove it afterwards, and the connector integration test additionally builds `services/connector` from source, so Docker and the Go toolchain must both be available to run `pnpm test`.
 
 ## 6. Configuration
 

@@ -188,6 +188,8 @@ A connector installation and cryptographic identity.
 - `last_heartbeat_at`
 - `revoked_at`
 
+`certificate_fingerprint` is the `sha256:<hex>` digest of the DER form of the issued client certificate (ADR-0014). It is unique across connectors and is how a verified peer certificate is resolved to this record, on both the control channel and the tunnel gateway's data channel.
+
 ### Lifecycle
 
 ```text
@@ -198,7 +200,9 @@ PENDING_ENROLMENT
   -> REVOKED
 ```
 
-A revoked connector cannot reuse its prior credentials.
+The record enters `PENDING_ENROLMENT` when the registration exchange issues its identity, and `ACTIVE` when it first opens an authenticated channel. `DEGRADED` and `DISCONNECTED` are conclusions the control plane draws from heartbeat silence, never self-reports (`CONNECTOR_PROTOCOL.md` §8); a heartbeat from either state returns the connector to `ACTIVE`. Every transition records an event with actor type `connector` (`EVENTS.md` §5, §7).
+
+A revoked connector cannot reuse its prior credentials. Revocation is terminal: the connector is refused before the channel is established and MUST NOT retry with the refused identity. Re-enrolment creates a new connector record with a new identity.
 
 ## 9. Workspace
 

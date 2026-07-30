@@ -49,9 +49,15 @@ Created by an administrator with:
 - Maximum uses, default one
 - Optional environment labels
 
+Stage 0 status: the connector is built and run from source (`services/connector`). systemd unit packaging, signed release artefacts and multi-platform builds are deferred.
+
 ### 4.2 Key generation
 
 The connector generates a key pair locally. The private key never leaves the environment.
+
+The key is an ECDSA key on P-256, stored PKCS#8 PEM-encoded at `<identity.data_dir>/device.key`. The connector MUST write it with owner-only permissions and MUST validate those permissions on every start, not only at enrolment; it MUST refuse to start when the file is readable or writable by group or other, or is owned by another account (`DEVELOPMENT.md` §10, `SECURITY.md` §6.2). The control plane accepts a device key on P-256 or P-384 and refuses any other key type or curve rather than certifying a key it cannot classify.
+
+Enrolment interrupted after key generation and before identity issuance is safe to retry: the connector reuses the existing key, because the control plane never saw it and no identity was orphaned. Re-enrolment (`--force`) generates a new key pair, because it creates a new connector identity (§18).
 
 ### 4.3 Registration request
 
@@ -102,6 +108,8 @@ The response provides connector ID, signed identity, control-plane endpoints and
 
 Endpoints MUST use the `wss` scheme; a plaintext endpoint is refused by the schema.
 
+The registration exchange is carried on the `control` channel, over a WebSocket the connector opens to the control plane's enrolment endpoint, by default `wss://<control-plane>/connector/v1/enrol`. That endpoint requires no client certificate — the identity is what enrolment establishes — and the enrolment token is the only credential presented on it. The connector MUST refuse a plaintext control-plane URL rather than downgrade, because the token would otherwise travel unencrypted (`SECURITY.md` §15).
+
 ## 5. Transport
 
 Initial transport:
@@ -113,6 +121,40 @@ Initial transport:
 - Heartbeats and reconnect support
 
 A future HTTP/2 or QUIC transport may replace the stream layer without changing published-service semantics.
+
+### 5.1 Signed device identity
+
+The signed identity of §4.3 is an X.509 client certificate issued by a control-plane certificate authority (ADR-0014). The authority is generated once at bootstrap and persisted server-side; its private key never leaves the control plane and is returned by no API.
+
+The certificate binds the connector's locally generated public key to its connector ID:
+
+- subject `CN=<connector_id>, O=ReviewPlane`
+- `basicConstraints` critical, `cA` false
+- `keyUsage` critical, `digitalSignature`
+- `extKeyUsage` `clientAuth`
+- `notAfter` equal to `signed_identity.expires_at`
+
+`signed_identity.certificate` carries the base64 DER certificate and `signed_identity.certificate_fingerprint` its `sha256:<hex>` digest, which is the value recorded on the connector record (`DOMAIN_MODEL.md` §8) and the key by which a verified peer certificate is resolved to a connector.
+
+### 5.2 Channel endpoints and verification
+
+Post-enrolment channels are the `control_url` and `data_url` of the registration response, by default `wss://<control-plane>/connector/v1/control` and `.../connector/v1/data`.
+
+A verifier — the control plane on the control channel, the tunnel gateway on the data channel — MUST:
+
+1. require a client certificate whose chain verifies against the control-plane certificate authority;
+2. compute the sha256 fingerprint of the presented leaf certificate;
+3. resolve it to a connector record, and refuse when no record matches or the record is revoked.
+
+An unauthenticated connection and a connection presenting a certificate from another authority are both refused before any frame is exchanged.
+
+Stage 0 terminates the connector channels on a dedicated mutually authenticated listener owned by the control-plane server, rather than behind the shared gateway of `ARCHITECTURE.md` §4.1, because the human API does not request client certificates and the two authentication models must not share a listener. The topology may change without changing this protocol.
+
+### 5.3 Refusal signalling
+
+Version 1 defines no error message type. A control plane refuses a connector by closing the WebSocket with code 1008 and a reason equal to a §21 error class. A connector MUST treat `ENROLMENT_TOKEN_INVALID`, `IDENTITY_REVOKED`, `PROTOCOL_UNSUPPORTED` and `UPGRADE_REQUIRED` as terminal: it reports the class and stops, and MUST NOT retry with the refused credential (§18). Any other close is a transport event, and the reconnect behaviour of §17 applies.
+
+A frame that is oversized, malformed or schema-invalid is refused with the close code that matches its reason — 1009 for a bound violation, 1008 for an unknown version or type, 1007 otherwise — and ends the connection rather than being skipped.
 
 ## 6. Channels
 
@@ -219,6 +261,10 @@ State guidance:
 - Missing a small number of heartbeats: delayed
 - Exceeding disconnect threshold: disconnected
 - Reconnection with valid identity: resume and reconcile
+
+The thresholds are the control plane's, not the connector's: `DEGRADED` and `DISCONNECTED` are conclusions drawn from silence, so a connector cannot report them about itself. Stage 0 defaults are a 15-second heartbeat interval, `ACTIVE` to `DEGRADED` after 45 seconds of silence, and `DEGRADED` to `DISCONNECTED` after 90 seconds; all three are configurable. A heartbeat arriving in either degraded state returns the connector to `ACTIVE`. Every transition produces an event (`EVENTS.md` §7), so a connector that goes quiet leaves an audit trail rather than merely ceasing to appear.
+
+The connector also sends a WebSocket ping alongside each heartbeat and bounds its own read wait, so that a control plane with nothing to say still proves the channel is alive.
 
 ## 9. Workspace discovery
 
@@ -415,9 +461,31 @@ Automatic self-update is deferred. Signed packages and explicit administrator ac
 ```yaml
 control_plane:
   url: https://agents.example.internal
+  # Optional. Defaults to /connector/v1/enrol.
+  enrolment_path: /connector/v1/enrol
+  tls:
+    # Optional additional trust anchor for the control-plane server
+    # certificate. Absent means the system trust store.
+    ca_file: /etc/reviewplane-connector/control-plane-ca.pem
 
 identity:
   data_dir: /var/lib/reviewplane-connector
+
+heartbeat:
+  interval: 15s
+
+reconnect:
+  initial_delay: 1s
+  max_delay: 60s
+  factor: 2
+  jitter: 0.3
+  # 0 means unbounded, which is the default for the long-running channel.
+  max_attempts: 0
+
+environment:
+  # Defaults to the host name.
+  name: dev-ai-03
+  labels: [proxmox, development]
 
 workspaces:
   - path: /home/dan/projects/refresh-surplus
@@ -443,6 +511,14 @@ logging:
   format: json
 ```
 
+Configuration MUST be validated at startup and every failure MUST name the setting and the line it was read from (`DEVELOPMENT.md` §6). An unknown setting is an error, never a value that is silently ignored (`CONFIGURATION.md` §1).
+
+The connector accepts a deliberately small YAML subset — comments, block mappings, block and flow sequences, and plain or quoted scalars — and refuses anything outside it, including tabs for indentation, anchors, aliases, tags, multi-line scalars, flow mappings and multiple documents. That keeps the statically linked binary of §3 free of a YAML dependency and keeps the parser bounded.
+
+Two settings are refused rather than accepted at Stage 0, because no configuration of this build can honour them: `privacy.report_process_details: true`, since §8 permits only `load` and `memory_available_bytes` in a heartbeat, and `privacy.discover_workspaces: true`, since workspace discovery (§9) is not implemented. The `workspaces` and `publication` blocks are parsed and validated so that a complete configuration loads, and are not yet acted upon.
+
+The `enrol` command reads its one-time token from `--token`, `--token-file` or `REVIEWPLANE_ENROLMENT_TOKEN`, exactly one of which must be supplied. A file or environment variable keeps the credential out of the process table and shell history.
+
 ## 21. Errors
 
 Stable connector error classes. This list is the complete wire vocabulary; adding a class is a protocol change requiring an ADR. It is generated into both languages from `packages/protocol`, which fails to build if the two lists disagree.
@@ -461,6 +537,8 @@ Stable connector error classes. This list is the complete wire vocabulary; addin
 - `UPGRADE_REQUIRED`
 
 These classes describe authorisation, identity and lifecycle outcomes. A frame that is oversized, malformed or schema-invalid is refused with a local reason and no wire error class, except for an unknown `protocol_version` or `type`, which report `PROTOCOL_UNSUPPORTED` (§7 "Rejection").
+
+On the wire a class is carried by a WebSocket close reason (§5.3), not by a message: version 1 defines no error message type, and adding one would be a protocol change. `CONTROL_PLANE_UNAVAILABLE` is the connector's own classification of a control plane it cannot reach, and is reported locally rather than received.
 
 ## 22. Security requirements
 

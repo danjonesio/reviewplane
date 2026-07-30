@@ -397,6 +397,8 @@ Later:
 - mTLS or cryptographically bound channel
 - Revocation support
 
+The mechanism is ADR-0014: a control-plane certificate authority, generated at bootstrap and persisted server-side, issues one X.509 client certificate per connector. Its private key never leaves the control plane; the CA certificate is exported so that the tunnel gateway can verify the same identities. Stage 0 terminates the connector channels on a dedicated mutually authenticated listener rather than behind the shared gateway of §4.1, because the human API does not request client certificates.
+
 ### Agent
 
 - Agent session token bound to connector, project and capabilities

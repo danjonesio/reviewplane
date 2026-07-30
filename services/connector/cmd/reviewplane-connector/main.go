@@ -281,11 +281,17 @@ func reportFailure(stderr *os.File, logger *slog.Logger, err error) int {
 
 	failure := transport.Classify(err)
 	if failure != nil && failure.Class != "" {
+		// The full error is reported, not only the classified cause: a wrapper
+		// such as "after 3 attempts" is what tells an operator whether the
+		// retry budget was exhausted. The class is prefixed once, not twice.
+		detail := err.Error()
+		prefix := string(failure.Class) + ": "
+		detail = strings.TrimPrefix(detail, prefix)
 		logger.Error("connector failed",
 			slog.String("error_class", string(failure.Class)),
-			slog.String("error", failure.Err.Error()),
+			slog.String("error", detail),
 		)
-		fmt.Fprintf(stderr, "%s: %s\n", failure.Class, failure.Err.Error())
+		fmt.Fprintf(stderr, "%s: %s\n", failure.Class, detail)
 		if failure.Terminal {
 			return exitRefused
 		}

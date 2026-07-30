@@ -115,10 +115,64 @@ Project deletion should initially archive and require a separate destructive pur
 GET    /api/v1/projects/:projectId/environments
 GET    /api/v1/environments/:environmentId
 POST   /api/v1/connectors/enrolment-tokens
+GET    /api/v1/connectors/certificate-authority
 GET    /api/v1/connectors
 GET    /api/v1/connectors/:connectorId
 POST   /api/v1/connectors/:connectorId/revoke
 ```
+
+### Enrolment-token issuance
+
+`POST /api/v1/connectors/enrolment-tokens` creates the one-time token of `CONNECTOR_PROTOCOL.md` §4.1.
+
+```json
+{
+  "project_id": "prj_...",
+  "expires_in_seconds": 3600,
+  "max_uses": 1,
+  "environment_labels": ["proxmox", "development"]
+}
+```
+
+Every field is optional. `max_uses` defaults to 1. `environment_labels` pins the labels the enrolling environment must declare; an environment that does not carry all of them is refused with `ENROLMENT_TOKEN_INVALID`.
+
+The response is the only place the token value appears; the control plane stores its hash and cannot reproduce it.
+
+```json
+{
+  "data": {
+    "id": "ent_...",
+    "organisation_id": "org_...",
+    "project_id": null,
+    "environment_labels": [],
+    "max_uses": 1,
+    "expires_at": "2026-07-28T12:00:00.000Z",
+    "enrolment_token": "shown once",
+    "enrolment_endpoint": "wss://agents.example.internal/connector/v1/enrol"
+  },
+  "meta": { "request_id": "req_..." }
+}
+```
+
+### Certificate-authority export
+
+`GET /api/v1/connectors/certificate-authority` returns the connector certificate authority's certificate, which a tunnel gateway needs as its trust anchor to verify the same connector identities (ADR-0014). The CA private key is not part of this or any other response.
+
+```json
+{
+  "data": {
+    "certificate_pem": "-----BEGIN CERTIFICATE-----\n...",
+    "fingerprint": "sha256:...",
+    "subject": "CN=ReviewPlane connector CA, O=ReviewPlane",
+    "not_after": "2036-07-28T00:00:00.000Z"
+  },
+  "meta": { "request_id": "req_..." }
+}
+```
+
+### Stage 0 authentication on this surface
+
+Human authentication is not yet built, so these endpoints require the bootstrap administrator token of `ARCHITECTURE.md` §11 as `Authorization: Bearer <token>`, compared in constant time and never logged. A connector credential — its identity, certificate, fingerprint or enrolment token — MUST NOT be accepted here (`TESTING.md` §10). Local accounts and sessions replace the bootstrap token when they land.
 
 ## 10. Published-service endpoints
 
