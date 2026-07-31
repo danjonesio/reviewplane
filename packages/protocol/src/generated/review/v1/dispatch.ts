@@ -9,6 +9,8 @@
 import type { SchemaViolation } from "./types.ts";
 import type {
   ArtefactAccessGranted,
+  ArtefactDeleted,
+  ArtefactThumbnailGenerated,
   ArtefactUploadCompleted,
   ArtefactUploadFailed,
   ArtefactUploadStarted,
@@ -29,6 +31,8 @@ import type {
 } from "./types.ts";
 import {
   decodeArtefactAccessGranted,
+  decodeArtefactDeleted,
+  decodeArtefactThumbnailGenerated,
   decodeArtefactUploadCompleted,
   decodeArtefactUploadFailed,
   decodeArtefactUploadStarted,
@@ -46,6 +50,8 @@ import {
 } from "./decode.ts";
 import {
   encodeArtefactAccessGranted,
+  encodeArtefactDeleted,
+  encodeArtefactThumbnailGenerated,
   encodeArtefactUploadCompleted,
   encodeArtefactUploadFailed,
   encodeArtefactUploadStarted,
@@ -63,6 +69,8 @@ import {
 } from "./encode.ts";
 import {
   validateArtefactAccessGranted,
+  validateArtefactDeleted,
+  validateArtefactThumbnailGenerated,
   validateArtefactUploadCompleted,
   validateArtefactUploadFailed,
   validateArtefactUploadStarted,
@@ -97,6 +105,8 @@ export type ReviewPayload =
   | ArtefactUploadCompleted
   | ArtefactUploadFailed
   | ArtefactAccessGranted
+  | ArtefactDeleted
+  | ArtefactThumbnailGenerated
   | ScreenshotCaptured;
 
 /**
@@ -146,6 +156,12 @@ export function validatePayload(type: MessageType, value: unknown, path: string,
     case "artefact.access_granted":
       validateArtefactAccessGranted(value, path, out);
       return;
+    case "artefact.deleted":
+      validateArtefactDeleted(value, path, out);
+      return;
+    case "artefact.thumbnail_generated":
+      validateArtefactThumbnailGenerated(value, path, out);
+      return;
     case "screenshot.captured":
       validateScreenshotCaptured(value, path, out);
       return;
@@ -185,6 +201,10 @@ export function decodeFrame(envelope: Envelope, value: unknown): ReviewFrame {
       return { envelope, type: "artefact.upload_failed", payload: decodeArtefactUploadFailed(value) };
     case "artefact.access_granted":
       return { envelope, type: "artefact.access_granted", payload: decodeArtefactAccessGranted(value) };
+    case "artefact.deleted":
+      return { envelope, type: "artefact.deleted", payload: decodeArtefactDeleted(value) };
+    case "artefact.thumbnail_generated":
+      return { envelope, type: "artefact.thumbnail_generated", payload: decodeArtefactThumbnailGenerated(value) };
     case "screenshot.captured":
       return { envelope, type: "screenshot.captured", payload: decodeScreenshotCaptured(value) };
   }
@@ -223,6 +243,10 @@ export function encodeFramePayload(frame: ReviewFrame): string {
       return encodeArtefactUploadFailed(frame.payload);
     case "artefact.access_granted":
       return encodeArtefactAccessGranted(frame.payload);
+    case "artefact.deleted":
+      return encodeArtefactDeleted(frame.payload);
+    case "artefact.thumbnail_generated":
+      return encodeArtefactThumbnailGenerated(frame.payload);
     case "screenshot.captured":
       return encodeScreenshotCaptured(frame.payload);
   }

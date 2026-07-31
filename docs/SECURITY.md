@@ -465,12 +465,44 @@ Redaction status must be recorded on artefacts.
 - Do not render active HTML artefacts directly under the control-plane origin
 
 Content-type validation is performed on the bytes and not on the claim. The
-declared media type is what an uploader asserts; the leading bytes are what it
-actually sent. An SVG or an HTML document uploaded as an image is refused
-before anything is stored, so no artefact exists that a viewer could later be
-persuaded to render as active content. Display metadata such as a filename
+declared media type is what an uploader asserts; the bytes are what it actually
+sent. An SVG uploaded as an image is refused before anything is stored, and so
+is an image uploaded as a DOM snapshot, so no artefact exists whose bytes are
+something other than what its record says. Display metadata such as a filename
 never reaches the storage key, which is content-addressed (ADR-0012); a value
 that is a path rather than a name is refused as well.
+
+The **kind fixes the media type**. A `screenshot` holds `image/png` or
+`image/jpeg`, a `dom_snapshot` holds `text/html`, an
+`accessibility_snapshot` holds `application/json`, a `review_export` holds
+`application/json` or `text/plain`, and a `thumbnail` holds `image/png`.
+Nothing else is stored. `image/svg+xml` is not in that set at any kind: no
+Stage 1 capture needs it, so it is refused on upload rather than stored and
+then held back at every reader.
+
+**Active content is served as an attachment, and the disposition is derived
+rather than requested.** `text/html` is the one type in the set that executes.
+The control plane computes `inline` or `attachment` from the media type on
+every read; no request parameter, header or query member can ask for `inline`,
+so there is no way to reach a rendered DOM snapshot under the control-plane
+origin. Every artefact response also carries `X-Content-Type-Options: nosniff`,
+`Content-Security-Policy: default-src 'none'; sandbox`, `X-Frame-Options: DENY`
+and `Cross-Origin-Resource-Policy: same-origin`, and the filename offered on a
+download is the artefact identifier rather than the uploader's display label.
+The web application states the same rule at the reader: an artefact whose
+disposition is `attachment` is offered as a download and is never placed in an
+`img`, an `iframe` or an `object`.
+
+Under the `s3` driver the same rule holds through a different mechanism: the
+presigned URL pins `response-content-type` and `response-content-disposition`
+inside the signature, so the bytes are served the way the control plane decided
+and the URL cannot be edited to change it.
+
+**Application-layer encryption is not applied.** `encryption_key_reference` is
+stored on every artefact and is null: section 15's envelope encryption is a
+later stage, and a null value is the statement that these bytes are protected
+by volume or bucket encryption alone rather than by anything this application
+did.
 
 Reading artefact content is an audited, subject-scoped access (ADR-0019). A
 caller mints a grant for one artefact and reads `/api/v1/artefact-content/`
@@ -525,6 +557,15 @@ a flag on this path.
 
 Loss of encryption keys must fail closed and produce explicit operational alarms.
 
+Envelope encryption is **not implemented**. The artefact record carries
+`encryption_key_reference`, which is a reference to a key held elsewhere and
+never key material, and nothing writes to it: an artefact's bytes are stored as
+they were verified. A reader must therefore treat a null reference as "not
+application-encrypted" rather than as "encrypted with a key nobody recorded",
+and an operator relying on encryption at rest must configure it on the volume
+or the bucket. The field exists now so that the record of which artefacts
+predate envelope encryption is unambiguous when it arrives.
+
 ## 16. Audit
 
 Audit events must cover:
@@ -541,6 +582,16 @@ Audit events must cover:
 - Export and backup operations
 
 Audit payloads must avoid raw secrets.
+
+Artefact access and deletion are both recorded. Minting an access grant records
+`artefact.access_granted` with the subject and the expiry, and every read of
+bytes goes through one, so no artefact is read without an attributed record.
+Deleting one records `artefact.deleted`, and the metadata row is retained with
+`deleted_at` set rather than removed: the identifier appears in events, in
+exports and in MCP responses, and an audit trail whose identifiers stop
+resolving is worse than a row that records that the bytes are gone. The event
+says whether the stored object was actually removed, because keys are
+content-addressed and two artefacts with identical bytes share one object.
 
 ## 17. Approval gates
 

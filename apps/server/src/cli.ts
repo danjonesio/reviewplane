@@ -14,6 +14,7 @@
  * reviewplane serve             the api role: HTTP API, connector listener
  * reviewplane jobs              the jobs role: durable background work
  * reviewplane install-token     mint the one-time administrator bootstrap token
+ * reviewplane status            build, schema and artefact-store health and use
  * reviewplane version           the build this image carries
  * ```
  *
@@ -35,6 +36,13 @@ import { migrate, migrationState } from "./db/migrate.ts";
 import { createPool, type Pool } from "./db/pool.ts";
 import { readBuildInfo, registerHealthRoutes } from "./health.ts";
 import { JobRunner } from "./jobs/runner.ts";
+import {
+  loadArtefactStoreConfig,
+  loadRetentionWindows,
+} from "./modules/artefacts/config.ts";
+import { artefactJobHandlers } from "./modules/artefacts/jobs.ts";
+import { ArtefactService } from "./modules/artefacts/service.ts";
+import { createArtefactStore } from "./modules/artefacts/store/index.ts";
 import { InstallTokenStore } from "./modules/identity/install-tokens.ts";
 import { OrganisationStore } from "./modules/identity/organisations.ts";
 import { UserStore } from "./modules/identity/users.ts";
@@ -51,6 +59,9 @@ const USAGE = `reviewplane <command>
   install-token [--ttl-seconds N]
                        mint the one-time administrator bootstrap token and print
                        it once; it is single-use and expires (default 24 hours)
+  status [--json]      report the build, the schema and the artefact store,
+                       including storage use; exits 1 when the store is
+                       unreachable or migrations are pending
   version              print the build information
 
 Configuration is read from the environment; see docs/CONFIGURATION.md.
@@ -120,10 +131,80 @@ async function runServe(pool: Pool): Promise<number> {
  */
 const SCHEMA_RECHECK_INTERVAL_MS = 5_000;
 
+/**
+ * The artefact service the `jobs` and `status` roles need.
+ *
+ * It reads the artefact module's own configuration and **not** the whole
+ * `ServerConfig`, for the reason `requireDatabaseUrl` below gives about
+ * `migrate`: neither role has a gateway, a worker credential or a capability
+ * key, and requiring them would make a background worker refuse to start over
+ * settings it never uses. The variables are the same ones the API role reads,
+ * so a thumbnail written by the jobs container lands in exactly the store the
+ * API container serves from.
+ */
+function artefactService(pool: Pool): ArtefactService {
+  const storeConfig = loadArtefactStoreConfig(process.env);
+  return new ArtefactService(pool, createArtefactStore(storeConfig), storeConfig.maxBytes, {
+    retention: loadRetentionWindows(process.env),
+  });
+}
+
+/**
+ * `reviewplane status` (`docs/OPERATIONS.md` §3).
+ *
+ * It reports the build, the schema and the artefact store. The remaining
+ * figures §3 lists — connectors, worker capacity, sessions, queue depth,
+ * certificate expiry — arrive with the stages that own them; this command
+ * prints what it can actually measure rather than inventing a zero for what it
+ * cannot, because a status line that is confidently wrong is worse than one
+ * that is absent.
+ */
+async function runStatus(pool: Pool, json: boolean): Promise<number> {
+  const build = readBuildInfo();
+  const schema = await migrationState(pool);
+  const store = await artefactService(pool).storeStatus();
+
+  if (json) {
+    write(
+      JSON.stringify({
+        version: build.version,
+        revision: build.revision,
+        schema_version: schema.schemaVersion,
+        pending_migrations: schema.pending.length,
+        artefact_store: store,
+      }),
+    );
+    return store.available && schema.pending.length === 0 ? 0 : 1;
+  }
+
+  write(`version:          ${build.version}`);
+  write(`schema version:   ${schema.schemaVersion ?? "(none applied)"}`);
+  write(`pending:          ${String(schema.pending.length)}`);
+  write(`artefact driver:  ${store.driver}`);
+  write(`artefact store:   ${store.available ? "available" : `unavailable — ${store.detail ?? ""}`}`);
+  write(`artefacts:        ${String(store.artefact_count)}`);
+  write(`storage use:      ${formatBytes(store.stored_bytes)}`);
+  write(`awaiting upload:  ${formatBytes(store.pending_bytes)}`);
+  return store.available && schema.pending.length === 0 ? 0 : 1;
+}
+
+/** Bytes an operator can read at a glance, with the exact figure beside it. */
+function formatBytes(bytes: number): string {
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const rounded = unit === 0 ? String(bytes) : value.toFixed(1);
+  return `${rounded} ${units[unit] ?? "B"} (${String(bytes)} bytes)`;
+}
+
 async function runJobs(pool: Pool, once: boolean): Promise<number> {
   const runner = new JobRunner({
     pool,
-    handlers: {},
+    handlers: artefactJobHandlers(artefactService(pool)),
     logger: {
       info: (fields, message) => {
         write(`${message} ${JSON.stringify(fields)}`);
@@ -342,6 +423,8 @@ export async function main(argv: readonly string[]): Promise<number> {
         return await runServe(pool);
       case "jobs":
         return await runJobs(pool, rest.includes("--once"));
+      case "status":
+        return await runStatus(pool, rest.includes("--json"));
       case "install-token":
         return await runInstallToken(pool, rest, rest.includes("--force"));
       default:

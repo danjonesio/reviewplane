@@ -1,38 +1,55 @@
 /**
- * Artefact endpoints (`docs/API.md` section 15).
+ * Artefact endpoints (`docs/API.md` §15).
  *
  * The worker uploads through these routes and holds no storage credentials
  * (ADR-0012). A worker principal may only act inside the projects it is
  * assigned to.
  *
- * Reading bytes back works differently from every other route here, and
- * deliberately so (ADR-0019). There is **no** path that serves an artefact
- * from its identifier. A caller mints a grant for one artefact and then reads
+ * **The order of operations is the security property.** Every route here
+ * resolves the caller *first*, turns that principal into a scope — an
+ * organisation and a set of projects — and only then looks the artefact up,
+ * with the identifier, the project scope and the organisation in one predicate.
+ * A row belonging to another tenant is therefore never returned and then
+ * rejected, and a foreign identifier is answered exactly as an unknown one is
+ * (`docs/TESTING.md` §10). The older shape here looked the artefact up first
+ * and compared afterwards, which made the two refusals distinguishable and the
+ * identifier space enumerable (RVP-66, RVP-67).
+ *
+ * **Reading bytes back works differently from every other route here**, and
+ * deliberately so (ADR-0019). There is **no** path that serves an artefact from
+ * its identifier. A caller mints a grant for one artefact and then reads
  * `/api/v1/artefact-content/:grantId`; the grant identifier is unguessable and
  * short-lived, and it admits nobody on its own, because the request must still
- * authenticate as the subject the grant was minted for. That split is what
- * lets an `<img>` element load evidence — it can carry a URL and a cookie, but
- * not an `Authorization` header — without putting a credential in a URL, which
- * `docs/SECURITY.md` section 18 forbids.
+ * authenticate as the subject the grant was minted for. That split is what lets
+ * an `<img>` element load evidence — it can carry a URL and a cookie, but not
+ * an `Authorization` header — without putting a credential in a URL, which
+ * `docs/SECURITY.md` §18 forbids.
+ *
+ * **Active content is never rendered here.** A DOM snapshot is `text/html`, and
+ * `docs/SECURITY.md` §13 forbids rendering active markup under the
+ * control-plane origin. Its bytes are served as an attachment, with the
+ * disposition derived from the media type rather than chosen by the caller, so
+ * there is no request that can ask for it inline.
  */
 
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Pool } from "pg";
 
 import { requireBearer, type Principal } from "../../auth.ts";
 import { ApiError, notFound } from "../../errors.ts";
 import type { ActorType, EventActor } from "../../events/append.ts";
 import { requireCsrfToken } from "../identity/authorisation.ts";
+import { dispositionFor } from "./kinds.ts";
 import {
   ARTEFACT_GRANT_TTL_SECONDS,
+  UNRESTRICTED_SCOPE,
   type ArtefactRecord,
+  type ArtefactScope,
   type ArtefactService,
 } from "./service.ts";
+import { IdempotencyStore, requestDigest } from "../agents/idempotency.ts";
 import type { WorkerRegistry } from "../browser-sessions/workers.ts";
-import {
-  authorisedForProject,
-  type ViewerPrincipal,
-} from "../live/viewer-sessions.ts";
+import type { ViewerPrincipal } from "../live/viewer-sessions.ts";
 
 /**
  * An agent credential presenting itself to read evidence back.
@@ -64,7 +81,7 @@ export interface ArtefactRoutesOptions {
    * Resolves an agent credential (`docs/SECURITY.md` §6.3). It admits an agent
    * to **reading** evidence it already holds a grant for, and to nothing else
    * here: the upload routes below never consult it, so an agent cannot create,
-   * overwrite or complete an artefact.
+   * overwrite, complete or delete an artefact.
    */
   readonly agentAuth?: (request: FastifyRequest) => Promise<AgentArtefactPrincipal | null>;
 }
@@ -75,20 +92,32 @@ function actorFor(principal: Principal): EventActor {
     : { type: "browser_worker", id: principal.workerId, display: principal.name };
 }
 
-/** The subject a grant is bound to, for either kind of principal. */
-interface GrantSubject {
-  readonly type: ActorType;
-  readonly id: string;
+/** The subject a grant is bound to, and the rows that subject may see. */
+interface ArtefactCaller {
+  readonly subjectType: ActorType;
+  readonly subjectId: string;
   readonly display: string;
+  readonly scope: ArtefactScope;
 }
 
 export async function registerArtefactRoutes(
   app: FastifyInstance,
   options: ArtefactRoutesOptions,
 ): Promise<void> {
-  // Screenshot bytes arrive as an octet stream; Fastify must hand them over
+  const idempotency = new IdempotencyStore(options.pool);
+
+  // Artefact bytes arrive as an opaque stream; Fastify must hand them over
   // untouched rather than trying to parse them.
-  for (const mediaType of ["image/png", "image/jpeg"]) {
+  //
+  // The transport header is not the artefact's media type. That is declared on
+  // the intent and verified against the bytes, so an uploader sends
+  // `application/octet-stream` — or, for the two image types the browser worker
+  // already uses, the image type itself — and a DOM snapshot or an
+  // accessibility snapshot travels as opaque bytes. Registering a parser for
+  // `application/json` here would replace the one every other route on this
+  // server needs, and a JSON body Fastify had parsed and re-serialised would no
+  // longer hash to what the uploader declared.
+  for (const mediaType of ["image/png", "image/jpeg", "application/octet-stream"]) {
     app.addContentTypeParser(
       mediaType,
       { parseAs: "buffer", bodyLimit: options.maxBytes },
@@ -116,45 +145,79 @@ export async function registerArtefactRoutes(
   };
 
   /**
-   * The subject of a grant.
+   * Turns the request's credential into a subject and a scope, **before any
+   * artefact is looked up**.
    *
-   * A human viewer session is the usual one; the administrator token and a
-   * worker credential are accepted so an operator with `curl` and the browser
-   * worker itself can read evidence back through the same mechanism rather
-   * than through a second, weaker one.
+   * A human viewer session is the usual caller; the administrator token, a
+   * worker credential and an agent credential are all accepted so that an
+   * operator with `curl`, the browser worker and an agent session read evidence
+   * through the same mechanism rather than through three weaker ones.
    *
-   * `intent` is what separates reading evidence from minting a grant to read
-   * it. Minting one inserts a row and records `artefact.access_granted`, so it
-   * is a state change and a cookie-authenticated caller must echo the session's
-   * CSRF token (`docs/API.md` section 4.0). The check is deliberately outside
-   * the `catch` above it: swallowing its refusal would be a guard that refuses
-   * nothing.
+   * `intent` separates reading evidence from minting a grant to read it, or
+   * deleting one. A write inserts a row and records an event, so a
+   * cookie-authenticated caller must echo the session's CSRF token
+   * (`docs/API.md` §4.0). The check runs before anything else this function
+   * does with the session, and outside any `catch`: swallowing its refusal
+   * would be a guard that refuses nothing.
    */
-  const resolveGrantSubject = async (
+  const resolveCaller = async (
     request: FastifyRequest,
-    record: ArtefactRecord,
     intent: "read" | "write",
-  ): Promise<GrantSubject> => {
+  ): Promise<ArtefactCaller> => {
     if (options.viewerAuth !== undefined) {
       const viewer = await options.viewerAuth(request).catch(() => null);
       if (viewer !== null) {
         if (intent === "write") requireCsrfToken(request, viewer);
-        if (!authorisedForProject(viewer, record.project_id)) {
-          throw new ApiError(
-            "PROJECT_CONTEXT_MISMATCH",
-            "This viewer session is not authorised for the project that owns this artefact.",
-          );
-        }
-        return { type: "human_user", id: viewer.viewerSessionId, display: viewer.display };
+        return {
+          subjectType: "human_user",
+          subjectId: viewer.viewerSessionId,
+          display: viewer.display,
+          scope: {
+            organisationId: viewer.organisationId,
+            projectIds: viewer.projectIds === null ? null : [...viewer.projectIds],
+          },
+        };
+      }
+    }
+    if (options.agentAuth !== undefined) {
+      const agent = await options.agentAuth(request).catch(() => null);
+      if (agent !== null) {
+        return {
+          subjectType: "agent_session",
+          subjectId: agent.credentialId,
+          display: agent.display,
+          scope: { organisationId: agent.organisationId, projectIds: [...agent.projectIds] },
+        };
       }
     }
     const principal = await resolvePrincipal(request);
-    requireProjectAccess(principal, record.project_id);
-    return principal.type === "administrator"
-      ? { type: "human_user", id: "bootstrap", display: "bootstrap administrator" }
-      : { type: "browser_worker", id: principal.workerId, display: principal.name };
+    if (principal.type === "administrator") {
+      return {
+        subjectType: "human_user",
+        subjectId: "bootstrap",
+        display: "bootstrap administrator",
+        scope: UNRESTRICTED_SCOPE,
+      };
+    }
+    return {
+      subjectType: "browser_worker",
+      subjectId: principal.workerId,
+      display: principal.name,
+      // A worker carries no organisation of its own; its assignment to a set of
+      // projects is the whole of its scope, and a project belongs to exactly
+      // one organisation, so the project filter decides the tenant.
+      scope: { organisationId: null, projectIds: [...principal.assignedProjects] },
+    };
   };
 
+  /**
+   * `POST /api/v1/projects/:projectId/artefacts/uploads`
+   *
+   * The intent is idempotent on the caller's `Idempotency-Key`
+   * (`docs/MCP_SPEC.md` §10): a worker that crashed mid-upload and retried the
+   * whole flow gets the same artefact back rather than a second pending row for
+   * the same capture, which is the `docs/TESTING.md` §11 fault-injection case.
+   */
   app.post("/api/v1/projects/:projectId/artefacts/uploads", async (request, reply) => {
     const principal = await resolvePrincipal(request);
     const { projectId } = request.params as { projectId: string };
@@ -167,8 +230,28 @@ export async function registerArtefactRoutes(
       sha256?: string;
       retention_class?: string;
       browser_session_id?: string;
+      source_artefact_id?: string;
       filename?: string;
     };
+    const actor = actorFor(principal);
+    const idempotencyKey = headerValue(request, "idempotency-key");
+    const keyScope =
+      idempotencyKey === null
+        ? null
+        : {
+            projectId,
+            actorType: actor.type,
+            actorId: actor.id ?? "bootstrap",
+            tool: "artefact_upload_intent",
+            key: idempotencyKey,
+          };
+    if (keyScope !== null) {
+      const claimed = await idempotency.claim(keyScope, requestDigest(body));
+      if (claimed.replayed) {
+        return reply.status(200).send({ data: claimed.response, meta: { request_id: request.id } });
+      }
+    }
+
     const record = await options.artefacts.createIntent({
       organisationId: await organisationOfProject(options.pool, projectId),
       projectId,
@@ -176,38 +259,44 @@ export async function registerArtefactRoutes(
       contentType: body.content_type ?? "",
       sizeBytes: Number(body.size_bytes ?? 0),
       sha256: body.sha256 ?? "",
-      retentionClass: body.retention_class ?? "action_screenshots",
+      ...(body.retention_class === undefined ? {} : { retentionClass: body.retention_class }),
       ...(body.browser_session_id === undefined
         ? {}
         : { browserSessionId: body.browser_session_id }),
+      ...(body.source_artefact_id === undefined
+        ? {}
+        : { sourceArtefactId: body.source_artefact_id }),
       ...(body.filename === undefined ? {} : { filenameLabel: body.filename }),
-      actor: actorFor(principal),
+      actor,
     });
 
-    return reply.status(201).send({
-      data: {
-        artefact_id: record.id,
-        state: record.state,
-        upload_path: `/api/v1/artefacts/${record.id}/content`,
-      },
-      meta: { request_id: request.id },
-    });
+    const data = {
+      artefact_id: record.id,
+      state: record.state,
+      // Stage 1 proxies the upload under both drivers, so the server is where
+      // content-type validation happens and no byte reaches storage before it
+      // passes. `upload_url` in the protocol is for the Stage 2 presigned-upload
+      // path ADR-0012 permits and this build does not issue.
+      upload_path: `/api/v1/artefacts/${record.id}/content`,
+      max_bytes: options.maxBytes,
+    };
+    if (keyScope !== null) await idempotency.complete(keyScope, data);
+    return reply.status(201).send({ data, meta: { request_id: request.id } });
   });
 
   app.post("/api/v1/artefacts/:artefactId/content", async (request, reply) => {
     const principal = await resolvePrincipal(request);
     const { artefactId } = request.params as { artefactId: string };
-    const existing = await options.artefacts.get(artefactId);
-    requireProjectAccess(principal, existing.project_id);
+    const existing = await options.artefacts.getInScope(artefactId, scopeOfPrincipal(principal));
 
     const body = request.body;
     if (!Buffer.isBuffer(body)) {
       throw new ApiError(
         "UNSUPPORTED_CAPABILITY",
-        "Artefact content must be sent as the image bytes declared on intent.",
+        "Artefact content must be sent as the bytes declared on intent.",
       );
     }
-    const record = await options.artefacts.storeContent(artefactId, body);
+    const record = await options.artefacts.storeContent(existing, body, actorFor(principal));
     return reply.status(202).send({
       data: { artefact_id: record.id, state: record.state },
       meta: { request_id: request.id },
@@ -217,84 +306,90 @@ export async function registerArtefactRoutes(
   app.post("/api/v1/artefacts/:artefactId/complete", async (request, reply) => {
     const principal = await resolvePrincipal(request);
     const { artefactId } = request.params as { artefactId: string };
-    const existing = await options.artefacts.get(artefactId);
-    requireProjectAccess(principal, existing.project_id);
+    const existing = await options.artefacts.getInScope(artefactId, scopeOfPrincipal(principal));
 
     const body = request.body as { sha256?: string; size_bytes?: number };
     const record = await options.artefacts.complete(
-      artefactId,
+      existing,
       {
         sha256: body.sha256 ?? "",
         ...(body.size_bytes === undefined ? {} : { sizeBytes: Number(body.size_bytes) }),
       },
       actorFor(principal),
     );
-    return reply.send({
+    return reply.send({ data: publicArtefact(record), meta: { request_id: request.id } });
+  });
+
+  app.get("/api/v1/artefacts/:artefactId", async (request, reply) => {
+    const { artefactId } = request.params as { artefactId: string };
+    const caller = await resolveCaller(request, "read");
+    // A read of metadata is authorised exactly as a read of bytes is, and by
+    // the same query.
+    const record = await options.artefacts.getInScope(artefactId, caller.scope);
+    return reply.send({ data: publicArtefact(record), meta: { request_id: request.id } });
+  });
+
+  /**
+   * Mints a short-lived grant for one artefact (`docs/SECURITY.md` §13,
+   * ADR-0012, ADR-0019).
+   */
+  app.post("/api/v1/artefacts/:artefactId/grants", async (request, reply) => {
+    const { artefactId } = request.params as { artefactId: string };
+    const caller = await resolveCaller(request, "write");
+    const record = await options.artefacts.getInScope(artefactId, caller.scope);
+    const grant = await options.artefacts.grantAccess({
+      record,
+      subjectType: caller.subjectType,
+      subjectId: caller.subjectId,
+      actor: { type: caller.subjectType, id: caller.subjectId, display: caller.display },
+    });
+    return reply.status(201).send({
       data: {
-        id: record.id,
-        state: record.state,
-        sha256: record.sha256,
-        size_bytes: record.size_bytes,
-        content_type: record.content_type,
-        kind: record.kind,
-        content_rectangle: contentRectangleOf(record),
+        grant_id: grant.id,
+        artefact_id: grant.artefact_id,
+        // Under the `s3` driver the driver decides what the URL points at
+        // (ADR-0019); the caller sees one flow either way.
+        url: grant.presigned_url ?? `/api/v1/artefact-content/${grant.id}`,
+        expires_at: grant.expires_at,
+        expires_in_seconds: ARTEFACT_GRANT_TTL_SECONDS,
+        disposition: dispositionFor(record.content_type),
       },
       meta: { request_id: request.id },
     });
   });
 
   /**
-   * The agent principal for this request, where the caller presented an agent
-   * credential authorised for the artefact's project.
+   * `DELETE /api/v1/artefacts/:artefactId` (`docs/API.md` §15).
+   *
+   * Deletion is audited (`docs/SECURITY.md` §16) and the metadata row is
+   * retained so the identifier still resolves in the audit trail. Retention
+   * *enforcement* is Stage 2: nothing sweeps expired artefacts, and this is the
+   * only path that removes any.
    */
-  const resolveAgent = async (
-    request: FastifyRequest,
-    record: ArtefactRecord,
-  ): Promise<AgentArtefactPrincipal | null> => {
-    if (options.agentAuth === undefined) return null;
-    const agent = await options.agentAuth(request).catch(() => null);
-    if (agent === null) return null;
-    if (agent.organisationId !== record.organisation_id || !agent.projectIds.has(record.project_id)) {
-      // Cross-project reads are refused before anything about the artefact is
-      // returned (`docs/TESTING.md` section 10).
+  app.delete("/api/v1/artefacts/:artefactId", async (request, reply) => {
+    const { artefactId } = request.params as { artefactId: string };
+    const caller = await resolveCaller(request, "write");
+    if (caller.subjectType === "agent_session") {
+      // An agent submits evidence and never destroys it. `AGENTS.md`'s
+      // acceptance-authority rule has the same shape: an agent may add to the
+      // record and may not close it.
       throw new ApiError(
-        "PROJECT_CONTEXT_MISMATCH",
-        "This agent credential is not bound to the project that owns this artefact.",
+        "AUTHORISATION_DENIED",
+        "An agent credential may read evidence and may not delete it.",
       );
     }
-    return agent;
-  };
-
-  app.get("/api/v1/artefacts/:artefactId", async (request, reply) => {
-    const { artefactId } = request.params as { artefactId: string };
-    const record = await options.artefacts.get(artefactId);
-    // A read of metadata is authorised the same way a read of bytes is.
-    const agent = await resolveAgent(request, record);
-    if (agent === null) await resolveGrantSubject(request, record, "read");
-    return reply.send({ data: publicArtefact(record), meta: { request_id: request.id } });
-  });
-
-  /**
-   * Mints a short-lived grant for one artefact (`docs/SECURITY.md` section 13,
-   * ADR-0012, ADR-0019).
-   */
-  app.post("/api/v1/artefacts/:artefactId/grants", async (request, reply) => {
-    const { artefactId } = request.params as { artefactId: string };
-    const record = await options.artefacts.get(artefactId);
-    const subject = await resolveGrantSubject(request, record, "write");
-    const grant = await options.artefacts.grantAccess({
-      artefactId: record.id,
-      subjectType: subject.type,
-      subjectId: subject.id,
-      actor: { type: subject.type, id: subject.id, display: subject.display },
-    });
-    return reply.status(201).send({
+    const record = await options.artefacts.getInScope(artefactId, caller.scope);
+    const reason = headerValue(request, "x-reviewplane-reason");
+    const deleted = await options.artefacts.delete(
+      record,
+      { type: caller.subjectType, id: caller.subjectId, display: caller.display },
+      reason ?? undefined,
+    );
+    return reply.send({
       data: {
-        grant_id: grant.id,
-        artefact_id: grant.artefact_id,
-        url: `/api/v1/artefact-content/${grant.id}`,
-        expires_at: grant.expires_at,
-        expires_in_seconds: ARTEFACT_GRANT_TTL_SECONDS,
+        artefact_id: record.id,
+        deleted_at: deleted.record.deleted_at,
+        bytes_removed: deleted.bytesRemoved,
       },
       meta: { request_id: request.id },
     });
@@ -316,23 +411,31 @@ export async function registerArtefactRoutes(
         "This artefact grant is unknown, expired or revoked.",
       );
     }
-    const record = await options.artefacts.get(grant.artefact_id);
+
     if (grant.subject_type === "agent_session") {
       // ADR-0019's agent flow. The grant names one agent session; the caller
       // proves it may act as that session by presenting the credential the
       // session was opened with. A credential that no longer owns the session —
       // because it expired, was revoked, or never owned it — is refused exactly
       // as an unknown grant is.
-      const agent = await resolveAgent(request, record);
-      if (agent === null || !agent.sessionIds.has(grant.subject_id)) {
+      const agent =
+        options.agentAuth === undefined
+          ? null
+          : await options.agentAuth(request).catch(() => null);
+      const owns =
+        agent !== null &&
+        agent.organisationId === grant.organisation_id &&
+        agent.projectIds.has(grant.project_id) &&
+        (agent.sessionIds.has(grant.subject_id) || agent.credentialId === grant.subject_id);
+      if (!owns) {
         throw new ApiError(
           "AUTHORISATION_DENIED",
           "This artefact grant was issued to a different principal.",
         );
       }
     } else {
-      const subject = await resolveGrantSubject(request, record, "read");
-      if (subject.type !== grant.subject_type || subject.id !== grant.subject_id) {
+      const caller = await resolveCaller(request, "read");
+      if (caller.subjectType !== grant.subject_type || caller.subjectId !== grant.subject_id) {
         throw new ApiError(
           "AUTHORISATION_DENIED",
           "This artefact grant was issued to a different principal.",
@@ -340,20 +443,63 @@ export async function registerArtefactRoutes(
       }
     }
 
-    const { bytes } = await options.artefacts.readContent(grant.artefact_id);
-    return reply
-      .header("content-type", record.content_type)
-      // docs/SECURITY.md section 13 and docs/UX_FLOWS.md section 17: never
-      // render an artefact as active content under the control-plane origin.
-      // `inline` is required for an <img>; the sandbox, the nosniff header and
-      // the type allowlist are what make it safe, not the disposition.
-      .header("content-disposition", `inline; filename="${record.id}"`)
-      .header("x-content-type-options", "nosniff")
-      .header("content-security-policy", "default-src 'none'; sandbox")
-      .header("referrer-policy", "no-referrer")
-      .header("cache-control", "private, no-store")
-      .send(bytes);
+    // The grant names one artefact and was minted against a scoped lookup, so
+    // the read is inside the grant's own project and organisation rather than
+    // by identifier alone.
+    const record = await options.artefacts.getInScope(grant.artefact_id, {
+      organisationId: grant.organisation_id,
+      projectIds: [grant.project_id],
+    });
+    const bytes = await options.artefacts.readContent(record);
+    return sendArtefactBytes(reply, record, bytes);
   });
+}
+
+/**
+ * Serves artefact bytes with the headers that keep `docs/SECURITY.md` §13 true.
+ *
+ * The disposition is derived from the media type and is not a parameter: active
+ * markup is always an attachment, so it is downloaded rather than rendered
+ * under the control-plane origin, and there is no request that can ask
+ * otherwise. `nosniff` is what stops a browser deciding for itself that an
+ * inert type is really a document; the sandboxing content-security policy is
+ * what makes that decision harmless if it were made anyway. The filename
+ * offered on a download is the artefact identifier and never the uploader's
+ * display label, which keeps a hostile name out of a reader's filesystem.
+ */
+function sendArtefactBytes(
+  reply: FastifyReply,
+  record: ArtefactRecord,
+  bytes: Buffer,
+): FastifyReply {
+  const disposition = dispositionFor(record.content_type);
+  const extension = EXTENSION_BY_TYPE[record.content_type] ?? "bin";
+  return reply
+    .header("content-type", record.content_type)
+    .header("content-disposition", `${disposition}; filename="${record.id}.${extension}"`)
+    .header("x-content-type-options", "nosniff")
+    .header("content-security-policy", "default-src 'none'; sandbox")
+    .header("cross-origin-resource-policy", "same-origin")
+    .header("x-frame-options", "DENY")
+    .header("referrer-policy", "no-referrer")
+    .header("cache-control", "private, no-store")
+    .send(bytes);
+}
+
+/** Extensions, for the name a download is offered under. */
+const EXTENSION_BY_TYPE: Readonly<Record<string, string>> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "text/html": "html",
+  "application/json": "json",
+  "text/plain": "txt",
+};
+
+/** The rows a machine principal may reach. */
+function scopeOfPrincipal(principal: Principal): ArtefactScope {
+  return principal.type === "administrator"
+    ? UNRESTRICTED_SCOPE
+    : { organisationId: null, projectIds: [...principal.assignedProjects] };
 }
 
 function contentRectangleOf(
@@ -363,7 +509,7 @@ function contentRectangleOf(
   return { width_px: record.content_width_px, height_px: record.content_height_px };
 }
 
-/** The artefact metadata a client may see (`docs/UX_FLOWS.md` section 17). */
+/** The artefact metadata a client may see (`docs/UX_FLOWS.md` §17). */
 function publicArtefact(record: ArtefactRecord): Record<string, unknown> {
   return {
     id: record.id,
@@ -378,10 +524,25 @@ function publicArtefact(record: ArtefactRecord): Record<string, unknown> {
     content_rectangle: contentRectangleOf(record),
     redaction_state: record.redaction_state,
     retention_class: record.retention_class,
+    // Null states that the bytes are not application-encrypted; Stage 1
+    // encrypts nothing (`docs/SECURITY.md` §15).
+    encryption_key_reference: record.encryption_key_reference,
+    disposition: dispositionFor(record.content_type),
+    source_artefact_id: record.source_artefact_id,
+    thumbnail_state: record.thumbnail_state,
+    thumbnail_artefact_id: record.thumbnail_artefact_id,
     browser_session_id: record.browser_session_id,
     created_at: record.created_at,
     available_at: record.available_at,
+    expires_at: record.expires_at,
   };
+}
+
+/** One request header, or null. */
+function headerValue(request: FastifyRequest, name: string): string | null {
+  const raw = request.headers[name];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return value === undefined || value.trim() === "" ? null : value.trim();
 }
 
 /** Looks up the organisation that owns a project. */

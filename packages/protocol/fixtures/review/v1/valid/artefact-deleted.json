@@ -1,0 +1,26 @@
+{
+  "id": "evt_01JARTDELETED",
+  "schema_version": 1,
+  "sequence": 41,
+  "type": "artefact.deleted",
+  "occurred_at": "2026-07-30T10:22:09.004Z",
+  "recorded_at": "2026-07-30T10:22:09.011Z",
+  "organisation_id": "org_01JREFRESH",
+  "project_id": "prj_01JREFRESHSURPLUS",
+  "actor": {
+    "type": "human_user",
+    "id": "vwr_01JBOOTSTRAPADMIN",
+    "display": "bootstrap administrator"
+  },
+  "correlation": {
+    "artefact_id": "art_01JHOMEPAGESHOT"
+  },
+  "payload": {
+    "artefact_id": "art_01JHOMEPAGESHOT",
+    "kind": "screenshot",
+    "sha256": "9f2c4c9d1b6a7e35d0d8c4a1f6b30e7c2a5d9e84b1c60f37a2d8e5b4c9f01a63",
+    "size_bytes": 184320,
+    "bytes_removed": false,
+    "reason": "Superseded by a recapture; another artefact still references the same content-addressed key."
+  }
+}

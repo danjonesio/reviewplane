@@ -132,6 +132,15 @@ gateway_data
 `deploy/compose/` names these `postgres-data`, `artefact-data` and `caddy-data`,
 and adds one more for the development fixture's own sources.
 
+`artefact-data` is the whole of the `filesystem` driver's storage (ADR-0012).
+It holds one directory, `sha256/`, whose contents are content-addressed: a
+backup of a single-host installation is a database dump plus this directory,
+and nothing in it depends on a name a user chose. A `probe/` directory appears
+transiently while `reviewplane status` checks that the volume is writable; the
+probe removes what it wrote. The control-plane server is the only process that
+mounts it read-write. The browser worker does not mount it at all: workers
+upload through the control-plane artefact API and hold no storage credentials.
+
 Browser profiles use ephemeral container storage unless project policy enables reusable authentication state.
 
 ## 6. Compose profiles
@@ -254,8 +263,23 @@ reviewplane migrate --status   # report the schema version and what is pending
 reviewplane serve              # the api role
 reviewplane jobs [--once]      # the jobs role
 reviewplane install-token      # mint the one-time administrator bootstrap token
+reviewplane status [--json]    # build, schema and artefact-store health and use
 reviewplane version            # the build this image carries
 ```
+
+`reviewplane status` reports what it can measure: the build, the schema
+version, the number of pending migrations, the artefact driver, whether the
+store answered a write-read-remove probe, how many verified artefacts there are
+and how many bytes they occupy. It exits `1` when the store is unreachable or
+migrations are pending, so an installation script can branch on it. The other
+figures `docs/OPERATIONS.md` §3 lists — connectors, worker capacity, sessions,
+queue depth, certificate expiry — arrive with the stages that own them; the
+command prints what it can measure rather than a confident zero for what it
+cannot.
+
+Storage use counts each content-addressed key once. Two artefacts holding
+identical bytes are one stored object, so summing per artefact would overstate
+the volume an operator has to back up.
 
 ### First run: claiming the installation
 
@@ -342,6 +366,49 @@ The default installation stores artefacts on a local volume through the `filesys
 - CORS configured only when direct browser upload is used
 
 Application metadata remains authoritative for artefact availability.
+
+### What the driver implements today
+
+The `s3` driver is implemented and is run against the same conformance suite as
+`filesystem` (ADR-0012, `docs/TESTING.md` §10). It is **not yet a documented
+operator mode**: the Compose default is `filesystem`, and testing against a real
+external service is a later stage. An operator configuring it now should expect
+to validate it themselves.
+
+Settings, all read at startup:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `REVIEWPLANE_ARTEFACT_DRIVER` | `filesystem` | `filesystem` or `s3` |
+| `REVIEWPLANE_S3_ENDPOINT` | none | Base endpoint URL; required for `s3` |
+| `REVIEWPLANE_S3_BUCKET` | none | Bucket; required for `s3` |
+| `REVIEWPLANE_S3_REGION` | `us-east-1` | Signing region |
+| `REVIEWPLANE_S3_ACCESS_KEY` | none | Access key; required for `s3` |
+| `REVIEWPLANE_S3_SECRET_KEY` | none | Secret key; required for `s3` |
+| `REVIEWPLANE_S3_PATH_STYLE` | `true` | Path-style addressing |
+| `REVIEWPLANE_S3_PREFIX` | empty | Key prefix inside a shared bucket |
+
+Every required value is required rather than defaulted: a deployment that
+half-configures external storage fails to start rather than starting and then
+failing on the first screenshot. The credentials support the `_FILE` form
+(`docs/CONFIGURATION.md` §7).
+
+Two behaviours differ from the `filesystem` driver and matter to an operator.
+
+**Uploads are still proxied.** ADR-0012 permits a presigned upload URL and this
+build does not issue one, because the server is where content-type validation
+happens. CORS is therefore not required.
+
+**Retrieval uses a presigned URL** at the storage origin (ADR-0019), pinned to
+one object, one content type and one disposition, expiring in two minutes. A
+browser loading evidence therefore fetches from the storage origin rather than
+from the control plane, so the edge gateway's `img-src` policy and the bucket's
+own CORS rules have to admit it. That is part of what makes `s3` a later stage
+rather than a supported one now.
+
+Multipart upload is not implemented. The largest artefact this build accepts is
+`REVIEWPLANE_ARTEFACT_MAX_BYTES` (20 MiB by default), which a single `PUT`
+carries.
 
 ## 13. Connector installation
 

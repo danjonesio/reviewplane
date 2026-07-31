@@ -750,6 +750,31 @@ resource read is an explicit request for them (section 13). Reading it mints an
 audited access grant for the agent session (`docs/SECURITY.md` section 16,
 ADR-0019).
 
+Both resources return the `artefact_resource` shape of `packages/protocol`,
+carrying the trust label and the instruction policy on every read: artefact
+bytes are browser-derived and untrusted (ADR-0010), and an agent that finds
+instructions in a DOM snapshot has found page content, not a command.
+
+**Degradation is a success with a reason.** A read that could not give the
+caller what it asked for returns the metadata, the verified digest and a
+short-lived content path, plus a `degraded` object naming the cause and saying
+what was returned instead:
+
+- `image_resources_unsupported` — the client declared no image-resource
+  capability (`docs/ARCHITECTURE.md` section 8.3, `docs/UX_FLOWS.md`
+  section 18). Refusing the read would deny the agent the digest and the
+  metadata it can use, and would say nothing about why.
+- `active_content_not_inlined` — the artefact is active markup, whose bytes are
+  only ever served as a download (`docs/SECURITY.md` section 13). A DOM snapshot
+  reached through `screenshot://` is answered this way rather than inlined.
+
+The absence of `degraded` is therefore meaningful: it says the read was
+complete.
+
+An artefact that has not been verified is refused with
+`ARTEFACT_UPLOAD_INCOMPLETE` rather than degraded, because there is no evidence
+to give.
+
 ## 9. Inbox workflow
 
 Recommended agent checkpoints:

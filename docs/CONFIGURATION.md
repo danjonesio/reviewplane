@@ -103,8 +103,26 @@ credential:
 | `REVIEWPLANE_WORKER_CREDENTIAL` | none | Credential the browser worker presents to this server |
 | `REVIEWPLANE_WORKER_COMMAND_CREDENTIAL` | none | Credential this server presents to the worker |
 | `REVIEWPLANE_WORKER_ENDPOINT` | `http://browser-worker:8090` | Worker's internal listener |
+| `REVIEWPLANE_ARTEFACT_DRIVER` | `filesystem` | `filesystem` or `s3` (ADR-0012); anything else fails at startup |
 | `REVIEWPLANE_ARTEFACT_PATH` | `/var/lib/reviewplane/artefacts` | Filesystem artefact-store root (ADR-0012) |
 | `REVIEWPLANE_ARTEFACT_MAX_BYTES` | `20971520` | Largest artefact accepted |
+| `REVIEWPLANE_S3_ENDPOINT` | none | `s3` driver only; required when the driver is `s3` |
+| `REVIEWPLANE_S3_BUCKET` | none | `s3` driver only; required |
+| `REVIEWPLANE_S3_REGION` | `us-east-1` | `s3` signing region |
+| `REVIEWPLANE_S3_ACCESS_KEY` | none | `s3` driver only; required; supports the `_FILE` form |
+| `REVIEWPLANE_S3_SECRET_KEY` | none | `s3` driver only; required; supports the `_FILE` form |
+| `REVIEWPLANE_S3_PATH_STYLE` | `true` | Path-style addressing, which most self-hosted services need |
+| `REVIEWPLANE_S3_PREFIX` | empty | Key prefix inside a shared bucket |
+| `REVIEWPLANE_RETENTION_ACTION_SCREENSHOTS_DAYS` | `30` | Window used to compute `expires_at`; `0` sets none |
+| `REVIEWPLANE_RETENTION_BROWSER_TRACES_DAYS` | `14` | As above |
+| `REVIEWPLANE_RETENTION_SESSION_VIDEO_DAYS` | `0` | As above; `0` is the sample configuration's `video: disabled` |
+| `REVIEWPLANE_RETENTION_CONSOLE_AND_NETWORK_LOGS_DAYS` | `14` | As above |
+| `REVIEWPLANE_RETENTION_VERIFICATION_EVIDENCE_DAYS` | `365` | As above |
+
+The retention windows are used to record `expires_at` on an artefact when its
+upload intent is created. **Nothing deletes an artefact when that date passes**:
+retention enforcement is a later stage, so these settings decide what the record
+says is due and not what the product removes.
 | `REVIEWPLANE_WORKER_REQUEST_TIMEOUT_MS` | `150000` | Bound on one worker request |
 | `REVIEWPLANE_ALLOWED_ORIGINS` | empty | Comma-separated origins a browser may use. See below: the two surfaces that read it read it differently |
 | `REVIEWPLANE_SECURE_COOKIES` | `true` | Whether the session and CSRF cookies are marked `Secure`. Set to `false` only for plain-HTTP local development |

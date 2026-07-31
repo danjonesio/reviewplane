@@ -166,12 +166,14 @@ export const JOB_KIND_VALUES = [
   "event_outbox_dispatch",
   "idempotency_key_expiry",
   "published_service_expiry",
+  "artefact_thumbnail",
 ] as const;
 
 export type JobKind =
   | "event_outbox_dispatch"
   | "idempotency_key_expiry"
-  | "published_service_expiry";
+  | "published_service_expiry"
+  | "artefact_thumbnail";
 
 /**
  * Why a job attempt failed. Stable, so a dead-lettered job can be diagnosed from the audit

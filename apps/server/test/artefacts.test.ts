@@ -192,7 +192,7 @@ test("a completion digest that contradicts the intent is refused", async () => {
   assert.equal(completed.statusCode, 409);
 });
 
-test("the artefact store is unavailable: completion fails and nothing becomes available", async () => {
+test("the artefact store is unavailable: completion fails, nothing becomes available, and the upload stays retryable", async () => {
   const { projectId } = await seedProjectAndWorker(harness);
   const created = await intent(projectId);
   const { artefact_id: artefactId, upload_path: uploadPath } = (
@@ -215,12 +215,25 @@ test("the artefact store is unavailable: completion fails and nothing becomes av
     payload: { sha256: digest(PNG) },
   });
   assert.equal(completed.statusCode, 409);
+  const failure = completed.json() as {
+    error: { code: string; message: string; details?: { reason?: string } };
+  };
+  assert.equal(failure.error.code, "ARTEFACT_UPLOAD_INCOMPLETE");
+  // `docs/ARCHITECTURE.md` section 14 asks for a clear error. The refusal names
+  // the store rather than blaming the uploader, because the uploader sent
+  // exactly what it declared.
+  assert.equal(failure.error.details?.reason, "artefact_store_unavailable");
+  process.stdout.write(`EVIDENCE store unavailable: ${failure.error.message}\n`);
+
   const record = await harness.built.app.inject({
     method: "GET",
     url: `/api/v1/artefacts/${artefactId}`,
     headers: { authorization: `Bearer ${BOOTSTRAP_TOKEN}` },
   });
-  assert.equal((record.json() as { data: { state: string } }).data.state, "failed");
+  // Not `failed`: a store outage is not a verification failure, and marking it
+  // failed would turn a transient fault into evidence the worker can never
+  // finish uploading. It stays where it was, so the same intent is retryable.
+  assert.equal((record.json() as { data: { state: string } }).data.state, "uploaded");
 });
 
 test("artefact keys are content-addressed and carry no caller-supplied name", async () => {

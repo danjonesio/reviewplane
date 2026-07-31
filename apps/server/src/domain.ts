@@ -85,14 +85,44 @@ export { WorkspaceStore, type WorkspaceRecord } from "./modules/agents/workspace
 export {
   ARTEFACT_GRANT_TTL_SECONDS,
   ArtefactService,
+  UNRESTRICTED_SCOPE,
+  artefactIsActiveContent,
+  dispositionOf,
   type ArtefactGrant,
   type ArtefactRecord,
+  type ArtefactScope,
+  type ArtefactStoreStatus,
+  type ThumbnailState,
 } from "./modules/artefacts/service.ts";
 export {
+  loadArtefactStoreConfig,
+  loadRetentionWindows,
+  DEFAULT_RETENTION_DAYS,
+  type ArtefactStoreConfig,
+  type RetentionWindows,
+} from "./modules/artefacts/config.ts";
+export { artefactJobHandlers } from "./modules/artefacts/jobs.ts";
+export {
+  acceptedContentTypes,
+  contentTypesForKind,
+  dispositionFor,
+  isActiveContentType,
+  STAGE_1_ARTEFACT_KINDS,
+  type ArtefactDisposition,
+} from "./modules/artefacts/kinds.ts";
+export {
+  ArtefactStoreError,
   FilesystemArtefactStore,
+  S3ArtefactStore,
+  createArtefactStore,
   keyForDigest,
+  temporaryArtefactStore,
+  type ArtefactStorageDriver,
   type ArtefactStore,
-} from "./modules/artefacts/store.ts";
+  type ArtefactStoreUsage,
+  type S3ArtefactStoreOptions,
+  type StoredObject,
+} from "./modules/artefacts/store/index.ts";
 
 export {
   BrowserSessionService,

@@ -1266,11 +1266,16 @@ export class ReviewService {
     scope: Scope,
     artefactId: string,
   ): Promise<{ id: string; contentWidthPx: number | null; contentHeightPx: number | null }> {
-    const artefact = await this.#artefacts.get(artefactId).catch(() => null);
-    if (artefact === null || artefact.project_id !== scope.projectId) {
-      throw notFound("The screenshot artefact");
-    }
-    if (artefact.organisation_id !== scope.organisationId) throw notFound("The screenshot artefact");
+    // The identifier, the project and the organisation are all in the
+    // predicate, so a foreign artefact is not returned and then rejected: it is
+    // answered exactly as an unknown identifier is.
+    const artefact = await this.#artefacts
+      .getInScope(artefactId, {
+        organisationId: scope.organisationId,
+        projectIds: [scope.projectId],
+      })
+      .catch(() => null);
+    if (artefact === null) throw notFound("The screenshot artefact");
     if (artefact.state !== "available") {
       throw new ApiError(
         "ARTEFACT_UPLOAD_INCOMPLETE",

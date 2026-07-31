@@ -712,6 +712,7 @@ GET    /api/v1/findings/:findingId
 PATCH  /api/v1/findings/:findingId
 POST   /api/v1/findings/:findingId/claim
 POST   /api/v1/findings/:findingId/comments
+GET    /api/v1/findings/:findingId/verification
 POST   /api/v1/findings/:findingId/verifications
 POST   /api/v1/findings/:findingId/accept
 POST   /api/v1/findings/:findingId/reopen
@@ -733,6 +734,14 @@ already be `available` — an unverified artefact is refused with
 `ARTEFACT_UPLOAD_INCOMPLETE` — and must belong to the same project. Annotations
 may be supplied inline, and are then written in the same transaction as the
 finding.
+
+`GET /api/v1/findings/:findingId/verification` returns the most recent
+verification submission for a finding, or `null`. It is read-only and
+project-scoped like every other route here. The artefact viewer needs it: the
+before-and-after comparison of `docs/UX_FLOWS.md` section 17 is the pair of
+artefact identifiers it records (`docs/DOMAIN_MODEL.md` section 19), and a
+finding with no submission yet is the honest empty state rather than a
+comparison control with nothing to compare.
 
 Status transitions are checked in this order: version, transition legality,
 actor authority, completion evidence. A human-authored finding cannot be set to
@@ -785,19 +794,81 @@ DELETE /api/v1/artefacts/:artefactId
 4. Complete with observed hash.
 5. Server verifies before making artefact available.
 
-Under the `filesystem` driver step 2 returns `upload_path`, the proxied endpoint above; the `s3` driver may return a presigned URL instead. Step 5 is the whole point of the flow: the server recomputes the digest of the bytes it stored and compares it with both the declared and the observed value. Until that succeeds the artefact stays `pending` or `uploaded`, no grant may be minted for it — the attempt is refused with `ARTEFACT_UPLOAD_INCOMPLETE` — and no caller may treat it as evidence. A mismatch marks the artefact `failed` and records `artefact.upload_failed`.
+Step 2 returns `upload_path`, the proxied endpoint above, and `max_bytes`, the
+largest body this deployment accepts. **Both drivers proxy the upload.**
+ADR-0012 permits the `s3` driver to issue a presigned upload URL instead, and
+this build does not: the server is where content-type validation happens, and a
+presigned upload would put unvalidated bytes in the bucket before anything
+looked at them. `upload_url` exists in the protocol for when that changes.
+
+The bytes are sent as `application/octet-stream`, or as `image/png` or
+`image/jpeg`. **The transport header is not the artefact's media type**: that
+was declared on the intent and is verified against the bytes, so a DOM snapshot
+and an accessibility snapshot travel as opaque bytes rather than as parsed
+bodies whose re-serialisation would no longer match the declared digest.
+
+Step 5 is the whole point of the flow: the server recomputes the digest of the
+bytes it stored and compares it with both the declared and the observed value.
+Until that succeeds the artefact stays `pending` or `uploaded`, no grant may be
+minted for it — the attempt is refused with `ARTEFACT_UPLOAD_INCOMPLETE` — and
+no caller may treat it as evidence.
+
+**Two failures, two outcomes.** Bytes that do not match what was declared are
+the uploader's fault: the artefact is marked `failed` and `artefact.upload_failed`
+is recorded, and the intent must not be retried, because it describes something
+the uploader did not send. A store that cannot be written to or read from is
+not the uploader's fault: the artefact keeps the state it had, the refusal
+carries `details.reason = "artefact_store_unavailable"`, and the same intent —
+and the same idempotency key — may be retried when the store returns. Neither
+outcome makes anything available.
+
+The intent honours `Idempotency-Key` (`docs/MCP_SPEC.md` section 10). A
+repeated request with the same key and the same body replays the first intent
+and returns `200`; the same key with a different body is refused with
+`IDEMPOTENCY_CONFLICT`. A worker that crashed mid-upload and retried the whole
+flow therefore produces one artefact rather than a second pending row for the
+same capture.
 
 Verification also decides what the bytes are and how large the picture in them
-is. The declared media type is a claim; the leading bytes are evidence, and a
-mismatch — an SVG or an HTML document uploaded as `image/png` — is refused on
-upload with `UNSUPPORTED_CAPABILITY` and marks the artefact `failed`. For an
-image the server measures the intrinsic pixel extent and records it as
+is. The declared media type is a claim; the bytes are evidence, and a mismatch —
+an SVG uploaded as `image/png`, or a PNG uploaded as a DOM snapshot — is refused
+on upload with `UNSUPPORTED_CAPABILITY` and marks the artefact `failed`. The
+kind fixes which media types are accepted (`docs/SECURITY.md` section 13). For
+an image the server measures the intrinsic pixel extent and records it as
 `content_rectangle`, because that rectangle is the reference frame every
 annotation on the artefact is normalised against (`docs/DOMAIN_MODEL.md`
 section 16) and an uploader that could choose it could move every existing
 mark. `filename` on the intent is display metadata only: it never reaches the
 content-addressed storage key, and a value that is a path rather than a name is
 refused.
+
+`expires_at` is computed from the retention class at intent and stored. Nothing
+deletes an artefact when it passes: retention enforcement is a later stage, and
+the date says when removal becomes due rather than that anything happened.
+
+Completing a `screenshot` enqueues a durable thumbnail job in the same
+transaction as the availability transition. The thumbnail is a **separate**
+artefact with its own digest, its own verification and `source_artefact_id`
+pointing at the original, because ADR-0006 forbids rewriting an original to
+carry something derived from it. `thumbnail_state` on the source records the
+outcome — `pending`, `generated`, `unsupported` or `failed` — so a reader can
+tell not-yet from not-possible.
+
+### Reading metadata and deleting
+
+`GET /api/v1/artefacts/:artefactId` resolves the artefact **inside the caller's
+scope**: the identifier, the caller's project scope and the caller's
+organisation are one predicate, so an artefact belonging to another project is
+answered `RESOURCE_NOT_FOUND` byte for byte as an identifier that never existed
+is. The same holds for minting a grant and for deleting.
+
+`DELETE /api/v1/artefacts/:artefactId` retains the metadata row with
+`deleted_at` set and removes the stored object **only when no other live
+artefact shares its content-addressed key**. It records `artefact.deleted`,
+whose payload says whether the bytes were removed. An optional
+`X-ReviewPlane-Reason` header is recorded with the event. A cookie-authenticated
+caller must carry the CSRF token, as it must for every state-changing route
+(section 4.0). An agent credential may read evidence and may not delete it.
 
 ### Reading content back
 
@@ -811,9 +882,20 @@ serves an artefact from its identifier.
   "artefact_id": "art_...",
   "url": "/api/v1/artefact-content/agr_...",
   "expires_at": "2026-07-30T10:14:04.118Z",
-  "expires_in_seconds": 120
+  "expires_in_seconds": 120,
+  "disposition": "inline"
 }
 ```
+
+Under the `s3` driver `url` is a short-lived presigned URL at the storage
+origin instead of a path this server serves (ADR-0012, ADR-0019). The grant row
+is still written and `artefact.access_granted` still recorded, so the audit
+trail does not depend on which driver a deployment runs, and the presigned URL
+pins the content type and the disposition inside its signature.
+
+`disposition` is derived from the media type and is never a caller's choice.
+`attachment` means the bytes are active markup and are served as a download,
+never rendered under the control-plane origin (`docs/SECURITY.md` section 13).
 
 `GET /api/v1/artefact-content/:grantId` resolves the grant, authenticates the
 caller independently, and requires the caller to be the grant's subject. An

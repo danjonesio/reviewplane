@@ -419,7 +419,12 @@
     "job_kind": {
       "type": "string",
       "description": "Durable background work the runner understands (docs/ARCHITECTURE.md section 4.8). It is an enumeration because an operator reading a failed job needs a name with a fixed meaning, not free text a caller chose.",
-      "enum": ["event_outbox_dispatch", "idempotency_key_expiry", "published_service_expiry"]
+      "enum": [
+        "event_outbox_dispatch",
+        "idempotency_key_expiry",
+        "published_service_expiry",
+        "artefact_thumbnail"
+      ]
     },
     "job_failure_reason": {
       "type": "string",

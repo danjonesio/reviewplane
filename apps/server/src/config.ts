@@ -133,7 +133,14 @@ export interface ServerConfig {
   readonly workerCommandCredential: string;
   /** Base URL of the browser worker's internal listener. */
   readonly workerEndpoint: string;
-  /** Filesystem artefact-store root (ADR-0012 default driver). */
+  /**
+   * Filesystem artefact-store root (ADR-0012's default driver).
+   *
+   * Which driver a deployment runs, and the `s3` driver's own settings, are
+   * read by `modules/artefacts/config.ts` rather than here: this file holds
+   * only settings shared by the whole server, and the driver is the artefact
+   * module's business.
+   */
   readonly artefactPath: string;
   readonly artefactMaxBytes: number;
   readonly workerRequestTimeoutMs: number;

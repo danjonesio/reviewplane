@@ -706,8 +706,11 @@ Metadata for binary evidence stored outside PostgreSQL.
 - `encryption_key_reference`
 - `redaction_state`
 - `retention_class`
+- `source_artefact_id` (derived artefacts: the original they came from)
+- `thumbnail_state` and `thumbnail_artefact_id`
 - `created_at`
 - `expires_at`
+- `deleted_at`
 
 `content_rectangle` is measured by the server during verification, from the
 bytes it stored, and never taken from the uploader. It is the reference frame
@@ -718,6 +721,29 @@ artefact that cannot be measured does not become `available`.
 `size_bytes`, `sha256` and `content_rectangle` are absent until verification
 succeeds. `state` — `pending`, `uploaded`, `available` or `failed` — is what
 says whether the artefact may be treated as evidence; only `available` may.
+
+`encryption_key_reference` is a reference to a key held elsewhere and never key
+material. Nothing writes it: application-layer envelope encryption is a later
+stage (`docs/SECURITY.md` §15), so a null value states that the bytes are not
+application-encrypted rather than that a key was forgotten.
+
+`expires_at` is computed from `retention_class` when the intent is recorded. It
+says when retention becomes **due**. Nothing acts on it: retention enforcement
+is a later stage, and a reader must not infer that an artefact past its expiry
+has been removed.
+
+A **derived** artefact records `source_artefact_id`. A thumbnail is the only one
+Stage 1 produces, and it is a separate artefact with its own digest and its own
+verified metadata, because ADR-0006 forbids rewriting an original to carry
+something derived from it. The source records `thumbnail_state` —
+`not_requested`, `pending`, `generated`, `unsupported` or `failed` — and
+`thumbnail_artefact_id`, so a reader can tell not-yet from not-possible instead
+of inferring both from an absent row.
+
+`deleted_at` marks an artefact whose bytes are gone. The metadata row survives,
+because the identifier appears in events, in exports and in MCP responses and an
+audit trail whose identifiers stop resolving is worse than a row that records
+the removal. Every read path treats a deleted artefact as absent.
 
 Artefact content is reachable only through a short-lived, subject-bound access
 grant (ADR-0019). No route serves an artefact from its identifier.
@@ -734,6 +760,13 @@ grant (ADR-0019). No route serves an artefact from its identifier.
 - console log
 - network log
 - review export
+
+Of these, five are stored: `screenshot`, `thumbnail`, `dom_snapshot`,
+`accessibility_snapshot` and `review_export`. The other five have no capture
+behind them yet and are refused by name — "not captured yet", which is a
+different statement from "unknown kind" and is what an operator needs to hear.
+The kind fixes which media types the artefact may hold
+(`docs/SECURITY.md` §13).
 
 ## 21. Inbox item
 

@@ -130,10 +130,11 @@ const (
 	JobKindEventOutboxDispatch    JobKind = "event_outbox_dispatch"
 	JobKindIdempotencyKeyExpiry   JobKind = "idempotency_key_expiry"
 	JobKindPublishedServiceExpiry JobKind = "published_service_expiry"
+	JobKindArtefactThumbnail      JobKind = "artefact_thumbnail"
 )
 
 // JobKindValues lists every value in declaration order.
-var JobKindValues = []JobKind{JobKindEventOutboxDispatch, JobKindIdempotencyKeyExpiry, JobKindPublishedServiceExpiry}
+var JobKindValues = []JobKind{JobKindEventOutboxDispatch, JobKindIdempotencyKeyExpiry, JobKindPublishedServiceExpiry, JobKindArtefactThumbnail}
 
 // JobFailureReason is defined by the connector protocol schema.
 //
