@@ -8,11 +8,32 @@
  * uniqueness is project scoped" — and a rule that can only be exercised
  * through an HTTP handler and a database is a rule nobody will exercise.
  *
+ * **The tables are not here.** Both status machines, and the authority column
+ * that says which actor types may request each transition, are data in
+ * `packages/protocol/schemas/review/v1.schema.json` and are read through
+ * `@reviewplane/protocol/review` (ADR-0024). This module decides what a
+ * violation *means* — which code, which message, which detail a caller needs to
+ * recover — and never what the table contains. The MCP layer and the web
+ * application read the same table, so a permitted action is derived once rather
+ * than restated in three places that can drift.
+ *
  * Nothing here touches PostgreSQL, Fastify or the event log.
  */
 
 import {
+  ACTIVE_REVIEW_STATUS_VALUES,
+  FINDING_TRANSITIONS,
+  REVIEW_TRANSITIONS,
   checkGeometryForType,
+  findingTransitionsFor,
+  isFinalDisposition,
+  isFindingTransitionLegal,
+  isImmutableReviewStatus,
+  isReviewTransitionLegal,
+  mayActorMoveFinding,
+  mayActorMoveReview,
+  reviewStatusesReachableBy,
+  transitionsAvailableTo,
   type AnnotationType,
   type FindingSource,
   type FindingStatus,
@@ -23,88 +44,28 @@ import { ApiError } from "../../errors.ts";
 import type { ActorType } from "../../events/append.ts";
 
 /**
- * Review transitions. Absent from this table means refused: a status machine
- * with an implicit "anything else is fine" branch is not a status machine.
- */
-const REVIEW_TRANSITIONS: Readonly<Record<ReviewStatus, readonly ReviewStatus[]>> = {
-  DRAFT: ["READY", "CANCELLED"],
-  READY: ["ASSIGNED", "DRAFT", "CANCELLED"],
-  ASSIGNED: ["IN_PROGRESS", "READY", "CANCELLED"],
-  IN_PROGRESS: ["AWAITING_HUMAN_REVIEW", "CHANGES_REQUESTED", "CANCELLED"],
-  AWAITING_HUMAN_REVIEW: ["ACCEPTED", "CHANGES_REQUESTED", "CANCELLED"],
-  CHANGES_REQUESTED: ["IN_PROGRESS", "ASSIGNED", "CANCELLED"],
-  ACCEPTED: ["ARCHIVED"],
-  CANCELLED: ["ARCHIVED"],
-  ARCHIVED: [],
-};
-
-/** Finding transitions (`docs/DOMAIN_MODEL.md` section 15). */
-const FINDING_TRANSITIONS: Readonly<Record<FindingStatus, readonly FindingStatus[]>> = {
-  OPEN: ["CLAIMED", "IN_PROGRESS", "BLOCKED", "WONT_FIX", "DUPLICATE"],
-  CLAIMED: ["IN_PROGRESS", "BLOCKED", "OPEN"],
-  IN_PROGRESS: ["FIXED_UNVERIFIED", "BLOCKED", "AWAITING_HUMAN_REVIEW"],
-  BLOCKED: ["IN_PROGRESS", "OPEN"],
-  FIXED_UNVERIFIED: ["AWAITING_HUMAN_REVIEW", "IN_PROGRESS"],
-  AWAITING_HUMAN_REVIEW: ["RESOLVED", "REOPENED"],
-  RESOLVED: ["REOPENED"],
-  REOPENED: ["CLAIMED", "IN_PROGRESS"],
-  WONT_FIX: ["REOPENED"],
-  DUPLICATE: ["REOPENED"],
-};
-
-/**
- * The transitions an agent may perform, taken verbatim from
- * `docs/MCP_SPEC.md` section 7.7. Everything else is human-only.
+ * The transitions an agent may perform, as `from:to` labels, read from the
+ * authority column of the protocol table rather than restated.
  *
- * The list is short on purpose. It stops at `awaiting_human_review`, which is
+ * The list is short on purpose. It stops at `AWAITING_HUMAN_REVIEW`, which is
  * the product invariant of `AGENTS.md` expressed as data: an agent submits
- * work for review and a human decides.
+ * work for review and a human decides. It is exactly the
+ * `docs/MCP_SPEC.md` section 7.7 list, and it is exactly that list because both
+ * are rendered from one source.
  */
-const AGENT_TRANSITIONS: readonly (readonly [FindingStatus, FindingStatus])[] = [
-  ["OPEN", "CLAIMED"],
-  ["CLAIMED", "IN_PROGRESS"],
-  ["IN_PROGRESS", "BLOCKED"],
-  ["IN_PROGRESS", "FIXED_UNVERIFIED"],
-  ["FIXED_UNVERIFIED", "AWAITING_HUMAN_REVIEW"],
-  ["REOPENED", "IN_PROGRESS"],
-];
+export const AGENT_TRANSITION_LABELS: readonly string[] = findingTransitionsFor("agent_session");
 
-/**
- * The same list rendered as `from:to`, for a refusal that tells a caller what
- * it *can* do. A refusal that only says no makes an agent guess.
- */
-export const AGENT_TRANSITION_LABELS: readonly string[] = AGENT_TRANSITIONS.map(
-  ([from, to]) => `${from}:${to}`,
-);
-
-/** The transitions available from one status, for the same purpose. */
+/** The finding transitions available to an agent from one status. */
 export function agentTransitionsFrom(status: FindingStatus): string[] {
-  return AGENT_TRANSITIONS.filter(([from]) => from === status).map(
-    ([from, to]) => `${from}:${to}`,
-  );
+  return transitionsAvailableTo("agent_session", status, FINDING_TRANSITIONS);
 }
 
-/**
- * Statuses that finally dispose of a finding. Reaching one is a decision about
- * whether the reported problem was real, which is the decision
- * `docs/DOMAIN_MODEL.md` section 15 reserves to a human for a human-authored
- * finding.
- */
-const FINAL_DISPOSITIONS: readonly FindingStatus[] = ["RESOLVED", "WONT_FIX", "DUPLICATE"];
-
-/** Statuses in which a review is closed to ordinary edits. */
-const IMMUTABLE_REVIEW_STATUSES: readonly ReviewStatus[] = ["ACCEPTED", "CANCELLED", "ARCHIVED"];
+/** The review statuses an agent can reach at all (`docs/API.md` section 12). */
+export const AGENT_REVIEW_STATUSES: readonly ReviewStatus[] =
+  reviewStatusesReachableBy("agent_session");
 
 /** Statuses whose slug still reserves the name inside its project. */
-export const ACTIVE_REVIEW_STATUSES: readonly ReviewStatus[] = [
-  "DRAFT",
-  "READY",
-  "ASSIGNED",
-  "IN_PROGRESS",
-  "AWAITING_HUMAN_REVIEW",
-  "CHANGES_REQUESTED",
-  "ACCEPTED",
-];
+export const ACTIVE_REVIEW_STATUSES: readonly ReviewStatus[] = ACTIVE_REVIEW_STATUS_VALUES;
 
 /** Whether an actor acts with human authority. */
 export function isHumanActor(actorType: ActorType): boolean {
@@ -129,7 +90,7 @@ export function assertExpectedVersion(current: number, expected: number, what: s
 
 export function assertReviewTransition(from: ReviewStatus, to: ReviewStatus): void {
   if (from === to) return;
-  if (!REVIEW_TRANSITIONS[from].includes(to)) {
+  if (!isReviewTransitionLegal(from, to)) {
     throw new ApiError("POLICY_DENIED", `A review cannot move from ${from} to ${to}.`, {
       field: "status",
     });
@@ -137,44 +98,74 @@ export function assertReviewTransition(from: ReviewStatus, to: ReviewStatus): vo
 }
 
 /**
- * An accepted review is immutable except for archival metadata
- * (`docs/DOMAIN_MODEL.md` section 14).
+ * A closed review is immutable except for archival metadata, comments and an
+ * explicit reopen (`docs/DOMAIN_MODEL.md` section 14).
  *
  * "Silently" is the word that matters in the test name: the refusal is
  * explicit and carries a code, rather than the write being dropped or applied
  * to a copy.
+ *
+ * The two exceptions are the two the section itself names. Archival is metadata
+ * about a finished review rather than a change to it. Reopening is the section's
+ * own sentence — "reopening an accepted review creates a new review revision or
+ * explicit reopen event" — so it is admitted here as a status move on its own
+ * and never alongside a field edit: a caller that wanted to retitle an accepted
+ * review by reopening it in the same request would have found a way around the
+ * rule rather than an exception to it.
  */
 export function assertReviewMutable(
   status: ReviewStatus,
   change: { readonly status?: ReviewStatus; readonly fields: readonly string[] },
 ): void {
-  if (!IMMUTABLE_REVIEW_STATUSES.includes(status)) return;
-  const archivalOnly = change.status === "ARCHIVED" && change.fields.length === 0;
-  if (archivalOnly) return;
+  if (!isImmutableReviewStatus(status)) return;
+  if (change.fields.length === 0) {
+    if (change.status === "ARCHIVED") return;
+    if (status === "ACCEPTED" && change.status === "CHANGES_REQUESTED") return;
+  }
   throw new ApiError(
     "POLICY_DENIED",
-    `A ${status} review is immutable except for archival metadata.`,
+    `A ${status} review is immutable except for archival metadata, comments and an explicit reopen.`,
     { field: change.fields[0] ?? "status" },
   );
 }
 
-/** Only a human may accept a review. */
+/**
+ * Whether this actor type may request this review transition
+ * (`docs/DOMAIN_MODEL.md` section 14, authority column).
+ *
+ * An agent reaches exactly three of the nine statuses: `ASSIGNED` by claiming,
+ * and `IN_PROGRESS` and `AWAITING_HUMAN_REVIEW` by working. `ACCEPTED` is
+ * human-only, which is the authority boundary of `AGENTS.md`, and so is every
+ * withdrawal and every archival — an agent that could cancel a review could
+ * dispose of the human feedback it was given rather than answering it.
+ */
 export function assertActorMayMoveReview(
   actorType: ActorType,
+  from: ReviewStatus,
   to: ReviewStatus,
 ): void {
-  if (to === "ACCEPTED" && !isHumanActor(actorType)) {
+  if (from === to) return;
+  if (mayActorMoveReview(actorType, from, to)) return;
+  if (to === "ACCEPTED") {
     throw new ApiError(
       "AUTHORISATION_DENIED",
       "Only a human may accept a review. An agent submits work for review and a human decides.",
       { field: "status" },
     );
   }
+  throw new ApiError(
+    "AUTHORISATION_DENIED",
+    `A ${actorType} principal may not move a review from ${from} to ${to}.`,
+    {
+      field: "status",
+      allowed_transitions: transitionsAvailableTo(actorType, from, REVIEW_TRANSITIONS),
+    },
+  );
 }
 
 export function assertFindingTransition(from: FindingStatus, to: FindingStatus): void {
   if (from === to) return;
-  if (!FINDING_TRANSITIONS[from].includes(to)) {
+  if (!isFindingTransitionLegal(from, to)) {
     throw new ApiError("POLICY_DENIED", `A finding cannot move from ${from} to ${to}.`, {
       field: "status",
     });
@@ -203,7 +194,17 @@ export function assertActorMayMoveFinding(
   to: FindingStatus,
 ): void {
   if (from === to) return;
-  if (isHumanActor(actorType)) return;
+  if (mayActorMoveFinding(actorType, from, to)) return;
+
+  if (isHumanActor(actorType)) {
+    // A human may make every legal transition; reaching here means the pair is
+    // not in the table at all, and `assertFindingTransition` has already said
+    // so more precisely. Restating it as an authority failure would blame the
+    // caller's identity for a request that nobody could make.
+    throw new ApiError("POLICY_DENIED", `A finding cannot move from ${from} to ${to}.`, {
+      field: "status",
+    });
+  }
 
   if (actorType !== "agent_session") {
     // A connector, a worker or an integration observes; it does not decide.
@@ -216,7 +217,7 @@ export function assertActorMayMoveFinding(
     );
   }
 
-  if (source === "human" && FINAL_DISPOSITIONS.includes(to)) {
+  if (source === "human" && isFinalDisposition(to)) {
     throw new ApiError(
       "AUTHORISATION_DENIED",
       `A human-authored finding cannot be set to ${to} by an agent. Submit verification and mark it AWAITING_HUMAN_REVIEW instead.`,
@@ -224,14 +225,60 @@ export function assertActorMayMoveFinding(
     );
   }
 
-  const permitted = AGENT_TRANSITIONS.some(([left, right]) => left === from && right === to);
-  if (!permitted) {
+  if (isFinalDisposition(to)) {
+    // An agent's own finding is no different in Stage 1. Section 15 permits
+    // auto-resolution "by policy if configured", and no policy is configured,
+    // so there is nothing to permit it. The code is the authority one because
+    // the refusal is about who is asking rather than about the move.
     throw new ApiError(
-      "POLICY_DENIED",
-      `An agent may not move a finding from ${from} to ${to}. No project policy permits it.`,
+      "AUTHORISATION_DENIED",
+      `A finding cannot be set to ${to} by an agent. A final disposition is a human decision, and no project policy permits otherwise.`,
       { field: "status", allowed_transitions: agentTransitionsFrom(from) },
     );
   }
+
+  throw new ApiError(
+    "POLICY_DENIED",
+    `An agent may not move a finding from ${from} to ${to}. No project policy permits it.`,
+    { field: "status", allowed_transitions: agentTransitionsFrom(from) },
+  );
+}
+
+/**
+ * Whether a review may be accepted (`docs/API.md` section 12: "Review accept
+ * checks that all required human-authored findings are resolved or explicitly
+ * waived").
+ *
+ * Waived means a human moved the finding to `WONT_FIX` or `DUPLICATE`, which
+ * are final dispositions and are human decisions in Stage 1. So the rule is one
+ * sentence: every human-authored finding must have reached a final disposition.
+ * The refusal names the findings that have not, because "some finding is
+ * outstanding" is not something a reviewer can act on.
+ *
+ * Agent-authored findings are deliberately not required. A human accepting a
+ * review is judging the feedback they gave; an agent's own note about its work
+ * is not a condition of that judgement.
+ */
+export function assertReviewAcceptable(
+  findings: readonly {
+    readonly id: string;
+    readonly source: FindingSource;
+    readonly status: FindingStatus;
+  }[],
+): void {
+  const outstanding = findings.filter(
+    (finding) => finding.source === "human" && !isFinalDisposition(finding.status),
+  );
+  if (outstanding.length === 0) return;
+  const first = outstanding[0];
+  throw new ApiError(
+    "POLICY_DENIED",
+    `${String(outstanding.length)} human-authored finding(s) are neither resolved nor explicitly waived, so this review cannot be accepted yet.`,
+    {
+      field: "findings",
+      reason: `finding ${first?.id ?? "unknown"} is ${first?.status ?? "outstanding"}`,
+    },
+  );
 }
 
 /**

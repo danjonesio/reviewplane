@@ -58,6 +58,7 @@ import { PublishedServiceBinder } from "./modules/published-services/session-bin
 import { PublishedServiceReconciler } from "./modules/published-services/reconciliation.ts";
 import { PublishedServiceService } from "./modules/published-services/service.ts";
 import type { RoutePublisher } from "./modules/published-services/service.ts";
+import { reviewExportHandler } from "./modules/reviews/export-job.ts";
 import { registerReviewRoutes } from "./modules/reviews/routes.ts";
 import { ReviewService } from "./modules/reviews/service.ts";
 
@@ -400,7 +401,7 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     options.runJobs === true
       ? new JobRunner({
           pool,
-          handlers: {},
+          handlers: { review_export: reviewExportHandler({ reviews, artefacts }) },
           publisher: outbox,
           logger: {
             info: (fields, message) => {

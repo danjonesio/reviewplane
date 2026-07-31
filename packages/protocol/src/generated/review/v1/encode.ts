@@ -24,6 +24,8 @@ import type {
   ArtefactUploadFailed,
   ArtefactUploadStarted,
   Comment,
+  CommentCreateRequest,
+  CommentUpdateRequest,
   ContentRectangle,
   Correlation,
   CssPixelBox,
@@ -33,19 +35,32 @@ import type {
   ErrorDetails,
   Finding,
   FindingAnnotated,
+  FindingClaimRequest,
   FindingClaimed,
   FindingCommentAdded,
   FindingCreateRequest,
   FindingCreated,
+  FindingReopened,
+  FindingResolved,
+  FindingStatusChangeDenied,
   FindingStatusChanged,
+  FindingTransitionRequest,
   FindingUpdateRequest,
   FindingVerificationSubmitted,
   Review,
+  ReviewAccepted,
+  ReviewArchived,
+  ReviewAssignRequest,
+  ReviewAssigned,
   ReviewClaimed,
+  ReviewCommentAdded,
   ReviewCreateRequest,
   ReviewCreated,
   ReviewNamed,
+  ReviewReopened,
+  ReviewStatusChangeDenied,
   ReviewStatusChanged,
+  ReviewTransitionRequest,
   ReviewUpdateRequest,
   ScreenshotCaptured,
   ScrollPosition,
@@ -177,8 +192,20 @@ export function encodeReview(value: Review): string {
     fields.push(`"description":${jsonString(value.description)}`);
   }
   fields.push(`"status":${jsonString(value.status)}`);
+  if (value.priority !== undefined) {
+    fields.push(`"priority":${jsonString(value.priority)}`);
+  }
   fields.push(`"version":${jsonInteger(value.version)}`);
   fields.push(`"created_by":${encodeActor(value.created_by)}`);
+  if (value.assigned_user_id !== undefined) {
+    fields.push(`"assigned_user_id":${jsonString(value.assigned_user_id)}`);
+  }
+  if (value.assigned_agent_session_id !== undefined) {
+    fields.push(`"assigned_agent_session_id":${jsonString(value.assigned_agent_session_id)}`);
+  }
+  if (value.reopen_count !== undefined) {
+    fields.push(`"reopen_count":${jsonInteger(value.reopen_count)}`);
+  }
   fields.push(`"captured_branch":${jsonString(value.captured_branch)}`);
   fields.push(`"captured_commit":${jsonString(value.captured_commit)}`);
   fields.push(`"captured_workspace_id":${jsonString(value.captured_workspace_id)}`);
@@ -362,6 +389,12 @@ export function encodeErrorDetails(value: ErrorDetails): string {
   if (value.required_evidence !== undefined) {
     fields.push(`"required_evidence":${`[${value.required_evidence.map((item) => jsonString(item)).join(",")}]`}`);
   }
+  if (value.allowed_transitions !== undefined) {
+    fields.push(`"allowed_transitions":${`[${value.allowed_transitions.map((item) => jsonString(item)).join(",")}]`}`);
+  }
+  if (value.reason !== undefined) {
+    fields.push(`"reason":${jsonString(value.reason)}`);
+  }
   if (value.retry_after_ms !== undefined) {
     fields.push(`"retry_after_ms":${jsonInteger(value.retry_after_ms)}`);
   }
@@ -394,6 +427,9 @@ export function encodeReviewCreateRequest(value: ReviewCreateRequest): string {
   if (value.status !== undefined) {
     fields.push(`"status":${jsonString(value.status)}`);
   }
+  if (value.priority !== undefined) {
+    fields.push(`"priority":${jsonString(value.priority)}`);
+  }
   fields.push(`"captured_branch":${jsonString(value.captured_branch)}`);
   fields.push(`"captured_commit":${jsonString(value.captured_commit)}`);
   fields.push(`"captured_workspace_id":${jsonString(value.captured_workspace_id)}`);
@@ -419,6 +455,81 @@ export function encodeReviewUpdateRequest(value: ReviewUpdateRequest): string {
   if (value.status !== undefined) {
     fields.push(`"status":${jsonString(value.status)}`);
   }
+  if (value.priority !== undefined) {
+    fields.push(`"priority":${jsonString(value.priority)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ReviewAssignRequest.
+ */
+export function encodeReviewAssignRequest(value: ReviewAssignRequest): string {
+  const fields: string[] = [];
+  fields.push(`"expected_version":${jsonInteger(value.expected_version)}`);
+  if (value.assigned_user_id !== undefined) {
+    fields.push(`"assigned_user_id":${jsonString(value.assigned_user_id)}`);
+  }
+  if (value.assigned_agent_session_id !== undefined) {
+    fields.push(`"assigned_agent_session_id":${jsonString(value.assigned_agent_session_id)}`);
+  }
+  if (value.reason !== undefined) {
+    fields.push(`"reason":${jsonString(value.reason)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ReviewTransitionRequest.
+ */
+export function encodeReviewTransitionRequest(value: ReviewTransitionRequest): string {
+  const fields: string[] = [];
+  fields.push(`"expected_version":${jsonInteger(value.expected_version)}`);
+  if (value.reason !== undefined) {
+    fields.push(`"reason":${jsonString(value.reason)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a FindingClaimRequest.
+ */
+export function encodeFindingClaimRequest(value: FindingClaimRequest): string {
+  const fields: string[] = [];
+  fields.push(`"expected_version":${jsonInteger(value.expected_version)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a FindingTransitionRequest.
+ */
+export function encodeFindingTransitionRequest(value: FindingTransitionRequest): string {
+  const fields: string[] = [];
+  fields.push(`"expected_version":${jsonInteger(value.expected_version)}`);
+  if (value.reason !== undefined) {
+    fields.push(`"reason":${jsonString(value.reason)}`);
+  }
+  if (value.duplicate_of_finding_id !== undefined) {
+    fields.push(`"duplicate_of_finding_id":${jsonString(value.duplicate_of_finding_id)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a CommentCreateRequest.
+ */
+export function encodeCommentCreateRequest(value: CommentCreateRequest): string {
+  const fields: string[] = [];
+  fields.push(`"body":${jsonString(value.body)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a CommentUpdateRequest.
+ */
+export function encodeCommentUpdateRequest(value: CommentUpdateRequest): string {
+  const fields: string[] = [];
+  fields.push(`"body":${jsonString(value.body)}`);
   return `{${fields.join(",")}}`;
 }
 
@@ -432,7 +543,6 @@ export function encodeFindingCreateRequest(value: FindingCreateRequest): string 
     fields.push(`"description":${jsonString(value.description)}`);
   }
   fields.push(`"severity":${jsonString(value.severity)}`);
-  fields.push(`"source":${jsonString(value.source)}`);
   fields.push(`"url":${jsonString(value.url)}`);
   fields.push(`"viewport":${encodeViewport(value.viewport)}`);
   fields.push(`"scroll_position":${encodeScrollPosition(value.scroll_position)}`);
@@ -580,13 +690,19 @@ export function encodeComment(value: Comment): string {
   if (value.project_id !== undefined) {
     fields.push(`"project_id":${jsonString(value.project_id)}`);
   }
-  if (value.review_id !== undefined) {
-    fields.push(`"review_id":${jsonString(value.review_id)}`);
+  fields.push(`"review_id":${jsonString(value.review_id)}`);
+  if (value.finding_id !== undefined) {
+    fields.push(`"finding_id":${jsonString(value.finding_id)}`);
   }
-  fields.push(`"finding_id":${jsonString(value.finding_id)}`);
   fields.push(`"body":${jsonString(value.body)}`);
   fields.push(`"created_by":${encodeActor(value.created_by)}`);
   fields.push(`"revision":${jsonInteger(value.revision)}`);
+  if (value.supersedes_comment_id !== undefined) {
+    fields.push(`"supersedes_comment_id":${jsonString(value.supersedes_comment_id)}`);
+  }
+  if (value.superseded_at !== undefined) {
+    fields.push(`"superseded_at":${jsonString(value.superseded_at)}`);
+  }
   fields.push(`"created_at":${jsonString(value.created_at)}`);
   return `{${fields.join(",")}}`;
 }
@@ -637,6 +753,154 @@ export function encodeFindingClaimed(value: FindingClaimed): string {
 export function encodeFindingCommentAdded(value: FindingCommentAdded): string {
   const fields: string[] = [];
   fields.push(`"comment":${encodeComment(value.comment)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ReviewCommentAdded.
+ */
+export function encodeReviewCommentAdded(value: ReviewCommentAdded): string {
+  const fields: string[] = [];
+  fields.push(`"comment":${encodeComment(value.comment)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ReviewAssigned.
+ */
+export function encodeReviewAssigned(value: ReviewAssigned): string {
+  const fields: string[] = [];
+  fields.push(`"review_id":${jsonString(value.review_id)}`);
+  if (value.assigned_user_id !== undefined) {
+    fields.push(`"assigned_user_id":${jsonString(value.assigned_user_id)}`);
+  }
+  if (value.assigned_agent_session_id !== undefined) {
+    fields.push(`"assigned_agent_session_id":${jsonString(value.assigned_agent_session_id)}`);
+  }
+  if (value.previous_assigned_user_id !== undefined) {
+    fields.push(`"previous_assigned_user_id":${jsonString(value.previous_assigned_user_id)}`);
+  }
+  if (value.previous_assigned_agent_session_id !== undefined) {
+    fields.push(`"previous_assigned_agent_session_id":${jsonString(value.previous_assigned_agent_session_id)}`);
+  }
+  fields.push(`"version":${jsonInteger(value.version)}`);
+  if (value.reason !== undefined) {
+    fields.push(`"reason":${jsonString(value.reason)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ReviewAccepted.
+ */
+export function encodeReviewAccepted(value: ReviewAccepted): string {
+  const fields: string[] = [];
+  fields.push(`"review_id":${jsonString(value.review_id)}`);
+  fields.push(`"accepted_by":${encodeActor(value.accepted_by)}`);
+  fields.push(`"version":${jsonInteger(value.version)}`);
+  fields.push(`"finding_count":${jsonInteger(value.finding_count)}`);
+  fields.push(`"human_finding_count":${jsonInteger(value.human_finding_count)}`);
+  if (value.reason !== undefined) {
+    fields.push(`"reason":${jsonString(value.reason)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ReviewReopened.
+ */
+export function encodeReviewReopened(value: ReviewReopened): string {
+  const fields: string[] = [];
+  fields.push(`"review_id":${jsonString(value.review_id)}`);
+  fields.push(`"from":${jsonString(value.from)}`);
+  fields.push(`"to":${jsonString(value.to)}`);
+  fields.push(`"version":${jsonInteger(value.version)}`);
+  fields.push(`"reopen_count":${jsonInteger(value.reopen_count)}`);
+  if (value.reason !== undefined) {
+    fields.push(`"reason":${jsonString(value.reason)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ReviewArchived.
+ */
+export function encodeReviewArchived(value: ReviewArchived): string {
+  const fields: string[] = [];
+  fields.push(`"review_id":${jsonString(value.review_id)}`);
+  fields.push(`"from":${jsonString(value.from)}`);
+  fields.push(`"version":${jsonInteger(value.version)}`);
+  if (value.reason !== undefined) {
+    fields.push(`"reason":${jsonString(value.reason)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a FindingResolved.
+ */
+export function encodeFindingResolved(value: FindingResolved): string {
+  const fields: string[] = [];
+  fields.push(`"finding_id":${jsonString(value.finding_id)}`);
+  fields.push(`"review_id":${jsonString(value.review_id)}`);
+  fields.push(`"disposition":${jsonString(value.disposition)}`);
+  fields.push(`"source":${jsonString(value.source)}`);
+  fields.push(`"decided_by":${encodeActor(value.decided_by)}`);
+  fields.push(`"version":${jsonInteger(value.version)}`);
+  if (value.duplicate_of_finding_id !== undefined) {
+    fields.push(`"duplicate_of_finding_id":${jsonString(value.duplicate_of_finding_id)}`);
+  }
+  if (value.reason !== undefined) {
+    fields.push(`"reason":${jsonString(value.reason)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ReviewStatusChangeDenied.
+ */
+export function encodeReviewStatusChangeDenied(value: ReviewStatusChangeDenied): string {
+  const fields: string[] = [];
+  fields.push(`"review_id":${jsonString(value.review_id)}`);
+  fields.push(`"from":${jsonString(value.from)}`);
+  fields.push(`"requested":${jsonString(value.requested)}`);
+  fields.push(`"code":${jsonString(value.code)}`);
+  if (value.reason !== undefined) {
+    fields.push(`"reason":${jsonString(value.reason)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a FindingStatusChangeDenied.
+ */
+export function encodeFindingStatusChangeDenied(value: FindingStatusChangeDenied): string {
+  const fields: string[] = [];
+  fields.push(`"finding_id":${jsonString(value.finding_id)}`);
+  fields.push(`"review_id":${jsonString(value.review_id)}`);
+  fields.push(`"from":${jsonString(value.from)}`);
+  fields.push(`"requested":${jsonString(value.requested)}`);
+  fields.push(`"source":${jsonString(value.source)}`);
+  fields.push(`"code":${jsonString(value.code)}`);
+  if (value.reason !== undefined) {
+    fields.push(`"reason":${jsonString(value.reason)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a FindingReopened.
+ */
+export function encodeFindingReopened(value: FindingReopened): string {
+  const fields: string[] = [];
+  fields.push(`"finding_id":${jsonString(value.finding_id)}`);
+  fields.push(`"review_id":${jsonString(value.review_id)}`);
+  fields.push(`"from":${jsonString(value.from)}`);
+  fields.push(`"version":${jsonInteger(value.version)}`);
+  fields.push(`"verification_count":${jsonInteger(value.verification_count)}`);
+  if (value.reason !== undefined) {
+    fields.push(`"reason":${jsonString(value.reason)}`);
+  }
   return `{${fields.join(",")}}`;
 }
 

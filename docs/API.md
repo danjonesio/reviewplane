@@ -675,6 +675,9 @@ POST   /api/v1/reviews/:reviewId/request-review
 POST   /api/v1/reviews/:reviewId/accept
 POST   /api/v1/reviews/:reviewId/reopen
 POST   /api/v1/reviews/:reviewId/archive
+GET    /api/v1/reviews/:reviewId/comments
+POST   /api/v1/reviews/:reviewId/comments
+PATCH  /api/v1/comments/:commentId
 GET    /api/v1/reviews/:reviewId/export
 ```
 
@@ -683,25 +686,80 @@ Review accept checks that all required human-authored findings are resolved or e
 `POST /api/v1/projects/:projectId/reviews` requires the captured source context
 of `docs/DOMAIN_MODEL.md` section 14 — `captured_branch`, `captured_commit`,
 `captured_workspace_id` and `source_browser_session_id` — and a project-scoped
-`slug`. A review is created `DRAFT` or `READY`; every other status is reached
-by a transition. A slug that is already in use by an **active** review of the
-same project is refused with `IDEMPOTENCY_CONFLICT`; the same slug in another
-project is unrelated. Active means every status except `CANCELLED` and
-`ARCHIVED`, so a withdrawn review releases its name and an accepted one keeps
-it: an agent told to work on `bugs-on-homepage` must never face two candidates.
+`slug`. It optionally takes a `priority`, which defaults to `medium` and orders
+a queue without gating anything. A review is created `DRAFT` or `READY`; every
+other status is reached by a transition. A slug that is already in use by an
+**active** review of the same project is refused with `IDEMPOTENCY_CONFLICT`;
+the same slug in another project is unrelated. Active means every status except
+`CANCELLED` and `ARCHIVED`, so a withdrawn review releases its name and an
+accepted one keeps it: an agent told to work on `bugs-on-homepage` must never
+face two candidates. Uniqueness is enforced by a partial unique index rather
+than by a read followed by a write, so two concurrent creations of one slug
+produce one review and one refusal.
 
-`GET /api/v1/projects/:projectId/reviews?slug=...` is the named lookup an agent
-uses; it searches active reviews only.
+`GET /api/v1/projects/:projectId/reviews` pages by the opaque cursor of section
+6, newest first. `?slug=...` is the named lookup an agent uses instead; it
+searches active reviews only and answers a single-element list.
 
-`ACCEPTED`, `CANCELLED` and `ARCHIVED` reviews are immutable except for
-archival metadata (`docs/DOMAIN_MODEL.md` section 14). An ordinary edit is
-refused with `POLICY_DENIED` rather than silently dropped. Only a `human_user`
-actor may move a review to `ACCEPTED`.
+The four lifecycle routes each fix their own target status rather than taking
+one in the body, so a caller cannot ask one route for another's transition. Each
+carries `expected_version` and an optional `reason`, which is recorded on the
+event and never on the record:
+
+- `request-review` moves the review to `AWAITING_HUMAN_REVIEW`.
+- `accept` moves it to `ACCEPTED`. It is refused with `POLICY_DENIED` unless
+  every human-authored finding has reached `RESOLVED`, `WONT_FIX` or
+  `DUPLICATE`; the refusal names one that has not. The precondition is checked
+  inside the transaction that holds the review's row lock, so a finding reopened
+  concurrently cannot slip past between the check and the write. Acceptance
+  records `review.accepted` beside `review.status_changed`, naming the human who
+  decided.
+- `reopen` moves it to `CHANGES_REQUESTED`. From `ACCEPTED` this is the explicit
+  reopen of `docs/DOMAIN_MODEL.md` section 14 and additionally records
+  `review.reopened` with the new `reopen_count`; prior findings, verifications,
+  comments and events are all retained.
+- `archive` moves it to `ARCHIVED` and records `review.archived` with the status
+  it was archived from. Archival is not deletion.
+
+`ACCEPTED`, `CANCELLED` and `ARCHIVED` reviews are immutable except for archival
+metadata, comments and an explicit reopen (`docs/DOMAIN_MODEL.md` section 14). An
+ordinary edit is refused with `POLICY_DENIED` rather than silently dropped, and a
+reopen that also carried a field edit is refused for the same reason. Only a
+`human_user` actor may move a review to `ACCEPTED`, `CANCELLED` or `ARCHIVED`;
+the three statuses an `agent_session` can reach are `ASSIGNED`, `IN_PROGRESS`
+and `AWAITING_HUMAN_REVIEW`, and every other request is refused with
+`AUTHORISATION_DENIED` and audited as `review.status_change_denied`.
+
+`POST /api/v1/reviews/:reviewId/assign` names at most one of `assigned_user_id`
+and `assigned_agent_session_id`; naming both is refused, and naming neither
+clears the assignment. A `READY` review becomes `ASSIGNED`. Assignment is
+separate from `review.claimed` because a human directing work and a worker taking
+it are different facts.
+
+`POST /api/v1/reviews/:reviewId/comments` appends a comment to the review itself
+and answers `201`. It carries no author: attribution is derived from the
+authenticated actor (`docs/DOMAIN_MODEL.md` section 18). `GET` returns the
+current revision of each comment; `?revisions=all` returns the retained history.
+`PATCH /api/v1/comments/:commentId` appends a new revision and supersedes the
+previous one; only the author may edit, and only the current revision, which is
+refused with `VERSION_CONFLICT` otherwise.
+
+`GET /api/v1/reviews/:reviewId/export` queues a durable job that produces a
+review-export artefact in the portable format of `docs/REVIEW_FORMAT.md`, and
+answers `202` with the export's state. It changes state the first time it is
+called, so it applies the CSRF rule of section 4.0 like any other write. Asking
+again while a run is in flight joins that run rather than queueing a second one,
+and answers `200` with the same export. When the job succeeds the export reports
+`ready` with the artefact identifier, its digest and its size; an attempt that
+fails leaves the export unready and no artefact at all. `reviewplane
+export-review` writes the same document to a file or to standard output
+(`docs/DEPLOYMENT.md` section 11).
 
 The request and response bodies are the `review_create_request`,
-`review_update_request` and `review` schemas of
-`packages/protocol/schemas/review/v1.schema.json`, and the server validates
-against the generated validator before any domain code runs.
+`review_update_request`, `review_assign_request`, `review_transition_request`,
+`comment_create_request`, `comment_update_request`, `review` and `comment`
+schemas of `packages/protocol/schemas/review/v1.schema.json`, and the server
+validates against the generated validator before any domain code runs.
 
 ## 13. Finding endpoints
 
@@ -711,6 +769,7 @@ POST   /api/v1/reviews/:reviewId/findings
 GET    /api/v1/findings/:findingId
 PATCH  /api/v1/findings/:findingId
 POST   /api/v1/findings/:findingId/claim
+GET    /api/v1/findings/:findingId/comments
 POST   /api/v1/findings/:findingId/comments
 POST   /api/v1/findings/:findingId/verifications
 POST   /api/v1/findings/:findingId/accept
@@ -720,7 +779,9 @@ POST   /api/v1/findings/:findingId/wont-fix
 
 Updates include `expected_version`. A mismatch is refused with
 `VERSION_CONFLICT` and the version the record actually holds, so a caller can
-re-read and retry rather than guess.
+re-read and retry rather than guess. `POST .../claim` uses the same mechanism
+rather than a separate one, so a human and an agent claiming at once produce one
+claim and one `VERSION_CONFLICT`.
 
 `POST /api/v1/reviews/:reviewId/findings` requires the captured context of
 `docs/UX_FLOWS.md` section 9: `url`, `viewport` including
@@ -734,14 +795,50 @@ already be `available` — an unverified artefact is refused with
 may be supplied inline, and are then written in the same transaction as the
 finding.
 
+The request body has **no `source` field**. It is derived from the authenticated
+actor and is immutable thereafter (`docs/DOMAIN_MODEL.md` section 15); a body
+that supplies one is refused as an unknown property by the generated validator,
+before any handler runs.
+
 Status transitions are checked in this order: version, transition legality,
-actor authority, completion evidence. A human-authored finding cannot be set to
-`RESOLVED`, `WONT_FIX` or `DUPLICATE` by an agent
-(`AUTHORISATION_DENIED`); the transitions an agent may perform are the
-`docs/MCP_SPEC.md` section 7.7 list and nothing else (`POLICY_DENIED`);
-and a move to `FIXED_UNVERIFIED` without a resolution note is refused with
-`EVIDENCE_REQUIRED`. These are domain rules, enforced below the transport, so
-they hold for the MCP surface as well as for this one.
+actor authority, completion evidence.
+
+- A finding cannot be set to `RESOLVED`, `WONT_FIX` or `DUPLICATE` by an agent —
+  `AUTHORISATION_DENIED`, whoever authored the finding. For a human-authored
+  finding that is the authority rule of `docs/DOMAIN_MODEL.md` section 15; for an
+  agent's own it is the absence of any Stage 1 policy that would permit
+  auto-resolution.
+- Any other transition an agent requests outside the `docs/MCP_SPEC.md` section
+  7.7 list is refused with `POLICY_DENIED` and `details.allowed_transitions`, so
+  the refusal says what is possible from here rather than only what is not.
+- A move to `FIXED_UNVERIFIED` without a resolution note is refused with
+  `EVIDENCE_REQUIRED`.
+
+Both refusals are audited as `finding.status_change_denied`, written outside the
+transaction the refusal rolled back. These are domain rules, enforced below the
+transport, so they hold for the MCP surface as well as for this one — and an
+agent credential presented to these routes is additionally refused at the
+transport with `AUTHORISATION_DENIED`, by token shape, because the review API is
+a human API (`docs/SECURITY.md` section 6.3).
+
+`accept`, `reopen` and `wont-fix` are the human dispositions. `accept` moves the
+finding to `RESOLVED`; `wont-fix` moves it to `WONT_FIX` and **requires a
+reason**, or to `DUPLICATE` when it also names `duplicate_of_finding_id`, which
+must be another finding of the same project; `reopen` moves it to `REOPENED` and
+retains prior verification history. Each records `finding.resolved` or
+`finding.reopened` beside `finding.status_changed`, naming the human who decided.
+
+`POST /api/v1/findings/:findingId/comments` appends a comment and answers `201`;
+`GET` returns the current revision of each, and `?revisions=all` the retained
+history. Attribution is derived from the authenticated actor, and the request
+body has no author field (`docs/DOMAIN_MODEL.md` section 18).
+
+`POST /api/v1/findings/:findingId/verifications` is **not implemented on this
+API yet**. The verification record exists and is reachable through
+`finding_submit_verification` on `/mcp/v1` (`docs/MCP_SPEC.md` section 7.7),
+which is the surface an agent uses; the human-facing route arrives with the
+evidence-gated completion work, along with the verification accept and reject
+decisions. The statuses those transitions target are the ones above.
 
 ## 14. Annotation endpoints
 

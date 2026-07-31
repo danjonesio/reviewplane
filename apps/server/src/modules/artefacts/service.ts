@@ -374,6 +374,109 @@ export class ArtefactService {
     });
   }
 
+  /**
+   * Stores an artefact the **control plane itself produced**, such as a review
+   * export (`docs/API.md` section 12, `docs/REVIEW_FORMAT.md`).
+   *
+   * It is a deliberately separate path from the upload flow above, and the
+   * reason is the trust boundary rather than convenience. The upload flow
+   * exists to catch a lying uploader: a declared content type is a claim, the
+   * magic bytes are evidence, and an SVG uploaded as `image/png` is refused
+   * before anything stores it (`docs/SECURITY.md` section 13). Here there is no
+   * uploader. The bytes were serialised by this process from rows it had just
+   * read, so sniffing them would be the server checking its own claim against
+   * itself, and the image measurement that follows verification has nothing to
+   * measure.
+   *
+   * What the two paths do share is the part that matters: the digest and the
+   * size are computed from the stored bytes, the key is the content address of
+   * that digest, and the row is only ever written `available` with all three
+   * present — so nothing downstream can tell a generated artefact from an
+   * uploaded one by finding it half-verified.
+   *
+   * It takes a client rather than a pool because the caller is a durable job
+   * whose own record must commit with the artefact it produced. An export row
+   * that claimed an artefact the transaction then rolled back would be a link
+   * to bytes that do not exist.
+   */
+  async storeGenerated(
+    client: PoolClient,
+    input: {
+      readonly organisationId: string;
+      readonly projectId: string;
+      readonly kind: string;
+      readonly contentType: string;
+      readonly retentionClass: string;
+      readonly bytes: Buffer;
+      readonly filenameLabel?: string;
+      readonly actor: EventActor;
+    },
+  ): Promise<ArtefactRecord> {
+    if (input.bytes.byteLength <= 0 || input.bytes.byteLength > this.#maxBytes) {
+      throw new ApiError(
+        "POLICY_DENIED",
+        `An artefact must be between 1 and ${String(this.#maxBytes)} bytes.`,
+      );
+    }
+    const stored = await this.#store.put(input.bytes);
+    const id = newId("art_");
+    const inserted = await client.query(
+      `INSERT INTO artefacts (
+          id, organisation_id, project_id, kind, state, storage_key, content_type,
+          declared_size_bytes, declared_sha256, size_bytes, sha256, retention_class,
+          created_by_actor_type, created_by_actor_id, filename_label, available_at
+       ) VALUES ($1,$2,$3,$4,'available',$5,$6,$7,$8,$7,$8,$9,$10,$11,$12, now())
+       RETURNING *`,
+      [
+        id,
+        input.organisationId,
+        input.projectId,
+        input.kind,
+        stored.key,
+        input.contentType,
+        stored.sizeBytes,
+        stored.sha256,
+        input.retentionClass,
+        input.actor.type,
+        input.actor.id ?? null,
+        input.filenameLabel ?? null,
+      ],
+    );
+    // Both events, because the artefact really did start and finish: a
+    // consumer replaying the stream sees the same pair for a generated artefact
+    // as for an uploaded one rather than a completion with no beginning.
+    await appendEvent(client, {
+      type: "artefact.upload_started",
+      organisationId: input.organisationId,
+      projectId: input.projectId,
+      actor: input.actor,
+      correlation: { artefact_id: id },
+      payload: {
+        artefact_id: id,
+        kind: input.kind,
+        declared_size_bytes: stored.sizeBytes,
+        declared_sha256: stored.sha256,
+        content_type: input.contentType,
+      },
+    });
+    await appendEvent(client, {
+      type: "artefact.upload_completed",
+      organisationId: input.organisationId,
+      projectId: input.projectId,
+      actor: input.actor,
+      correlation: { artefact_id: id },
+      payload: {
+        artefact_id: id,
+        kind: input.kind,
+        sha256: stored.sha256,
+        size_bytes: stored.sizeBytes,
+        storage_key: stored.key,
+        redaction_state: "not_applied",
+      },
+    });
+    return toRecord(inserted.rows[0] as Record<string, unknown>);
+  }
+
   async #markFailed(record: ArtefactRecord, reason: string, actor: EventActor): Promise<void> {
     await inTransaction(this.#pool, async (client: PoolClient) => {
       await client.query("UPDATE artefacts SET state = 'failed' WHERE id = $1", [record.id]);

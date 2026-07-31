@@ -1,0 +1,30 @@
+{
+  "id": "evt_01JREVIEWACCEPTED",
+  "schema_version": 1,
+  "occurred_at": "2026-07-31T09:02:11.004Z",
+  "recorded_at": "2026-07-31T09:02:11.011Z",
+  "organisation_id": "org_01JREFRESH",
+  "project_id": "prj_01JREFRESHSURPLUS",
+  "sequence": 61,
+  "type": "review.accepted",
+  "actor": {
+    "type": "human_user",
+    "id": "vwr_01JBOOTSTRAPADMIN",
+    "display": "bootstrap administrator"
+  },
+  "correlation": {
+    "review_id": "rev_01JBUGSONHOMEPAGE"
+  },
+  "payload": {
+    "review_id": "rev_01JBUGSONHOMEPAGE",
+    "accepted_by": {
+      "type": "human_user",
+      "id": "vwr_01JBOOTSTRAPADMIN",
+      "display": "bootstrap administrator"
+    },
+    "version": 7,
+    "finding_count": 3,
+    "human_finding_count": 2,
+    "reason": "Checked at 390x844 and 1440x900."
+  }
+}

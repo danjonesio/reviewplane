@@ -137,7 +137,8 @@ function findingBody(fixture: Fixture, overrides: Record<string, unknown> = {}) 
     title: "Hero heading overlaps the basket button",
     description: "At 390x844 the heading wraps onto the button and hides it.",
     severity: "high",
-    source: "human",
+    // No `source`: it is derived from the authenticated actor and the schema
+    // has no such field (docs/DOMAIN_MODEL.md section 15).
     url: "https://route-01jhomepage.internal.invalid/",
     viewport: { width: 390, height: 844, device_scale_factor: 2 },
     scroll_position: { x: 0, y: 320 },
