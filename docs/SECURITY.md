@@ -426,6 +426,10 @@ and what it checks there is exactly this:
   caller-supplied list. A session allow-list is a request for authorisation and
   never a grant of it.
 - **The lifetime**, against the configured maximum, refused rather than clipped.
+- **The number of routes the connector already carries**, against the
+  per-connector limit of `CONNECTOR_PROTOCOL.md` §11, counted **inside the
+  connector's organisation** — a count shared across organisations is a shared
+  resource one of them can exhaust.
 
 Reads are scoped the same way, in **one** predicate carrying the identifier, the
 caller's organisation and the session's project scope, so a route outside the

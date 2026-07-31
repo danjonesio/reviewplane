@@ -307,14 +307,19 @@ ORGANISATION_ID="$(field "${TOKEN_RESPONSE}" 'data["organisation_id"]')" || fail
 # rather than through the API, which generates them.
 #
 # The fixture connector is configured with `project: prj_fixture` and
-# `workspaces: [{id: wsp_fixture}]`. While publication wrote whatever it was
-# given, nothing noticed that the scenario's generated identifiers matched
-# neither: the connector's workspace observations were refused for a project it
-# was not configured for, and a route named a `wsp_fixture` that existed in no
-# table. Making the deployment agree with its own fixture is what lets the
-# connector accept the publication — it validates the workspace association
-# independently (`docs/CONNECTOR_PROTOCOL.md` §11) — and it is also what makes
-# the connector's Git observations land where the project can see them.
+# `workspaces: [{id: wsp_fixture}]`, and it validates the workspace association
+# itself (`docs/CONNECTOR_PROTOCOL.md` §11). `wsp_fixture` existed in no table:
+# the connector reports no workspace here — the fixture is a served directory
+# and not a Git checkout, so there is nothing to observe — and while the control
+# plane wrote whatever `workspace_id` it was given, nothing noticed. Once the
+# control plane stopped forwarding an identifier it could not resolve, the
+# connector refused it too, on its own check.
+#
+# The row is `administrative_registration` and not `connector_report`. No
+# connector reported it, and `0080_workspace_git_context.sql` keeps the two
+# apart precisely so that a reader can tell which happened. Making the fixture a
+# real checkout, so that observation is proven rather than stood in for, is
+# follow-up work.
 "${COMPOSE[@]}" exec -T postgres psql -U reviewplane -d reviewplane -q -c \
   "insert into projects (id, organisation_id, name, slug)
    values ('${PROJECT_ID}', '${ORGANISATION_ID}', 'Fixture', '${PROJECT_SLUG}')
@@ -327,7 +332,7 @@ ORGANISATION_ID="$(field "${TOKEN_RESPONSE}" 'data["organisation_id"]')" || fail
    values ('wsp_fixture', '${ORGANISATION_ID}', '${PROJECT_ID}',
            '/opt/reviewplane/dev-fixture', 'main',
            '0000000000000000000000000000000000000001',
-           'sha256:$(printf '0%.0s' {1..64})', 'dev-fixture', 'connector_report')
+           'sha256:$(printf '0%.0s' {1..64})', 'dev-fixture', 'administrative_registration')
    on conflict (id) do nothing" >/dev/null \
   || fail "could not register the fixture workspace"
 WORKSPACE_ID="wsp_fixture"
@@ -339,10 +344,15 @@ printf '%s' "${ENROLMENT_TOKEN}" > "${COMPOSE_DIR}/secrets/enrolment_token"
 chmod 644 "${COMPOSE_DIR}/secrets/enrolment_token"
 info "issued a single-use enrolment token"
 
-# The connector's configuration names the project it serves; the fixture project
-# identifier is generated, so it is substituted here.
-sed "s/prj_fixture/${PROJECT_ID}/g" "${COMPOSE_DIR}/connector-config.yaml" \
-  > "${COMPOSE_DIR}/connector-config.generated.yaml"
+# The connector reads the generated copy, which Compose mounts; `configure`
+# makes the same copy for an ordinary installation.
+#
+# It used to be a `sed` substituting the generated project identifier into the
+# configuration, which is why the connector's own §11 checks passed while the
+# scenario was otherwise disagreeing with its fixture. The scenario now creates
+# the project under the identifier the configuration already names, so there is
+# nothing to substitute and a copy is the whole of it.
+cp "${COMPOSE_DIR}/connector-config.yaml" "${COMPOSE_DIR}/connector-config.generated.yaml"
 
 # ---------------------------------------------------------------------------
 step "3. Start the fixture application on connector loopback (step 3)"

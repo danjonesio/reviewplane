@@ -227,6 +227,17 @@ export function renderError(error: unknown, request: ErrorRequest, reply: ErrorR
   // server for a request the client malformed, and writes a stack trace for
   // something that is not a fault. Nothing from the framework's message reaches
   // the caller: it quotes the input, and the input is what the refusal is about.
+  //
+  // **This is deliberately broad and will eventually be too broad.** Everything
+  // that reaches here today is about the request's *shape* — an unparseable
+  // body, a payload past `bodyLimit` (413), an unsupported content type (415) —
+  // so `VALIDATION_FAILED` describes all of them. It would not describe a
+  // meaningful 401, 403 or 429 raised by a plugin, and a future plugin that
+  // raises one would have it relabelled a validation failure. Anything reaching
+  // this server that means something more specific than "the request could not
+  // be read" should be raised as an `ApiError` with its own code, which the
+  // branch above renders unchanged; narrow this predicate on the day the first
+  // such case exists rather than guessing at it now.
   const frameworkStatus = (error as { statusCode?: unknown }).statusCode;
   if (typeof frameworkStatus === "number" && frameworkStatus >= 400 && frameworkStatus < 500) {
     void reply
