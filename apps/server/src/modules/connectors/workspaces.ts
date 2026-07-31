@@ -38,7 +38,36 @@ import { newId } from "../../ids.ts";
 export const MAX_WORKSPACES_PER_ENVIRONMENT = 32;
 
 /** Why an observation was refused. Stable, so a caller can map it to a class. */
-export type ObservationRefusal = "project_not_authorised" | "workspace_limit_exceeded";
+export type ObservationRefusal =
+  | "project_not_authorised"
+  | "workspace_limit_exceeded"
+  | "workspace_conflict";
+
+/** PostgreSQL's unique-violation class (SQLSTATE 23505). */
+const UNIQUE_VIOLATION = "23505";
+
+/**
+ * Turns a uniqueness collision into a refusal.
+ *
+ * This is a backstop, not the mechanism: the preference in `recordObservation`
+ * is what stops the collision arising for the case that occurs in practice.
+ * It exists because of what the alternative cost. A collision here threw a
+ * driver error, which no frame handler expected, and an unexpected error on the
+ * frame path was an unhandled rejection that **ended the control-plane
+ * process** — reachable by an operator swapping two entries in a configuration
+ * file. The channel's error handling now contains that, and this turns the same
+ * condition into something the connector is actually told about.
+ */
+function asRefusal(error: unknown): never {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (code === UNIQUE_VIOLATION) {
+    throw new WorkspaceObservationRefused(
+      "workspace_conflict",
+      "the reported workspace collides with another record in this environment",
+    );
+  }
+  throw error;
+}
 
 export class WorkspaceObservationRefused extends Error {
   readonly reason: ObservationRefusal;
@@ -162,7 +191,10 @@ export async function recordObservation(
     // row belongs to this environment or to no environment at all. Matching one
     // across environments is what made two machines with the same layout fight
     // over a single row.
-    const existing = await client.query<WorkspaceRow>(
+    // Both candidates are locked in one statement, ordered by identifier so that
+    // two transactions take the same locks in the same order and cannot deadlock
+    // against each other.
+    const candidates = await client.query<WorkspaceRow>(
       `select ${WORKSPACE_COLUMNS}
          from workspaces
         where organisation_id = $1
@@ -171,8 +203,7 @@ export async function recordObservation(
                 id = $3
              or (path_hash = $4 and (environment_id = $5 or environment_id is null))
           )
-        order by (id = $3) desc
-        limit 1
+        order by id
           for update`,
       [
         context.organisationId,
@@ -182,49 +213,94 @@ export async function recordObservation(
         context.environmentId,
       ],
     );
-    const previous = existing.rows[0];
+    const holder = candidates.rows.find((row) => row.id === observation.workspace_id);
+    const atThisPath = candidates.rows.find(
+      (row) =>
+        row.path_hash === observation.path_hash &&
+        (row.environment_id === context.environmentId || row.environment_id === null),
+    );
+
+    // The identifier is refused on its own terms, before any path preference
+    // below can quietly route around it. Whether the reported identifier is
+    // available is a question with one answer, and it must not depend on what
+    // else the connector happened to report.
+    if (holder !== undefined) {
+      assertMayWrite(holder, context, observation);
+    }
+
+    // For a reported workspace the **checkout is the identity** and the
+    // workspace identifier is the label the connector chose for it. So a record
+    // already at this path in this environment wins over one merely carrying the
+    // reported identifier.
+    //
+    // That preference is what makes swapping two `workspaces:` entries in
+    // `config.yaml` an ordinary act rather than a fault. Under identifier
+    // preference the connector's first observation moved one record onto the
+    // other's path, which collided with the uniqueness of
+    // `(project_id, environment_id, path_hash)` — and that collision ended the
+    // control-plane process, because the resulting error was not a refusal any
+    // handler expected. Here the record at that path is simply updated in place,
+    // its path unchanged, and nothing collides.
+    //
+    // Moving a checkout still works: an identifier reported at a path no record
+    // holds finds no `atThisPath`, falls through to `holder`, and the path moves.
+    const previous = atThisPath ?? holder;
 
     if (previous === undefined) {
       return insertObserved(client, context, observation);
     }
-    // Two refusals, both here rather than folded into the predicate above,
-    // because a row this connector may not write must be **refused** rather
-    // than skipped. Skipping it would fall through to an insert under a primary
-    // key that is already taken, and the caller would learn about the collision
-    // as a constraint violation rather than as the authorisation failure it is.
-    //
-    // **A row owned by another environment.** Somebody else's machine reports
-    // that checkout; this one may not rewrite the branch and head commit a
-    // verification is checked against (`docs/MCP_SPEC.md` §7.7).
-    if (previous.environment_id !== null && previous.environment_id !== context.environmentId) {
-      throw new WorkspaceObservationRefused(
-        "project_not_authorised",
-        "the reported workspace identifier belongs to another environment",
-      );
-    }
-    // **An unowned row at a different path.** A row with no environment was
-    // registered administratively (`docs/API.md` §4.3), and adoption is
-    // justified by one fact only: an operator named that exact path and this
-    // connector observes that exact path, so they are the same checkout.
-    //
-    // The path has to be checked, not assumed. The candidate query reaches an
-    // unowned row two ways — by path, where the paths match by construction, and
-    // by identifier, where nothing has compared them. Without this, naming a
-    // registered workspace's identifier adopted it whatever the paths were: the
-    // row kept the `root_path` an operator gave it, which
-    // `docs/MCP_SPEC.md` §4 resolves a `workspace_hint` against, while its
-    // digest, label, branch and head commit were all replaced by a machine that
-    // has never seen that directory. An identifier match at a different path is
-    // the same "identifier already held" collision as the case above, and takes
-    // the same refusal.
-    if (previous.environment_id === null && previous.path_hash !== observation.path_hash) {
-      throw new WorkspaceObservationRefused(
-        "project_not_authorised",
-        "the reported workspace identifier is held by a record for a different checkout",
-      );
-    }
+    assertMayWrite(previous, context, observation);
     return updateObserved(client, context, observation, previous);
   });
+}
+
+/**
+ * Refuses a record this connector may not write.
+ *
+ * Two refusals, kept apart because they are different facts and a reader
+ * debugging one should not be told the other. They are separate messages for
+ * the same reason: both flatten to one wire class, so the message is the only
+ * place the distinction survives, and a unit test asserts which one fired.
+ *
+ * Neither is folded into the candidate query's predicate. A record this
+ * connector may not write must be **refused** rather than skipped: skipping it
+ * would fall through to an insert under a primary key that is already taken, and
+ * the caller would learn about the collision as a constraint violation rather
+ * than as the authorisation failure it is.
+ */
+function assertMayWrite(
+  record: WorkspaceRow,
+  context: ObservationContext,
+  observation: WorkspaceObservation,
+): void {
+  // **Owned by another environment.** Somebody else's machine reports that
+  // checkout; this one may not rewrite the branch and head commit a
+  // verification is checked against (`docs/MCP_SPEC.md` §7.7).
+  if (record.environment_id !== null && record.environment_id !== context.environmentId) {
+    throw new WorkspaceObservationRefused(
+      "project_not_authorised",
+      "the reported workspace identifier belongs to another environment",
+    );
+  }
+  // **Unowned, at a different path.** A record with no environment was
+  // registered administratively (`docs/API.md` §4.3), and adoption is justified
+  // by one fact only: an operator named that exact path and this connector
+  // observes that exact path, so they are the same checkout.
+  //
+  // The path has to be checked, not assumed. The candidate query reaches an
+  // unowned record two ways — by path, where the digests agree by construction,
+  // and by identifier, where nothing has compared them. Without this, naming a
+  // registered workspace's identifier adopted it whatever the paths were: the
+  // record kept the `root_path` an operator gave it, which
+  // `docs/MCP_SPEC.md` §4 resolves a `workspace_hint` against, while its digest,
+  // label, branch and head commit were replaced by a machine that had never seen
+  // that directory.
+  if (record.environment_id === null && record.path_hash !== observation.path_hash) {
+    throw new WorkspaceObservationRefused(
+      "project_not_authorised",
+      "the reported workspace identifier is held by a record for a different checkout",
+    );
+  }
 }
 
 /**
@@ -299,7 +375,7 @@ async function insertObserved(
       observation.head_commit,
       observation.dirty,
     ],
-  );
+  ).catch(asRefusal);
   const row = inserted.rows[0];
   if (row === undefined) {
     throw new WorkspaceObservationRefused(
@@ -381,7 +457,7 @@ async function updateObserved(
       context.organisationId,
       observation.project_id,
     ],
-  );
+  ).catch(asRefusal);
   const row = updated.rows[0];
   if (row === undefined) {
     throw new WorkspaceObservationRefused(

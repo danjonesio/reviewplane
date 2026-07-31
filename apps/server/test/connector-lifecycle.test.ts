@@ -22,9 +22,14 @@ import { decodePlatformEvent } from "@reviewplane/protocol/platform";
 
 import { main } from "../src/cli.ts";
 
-import { HeartbeatFloor } from "../src/modules/connectors/channel.ts";
+import { FrameQueue, HeartbeatFloor } from "../src/modules/connectors/channel.ts";
 import { sweepConnectorHealth } from "../src/modules/connectors/monitor.ts";
-import { displayLabel, pathHash } from "../src/modules/connectors/workspaces.ts";
+import {
+  displayLabel,
+  pathHash,
+  recordObservation,
+  WorkspaceObservationRefused,
+} from "../src/modules/connectors/workspaces.ts";
 import { revokeConnector } from "../src/modules/connectors/repository.ts";
 import { enrolmentCommand } from "../src/modules/connectors/routes.ts";
 import { BOOTSTRAP_TOKEN, startHarness, type Harness } from "./support/harness.ts";
@@ -823,6 +828,73 @@ describe("workspace observations", () => {
     assert.deepEqual(await read(), before, "the registered record was rewritten");
   });
 
+  test("swapping two configured workspace paths is an ordinary act, not a crash", async () => {
+    // The three frames that ended the control-plane process. No attacker: an
+    // operator swapping two `workspaces:` entries in `config.yaml` produces
+    // exactly this sequence. The third frame moved one record onto the other's
+    // path, which collided with the uniqueness of
+    // `(project_id, environment_id, path_hash)`; the resulting driver error was
+    // not a refusal any handler expected, so it became an unhandled rejection
+    // and Node terminated the process — taking the HTTP API, the connector
+    // listener and the jobs role with it.
+    const { projectId } = await seedProject();
+    const enrolled = await enrol({ projectId });
+    const channel = await openControlChannel(harness, enrolled.identity);
+    const pathOne = `sha256:${"1".repeat(64)}`;
+    const pathTwo = `sha256:${"2".repeat(64)}`;
+
+    const observe = (workspaceId: string, hash: string, branch: string): void => {
+      channel.sendWorkspaceObservation({
+        workspace_id: workspaceId,
+        project_id: projectId,
+        path_hash: hash,
+        display_label: workspaceId.replace("wsp_", ""),
+        branch,
+        head_commit: "1111111111111111111111111111111111111111",
+        dirty: false,
+      });
+    };
+
+    observe("wsp_one", pathOne, "main");
+    observe("wsp_two", pathTwo, "main");
+    await waitFor(async () => {
+      const rows = await harness.pool.query<{ n: number }>("select count(*)::int as n from workspaces");
+      return rows.rows[0]?.n === 2 ? true : null;
+    }, "both workspaces to be recorded");
+
+    // The third frame: the first identifier now reported at the second's path.
+    observe("wsp_one", pathTwo, "swapped");
+
+    // The checkout is the identity and the identifier is the label, so the
+    // record already at that path is updated in place and nothing collides.
+    await waitFor(async () => {
+      const rows = await harness.pool.query<{ branch: string }>(
+        "select branch from workspaces where path_hash = $1",
+        [pathTwo],
+      );
+      return rows.rows[0]?.branch === "swapped" ? true : null;
+    }, "the observation at the second path to be applied");
+
+    const rows = await harness.pool.query<{ id: string; path_hash: string }>(
+      "select id, path_hash from workspaces order by id",
+    );
+    assert.equal(rows.rows.length, 2, "the swap merged or duplicated a record");
+
+    // The channel is still open and the control plane is still answering: the
+    // frame was processed rather than surviving the process that handled it.
+    const alive = await harness.built.app.inject({ method: "GET", url: "/health/live" });
+    assert.equal(alive.statusCode, 200, "the control plane did not survive the frame");
+    observe("wsp_two", pathOne, "still-serving");
+    await waitFor(async () => {
+      const check = await harness.pool.query<{ branch: string }>(
+        "select branch from workspaces where path_hash = $1",
+        [pathOne],
+      );
+      return check.rows[0]?.branch === "still-serving" ? true : null;
+    }, "the channel to still be serving frames");
+    channel.close();
+  });
+
   test("the observed workspace reaches the project's environment view", async () => {
     const { projectId } = await seedProject();
     const enrolled = await enrol({ projectId });
@@ -1108,6 +1180,118 @@ describe("the operator command line", () => {
       if (previousUrl === undefined) delete process.env["REVIEWPLANE_DATABASE_URL"];
       else process.env["REVIEWPLANE_DATABASE_URL"] = previousUrl;
     }
+  });
+});
+
+describe("each ownership layer is pinned on its own", () => {
+  test("the refusal names which check fired, so neither layer can be deleted unnoticed", async () => {
+    // Two layers refuse a record owned by another environment: the explicit
+    // check before the update, and the ownership repeated in the update's own
+    // predicate. Through the channel both flatten to one wire class, so
+    // mutating either alone leaves every channel test green and only removing
+    // both fails one — which means a refactor could delete either with the
+    // gates passing.
+    //
+    // `recordObservation` is therefore called directly here. The two layers
+    // carry different messages, so this asserts which one fired.
+    const { projectId, organisationId } = await seedProject();
+    const mine = await enrol({ projectId });
+    const theirs = await enrol({ projectId });
+
+    const observation = {
+      workspace_id: "wsp_layered",
+      project_id: projectId,
+      path_hash: `sha256:${"a".repeat(64)}`,
+      display_label: "checkout",
+      branch: "main",
+      head_commit: "1111111111111111111111111111111111111111",
+      dirty: false,
+      observed_at: "2026-07-31T00:00:00Z",
+    } as const;
+    const contextFor = (enrolled: typeof mine): Parameters<typeof recordObservation>[1] => ({
+      organisationId,
+      connectorId: enrolled.connectorId,
+      environmentId: enrolled.environmentId,
+      enrolledProjectId: projectId,
+      requestId: "req_layer_test",
+    });
+
+    await recordObservation(harness.pool, contextFor(theirs), observation);
+
+    // Layer one: the explicit ownership check, reached because the record is
+    // owned by another environment.
+    await assert.rejects(
+      recordObservation(harness.pool, contextFor(mine), observation),
+      (error: unknown) => {
+        assert.ok(error instanceof WorkspaceObservationRefused);
+        assert.equal(error.reason, "project_not_authorised");
+        assert.match(error.message, /belongs to another environment/u);
+        return true;
+      },
+      "the owned-elsewhere layer did not fire",
+    );
+
+    // Layer two: the unowned-at-a-different-path check, which is a different
+    // record state and a different message.
+    const registered = await harness.built.workspaces.register({
+      organisationId,
+      projectId,
+      rootPath: "/home/dan/registered",
+      branch: "main",
+      headCommit: "9999999999999999999999999999999999999999",
+    });
+    await assert.rejects(
+      recordObservation(harness.pool, contextFor(mine), {
+        ...observation,
+        workspace_id: registered.id,
+        path_hash: `sha256:${"e".repeat(64)}`,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof WorkspaceObservationRefused);
+        assert.equal(error.reason, "project_not_authorised");
+        assert.match(error.message, /a record for a different checkout/u);
+        return true;
+      },
+      "the unowned-different-path layer did not fire",
+    );
+  });
+});
+
+describe("a frame handler cannot take the process down", () => {
+  test("an unexpected error in the consumer ends the frame, not the process", async () => {
+    // The containment, tested at the queue rather than through a handler,
+    // because the point is that it holds for an error nobody enumerated — and
+    // an enumerated one would not test that.
+    //
+    // `#drain` is started with `void`, so before this a rejection here was an
+    // unhandled rejection and Node's default is to terminate. The assertion is
+    // therefore about the process: this test process is the one that would die.
+    const queue = new FrameQueue();
+    const seen: unknown[] = [];
+    let delivered = 0;
+    queue.setConsumer(
+      async (raw: Buffer) => {
+        delivered += 1;
+        await Promise.resolve();
+        throw new Error(`nobody expected this: ${String(raw.length)}`);
+      },
+      (error: unknown) => {
+        seen.push(error);
+      },
+    );
+    queue.push(Buffer.from("one"));
+    queue.push(Buffer.from("two"));
+    await waitFor(() => (seen.length === 1 ? true : null), "the error handler to run", 2_000);
+
+    assert.equal(seen.length, 1, "the failure was not reported exactly once");
+    assert.match(String(seen[0]), /nobody expected this/u);
+    // The channel is finished, so nothing after the failure is delivered: a
+    // handler that failed has not necessarily left state a later frame can be
+    // applied against.
+    assert.equal(delivered, 1, "delivery continued after an unhandled failure");
+
+    // Still here. Before the `catch`, reaching this line was not possible.
+    assert.ok(process.pid > 0);
   });
 });
 

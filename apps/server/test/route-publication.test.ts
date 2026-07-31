@@ -363,10 +363,15 @@ describe("publishing a loopback development service", () => {
       [],
       `the connector is listening on a socket:\n${socketsForProcess(socketsAfter, pid).join("\n")}`,
     );
-    assert.equal(
-      socketsAfter.split("\n").length,
-      socketsBefore.split("\n").length,
-      "publishing a route changed the set of listening sockets",
+    // Scoped to this connector's process, like the assertion above it. Comparing
+    // host-wide socket counts made the result depend on every other process on
+    // the machine: it failed once on a shared build host because something
+    // unrelated started listening between the two samples, which reads as a
+    // connector defect and is not one.
+    assert.deepEqual(
+      socketsForProcess(socketsAfter, pid),
+      socketsForProcess(socketsBefore, pid),
+      "publishing a route changed the connector's listening sockets",
     );
   });
 

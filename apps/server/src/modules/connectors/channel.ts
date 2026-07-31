@@ -125,12 +125,13 @@ function messageBuffer(payload: unknown): Buffer {
  * handled, never dropped. Serial delivery additionally keeps one connector's
  * frames in order and bounds how much work a burst can start at once.
  */
-class FrameQueue {
+export class FrameQueue {
   /** Frames buffered before the consumer exists. A burst beyond this is refused. */
   static readonly MAX_PENDING = 32;
 
   readonly #pending: Buffer[] = [];
   #consumer: ((raw: Buffer) => Promise<void>) | null = null;
+  #onConsumerError: ((error: unknown) => void) | null = null;
   #draining = false;
   #overflowed = false;
 
@@ -148,17 +149,53 @@ class FrameQueue {
     void this.#drain();
   }
 
-  setConsumer(consumer: (raw: Buffer) => Promise<void>): void {
+  /**
+   * Sets the consumer and the handler for anything it throws.
+   *
+   * `onError` is required rather than optional: a queue drained with `void` and
+   * no error handler is exactly the shape that terminated the process, and
+   * making the caller name what happens is what stops the next consumer being
+   * written without one.
+   */
+  setConsumer(consumer: (raw: Buffer) => Promise<void>, onError: (error: unknown) => void): void {
     this.#consumer = consumer;
+    this.#onConsumerError = onError;
     void this.#drain();
   }
 
+  /**
+   * Delivers buffered frames one at a time.
+   *
+   * The `catch` is the whole point of this method's shape, and it is a security
+   * control rather than tidiness. `#drain` is started with `void`, so a
+   * rejection here is an **unhandled rejection**, and Node terminates the
+   * process on one by default — which means any error a frame handler failed to
+   * anticipate lets a peer outside the control-plane trust boundary
+   * (`docs/SECURITY.md` §3) stop the control plane with an ordinary protocol
+   * message. It took down the HTTP API, the connector listener and the jobs
+   * role together, and under Compose's restart policy the connector re-sent the
+   * same frame on its next interval, so the outage was sustained rather than
+   * momentary.
+   *
+   * A handler is expected to refuse a frame it does not like, with a close code
+   * and a §21 error class. This is what happens when one does not: the failure
+   * is contained to the frame, reported, and the channel ends. It is deliberately
+   * unconditional — no error type is allowed past it — because the point is to
+   * bound what an unanticipated failure can cost, and an unanticipated failure
+   * is by definition one nobody enumerated.
+   */
   async #drain(): Promise<void> {
     if (this.#draining || this.#consumer === null) return;
     this.#draining = true;
     try {
       for (let next = this.#pending.shift(); next !== undefined; next = this.#pending.shift()) {
-        await this.#consumer(next);
+        try {
+          await this.#consumer(next);
+        } catch (error) {
+          this.#pending.length = 0;
+          this.#onConsumerError?.(error);
+          return;
+        }
       }
     } finally {
       this.#draining = false;
@@ -530,6 +567,21 @@ async function handleControlSocket(
         log.warn({ message_type: frame.type }, "no handler for message type");
         socket.close(CLOSE.policyViolation, "PROTOCOL_UNSUPPORTED");
     }
+  },
+  (error: unknown) => {
+    // A frame handler failed in a way it did not anticipate. The channel ends
+    // with an internal-error close rather than a §21 class, because the class
+    // vocabulary describes authorisation, identity and lifecycle outcomes and
+    // this is none of those — the connector learns that the control plane could
+    // not process the frame, which is true, and reconnects under §17.
+    //
+    // The connector is told at all, which is the part that matters. Before this
+    // the failure was an unhandled rejection: the process ended, the frame was
+    // silently dropped from the connector's point of view, and it re-sent the
+    // same frame on its next interval into a control plane that had just
+    // restarted.
+    log.error({ err: error, connector_id: connector.id }, "a control frame handler failed");
+    socket.close(CLOSE.internalError, "");
   });
 
   socket.on("error", (error: Error) => {

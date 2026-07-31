@@ -146,6 +146,18 @@ environment belongs in the key because `/home/dev/app` on two development
 machines is two checkouts: without it they collide into one record and rewrite
 each other every observation interval.
 
+Within one environment the **checkout is the identity and the workspace
+identifier is the label the connector chose for it**, so an observation naming
+one record's identifier at another record's path updates the record at that
+path. Preferring the identifier instead made an operator swapping two
+`workspaces:` entries in a configuration file move one record onto the other's
+path, which violated that uniqueness — and the resulting error was not a refusal
+any frame handler expected, so it ended the control-plane process. That failure
+is contained at the channel now (see the negative consequences below), but the
+preference is what stops the condition arising: each record is updated where it
+stands and nothing moves onto an occupied path. Moving a checkout still works,
+because an identifier reported at a path no record holds moves that record.
+
 **9. An unchanged repeat writes no event.** A first observation writes
 `workspace.observed`; a change to branch, head commit or dirty state writes
 `workspace.head_changed` carrying both sides; an observation that moved nothing
@@ -202,6 +214,17 @@ sent had changed.
   stream is not, so a connector serving more than eight claims a subset and
   reports all of them. The claim is not an authorisation, so the asymmetry
   costs nothing but has to be understood when reading a reconnect log line.
+- **A frame handler's unanticipated failure ends the channel rather than the
+  process.** This decision put a domain write on the connector frame path, and
+  that path was drained with `void` and no `catch`, so an error no handler
+  expected became an unhandled rejection and Node terminated the control plane —
+  reachable, before the preference above, by an operator swapping two entries in
+  a configuration file. The queue now contains any error a consumer throws,
+  reports it, and closes the channel with an internal-error code. The shape
+  predates this decision, but this decision is what made it easy to reach, so
+  the containment is recorded here: **a peer outside the control-plane trust
+  boundary (`docs/SECURITY.md` §3) must not be able to stop the control plane
+  with a protocol message**, and any handler added to this path inherits that.
 - **A connector can learn whether a workspace identifier is taken**, at a cost of
   one channel per probe: an identifier held anywhere is refused, an unheld one is
   accepted. It is accepted rather than designed away because the identifier is

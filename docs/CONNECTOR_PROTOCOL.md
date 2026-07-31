@@ -412,6 +412,8 @@ Refusals are byte-identical whichever of those it was, so a connector can learn 
 
 A record's identity is `(project_id, environment_id, path_hash)`. The environment is part of it because the same path on two development machines is two checkouts: without it, two machines with the same layout share one record and overwrite each other's branch and head commit every interval.
 
+For a reported workspace the **checkout is the identity and the identifier is the label**. When an observation names an identifier held by one record and a path held by another of this environment's, the record at that path is the one updated. That is what makes swapping two `workspaces:` entries in `config.yaml` an ordinary act: each record is updated where it stands, none moves onto another's path, and nothing collides. Moving a checkout still works — an identifier reported at a path no record holds moves that record's path.
+
 An environment may hold at most 32 workspaces in one project. Without a bound, an environment that chooses its own identifiers could fill the table with identifiers nothing will ever use.
 
 ### What the control plane records
