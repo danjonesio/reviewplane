@@ -38,7 +38,10 @@ import {
   BrowserSessionService,
   BrowserWorkerClient,
   IdempotencyStore,
+  HttpTunnelGateway,
+  PublishedServiceService,
   ReviewService,
+  STAGE_0_DESTINATION_POLICY,
   WorkerRegistry,
   WorkspaceStore,
   createArtefactStore,
@@ -46,6 +49,7 @@ import {
   loadRetentionWindows,
   registerHealthRoutes,
   type ArtefactStore,
+  type RoutePublisher,
 } from "@reviewplane/server/domain";
 
 import type { McpServerConfig } from "./config.ts";
@@ -55,6 +59,7 @@ import {
   type McpConnection,
   type McpServices,
 } from "./context.ts";
+import { DevelopmentServiceCommands } from "./development-services.ts";
 import { buildMcpServer } from "./server.ts";
 import { assertToolSetMatchesSchema } from "./tools.ts";
 
@@ -64,6 +69,31 @@ export interface BuildMcpAppOptions {
   readonly artefactStore?: ArtefactStore;
   readonly workerFetch?: typeof fetch;
   readonly logger?: boolean;
+  /**
+   * Substituted by the integration harness, which runs the `api` role and this
+   * one in a single process and so does hold the connector's control channel.
+   * Production leaves it unset and gets {@link UnreachableRoutePublisher}.
+   */
+  readonly routePublisher?: RoutePublisher;
+}
+
+/**
+ * The publisher this process cannot have.
+ *
+ * `PublishedServiceService.complete` is never called here — the MCP tools call
+ * `request` and wait for `api` to finish the route — and this refuses loudly if
+ * that ever stops being true, rather than silently marking a perfectly good
+ * route `failed`.
+ */
+class UnreachableRoutePublisher implements RoutePublisher {
+  publish(): Promise<{ readonly observedDestination: string }> {
+    return Promise.reject(
+      new ApiError(
+        "CONTROL_PLANE_UNAVAILABLE",
+        "The MCP endpoint holds no connector control channel; a requested route is completed by the control-plane API (ADR-0021).",
+      ),
+    );
+  }
 }
 
 export interface BuiltMcpApp {
@@ -117,6 +147,39 @@ export async function buildMcpApp(options: BuildMcpAppOptions): Promise<BuiltMcp
   const agentSessions = new AgentSessionStore(pool, workspaces);
   const idempotency = new IdempotencyStore(pool);
 
+  // Published development services (`docs/MCP_SPEC.md` section 7.2).
+  //
+  // The service is built here **without a capability signing key**. Minting is
+  // what binds a route to one browser session, the control plane is the minting
+  // authority (`docs/ARCHITECTURE.md` section 7.3), and this process drives no
+  // browser session: a process that cannot mint cannot leak a minting key, and
+  // `PublishedServiceService.mint` refuses rather than signing with a
+  // placeholder.
+  //
+  // It is built without a working `RoutePublisher` for the same kind of reason.
+  // A connector dials the control plane, so its control channel terminates in
+  // the `api` process; this one writes a route as `requested` and `api` finishes
+  // it (ADR-0021). A publisher that could reach the connector from here would be
+  // a second network path into a development machine.
+  const developmentServices = new DevelopmentServiceCommands(
+    pool,
+    new PublishedServiceService(
+      pool,
+      new HttpTunnelGateway({
+        baseUrl: config.tunnelControlUrl,
+        token: config.tunnelControlToken,
+      }),
+      options.routePublisher ?? new UnreachableRoutePublisher(),
+      {
+        destinationPolicy: STAGE_0_DESTINATION_POLICY,
+        internalSuffix: config.internalSuffix,
+        routeTtlMaxSeconds: config.routeTtlMaxSeconds,
+        maxRoutesPerConnector: 10,
+      },
+    ),
+    config.publishWaitMs,
+  );
+
   const services: McpServices = {
     pool,
     config,
@@ -127,6 +190,7 @@ export async function buildMcpApp(options: BuildMcpAppOptions): Promise<BuiltMcp
     agentSessions,
     workspaces,
     idempotency,
+    developmentServices,
   };
 
   const live = new Map<string, LiveConnection>();

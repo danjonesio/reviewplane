@@ -190,6 +190,48 @@
       "file": "valid/workspace-head-changed.json",
       "message_type": "workspace.head_changed",
       "note": "Both sides of the move, because a review captured before it was captured against the previous head."
+    },
+    {
+      "name": "published-service-requested",
+      "kind": "platform_event",
+      "file": "valid/published-service-requested.json",
+      "message_type": "published_service.requested",
+      "note": "Publication was asked for. The destination that was requested is recorded before the connector or the gateway is told anything, so a refusal can be read against the request that produced it."
+    },
+    {
+      "name": "published-service-ready",
+      "kind": "platform_event",
+      "file": "valid/published-service-ready.json",
+      "message_type": "published_service.ready",
+      "note": "The route began carrying traffic. It names the destination the connector reported it opened rather than the one the control plane asked for, so that the two can be compared."
+    },
+    {
+      "name": "published-service-capability-minted",
+      "kind": "platform_event",
+      "file": "valid/published-service-capability-minted.json",
+      "message_type": "published_service.ready",
+      "note": "A session-scoped capability was minted against a live route. The same type carries both occurrences, and this one moves no status; the identifier is recorded and the token never is."
+    },
+    {
+      "name": "published-service-failed",
+      "kind": "platform_event",
+      "file": "valid/published-service-failed.json",
+      "message_type": "published_service.failed",
+      "note": "The connector refused the publication because nothing was listening. The class is the diagnosis and reaches the caller under the same name (docs/API.md section 10)."
+    },
+    {
+      "name": "published-service-expired",
+      "kind": "platform_event",
+      "file": "valid/published-service-expired.json",
+      "message_type": "published_service.expired",
+      "note": "The route reached its expiry. Its actor is system: nobody asked for this, the clock did."
+    },
+    {
+      "name": "published-service-revoked",
+      "kind": "platform_event",
+      "file": "valid/published-service-revoked.json",
+      "message_type": "published_service.revoked",
+      "note": "The route was revoked and the capability minted against it withdrawn with it. Identifiers only: revocation names what it reached without restating the credential."
     }
   ],
   "invalid": [
@@ -312,6 +354,22 @@
       "expect_reason": "schema_violation",
       "expect_error_class": "VALIDATION_FAILED",
       "note": "A connector cannot report itself degraded: heartbeat is not in the degraded trigger vocabulary, because a silent connector reports nothing."
+    },
+    {
+      "name": "event-published-service-ready-carries-the-capability",
+      "kind": "platform_event",
+      "file": "invalid/event-published-service-ready-carries-the-capability.json",
+      "expect_reason": "schema_violation",
+      "expect_error_class": "VALIDATION_FAILED",
+      "note": "The payload has no member capable of carrying a capability token. An event is append-only, so a credential written into one cannot be taken out again (docs/EVENTS.md section 8)."
+    },
+    {
+      "name": "event-published-service-failed-free-text-class",
+      "kind": "platform_event",
+      "file": "invalid/event-published-service-failed-free-text-class.json",
+      "expect_reason": "schema_violation",
+      "expect_error_class": "VALIDATION_FAILED",
+      "note": "A refusal is a stable class from a closed vocabulary, never free text (docs/SECURITY.md section 18). A message that described the failure in prose would also be a place for request data to leak into the audit trail."
     }
   ]
 }

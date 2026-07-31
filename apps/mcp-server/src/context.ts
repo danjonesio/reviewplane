@@ -33,6 +33,7 @@ import type {
 } from "@reviewplane/server/domain";
 
 import type { McpServerConfig } from "./config.ts";
+import type { DevelopmentServiceCommands } from "./development-services.ts";
 
 /** Everything a tool needs that is not part of one request. */
 export interface McpServices {
@@ -45,6 +46,8 @@ export interface McpServices {
   readonly agentSessions: AgentSessionStore;
   readonly workspaces: WorkspaceStore;
   readonly idempotency: IdempotencyStore;
+  /** Published development services (`docs/MCP_SPEC.md` section 7.2). */
+  readonly developmentServices: DevelopmentServiceCommands;
 }
 
 /** What the client said it can consume (`docs/MCP_SPEC.md` section 4). */

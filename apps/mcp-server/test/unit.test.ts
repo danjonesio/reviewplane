@@ -194,6 +194,7 @@ test("the MCP server's artefact defaults are the artefact module's own", () => {
   const mcp = loadMcpServerConfig({
     REVIEWPLANE_DATABASE_URL: "postgres://localhost/reviewplane",
     REVIEWPLANE_WORKER_COMMAND_CREDENTIAL: "d".repeat(32),
+    REVIEWPLANE_TUNNEL_CONTROL_TOKEN: "e".repeat(32),
   });
   assert.equal(mcp.artefactPath, DEFAULT_ARTEFACT_PATH);
   assert.equal(mcp.artefactMaxBytes, DEFAULT_ARTEFACT_MAX_BYTES);

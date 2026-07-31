@@ -43,6 +43,12 @@ import type {
   ProjectRepositoryChangedPayload,
   ProjectSettings,
   ProjectUpdatedPayload,
+  PublishedService,
+  PublishedServiceExpiredPayload,
+  PublishedServiceFailedPayload,
+  PublishedServiceReadyPayload,
+  PublishedServiceRequestedPayload,
+  PublishedServiceRevokedPayload,
   RepositoryIdentity,
   SessionRevokedPayload,
   StreamError,
@@ -748,5 +754,132 @@ export function encodeCursorClaims(value: CursorClaims): string {
   fields.push(`"version":${jsonInteger(value.version)}`);
   fields.push(`"sort_key":${jsonString(value.sort_key)}`);
   fields.push(`"id":${jsonString(value.id)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a PublishedService.
+ */
+export function encodePublishedService(value: PublishedService): string {
+  const fields: string[] = [];
+  fields.push(`"id":${jsonString(value.id)}`);
+  fields.push(`"organisation_id":${jsonString(value.organisation_id)}`);
+  fields.push(`"project_id":${jsonString(value.project_id)}`);
+  fields.push(`"connector_id":${jsonString(value.connector_id)}`);
+  fields.push(`"workspace_id":${jsonString(value.workspace_id)}`);
+  fields.push(`"public_alias":${jsonString(value.public_alias)}`);
+  fields.push(`"internal_origin":${jsonString(value.internal_origin)}`);
+  fields.push(`"local_host":${jsonString(value.local_host)}`);
+  fields.push(`"local_port":${jsonInteger(value.local_port)}`);
+  fields.push(`"protocol":${jsonString(value.protocol)}`);
+  fields.push(`"scope":${jsonString(value.scope)}`);
+  fields.push(`"allowed_browser_session_ids":${`[${value.allowed_browser_session_ids.map((item) => jsonString(item)).join(",")}]`}`);
+  fields.push(`"expires_at":${jsonString(value.expires_at)}`);
+  fields.push(`"status":${jsonString(value.status)}`);
+  if (value.failure_class !== undefined) {
+    fields.push(`"failure_class":${jsonString(value.failure_class)}`);
+  }
+  if (value.observed_destination !== undefined) {
+    fields.push(`"observed_destination":${jsonString(value.observed_destination)}`);
+  }
+  fields.push(`"requested_at":${jsonString(value.requested_at)}`);
+  if (value.ready_at !== undefined) {
+    fields.push(`"ready_at":${jsonString(value.ready_at)}`);
+  }
+  if (value.ended_at !== undefined) {
+    fields.push(`"ended_at":${jsonString(value.ended_at)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a PublishedServiceRequestedPayload.
+ */
+export function encodePublishedServiceRequestedPayload(value: PublishedServiceRequestedPayload): string {
+  const fields: string[] = [];
+  fields.push(`"published_service_id":${jsonString(value.published_service_id)}`);
+  fields.push(`"connector_id":${jsonString(value.connector_id)}`);
+  fields.push(`"workspace_id":${jsonString(value.workspace_id)}`);
+  fields.push(`"local_host":${jsonString(value.local_host)}`);
+  fields.push(`"local_port":${jsonInteger(value.local_port)}`);
+  fields.push(`"protocol":${jsonString(value.protocol)}`);
+  fields.push(`"public_alias":${jsonString(value.public_alias)}`);
+  fields.push(`"expires_at":${jsonString(value.expires_at)}`);
+  fields.push(`"allowed_browser_session_ids":${`[${value.allowed_browser_session_ids.map((item) => jsonString(item)).join(",")}]`}`);
+  fields.push(`"new_status":${jsonString(value.new_status)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a PublishedServiceReadyPayload.
+ */
+export function encodePublishedServiceReadyPayload(value: PublishedServiceReadyPayload): string {
+  const fields: string[] = [];
+  fields.push(`"published_service_id":${jsonString(value.published_service_id)}`);
+  if (value.previous_status !== undefined) {
+    fields.push(`"previous_status":${jsonString(value.previous_status)}`);
+  }
+  if (value.new_status !== undefined) {
+    fields.push(`"new_status":${jsonString(value.new_status)}`);
+  }
+  if (value.observed_destination !== undefined) {
+    fields.push(`"observed_destination":${jsonString(value.observed_destination)}`);
+  }
+  if (value.internal_origin !== undefined) {
+    fields.push(`"internal_origin":${jsonString(value.internal_origin)}`);
+  }
+  if (value.connector_connected !== undefined) {
+    fields.push(`"connector_connected":${jsonBoolean(value.connector_connected)}`);
+  }
+  if (value.capability_id !== undefined) {
+    fields.push(`"capability_id":${jsonString(value.capability_id)}`);
+  }
+  if (value.browser_session_id !== undefined) {
+    fields.push(`"browser_session_id":${jsonString(value.browser_session_id)}`);
+  }
+  if (value.key_id !== undefined) {
+    fields.push(`"key_id":${jsonString(value.key_id)}`);
+  }
+  if (value.expires_at !== undefined) {
+    fields.push(`"expires_at":${jsonString(value.expires_at)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a PublishedServiceFailedPayload.
+ */
+export function encodePublishedServiceFailedPayload(value: PublishedServiceFailedPayload): string {
+  const fields: string[] = [];
+  fields.push(`"published_service_id":${jsonString(value.published_service_id)}`);
+  fields.push(`"previous_status":${jsonString(value.previous_status)}`);
+  fields.push(`"new_status":${jsonString(value.new_status)}`);
+  fields.push(`"error_class":${jsonString(value.error_class)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a PublishedServiceExpiredPayload.
+ */
+export function encodePublishedServiceExpiredPayload(value: PublishedServiceExpiredPayload): string {
+  const fields: string[] = [];
+  fields.push(`"published_service_id":${jsonString(value.published_service_id)}`);
+  fields.push(`"previous_status":${jsonString(value.previous_status)}`);
+  fields.push(`"new_status":${jsonString(value.new_status)}`);
+  fields.push(`"expires_at":${jsonString(value.expires_at)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a PublishedServiceRevokedPayload.
+ */
+export function encodePublishedServiceRevokedPayload(value: PublishedServiceRevokedPayload): string {
+  const fields: string[] = [];
+  fields.push(`"published_service_id":${jsonString(value.published_service_id)}`);
+  fields.push(`"previous_status":${jsonString(value.previous_status)}`);
+  fields.push(`"new_status":${jsonString(value.new_status)}`);
+  if (value.revoked_capability_ids !== undefined) {
+    fields.push(`"revoked_capability_ids":${`[${value.revoked_capability_ids.map((item) => jsonString(item)).join(",")}]`}`);
+  }
   return `{${fields.join(",")}}`;
 }

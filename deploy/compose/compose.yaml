@@ -341,7 +341,14 @@ services:
         REVIEWPLANE_REVISION: ${REVIEWPLANE_REVISION:-unknown}
         REVIEWPLANE_BUILT_AT: ${REVIEWPLANE_BUILT_AT:-unknown}
     restart: unless-stopped
-    networks: [data, browser, edge]
+    # The tunnel network is here for one reason: `development_service_unpublish`
+    # must reach the gateway's control listener. The gateway verifies a route
+    # capability from its signature without a database read, so a record marked
+    # revoked while the gateway still carried the route would be a revocation of
+    # nothing (RVP-24). This process reaches the gateway's control API and
+    # nothing else on that network: it holds no connector channel, and a
+    # publication it requests is completed by `api` (ADR-0021).
+    networks: [data, browser, edge, tunnel]
     depends_on:
       postgres:
         condition: service_healthy
@@ -354,9 +361,13 @@ services:
       REVIEWPLANE_WORKER_ENDPOINT: http://browser-worker:8090
       REVIEWPLANE_ARTEFACT_PATH: /var/lib/reviewplane/artefacts
       REVIEWPLANE_API_PATH_PREFIX: /api/v1
+      REVIEWPLANE_TUNNEL_CONTROL_URL: http://tunnel-gateway:8445
+      REVIEWPLANE_TUNNEL_CONTROL_TOKEN_FILE: /run/secrets/tunnel_control_token
+      REVIEWPLANE_INTERNAL_SUFFIX: internal.invalid
     secrets:
       - database_url
       - worker_command_credential
+      - tunnel_control_token
     volumes:
       # Read-only: the MCP server serves evidence and never writes it. The
       # browser worker uploads through the control-plane API (ADR-0012).

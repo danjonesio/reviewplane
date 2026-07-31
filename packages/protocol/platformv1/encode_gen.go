@@ -1228,3 +1228,236 @@ func EncodeCursorClaims(value CursorClaims) ([]byte, error) {
 	encodeCursorClaimsInto(&w, value)
 	return w.result()
 }
+
+// encodePublishedServiceInto writes the canonical encoding of a PublishedService.
+func encodePublishedServiceInto(w *canonicalWriter, value PublishedService) {
+	w.beginObject()
+	w.key("id")
+	w.string(value.ID)
+	w.key("organisation_id")
+	w.string(value.OrganisationID)
+	w.key("project_id")
+	w.string(value.ProjectID)
+	w.key("connector_id")
+	w.string(value.ConnectorID)
+	w.key("workspace_id")
+	w.string(value.WorkspaceID)
+	w.key("public_alias")
+	w.string(value.PublicAlias)
+	w.key("internal_origin")
+	w.string(value.InternalOrigin)
+	w.key("local_host")
+	w.string(value.LocalHost)
+	w.key("local_port")
+	w.integer(value.LocalPort)
+	w.key("protocol")
+	w.string(string(value.Protocol))
+	w.key("scope")
+	w.string(string(value.Scope))
+	w.key("allowed_browser_session_ids")
+	w.beginArray()
+	for _, item := range value.AllowedBrowserSessionIDs {
+		w.item()
+		w.string(item)
+	}
+	w.endArray()
+	w.key("expires_at")
+	w.string(value.ExpiresAt)
+	w.key("status")
+	w.string(string(value.Status))
+	if value.FailureClass != nil {
+		w.key("failure_class")
+		w.string(string((*value.FailureClass)))
+	}
+	if value.ObservedDestination != nil {
+		w.key("observed_destination")
+		w.string((*value.ObservedDestination))
+	}
+	w.key("requested_at")
+	w.string(value.RequestedAt)
+	if value.ReadyAt != nil {
+		w.key("ready_at")
+		w.string((*value.ReadyAt))
+	}
+	if value.EndedAt != nil {
+		w.key("ended_at")
+		w.string((*value.EndedAt))
+	}
+	w.endObject()
+}
+
+// EncodePublishedService returns the canonical encoding of a PublishedService.
+func EncodePublishedService(value PublishedService) ([]byte, error) {
+	var w canonicalWriter
+	encodePublishedServiceInto(&w, value)
+	return w.result()
+}
+
+// encodePublishedServiceRequestedPayloadInto writes the canonical encoding of a
+// PublishedServiceRequestedPayload.
+func encodePublishedServiceRequestedPayloadInto(w *canonicalWriter, value PublishedServiceRequestedPayload) {
+	w.beginObject()
+	w.key("published_service_id")
+	w.string(value.PublishedServiceID)
+	w.key("connector_id")
+	w.string(value.ConnectorID)
+	w.key("workspace_id")
+	w.string(value.WorkspaceID)
+	w.key("local_host")
+	w.string(value.LocalHost)
+	w.key("local_port")
+	w.integer(value.LocalPort)
+	w.key("protocol")
+	w.string(string(value.Protocol))
+	w.key("public_alias")
+	w.string(value.PublicAlias)
+	w.key("expires_at")
+	w.string(value.ExpiresAt)
+	w.key("allowed_browser_session_ids")
+	w.beginArray()
+	for _, item := range value.AllowedBrowserSessionIDs {
+		w.item()
+		w.string(item)
+	}
+	w.endArray()
+	w.key("new_status")
+	w.string(string(value.NewStatus))
+	w.endObject()
+}
+
+// EncodePublishedServiceRequestedPayload returns the canonical encoding of a
+// PublishedServiceRequestedPayload.
+func EncodePublishedServiceRequestedPayload(value PublishedServiceRequestedPayload) ([]byte, error) {
+	var w canonicalWriter
+	encodePublishedServiceRequestedPayloadInto(&w, value)
+	return w.result()
+}
+
+// encodePublishedServiceReadyPayloadInto writes the canonical encoding of a
+// PublishedServiceReadyPayload.
+func encodePublishedServiceReadyPayloadInto(w *canonicalWriter, value PublishedServiceReadyPayload) {
+	w.beginObject()
+	w.key("published_service_id")
+	w.string(value.PublishedServiceID)
+	if value.PreviousStatus != nil {
+		w.key("previous_status")
+		w.string(string((*value.PreviousStatus)))
+	}
+	if value.NewStatus != nil {
+		w.key("new_status")
+		w.string(string((*value.NewStatus)))
+	}
+	if value.ObservedDestination != nil {
+		w.key("observed_destination")
+		w.string((*value.ObservedDestination))
+	}
+	if value.InternalOrigin != nil {
+		w.key("internal_origin")
+		w.string((*value.InternalOrigin))
+	}
+	if value.ConnectorConnected != nil {
+		w.key("connector_connected")
+		w.boolean((*value.ConnectorConnected))
+	}
+	if value.CapabilityID != nil {
+		w.key("capability_id")
+		w.string((*value.CapabilityID))
+	}
+	if value.BrowserSessionID != nil {
+		w.key("browser_session_id")
+		w.string((*value.BrowserSessionID))
+	}
+	if value.KeyID != nil {
+		w.key("key_id")
+		w.string((*value.KeyID))
+	}
+	if value.ExpiresAt != nil {
+		w.key("expires_at")
+		w.string((*value.ExpiresAt))
+	}
+	w.endObject()
+}
+
+// EncodePublishedServiceReadyPayload returns the canonical encoding of a
+// PublishedServiceReadyPayload.
+func EncodePublishedServiceReadyPayload(value PublishedServiceReadyPayload) ([]byte, error) {
+	var w canonicalWriter
+	encodePublishedServiceReadyPayloadInto(&w, value)
+	return w.result()
+}
+
+// encodePublishedServiceFailedPayloadInto writes the canonical encoding of a
+// PublishedServiceFailedPayload.
+func encodePublishedServiceFailedPayloadInto(w *canonicalWriter, value PublishedServiceFailedPayload) {
+	w.beginObject()
+	w.key("published_service_id")
+	w.string(value.PublishedServiceID)
+	w.key("previous_status")
+	w.string(string(value.PreviousStatus))
+	w.key("new_status")
+	w.string(string(value.NewStatus))
+	w.key("error_class")
+	w.string(string(value.ErrorClass))
+	w.endObject()
+}
+
+// EncodePublishedServiceFailedPayload returns the canonical encoding of a
+// PublishedServiceFailedPayload.
+func EncodePublishedServiceFailedPayload(value PublishedServiceFailedPayload) ([]byte, error) {
+	var w canonicalWriter
+	encodePublishedServiceFailedPayloadInto(&w, value)
+	return w.result()
+}
+
+// encodePublishedServiceExpiredPayloadInto writes the canonical encoding of a
+// PublishedServiceExpiredPayload.
+func encodePublishedServiceExpiredPayloadInto(w *canonicalWriter, value PublishedServiceExpiredPayload) {
+	w.beginObject()
+	w.key("published_service_id")
+	w.string(value.PublishedServiceID)
+	w.key("previous_status")
+	w.string(string(value.PreviousStatus))
+	w.key("new_status")
+	w.string(string(value.NewStatus))
+	w.key("expires_at")
+	w.string(value.ExpiresAt)
+	w.endObject()
+}
+
+// EncodePublishedServiceExpiredPayload returns the canonical encoding of a
+// PublishedServiceExpiredPayload.
+func EncodePublishedServiceExpiredPayload(value PublishedServiceExpiredPayload) ([]byte, error) {
+	var w canonicalWriter
+	encodePublishedServiceExpiredPayloadInto(&w, value)
+	return w.result()
+}
+
+// encodePublishedServiceRevokedPayloadInto writes the canonical encoding of a
+// PublishedServiceRevokedPayload.
+func encodePublishedServiceRevokedPayloadInto(w *canonicalWriter, value PublishedServiceRevokedPayload) {
+	w.beginObject()
+	w.key("published_service_id")
+	w.string(value.PublishedServiceID)
+	w.key("previous_status")
+	w.string(string(value.PreviousStatus))
+	w.key("new_status")
+	w.string(string(value.NewStatus))
+	if value.RevokedCapabilityIDs != nil {
+		w.key("revoked_capability_ids")
+		w.beginArray()
+		for _, item := range value.RevokedCapabilityIDs {
+			w.item()
+			w.string(item)
+		}
+		w.endArray()
+	}
+	w.endObject()
+}
+
+// EncodePublishedServiceRevokedPayload returns the canonical encoding of a
+// PublishedServiceRevokedPayload.
+func EncodePublishedServiceRevokedPayload(value PublishedServiceRevokedPayload) ([]byte, error) {
+	var w canonicalWriter
+	encodePublishedServiceRevokedPayloadInto(&w, value)
+	return w.result()
+}

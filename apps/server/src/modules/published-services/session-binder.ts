@@ -34,8 +34,14 @@ export class PublishedServiceBinder implements ServiceBinder {
     readonly requestId: string;
   }): Promise<ServiceBinding> {
     // The project is checked before anything is minted, so a cross-project
-    // request never produces a credential that then has to be revoked.
-    const service = await this.#services.read(input.publishedServiceId);
+    // request never produces a credential that then has to be revoked. It is
+    // checked **twice, differently**: the read is scoped to the session's
+    // project so that a route in another one is simply absent, and the equality
+    // below then states the same rule where a reader can see it. The scoped
+    // read is the enforcement; the comparison is what makes a future change to
+    // the read visible as a test failure rather than as a silent widening.
+    const scope = { organisationId: null, projectIds: [input.projectId] };
+    const service = await this.#services.read(input.publishedServiceId, scope);
     if (service.project_id !== input.projectId) {
       // A session may only route to a service authorised for the same project
       // (`docs/DOMAIN_MODEL.md` §6 invariants). The capability the gateway
@@ -52,6 +58,7 @@ export class PublishedServiceBinder implements ServiceBinder {
       input.publishedServiceId,
       input.browserSessionId,
       undefined,
+      scope,
       input.actor,
       input.requestId,
     );

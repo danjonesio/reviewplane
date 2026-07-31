@@ -219,6 +219,34 @@ Connector reconnect is the Stage 0 exit criterion "Protocol round trip survives 
 
 Running today: `services/connector/internal/protocolsim` (the Protocol simulation mode of `DEVELOPMENT.md` §4 — the three-part round trip, the six-field reconnect payload, routes closed on reconciliation, the desired-state timeout, flapping reconnects, the terminal upgrade classification, and the measured reconnect-time distribution over ten forced disconnects), `apps/server/test/connector-reconnect.test.ts` (a real connector process killed and restarted, a control-plane restart, claims on another connector's route, an expired route, a revoked identity, and browser sessions degraded and resumed) and `apps/server/test/reconciliation.test.ts` (the decision table).
 
+### Publication authorisation and the agent surface
+
+Running today: `apps/server/test/published-services.test.ts`, against a real
+database, covering the endpoints of `docs/API.md` section 10 and — the part
+that matters most — who may reach them. A cookie session must present its CSRF
+token, and the refusal happens **before the body is decoded**, which the test
+proves by sending a body no validator would accept and asserting the CSRF
+refusal rather than a validation one. A route in another organisation answers
+`DELETE` and capability minting **byte-identically** to a route that does not
+exist, and the foreign route is still `ready` afterwards; a project in another
+organisation answers the listing and the creation the same way, and writes no
+row. Whole normalised bodies are compared rather than status codes, because a
+status code alone would not catch a message that named what it had found. A
+machine credential reaches none of the four routes.
+
+`apps/mcp-server/test/development-services.test.ts` does the same for the tools
+of `docs/MCP_SPEC.md` section 7.2, through a real MCP client: the advertised
+input schema has no member for a connector, a project or a browser session; a
+workspace in another project is absent rather than forbidden and identical to
+one that does not exist; a route in another project is invisible to the listing,
+absent to `development_service_unpublish` and untouched by the refusal; a
+credential without `service:publish` may list and may not publish or revoke; and
+a project with no connector answers `CONNECTOR_OFFLINE` rather than hanging.
+
+`apps/server/test/session-service-binding.test.ts` covers the third caller: a
+browser session binding to a route in another project is absent rather than
+forbidden, and no capability is minted for it.
+
 ### Connector lifecycle and workspace observation
 
 Running today: `apps/server/test/connector-lifecycle.test.ts`, against a real

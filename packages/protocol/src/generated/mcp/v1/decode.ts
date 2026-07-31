@@ -28,6 +28,13 @@ import type {
   ClientIdentity,
   CommentView,
   ContentRectangle,
+  DestinationProtocol,
+  DevelopmentServicePublishInput,
+  DevelopmentServiceResult,
+  DevelopmentServiceUnpublishInput,
+  DevelopmentServiceView,
+  DevelopmentServicesListInput,
+  DevelopmentServicesListResult,
   Envelope,
   ErrorClass,
   ErrorDetails,
@@ -52,6 +59,7 @@ import type {
   ProjectCurrentInput,
   ProjectCurrentResult,
   ProjectReference,
+  PublishedServiceStatus,
   ReviewClaimInput,
   ReviewGetInput,
   ReviewGetResult,
@@ -723,5 +731,80 @@ export function decodeEnvelope(value: unknown): Envelope {
     trust: source["trust"] as TrustLabel,
     instruction_policy: source["instruction_policy"] as InstructionPolicy,
     ...(source["warnings"] === undefined ? {} : { warnings: (source["warnings"] as unknown[]).map((item) => decodeWarning(item)) }),
+  };
+}
+
+/**
+ * Decodes a validated DevelopmentServiceView.
+ */
+export function decodeDevelopmentServiceView(value: unknown): DevelopmentServiceView {
+  const source = value as Record<string, unknown>;
+  return {
+    id: source["id"] as string,
+    status: source["status"] as PublishedServiceStatus,
+    ...(source["workspace_id"] === undefined ? {} : { workspace_id: source["workspace_id"] as string }),
+    local_host: source["local_host"] as string,
+    local_port: source["local_port"] as number,
+    protocol: source["protocol"] as DestinationProtocol,
+    internal_origin: source["internal_origin"] as string,
+    ...(source["observed_destination"] === undefined ? {} : { observed_destination: source["observed_destination"] as string }),
+    ...(source["failure_class"] === undefined ? {} : { failure_class: source["failure_class"] as ErrorClass }),
+    expires_at: source["expires_at"] as string,
+  };
+}
+
+/**
+ * Decodes a validated DevelopmentServicesListInput.
+ */
+export function decodeDevelopmentServicesListInput(value: unknown): DevelopmentServicesListInput {
+  const source = value as Record<string, unknown>;
+  return {
+    ...(source["limit"] === undefined ? {} : { limit: source["limit"] as number }),
+  };
+}
+
+/**
+ * Decodes a validated DevelopmentServicePublishInput.
+ */
+export function decodeDevelopmentServicePublishInput(value: unknown): DevelopmentServicePublishInput {
+  const source = value as Record<string, unknown>;
+  return {
+    workspace_id: source["workspace_id"] as string,
+    ...(source["local_host"] === undefined ? {} : { local_host: source["local_host"] as string }),
+    local_port: source["local_port"] as number,
+    ...(source["protocol"] === undefined ? {} : { protocol: source["protocol"] as DestinationProtocol }),
+    ...(source["ttl_seconds"] === undefined ? {} : { ttl_seconds: source["ttl_seconds"] as number }),
+    idempotency_key: source["idempotency_key"] as string,
+  };
+}
+
+/**
+ * Decodes a validated DevelopmentServiceUnpublishInput.
+ */
+export function decodeDevelopmentServiceUnpublishInput(value: unknown): DevelopmentServiceUnpublishInput {
+  const source = value as Record<string, unknown>;
+  return {
+    published_service_id: source["published_service_id"] as string,
+    idempotency_key: source["idempotency_key"] as string,
+  };
+}
+
+/**
+ * Decodes a validated DevelopmentServicesListResult.
+ */
+export function decodeDevelopmentServicesListResult(value: unknown): DevelopmentServicesListResult {
+  const source = value as Record<string, unknown>;
+  return {
+    services: (source["services"] as unknown[]).map((item) => decodeDevelopmentServiceView(item)),
+  };
+}
+
+/**
+ * Decodes a validated DevelopmentServiceResult.
+ */
+export function decodeDevelopmentServiceResult(value: unknown): DevelopmentServiceResult {
+  const source = value as Record<string, unknown>;
+  return {
+    service: decodeDevelopmentServiceView(source["service"]),
   };
 }

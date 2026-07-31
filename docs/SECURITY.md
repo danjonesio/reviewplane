@@ -411,6 +411,25 @@ The tunnel gateway must reject:
 - Requests carrying another project's capability
 - Header-based route confusion
 
+The control plane closes the same surface one step earlier, at publication. The
+destination policy runs before any row exists, so a link-local or metadata
+target never becomes a route to be refused later. Every caller-facing read of a
+published service carries the identifier, the caller's organisation and the
+session's project scope in **one** predicate, so a route outside the caller's
+scope is absent rather than found-and-refused: `API.md` §5 requires a foreign
+identifier and an unknown one to be indistinguishable, and `DELETE
+/api/v1/published-services/:serviceId` names a route and no project, which
+leaves the principal as the only place its scope can come from. Every
+state-changing route on that surface applies the strict CSRF guard before the
+body is decoded, because a cookie session can reach it.
+
+The agent surface is narrowed by construction rather than by checking. The
+published-service tools of `MCP_SPEC.md` §7.2 have no member for a connector, a
+project or a browser session; the server resolves all three from the agent
+session, and publishing or revoking requires the `service:publish` capability
+(§6.3) rather than riding on a read capability an existing credential already
+holds.
+
 Header handling MUST be normalised before the origin is resolved to a route, on the upgrade path exactly as on the ordinary one. Ordering is the control: a route-confusion header removed after a route had already been chosen would be removed from the wrong thing.
 
 ## 10. Browser-worker isolation

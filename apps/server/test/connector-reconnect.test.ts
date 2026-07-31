@@ -403,7 +403,12 @@ describe("a connector process restart", () => {
     );
     assert.equal(after.rows[0]?.observed_destination, destination);
 
-    await harness.built.publishedServices.revoke(routeId, { type: "system" }, "cleanup");
+    await harness.built.publishedServices.revoke(
+      routeId,
+      { organisationId: null, projectIds: null },
+      { type: "system" },
+      "cleanup",
+    );
   });
 });
 
@@ -436,7 +441,12 @@ describe("a control-plane restart while the connector is connected", () => {
     }, "a decision for the route the connector still held");
     assert.match(decision, /"decision":"continue"/u);
 
-    await harness.built.publishedServices.revoke(routeId, { type: "system" }, "cleanup");
+    await harness.built.publishedServices.revoke(
+      routeId,
+      { organisationId: null, projectIds: null },
+      { type: "system" },
+      "cleanup",
+    );
   });
 });
 
@@ -468,7 +478,12 @@ describe("reconciliation refuses what it must", () => {
 
     // The route belongs to the first connector and is untouched.
     assert.equal(await serviceStatus(routeId), "ready");
-    await harness.built.publishedServices.revoke(routeId, { type: "system" }, "cleanup");
+    await harness.built.publishedServices.revoke(
+      routeId,
+      { organisationId: null, projectIds: null },
+      { type: "system" },
+      "cleanup",
+    );
   });
 
   test("a claim on an expired route closes it and records the expiry", async () => {
@@ -644,6 +659,11 @@ describe("browser sessions during a connector outage", () => {
     assert.ok(recorded("browser_session.resumed (connector_reconnected)"), sequence.join("\n"));
     await writeEvidence("event-sequence.txt", `${sequence.join("\n")}\n`);
 
-    await harness.built.publishedServices.revoke(routeId, { type: "system" }, "cleanup");
+    await harness.built.publishedServices.revoke(
+      routeId,
+      { organisationId: null, projectIds: null },
+      { type: "system" },
+      "cleanup",
+    );
   });
 });

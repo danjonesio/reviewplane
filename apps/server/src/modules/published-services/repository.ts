@@ -1,10 +1,28 @@
 /**
  * Persistence for published services and the capabilities minted against them.
  *
- * Every read is scoped by project as well as by identifier
- * (`docs/DOMAIN_MODEL.md` section 3, defence-in-depth filtering): a handler
- * that forgets the scope should return nothing rather than another project's
- * route.
+ * Reads split into two families, and which one a caller may use is the whole
+ * security property of this file.
+ *
+ * **Caller-facing reads carry the caller's scope.** {@link findInScope} and
+ * {@link listInScope} take the identifier, the organisation and the session's
+ * project scope and put all three in **one** predicate, so a route outside the
+ * caller's scope produces no row rather than a row that a later `if` is trusted
+ * to reject. That is what makes a foreign identifier and an unknown one answer
+ * `RESOURCE_NOT_FOUND` byte-identically (`docs/API.md` section 5), and it is
+ * the shape RVP-66 records: the organisation is a term in the query, never a
+ * value read back off the record that was found.
+ *
+ * **Internal reads carry the scope their own caller already established.** The
+ * expiry sweep, reconnect reconciliation and connector revocation act for the
+ * system or for one connector identity, and their scope is the connector or the
+ * clock rather than a human session. They are named for what they select —
+ * {@link findDueForExpiry}, {@link findLiveForConnector} — and none of them is
+ * reachable from an HTTP handler.
+ *
+ * There is deliberately no unscoped read by identifier. One existed, every
+ * caller-facing path used it, and the result was that `DELETE
+ * /api/v1/published-services/:serviceId` revoked another organisation's route.
  */
 
 import type { PoolClient } from "../../db/pool.ts";
@@ -53,6 +71,8 @@ export interface InsertPublishedService {
   readonly protocol: string;
   readonly allowedBrowserSessionIds: readonly string[];
   readonly expiresAt: Date;
+  /** When publication was asked for, from the service's clock. */
+  readonly requestedAt: Date;
 }
 
 export async function insertRequested(
@@ -63,8 +83,8 @@ export async function insertRequested(
     `INSERT INTO published_services (
        id, organisation_id, project_id, connector_id, workspace_id, public_alias,
        local_host, local_port, protocol, scope, allowed_browser_session_ids,
-       expires_at, status
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'browser_session', $10, $11, 'requested')
+       expires_at, status, requested_at
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'browser_session', $10, $11, 'requested', $12)
      RETURNING ${COLUMNS}`,
     [
       input.id,
@@ -78,6 +98,13 @@ export async function insertRequested(
       input.protocol,
       [...input.allowedBrowserSessionIds],
       input.expiresAt.toISOString(),
+      // The service's clock, not the column default. `expires_at` is already
+      // computed from the injected clock, and the completion sweep compares
+      // `requested_at` against that same clock: a row stamped by `now()` and
+      // read against an injected instant is two clocks compared to each other,
+      // which is the confusion `docs/TESTING.md` §6 warns about for stream and
+      // socket deadlines. The same argument applies here.
+      input.requestedAt.toISOString(),
     ],
   );
   return result.rows[0] as PublishedService;
@@ -135,29 +162,87 @@ export async function markEnded(
   return result.rows[0] ?? null;
 }
 
-export async function findById(
+/**
+ * The scope a caller acts in.
+ *
+ * `organisationId` is `null` only for the organisation-wide bootstrap
+ * administrator, which `docs/adr/0016-viewer-sessions-from-bootstrap-token.md`
+ * defines as belonging to no organisation row; `projectIds` is `null` for a
+ * session that is not delegated to a subset of projects. Both mirror
+ * `modules/identity/authorisation.ts`, so one rule about what a principal may
+ * reach is expressed once.
+ */
+export interface CallerScope {
+  readonly organisationId: string | null;
+  readonly projectIds: readonly string[] | null;
+}
+
+/**
+ * Reads one route inside the caller's scope.
+ *
+ * The identifier, the organisation and the project scope are three terms of one
+ * predicate. A route in another organisation is *not found* — not found and
+ * then refused, which would leak its existence through the difference between
+ * two responses.
+ */
+export async function findInScope(
   client: PoolClient,
-  id: string,
+  input: { readonly id: string } & CallerScope,
 ): Promise<PublishedService | null> {
   const result = await client.query<PublishedService>(
-    `SELECT ${COLUMNS} FROM published_services WHERE id = $1`,
-    [id],
+    `SELECT ${COLUMNS}
+       FROM published_services
+      WHERE id = $1
+        AND ($2::text IS NULL OR organisation_id = $2)
+        AND ($3::text[] IS NULL OR project_id = ANY($3))`,
+    [input.id, input.organisationId, input.projectIds === null ? null : [...input.projectIds]],
   );
   return result.rows[0] ?? null;
 }
 
-export async function listForProject(
+/** Lists one project's routes inside the caller's scope. */
+export async function listInScope(
   client: PoolClient,
-  projectId: string,
-  limit: number,
+  input: { readonly projectId: string; readonly limit: number } & CallerScope,
 ): Promise<PublishedService[]> {
   const result = await client.query<PublishedService>(
     `SELECT ${COLUMNS}
        FROM published_services
       WHERE project_id = $1
+        AND ($2::text IS NULL OR organisation_id = $2)
+        AND ($3::text[] IS NULL OR project_id = ANY($3))
       ORDER BY requested_at DESC
+      LIMIT $4`,
+    [
+      input.projectId,
+      input.organisationId,
+      input.projectIds === null ? null : [...input.projectIds],
+      input.limit,
+    ],
+  );
+  return result.rows;
+}
+
+/**
+ * Routes still waiting to be published, older than a grace.
+ *
+ * The grace is what separates "nobody is finishing this" from "the request
+ * that asked for it is finishing it right now". It is an internal read: the
+ * scope was established when the route was requested, and the process running
+ * the sweep acts for the deployment rather than for a session.
+ */
+export async function findPending(
+  client: PoolClient,
+  requestedBefore: Date,
+  limit: number,
+): Promise<PublishedService[]> {
+  const result = await client.query<PublishedService>(
+    `SELECT ${COLUMNS}
+       FROM published_services
+      WHERE status = 'requested' AND requested_at <= $1
+      ORDER BY requested_at
       LIMIT $2`,
-    [projectId, limit],
+    [requestedBefore.toISOString(), limit],
   );
   return result.rows;
 }

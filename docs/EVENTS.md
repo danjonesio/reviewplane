@@ -216,6 +216,39 @@ tell.
 - `published_service.expired`
 - `published_service.revoked`
 
+These five have their own channel, `published_service`, because a route's
+lifecycle is neither environment lifecycle nor project lifecycle: it is
+short-lived, it belongs to exactly one project, and every transition of it is an
+access decision section 16 of `docs/SECURITY.md` requires to be auditable on its
+own.
+
+`published_service.requested` is written **before** the connector or the tunnel
+gateway is told anything, so a refusal always has the request it refused to be
+read against. Its actor is whoever asked: a human through the API, or an
+`agent_session` through `development_service_publish`.
+
+`published_service.ready` covers two occurrences. A route that began carrying
+traffic records the destination the connector reported it opened — which is what
+it observed, not what the control plane asked for, so the two can be compared —
+and a session-scoped capability minted against a live route records the
+capability's **identifier**, the browser session it was minted for and the
+signing key it was minted with. It never records the token. An event is
+append-only, so a credential written into one cannot be taken out again
+(section 8), and the corpus refuses a payload that carries one rather than
+leaving it to review.
+
+`published_service.failed` carries a stable class from a closed vocabulary and
+never free text. A refusal the vocabulary does not name is recorded as
+`INTERNAL_ERROR` rather than widening it at write time, because an event no
+consumer can decode is worse than a coarse one.
+
+`published_service.expired` and `published_service.revoked` are both terminal
+and both close streams already in flight. `docs/CONNECTOR_PROTOCOL.md` §12.3
+reports both to the browser as `ROUTE_EXPIRED` because §21 is a closed
+vocabulary; which of the two happened is here, and nowhere else. The revocation
+event names the capabilities it withdrew, because revoking a route without
+withdrawing the credentials minted against it would leave the revocation partial.
+
 ### Agent session
 
 - `agent_credential.issued`

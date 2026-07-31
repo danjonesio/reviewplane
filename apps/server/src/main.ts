@@ -16,6 +16,27 @@ import { createPool } from "./db/pool.ts";
 /** How often published-service expiry is enforced. */
 const SWEEP_INTERVAL_MS = 30_000;
 
+/**
+ * How often routes another process requested are finished (ADR-0021).
+ *
+ * It is much shorter than the expiry sweep because somebody is waiting on it:
+ * an agent that called `development_service_publish` is holding an MCP call
+ * open until the route is `ready` or `failed`. The query is a partial index
+ * scan over the handful of rows still in `requested`, so a second is cheap; a
+ * connector's startup grace is ten seconds, and this must not be what dominates
+ * the wait.
+ */
+const PENDING_INTERVAL_MS = 1_000;
+
+/**
+ * How long a route may sit `requested` before the sweep takes it over.
+ *
+ * The API publishes inline, so a route it is working on is milliseconds old.
+ * Waiting two seconds before the sweep touches one keeps the two paths from
+ * asking the same connector to open the same destination twice.
+ */
+const PENDING_GRACE_MS = 2_000;
+
 async function main(): Promise<void> {
   let config;
   try {
@@ -57,12 +78,27 @@ async function main(): Promise<void> {
   // The sweep must not hold the process open on shutdown.
   sweep.unref();
 
+  // The connector's control channel terminates in this process, so this is the
+  // only process that can finish a publication (ADR-0021). A deployment that
+  // runs several `api` replicas runs several of these; `markReady` and
+  // `markFailed` both refuse a record whose status has already moved, so the
+  // duplicate is a wasted acknowledgement rather than a second route.
+  const pending = setInterval(() => {
+    built.publishedServices
+      .completePending({ olderThanMs: PENDING_GRACE_MS })
+      .catch((error: unknown) => {
+        built.app.log.error({ err: error }, "published-service completion sweep failed");
+      });
+  }, PENDING_INTERVAL_MS);
+  pending.unref();
+
   let shuttingDown = false;
   const shutdown = (signal: string): void => {
     if (shuttingDown) return;
     shuttingDown = true;
     built.app.log.info({ signal }, "shutting down");
     clearInterval(sweep);
+    clearInterval(pending);
     void built
       .stop()
       .then(async () => pool.end())

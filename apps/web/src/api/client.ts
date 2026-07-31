@@ -365,6 +365,57 @@ export interface EnrolmentToken {
   readonly connector_command: string;
 }
 
+/**
+ * A published development service: a temporary route from a central browser
+ * worker to a port on the development machine (`docs/DOMAIN_MODEL.md` section
+ * 10, `docs/API.md` section 10).
+ *
+ * Declared here for the same reason `EnrolmentToken` is: the platform schema
+ * does not cover this record yet. It belongs in `packages/protocol` once it
+ * does, and until then this is the one declaration rather than one per surface.
+ *
+ * `failure_class` is a `docs/CONNECTOR_PROTOCOL.md` section 21 class rather
+ * than a message, and `observed_destination` is what the connector actually
+ * reached — both are null on a route where they do not apply, so a reader is
+ * never shown a destination that was never observed.
+ */
+export type PublishedServiceStatus = "requested" | "ready" | "failed" | "expired" | "revoked";
+
+export interface PublishedService {
+  readonly id: string;
+  readonly project_id: string;
+  readonly connector_id: string;
+  readonly workspace_id: string;
+  readonly local_host: string;
+  readonly local_port: number;
+  readonly protocol: string;
+  readonly public_alias: string;
+  readonly internal_origin: string;
+  readonly scope: string;
+  readonly allowed_browser_session_ids: readonly string[];
+  readonly expires_at: string;
+  readonly status: PublishedServiceStatus;
+  readonly failure_class?: Absent<string>;
+  readonly observed_destination?: Absent<string>;
+}
+
+/**
+ * What the publication form sends.
+ *
+ * `allowed_browser_session_ids` must name at least one session:
+ * `docs/CONNECTOR_PROTOCOL.md` section 11 does not publish a route no session
+ * may use, so a form that could send none would only ever be refused.
+ */
+export interface PublishedServiceDraft {
+  readonly connector_id: string;
+  readonly workspace_id: string;
+  readonly local_host: string;
+  readonly local_port: number;
+  readonly protocol: string;
+  readonly ttl_seconds: number;
+  readonly allowed_browser_session_ids: readonly string[];
+}
+
 /** What revocation did, so the page can report it rather than imply it. */
 export interface ConnectorRevocation {
   readonly id: string;
@@ -489,6 +540,33 @@ export const api = {
 
   async environment(environmentId: string): Promise<EnvironmentRecord> {
     return request<EnvironmentRecord>(`/api/v1/environments/${encodeURIComponent(environmentId)}`);
+  },
+
+  async publishedServices(projectId: string): Promise<PublishedService[]> {
+    return request<PublishedService[]>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/published-services`,
+    );
+  },
+
+  /**
+   * Publishes a development service. The control plane asks the connector and
+   * the gateway in turn, so the record this answers with may be `requested`
+   * rather than `ready`; the caller reports what it was given rather than
+   * assuming the route is carried.
+   */
+  async publishService(projectId: string, draft: PublishedServiceDraft): Promise<PublishedService> {
+    return request<PublishedService>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/published-services`,
+      { method: "POST", body: JSON.stringify(draft) },
+    );
+  },
+
+  /** Revokes a route. The gateway is instructed before the record changes. */
+  async revokePublishedService(serviceId: string): Promise<PublishedService> {
+    return request<PublishedService>(
+      `/api/v1/published-services/${encodeURIComponent(serviceId)}`,
+      { method: "DELETE" },
+    );
   },
 
   async reviews(projectId: string): Promise<Review[]> {

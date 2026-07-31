@@ -183,6 +183,14 @@ async function main(): Promise<void> {
     workerRequestTimeoutMs: 60_000,
     artefactPath: artefactRoot,
     artefactMaxBytes: 20_971_520,
+    // The tunnel gateway is unreachable in this harness on purpose: nothing
+    // here revokes a route, and a reachable control listener would make a
+    // test depend on a service it never started.
+    tunnelControlUrl: "http://127.0.0.1:1",
+    tunnelControlToken: "test-tunnel-control-token-0001",
+    internalSuffix: "internal.invalid",
+    routeTtlMaxSeconds: 28_800,
+    publishWaitMs: 5_000,
     apiPathPrefix: "/api/v1",
     mcpPath: "/mcp/v1",
   };

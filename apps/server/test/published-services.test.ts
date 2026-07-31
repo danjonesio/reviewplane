@@ -15,6 +15,7 @@ import type { CapabilityKeyring } from "@reviewplane/protocol";
 import type { FastifyInstance } from "fastify";
 
 import { buildApp } from "../src/app.ts";
+import type { BuiltApp } from "../src/app.ts";
 import type { ServerConfig } from "../src/config.ts";
 import { migrate } from "../src/db/migrate.ts";
 import { createPool } from "../src/db/pool.ts";
@@ -27,10 +28,43 @@ import type {
 import { StubRoutePublisher } from "../src/modules/published-services/service.ts";
 import type { PublishedServiceService } from "../src/modules/published-services/service.ts";
 import { testServerConfig } from "./support/config.ts";
+import { claimSessionFor } from "./support/identity.ts";
+import type { SessionCookies } from "./support/identity.ts";
 import { startPostgres } from "./support/postgres.ts";
 import type { TestDatabase } from "./support/postgres.ts";
 
 const BOOTSTRAP_TOKEN = "test-bootstrap-token-0123456789abcdef";
+
+/**
+ * The projects this suite acts in.
+ *
+ * They are real `projects` rows in a real organisation, because the endpoints
+ * resolve the project inside the caller's scope before anything else happens
+ * (`docs/API.md` §5). A synthetic identifier that named no row used to reach
+ * the service layer, which is exactly how the scope defect this suite now
+ * covers stayed invisible.
+ */
+const PROJECTS = [
+  "prj_test_01",
+  "prj_gateway_refusal",
+  "prj_mint_01",
+  "prj_mint_02",
+  "prj_mint_03",
+  "prj_revoke_01",
+  "prj_revoke_02",
+  "prj_expiry_01",
+  "prj_listing_a",
+  "prj_listing_b",
+  "prj_limit_01",
+  "prj_audit_01",
+  "prj_sequence_01",
+] as const;
+
+/** The organisation everything above belongs to. */
+const ORGANISATION_ID = "org_publication_home";
+/** A second organisation, so that "another organisation" is a real place. */
+const OTHER_ORGANISATION_ID = "org_publication_foreign";
+const OTHER_PROJECT_ID = "prj_foreign_01";
 const SIGNING_KEY = new Uint8Array(32).fill(0x11);
 const KEY_ID = "stage0-a";
 
@@ -92,7 +126,10 @@ describe("published-service endpoints", () => {
   let postgres: TestDatabase;
   let pool: Pool;
   let app: FastifyInstance;
+  let built: BuiltApp;
   let service: PublishedServiceService;
+  /** A real cookie session in ORGANISATION_ID, for the CSRF and scope tests. */
+  let session: SessionCookies;
   let gateway: RecordingGateway;
   let now = new Date("2026-07-30T12:00:00.000Z");
 
@@ -100,8 +137,10 @@ describe("published-service endpoints", () => {
     postgres = await startPostgres();
     pool = createPool(postgres.url);
     await migrate(pool);
+    await seedOrganisation(ORGANISATION_ID, "publication-home", PROJECTS);
+    await seedOrganisation(OTHER_ORGANISATION_ID, "publication-foreign", [OTHER_PROJECT_ID]);
     gateway = new RecordingGateway();
-    const built = await buildApp({
+    built = await buildApp({
       config: testConfig(postgres.url),
       pool,
       gateway,
@@ -124,6 +163,9 @@ describe("published-service endpoints", () => {
     app = built.app;
     service = built.publishedServices;
     await app.ready();
+    session = await claimSessionFor(built, pool, ORGANISATION_ID, {
+      email: "publisher@localhost",
+    });
   });
 
   after(async () => {
@@ -131,6 +173,24 @@ describe("published-service endpoints", () => {
     await pool.end();
     await postgres.stop();
   });
+
+  async function seedOrganisation(
+    organisationId: string,
+    slug: string,
+    projectIds: readonly string[],
+  ): Promise<void> {
+    await pool.query("INSERT INTO organisations (id, name, slug) VALUES ($1, $2, $3)", [
+      organisationId,
+      slug,
+      slug,
+    ]);
+    for (const projectId of projectIds) {
+      await pool.query(
+        "INSERT INTO projects (id, organisation_id, name, slug) VALUES ($1, $2, $3, $4)",
+        [projectId, organisationId, projectId, projectId.replaceAll("_", "-")],
+      );
+    }
+  }
 
   async function request(
     method: string,
@@ -475,6 +535,219 @@ describe("published-service endpoints", () => {
     const encoded = JSON.stringify(events.rows);
     assert.ok(!encoded.includes(minted["capability"] as string), "an event carries the capability");
     assert.ok(encoded.includes(minted["capability_id"] as string), "no event names the capability");
+  });
+
+
+  // ---------------------------------------------------------------------
+  // Authorisation. Publication opens a tunnel from a central browser into a
+  // development machine, and minting hands out the bearer credential for it.
+  // These are the two shapes that must not be forgeable and must not cross an
+  // organisation boundary.
+  // ---------------------------------------------------------------------
+
+  /** A body no validator would accept, so that a body-first refusal is visible. */
+  const UNPARSEABLE_BODY = { connector_id: 42, local_port: "not a port" };
+
+  test("a cookie session must present its CSRF token, and is refused before the body is read", async () => {
+    for (const [method, url] of [
+      ["POST", `/api/v1/projects/prj_test_01/published-services`],
+      ["DELETE", `/api/v1/published-services/svc_anything`],
+      ["POST", `/api/v1/published-services/svc_anything/capabilities`],
+    ] as const) {
+      const response = await app.inject({
+        method,
+        url,
+        headers: session.readHeaders,
+        payload: UNPARSEABLE_BODY,
+      });
+      assert.equal(response.statusCode, 403, `${method} ${url}: ${response.body}`);
+      const body = JSON.parse(response.body);
+      assert.equal(body.error.code, "AUTHORISATION_DENIED");
+      // The guard ran before the body was decoded. A VALIDATION_FAILED here
+      // would mean the request was parsed first, which is work an attacker
+      // asked for and got.
+      assert.equal(body.error.details.reason, "csrf_token_invalid");
+    }
+  });
+
+  test("a cookie session carrying its CSRF token may publish and revoke", async () => {
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/v1/projects/prj_test_01/published-services",
+      headers: session.writeHeaders,
+      payload: createBody(),
+    });
+    assert.equal(created.statusCode, 201, created.body);
+    const record = JSON.parse(created.body).data as Record<string, string>;
+    const revoked = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/published-services/${String(record["id"])}`,
+      headers: session.writeHeaders,
+    });
+    assert.equal(revoked.statusCode, 200, revoked.body);
+  });
+
+  /** Replaces the request identifier, which is the only per-request member. */
+  function normalise(body: string): unknown {
+    const parsed = JSON.parse(body) as { meta?: { request_id?: string } };
+    if (parsed.meta !== undefined) parsed.meta.request_id = "req_normalised";
+    return parsed;
+  }
+
+  test("a route in another organisation answers byte-identically to one that does not exist", async () => {
+    // The foreign route is real: created through the bootstrap operator, which
+    // belongs to no organisation and may therefore reach both.
+    const foreign = await createService(OTHER_PROJECT_ID);
+
+    for (const [method, url] of [
+      ["DELETE", (id: string) => `/api/v1/published-services/${id}`],
+      ["POST", (id: string) => `/api/v1/published-services/${id}/capabilities`],
+    ] as const) {
+      const onForeign = await app.inject({
+        method,
+        url: url(String(foreign["id"])),
+        headers: session.writeHeaders,
+        payload: { browser_session_id: "brs_test_01" },
+      });
+      const onUnknown = await app.inject({
+        method,
+        url: url("svc_does_not_exist_at_all"),
+        headers: session.writeHeaders,
+        payload: { browser_session_id: "brs_test_01" },
+      });
+      assert.equal(onForeign.statusCode, 404, onForeign.body);
+      assert.equal(onUnknown.statusCode, 404, onUnknown.body);
+      assert.deepEqual(normalise(onForeign.body), normalise(onUnknown.body));
+    }
+
+    // The foreign route is untouched: the refusal was a refusal, not a
+    // revocation that happened to report an error.
+    const after = await pool.query<{ status: string }>(
+      "SELECT status FROM published_services WHERE id = $1",
+      [foreign["id"]],
+    );
+    assert.equal(after.rows[0]?.status, "ready");
+  });
+
+  test("a project in another organisation answers byte-identically to one that does not exist", async () => {
+    for (const method of ["GET", "POST"] as const) {
+      const onForeign = await app.inject({
+        method,
+        url: `/api/v1/projects/${OTHER_PROJECT_ID}/published-services`,
+        headers: method === "GET" ? session.readHeaders : session.writeHeaders,
+        payload: createBody(),
+      });
+      const onUnknown = await app.inject({
+        method,
+        url: "/api/v1/projects/prj_does_not_exist_at_all/published-services",
+        headers: method === "GET" ? session.readHeaders : session.writeHeaders,
+        payload: createBody(),
+      });
+      assert.equal(onForeign.statusCode, 404, onForeign.body);
+      assert.deepEqual(normalise(onForeign.body), normalise(onUnknown.body));
+    }
+    // Nothing was written for the foreign project.
+    const rows = await pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM published_services WHERE project_id = $1 AND status = 'requested'",
+      [OTHER_PROJECT_ID],
+    );
+    assert.equal(rows.rows[0]?.count, "0");
+  });
+
+  test("a machine credential reaches none of these routes", async () => {
+    for (const [method, url] of [
+      ["GET", "/api/v1/projects/prj_test_01/published-services"],
+      ["POST", "/api/v1/projects/prj_test_01/published-services"],
+      ["DELETE", "/api/v1/published-services/svc_anything"],
+      ["POST", "/api/v1/published-services/svc_anything/capabilities"],
+    ] as const) {
+      const response = await request(method, url, createBody(), "rpa_agent_credential_value");
+      assert.equal(response.statusCode, 403, `${method} ${url}: ${response.body}`);
+      assert.equal(JSON.parse(response.body).error.code, "AUTHORISATION_DENIED");
+    }
+  });
+
+
+  // ---------------------------------------------------------------------
+  // Two-phase publication (ADR-0021). A connector dials the control plane, so
+  // only the process holding its channel can finish a route; anything else
+  // leaves one `requested` and this is what picks it up.
+  // ---------------------------------------------------------------------
+
+  test("a route another process requested is finished by the completion sweep", async () => {
+    const requested = await service.request(
+      {
+        projectId: "prj_test_01",
+        organisationId: ORGANISATION_ID,
+        connectorId: "con_sweep_01",
+        workspaceId: "wsp_test_01",
+        localHost: "127.0.0.1",
+        localPort: 5173,
+        protocol: "http",
+        ttlSeconds: 600,
+        allowedBrowserSessionIds: ["brs_test_01"],
+      },
+      { type: "agent_session", id: "ags_sweep" },
+      "req_sweep",
+    );
+    // Phase one touched nothing outside the database: no gateway registration
+    // and no connector exchange happened for this route.
+    assert.equal(requested.status, "requested");
+    assert.ok(!gateway.registered.some((entry) => entry.route_id === requested.id));
+    assert.deepEqual(await eventTypes(requested.id), ["published_service.requested"]);
+
+    // The grace is what keeps the sweep off a route the API is publishing right
+    // now; zero means "take everything", which is what a test wants.
+    const finished = await service.completePending({ olderThanMs: 0 });
+    assert.ok(
+      finished.some((entry) => entry.id === requested.id && entry.status === "ready"),
+      `the sweep did not finish the route: ${JSON.stringify(finished)}`,
+    );
+    assert.ok(gateway.registered.some((entry) => entry.route_id === requested.id));
+    assert.deepEqual(await eventTypes(requested.id), [
+      "published_service.requested",
+      "published_service.ready",
+    ]);
+
+    // A second sweep finds nothing: the record has left `requested`, and
+    // completing it twice would open a second route for one request.
+    const registrations = gateway.registered.length;
+    assert.deepEqual(await service.completePending({ olderThanMs: 0 }), []);
+    assert.equal(gateway.registered.length, registrations);
+  });
+
+  test("a refusal the failure vocabulary does not name is recorded as INTERNAL_ERROR", async () => {
+    // `published_service_failure_class` in `packages/protocol` is closed, so a
+    // code outside it would produce an event no consumer can decode. The caller
+    // still receives the original error; only the record is narrowed.
+    const { ApiError } = await import("../src/errors.ts");
+    const requested = await service.request(
+      {
+        projectId: "prj_test_01",
+        organisationId: ORGANISATION_ID,
+        connectorId: "con_sweep_02",
+        workspaceId: "wsp_test_01",
+        localHost: "127.0.0.1",
+        localPort: 5173,
+        protocol: "http",
+        ttlSeconds: 600,
+        allowedBrowserSessionIds: ["brs_test_01"],
+      },
+      { type: "system" },
+      "req_sweep_2",
+    );
+    gateway.refuseWith = new ApiError("RATE_LIMITED", "not a publication failure class");
+    try {
+      await assert.rejects(() => service.complete(requested.id, { type: "system" }, "req_sweep_2"));
+    } finally {
+      gateway.refuseWith = null;
+    }
+    const row = await pool.query<{ status: string; failure_class: string }>(
+      "SELECT status, failure_class FROM published_services WHERE id = $1",
+      [requested.id],
+    );
+    assert.equal(row.rows[0]?.status, "failed");
+    assert.equal(row.rows[0]?.failure_class, "INTERNAL_ERROR");
   });
 
   test("the event sequence is monotonic within a project", async () => {

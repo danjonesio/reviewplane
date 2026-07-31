@@ -39,10 +39,17 @@ const (
 	// ChannelAPI carries the HTTP response metadata and refusal envelope of docs/API.md
 	// section 5.
 	ChannelAPI Channel = "api"
+	// ChannelPublishedService carries published development services and the scoped
+	// tunnel routes that carry them (docs/EVENTS.md section 7, docs/DOMAIN_MODEL.md
+	// section 10). It is a channel of its own because a route's lifecycle is neither
+	// environment lifecycle nor project lifecycle: it is short-lived, it belongs to
+	// exactly one project, and every transition of it is an access decision
+	// docs/SECURITY.md section 16 requires to be auditable on its own.
+	ChannelPublishedService Channel = "published_service"
 )
 
 // ChannelValues lists every channel in declaration order.
-var ChannelValues = []Channel{ChannelOrganisation, ChannelEnvironment, ChannelJobs, ChannelStream, ChannelAPI}
+var ChannelValues = []Channel{ChannelOrganisation, ChannelEnvironment, ChannelJobs, ChannelStream, ChannelAPI, ChannelPublishedService}
 
 // MessageType is defined by the connector protocol schema.
 //
@@ -73,10 +80,15 @@ const (
 	MessageTypeJobEnqueued                  MessageType = "job.enqueued"
 	MessageTypeJobSucceeded                 MessageType = "job.succeeded"
 	MessageTypeJobFailed                    MessageType = "job.failed"
+	MessageTypePublishedServiceRequested    MessageType = "published_service.requested"
+	MessageTypePublishedServiceReady        MessageType = "published_service.ready"
+	MessageTypePublishedServiceFailed       MessageType = "published_service.failed"
+	MessageTypePublishedServiceExpired      MessageType = "published_service.expired"
+	MessageTypePublishedServiceRevoked      MessageType = "published_service.revoked"
 )
 
 // MessageTypeValues lists every value in declaration order.
-var MessageTypeValues = []MessageType{MessageTypeOrganisationCreated, MessageTypeProjectCreated, MessageTypeProjectUpdated, MessageTypeProjectRepositoryChanged, MessageTypeProjectArchived, MessageTypeUserInvited, MessageTypeUserCredentialsSet, MessageTypeAuthenticationLoginSucceeded, MessageTypeAuthenticationLoginFailed, MessageTypeSessionRevoked, MessageTypeConnectorEnrolled, MessageTypeConnectorConnected, MessageTypeConnectorDegraded, MessageTypeConnectorDisconnected, MessageTypeConnectorRevoked, MessageTypeWorkspaceObserved, MessageTypeWorkspaceHeadChanged, MessageTypeJobEnqueued, MessageTypeJobSucceeded, MessageTypeJobFailed}
+var MessageTypeValues = []MessageType{MessageTypeOrganisationCreated, MessageTypeProjectCreated, MessageTypeProjectUpdated, MessageTypeProjectRepositoryChanged, MessageTypeProjectArchived, MessageTypeUserInvited, MessageTypeUserCredentialsSet, MessageTypeAuthenticationLoginSucceeded, MessageTypeAuthenticationLoginFailed, MessageTypeSessionRevoked, MessageTypeConnectorEnrolled, MessageTypeConnectorConnected, MessageTypeConnectorDegraded, MessageTypeConnectorDisconnected, MessageTypeConnectorRevoked, MessageTypeWorkspaceObserved, MessageTypeWorkspaceHeadChanged, MessageTypeJobEnqueued, MessageTypeJobSucceeded, MessageTypeJobFailed, MessageTypePublishedServiceRequested, MessageTypePublishedServiceReady, MessageTypePublishedServiceFailed, MessageTypePublishedServiceExpired, MessageTypePublishedServiceRevoked}
 
 // ErrorClass is defined by the connector protocol schema.
 //
@@ -436,6 +448,83 @@ const (
 // StreamErrorTypeValues lists every value in declaration order.
 var StreamErrorTypeValues = []StreamErrorType{StreamErrorTypeStreamError}
 
+// PublishedServiceStatus is defined by the connector protocol schema.
+//
+// Published-service lifecycle status (docs/DOMAIN_MODEL.md section 10). A route
+// reaches ready only once the connector has acknowledged the destination it opened and
+// the tunnel gateway has accepted the registration; failed carries the stable class
+// that refused it. expired and revoked are both terminal, and both close streams that
+// are already in flight.
+type PublishedServiceStatus string
+
+const (
+	PublishedServiceStatusRequested PublishedServiceStatus = "requested"
+	PublishedServiceStatusReady     PublishedServiceStatus = "ready"
+	PublishedServiceStatusFailed    PublishedServiceStatus = "failed"
+	PublishedServiceStatusExpired   PublishedServiceStatus = "expired"
+	PublishedServiceStatusRevoked   PublishedServiceStatus = "revoked"
+)
+
+// PublishedServiceStatusValues lists every value in declaration order.
+var PublishedServiceStatusValues = []PublishedServiceStatus{PublishedServiceStatusRequested, PublishedServiceStatusReady, PublishedServiceStatusFailed, PublishedServiceStatusExpired, PublishedServiceStatusRevoked}
+
+// PublishedServiceScope is defined by the connector protocol schema.
+//
+// What a route is scoped to (docs/DOMAIN_MODEL.md section 10). The only version 1
+// value is browser_session: the route is usable only by the sessions named in its
+// publication, and docs/CONNECTOR_PROTOCOL.md section 11 requires at least one.
+type PublishedServiceScope string
+
+const (
+	PublishedServiceScopeBrowserSession PublishedServiceScope = "browser_session"
+)
+
+// PublishedServiceScopeValues lists every value in declaration order.
+var PublishedServiceScopeValues = []PublishedServiceScope{PublishedServiceScopeBrowserSession}
+
+// PublishedServiceFailureClass is defined by the connector protocol schema.
+//
+// Why a publication was refused. It is a closed vocabulary drawn from docs/API.md
+// section 5 and docs/CONNECTOR_PROTOCOL.md section 21, and never free text:
+// docs/SECURITY.md section 18 requires a stable code, and docs/API.md section 10
+// requires one failure to carry one code from the connector to the caller. A refusal
+// this list does not name is recorded as INTERNAL_ERROR rather than widening the
+// vocabulary at write time.
+type PublishedServiceFailureClass string
+
+const (
+	PublishedServiceFailureClassConnectorOffline            PublishedServiceFailureClass = "CONNECTOR_OFFLINE"
+	PublishedServiceFailureClassControlPlaneUnavailable     PublishedServiceFailureClass = "CONTROL_PLANE_UNAVAILABLE"
+	PublishedServiceFailureClassDestinationNotAllowed       PublishedServiceFailureClass = "DESTINATION_NOT_ALLOWED"
+	PublishedServiceFailureClassIdentityRevoked             PublishedServiceFailureClass = "IDENTITY_REVOKED"
+	PublishedServiceFailureClassInternalError               PublishedServiceFailureClass = "INTERNAL_ERROR"
+	PublishedServiceFailureClassPortNotListening            PublishedServiceFailureClass = "PORT_NOT_LISTENING"
+	PublishedServiceFailureClassProjectNotAuthorised        PublishedServiceFailureClass = "PROJECT_NOT_AUTHORISED"
+	PublishedServiceFailureClassProtocolUnsupported         PublishedServiceFailureClass = "PROTOCOL_UNSUPPORTED"
+	PublishedServiceFailureClassPublishedServiceUnavailable PublishedServiceFailureClass = "PUBLISHED_SERVICE_UNAVAILABLE"
+	PublishedServiceFailureClassRouteExpired                PublishedServiceFailureClass = "ROUTE_EXPIRED"
+	PublishedServiceFailureClassRouteLimitExceeded          PublishedServiceFailureClass = "ROUTE_LIMIT_EXCEEDED"
+	PublishedServiceFailureClassWorkspaceNotFound           PublishedServiceFailureClass = "WORKSPACE_NOT_FOUND"
+)
+
+// PublishedServiceFailureClassValues lists every value in declaration order.
+var PublishedServiceFailureClassValues = []PublishedServiceFailureClass{PublishedServiceFailureClassConnectorOffline, PublishedServiceFailureClassControlPlaneUnavailable, PublishedServiceFailureClassDestinationNotAllowed, PublishedServiceFailureClassIdentityRevoked, PublishedServiceFailureClassInternalError, PublishedServiceFailureClassPortNotListening, PublishedServiceFailureClassProjectNotAuthorised, PublishedServiceFailureClassProtocolUnsupported, PublishedServiceFailureClassPublishedServiceUnavailable, PublishedServiceFailureClassRouteExpired, PublishedServiceFailureClassRouteLimitExceeded, PublishedServiceFailureClassWorkspaceNotFound}
+
+// DestinationProtocol is defined by the connector protocol schema.
+//
+// Protocol the development service speaks on its local socket. It is declared at
+// publication and is not negotiable per request: docs/CONNECTOR_PROTOCOL.md section 12
+// fixes the destination at publication time, so nothing a browser sends can change it.
+type DestinationProtocol string
+
+const (
+	DestinationProtocolHTTP  DestinationProtocol = "http"
+	DestinationProtocolHTTPS DestinationProtocol = "https"
+)
+
+// DestinationProtocolValues lists every value in declaration order.
+var DestinationProtocolValues = []DestinationProtocol{DestinationProtocolHTTP, DestinationProtocolHTTPS}
+
 // MessageDirection states which side of the trust boundary sends a message.
 type MessageDirection string
 
@@ -466,6 +555,11 @@ var MessageDirections = map[MessageType]MessageDirection{
 	MessageTypeJobEnqueued:                  DirectionControlPlaneToSubscriber,
 	MessageTypeJobSucceeded:                 DirectionControlPlaneToSubscriber,
 	MessageTypeJobFailed:                    DirectionControlPlaneToSubscriber,
+	MessageTypePublishedServiceRequested:    DirectionControlPlaneToSubscriber,
+	MessageTypePublishedServiceReady:        DirectionControlPlaneToSubscriber,
+	MessageTypePublishedServiceFailed:       DirectionControlPlaneToSubscriber,
+	MessageTypePublishedServiceExpired:      DirectionControlPlaneToSubscriber,
+	MessageTypePublishedServiceRevoked:      DirectionControlPlaneToSubscriber,
 }
 
 // MessageChannels records the channel each message type travels on.
@@ -490,6 +584,11 @@ var MessageChannels = map[MessageType]Channel{
 	MessageTypeJobEnqueued:                  ChannelJobs,
 	MessageTypeJobSucceeded:                 ChannelJobs,
 	MessageTypeJobFailed:                    ChannelJobs,
+	MessageTypePublishedServiceRequested:    ChannelPublishedService,
+	MessageTypePublishedServiceReady:        ChannelPublishedService,
+	MessageTypePublishedServiceFailed:       ChannelPublishedService,
+	MessageTypePublishedServiceExpired:      ChannelPublishedService,
+	MessageTypePublishedServiceRevoked:      ChannelPublishedService,
 }
 
 // PayloadMaxBytes records the maximum canonical payload size for each message type. A
@@ -515,6 +614,11 @@ var PayloadMaxBytes = map[MessageType]int{
 	MessageTypeJobEnqueued:                  1024,
 	MessageTypeJobSucceeded:                 1024,
 	MessageTypeJobFailed:                    1024,
+	MessageTypePublishedServiceRequested:    2048,
+	MessageTypePublishedServiceReady:        1024,
+	MessageTypePublishedServiceFailed:       512,
+	MessageTypePublishedServiceExpired:      512,
+	MessageTypePublishedServiceRevoked:      2048,
 }
 
 // ViolationReason classifies a refused frame. Only some reasons map to a wire error
@@ -767,6 +871,42 @@ type WorkspaceDisplayLabel = string
 // A commit identifier, lowercase hexadecimal. Bounded so that an abbreviated and a
 // full identifier are both accepted and nothing else is.
 type GitCommit = string
+
+// PublicAlias is defined by the connector protocol schema.
+//
+// Leftmost label of a route's internal origin (docs/ARCHITECTURE.md section 7.3). It
+// MUST be a DNS label and MUST be unique across the deployment, so the control plane
+// generates it rather than deriving it from the route identifier, whose conventional
+// svc_ prefix is not a valid label. Consumers MUST treat it as opaque.
+type PublicAlias = string
+
+// InternalOrigin is defined by the connector protocol schema.
+//
+// Origin an authorised browser session opens, of the form
+// https://<public_alias>.<suffix>/. The control plane derives it from the alias; it is
+// never taken from a request, because the origin is the browser session's egress
+// allow-list (docs/SECURITY.md section 9).
+type InternalOrigin = string
+
+// LocalHost is defined by the connector protocol schema.
+//
+// Local address of the development service, as a literal IP address. A name would have
+// to be resolved, and a resolver is a rebinding surface: the name that passed the
+// destination policy need not be the address the connector later opens
+// (docs/SECURITY.md section 9).
+type LocalHost = string
+
+// LocalPort is defined by the connector protocol schema.
+//
+// TCP port the development service listens on.
+type LocalPort = int64
+
+// ObservedDestination is defined by the connector protocol schema.
+//
+// The destination the connector reported it actually opened, as host:port
+// (docs/CONNECTOR_PROTOCOL.md section 11). It is what the connector observed rather
+// than what the control plane asked for, so that the two can be compared.
+type ObservedDestination = string
 
 // RepositoryIdentity is defined by the connector protocol schema.
 //
@@ -1600,6 +1740,166 @@ type CursorClaims struct {
 	ID string `json:"id"`
 }
 
+// PublishedService is defined by the connector protocol schema.
+//
+// A temporary route from an authorised browser worker to a local development service
+// (docs/DOMAIN_MODEL.md section 10). It has no member capable of carrying a capability
+// token: a capability is a bearer credential the control plane mints and never stores,
+// and this record names only the sessions one may be minted for.
+type PublishedService struct {
+	// Published-service identity, conventionally prefixed svc_.
+	ID string `json:"id"`
+	// Owning organisation, carried for defence-in-depth filtering.
+	OrganisationID string `json:"organisation_id"`
+	// Project the route belongs to. A capability issued for this project is refused
+	// anywhere else.
+	ProjectID string `json:"project_id"`
+	// Connector that carries the route.
+	ConnectorID string `json:"connector_id"`
+	// Workspace the development service was started from.
+	WorkspaceID string `json:"workspace_id"`
+	// Leftmost label of the internal origin.
+	PublicAlias string `json:"public_alias"`
+	// Origin an authorised browser session opens.
+	InternalOrigin string `json:"internal_origin"`
+	// Local address the connector opens. The default is loopback.
+	LocalHost string `json:"local_host"`
+	// Local port the connector opens.
+	LocalPort int64 `json:"local_port"`
+	// Protocol declared at publication.
+	Protocol DestinationProtocol `json:"protocol"`
+	// What the route is scoped to.
+	Scope PublishedServiceScope `json:"scope"`
+	// Browser sessions a route authorises. At least one is required: a route no session
+	// may use is not published (docs/CONNECTOR_PROTOCOL.md section 11).
+	AllowedBrowserSessionIDs []string `json:"allowed_browser_session_ids"`
+	// When the route expires. Publication always expires, and no stream's deadline may
+	// exceed this instant.
+	ExpiresAt string `json:"expires_at"`
+	// Lifecycle status.
+	Status PublishedServiceStatus `json:"status"`
+	// Why the publication was refused. Present only when the status is failed.
+	FailureClass *PublishedServiceFailureClass `json:"failure_class,omitempty"`
+	// Destination the connector reported it opened. Absent until the route is ready.
+	ObservedDestination *string `json:"observed_destination,omitempty"`
+	// When publication was requested.
+	RequestedAt string `json:"requested_at"`
+	// When the route began carrying traffic. Absent until it does.
+	ReadyAt *string `json:"ready_at,omitempty"`
+	// When the route stopped carrying traffic, by failure, expiry or revocation. Absent
+	// while it is live.
+	EndedAt *string `json:"ended_at,omitempty"`
+}
+
+// PublishedServiceRequestedPayload is defined by the connector protocol schema.
+//
+// Payload of published_service.requested. It is written before anything is sent to the
+// connector or the gateway, so the audit trail records the destination that was asked
+// for even when the publication is then refused.
+type PublishedServiceRequestedPayload struct {
+	// Route requested.
+	PublishedServiceID string `json:"published_service_id"`
+	// Connector asked to carry it.
+	ConnectorID string `json:"connector_id"`
+	// Workspace the service was started from.
+	WorkspaceID string `json:"workspace_id"`
+	// Destination address requested.
+	LocalHost string `json:"local_host"`
+	// Destination port requested.
+	LocalPort int64 `json:"local_port"`
+	// Destination protocol declared.
+	Protocol DestinationProtocol `json:"protocol"`
+	// Alias the internal origin was built from.
+	PublicAlias string `json:"public_alias"`
+	// When the requested route expires.
+	ExpiresAt string `json:"expires_at"`
+	// Browser sessions a route authorises. At least one is required: a route no session
+	// may use is not published (docs/CONNECTOR_PROTOCOL.md section 11).
+	AllowedBrowserSessionIDs []string `json:"allowed_browser_session_ids"`
+	// Status the record was written in, which is requested.
+	NewStatus PublishedServiceStatus `json:"new_status"`
+}
+
+// PublishedServiceReadyPayload is defined by the connector protocol schema.
+//
+// Payload of published_service.ready. It is written for two occurrences: a route that
+// began carrying traffic, and a session-scoped capability minted against one. Neither
+// carries the capability token, only its identifier, because an event is append-only
+// and a credential written into one cannot be taken out again (docs/EVENTS.md section
+// 8).
+type PublishedServiceReadyPayload struct {
+	// Route concerned.
+	PublishedServiceID string `json:"published_service_id"`
+	// Status before the move. Absent when the event records a capability mint, which
+	// moves no status.
+	PreviousStatus *PublishedServiceStatus `json:"previous_status,omitempty"`
+	// Status after the move. Absent on a capability mint.
+	NewStatus *PublishedServiceStatus `json:"new_status,omitempty"`
+	// Destination the connector reported it opened.
+	ObservedDestination *string `json:"observed_destination,omitempty"`
+	// Origin the gateway registered for the route.
+	InternalOrigin *string `json:"internal_origin,omitempty"`
+	// Whether the gateway held the connector's data channel when it registered the route.
+	ConnectorConnected *bool `json:"connector_connected,omitempty"`
+	// Capability minted, when this event records a mint. The token itself never appears.
+	CapabilityID *string `json:"capability_id,omitempty"`
+	// Session the capability was minted for.
+	BrowserSessionID *string `json:"browser_session_id,omitempty"`
+	// Signing key the capability was minted with, so that a rotation can be audited.
+	KeyID *string `json:"key_id,omitempty"`
+	// When the minted capability expires. It never outlives its route.
+	ExpiresAt *string `json:"expires_at,omitempty"`
+}
+
+// PublishedServiceFailedPayload is defined by the connector protocol schema.
+//
+// Payload of published_service.failed. The class is the diagnosis: docs/API.md section
+// 10 requires one failure to carry one code from the connector to the caller, so what
+// refused the publication is recorded under the name the caller was given.
+type PublishedServiceFailedPayload struct {
+	// Route refused.
+	PublishedServiceID string `json:"published_service_id"`
+	// Status before the refusal.
+	PreviousStatus PublishedServiceStatus `json:"previous_status"`
+	// Status after it, which is failed.
+	NewStatus PublishedServiceStatus `json:"new_status"`
+	// Stable class that refused it.
+	ErrorClass PublishedServiceFailureClass `json:"error_class"`
+}
+
+// PublishedServiceExpiredPayload is defined by the connector protocol schema.
+//
+// Payload of published_service.expired. Expiry is the ordinary end of a route, and it
+// closes streams that are already in flight, including an upgraded one
+// (docs/ARCHITECTURE.md section 7.3).
+type PublishedServiceExpiredPayload struct {
+	// Route that expired.
+	PublishedServiceID string `json:"published_service_id"`
+	// Status before expiry.
+	PreviousStatus PublishedServiceStatus `json:"previous_status"`
+	// Status after it, which is expired.
+	NewStatus PublishedServiceStatus `json:"new_status"`
+	// The expiry the sweep enforced.
+	ExpiresAt string `json:"expires_at"`
+}
+
+// PublishedServiceRevokedPayload is defined by the connector protocol schema.
+//
+// Payload of published_service.revoked. Revocation is idempotent and writes this once.
+// It names the capabilities it withdrew, because revoking a route without withdrawing
+// the credentials minted against it would leave the revocation partial.
+type PublishedServiceRevokedPayload struct {
+	// Route revoked.
+	PublishedServiceID string `json:"published_service_id"`
+	// Status before revocation.
+	PreviousStatus PublishedServiceStatus `json:"previous_status"`
+	// Status after it, which is revoked.
+	NewStatus PublishedServiceStatus `json:"new_status"`
+	// Capabilities withdrawn with the route. Identifiers only: a token never appears in
+	// an event.
+	RevokedCapabilityIDs []string `json:"revoked_capability_ids,omitempty"`
+}
+
 // Payload is implemented by every version 1 message payload. The interface is closed:
 // only payloads generated from the schema can satisfy it.
 type Payload interface {
@@ -1716,6 +2016,41 @@ func (JobSucceededPayload) isConnectorPayload() {}
 func (JobFailedPayload) MessageType() MessageType { return MessageTypeJobFailed }
 
 func (JobFailedPayload) isConnectorPayload() {}
+
+// MessageType reports the envelope type carrying a PublishedServiceRequestedPayload.
+func (PublishedServiceRequestedPayload) MessageType() MessageType {
+	return MessageTypePublishedServiceRequested
+}
+
+func (PublishedServiceRequestedPayload) isConnectorPayload() {}
+
+// MessageType reports the envelope type carrying a PublishedServiceReadyPayload.
+func (PublishedServiceReadyPayload) MessageType() MessageType {
+	return MessageTypePublishedServiceReady
+}
+
+func (PublishedServiceReadyPayload) isConnectorPayload() {}
+
+// MessageType reports the envelope type carrying a PublishedServiceFailedPayload.
+func (PublishedServiceFailedPayload) MessageType() MessageType {
+	return MessageTypePublishedServiceFailed
+}
+
+func (PublishedServiceFailedPayload) isConnectorPayload() {}
+
+// MessageType reports the envelope type carrying a PublishedServiceExpiredPayload.
+func (PublishedServiceExpiredPayload) MessageType() MessageType {
+	return MessageTypePublishedServiceExpired
+}
+
+func (PublishedServiceExpiredPayload) isConnectorPayload() {}
+
+// MessageType reports the envelope type carrying a PublishedServiceRevokedPayload.
+func (PublishedServiceRevokedPayload) MessageType() MessageType {
+	return MessageTypePublishedServiceRevoked
+}
+
+func (PublishedServiceRevokedPayload) isConnectorPayload() {}
 
 // Frame is a decoded control frame: envelope header plus its typed payload.
 type Frame struct {

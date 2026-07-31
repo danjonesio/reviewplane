@@ -21,12 +21,17 @@ var pattern12 = regexp.MustCompile("^[A-Za-z0-9:._-]+$")
 var pattern13 = regexp.MustCompile("^sha256:[0-9a-f]{64}$")
 var pattern14 = regexp.MustCompile("^[^\\x00-\\x1f\\x7f/\\\\]+$")
 var pattern15 = regexp.MustCompile("^[0-9a-f]+$")
-var pattern16 = regexp.MustCompile("^[^\\s\\x00-\\x1f]+$")
-var pattern17 = regexp.MustCompile("^[a-z][a-z0-9_]*$")
-var pattern18 = regexp.MustCompile("^[^\\x00]+$")
-var pattern19 = regexp.MustCompile("^[A-Za-z0-9_.-]+$")
-var pattern20 = regexp.MustCompile("^[a-z][a-z0-9_.]*$")
-var pattern21 = regexp.MustCompile("^[a-z][a-z0-9_.\\[\\]]*$")
+var pattern16 = regexp.MustCompile("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+var pattern17 = regexp.MustCompile("^https://[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.[a-z0-9.-]{1,180}/$")
+var pattern18 = regexp.MustCompile("^[0-9A-Fa-f:.]{1,45}$")
+var pattern19 = regexp.MustCompile("^(\\[[0-9A-Fa-f:.]{1,45}\\]|[0-9A-Fa-f:.]{1,45}):[0-9]{1,5}$")
+var pattern20 = regexp.MustCompile("^[^\\s\\x00-\\x1f]+$")
+var pattern21 = regexp.MustCompile("^[a-z][a-z0-9_]*$")
+var pattern22 = regexp.MustCompile("^[^\\x00]+$")
+var pattern23 = regexp.MustCompile("^[A-Za-z0-9_.-]+$")
+var pattern24 = regexp.MustCompile("^[a-z][a-z0-9_.]*$")
+var pattern25 = regexp.MustCompile("^[a-z][a-z0-9_.\\[\\]]*$")
+var pattern26 = regexp.MustCompile("^[A-Za-z0-9_-]{1,64}$")
 
 // validateIdentifier checks opaque durable identifier (docs/DOMAIN_MODEL.md section
 // 3). Consumers MUST treat the value as opaque: the schema bounds only its length and
@@ -60,7 +65,7 @@ func validateCursor(value any, path string, out *[]SchemaViolation) {
 // x-protocol.messages, and is a subset of the event_types vocabulary: an event type
 // defined in another schema source is decoded by that source.
 func validateMessageType(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{values: []string{"organisation.created", "project.created", "project.updated", "project.repository_changed", "project.archived", "user.invited", "user.credentials_set", "authentication.login_succeeded", "authentication.login_failed", "session.revoked", "connector.enrolled", "connector.connected", "connector.degraded", "connector.disconnected", "connector.revoked", "workspace.observed", "workspace.head_changed", "job.enqueued", "job.succeeded", "job.failed"}})
+	checkString(value, path, out, stringOpts{values: []string{"organisation.created", "project.created", "project.updated", "project.repository_changed", "project.archived", "user.invited", "user.credentials_set", "authentication.login_succeeded", "authentication.login_failed", "session.revoked", "connector.enrolled", "connector.connected", "connector.degraded", "connector.disconnected", "connector.revoked", "workspace.observed", "workspace.head_changed", "job.enqueued", "job.succeeded", "job.failed", "published_service.requested", "published_service.ready", "published_service.failed", "published_service.expired", "published_service.revoked"}})
 }
 
 // validateErrorClass checks stable API error code (docs/API.md section 5,
@@ -286,6 +291,79 @@ func validateSessionRevocationReason(value any, path string, out *[]SchemaViolat
 	checkString(value, path, out, stringOpts{values: []string{"sign_out", "rotated", "revoked_by_user", "revoked_by_administrator"}})
 }
 
+// validatePublishedServiceStatus checks published-service lifecycle status
+// (docs/DOMAIN_MODEL.md section 10). A route reaches ready only once the connector has
+// acknowledged the destination it opened and the tunnel gateway has accepted the
+// registration; failed carries the stable class that refused it. expired and revoked
+// are both terminal, and both close streams that are already in flight.
+func validatePublishedServiceStatus(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"requested", "ready", "failed", "expired", "revoked"}})
+}
+
+// validatePublishedServiceScope checks what a route is scoped to (docs/DOMAIN_MODEL.md
+// section 10). The only version 1 value is browser_session: the route is usable only
+// by the sessions named in its publication, and docs/CONNECTOR_PROTOCOL.md section 11
+// requires at least one.
+func validatePublishedServiceScope(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"browser_session"}})
+}
+
+// validatePublishedServiceFailureClass checks why a publication was refused. It is a
+// closed vocabulary drawn from docs/API.md section 5 and docs/CONNECTOR_PROTOCOL.md
+// section 21, and never free text: docs/SECURITY.md section 18 requires a stable code,
+// and docs/API.md section 10 requires one failure to carry one code from the connector
+// to the caller. A refusal this list does not name is recorded as INTERNAL_ERROR
+// rather than widening the vocabulary at write time.
+func validatePublishedServiceFailureClass(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"CONNECTOR_OFFLINE", "CONTROL_PLANE_UNAVAILABLE", "DESTINATION_NOT_ALLOWED", "IDENTITY_REVOKED", "INTERNAL_ERROR", "PORT_NOT_LISTENING", "PROJECT_NOT_AUTHORISED", "PROTOCOL_UNSUPPORTED", "PUBLISHED_SERVICE_UNAVAILABLE", "ROUTE_EXPIRED", "ROUTE_LIMIT_EXCEEDED", "WORKSPACE_NOT_FOUND"}})
+}
+
+// validateDestinationProtocol checks protocol the development service speaks on its
+// local socket. It is declared at publication and is not negotiable per request:
+// docs/CONNECTOR_PROTOCOL.md section 12 fixes the destination at publication time, so
+// nothing a browser sends can change it.
+func validateDestinationProtocol(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"http", "https"}})
+}
+
+// validatePublicAlias checks leftmost label of a route's internal origin
+// (docs/ARCHITECTURE.md section 7.3). It MUST be a DNS label and MUST be unique across
+// the deployment, so the control plane generates it rather than deriving it from the
+// route identifier, whose conventional svc_ prefix is not a valid label. Consumers
+// MUST treat it as opaque.
+func validatePublicAlias(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 63, pattern: pattern16})
+}
+
+// validateInternalOrigin checks origin an authorised browser session opens, of the
+// form https://<public_alias>.<suffix>/. The control plane derives it from the alias;
+// it is never taken from a request, because the origin is the browser session's egress
+// allow-list (docs/SECURITY.md section 9).
+func validateInternalOrigin(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 256, pattern: pattern17})
+}
+
+// validateLocalHost checks local address of the development service, as a literal IP
+// address. A name would have to be resolved, and a resolver is a rebinding surface:
+// the name that passed the destination policy need not be the address the connector
+// later opens (docs/SECURITY.md section 9).
+func validateLocalHost(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 45, pattern: pattern18})
+}
+
+// validateLocalPort checks tCP port the development service listens on.
+func validateLocalPort(value any, path string, out *[]SchemaViolation) {
+	checkInteger(value, path, out, 1, 65535)
+}
+
+// validateObservedDestination checks the destination the connector reported it
+// actually opened, as host:port (docs/CONNECTOR_PROTOCOL.md section 11). It is what
+// the connector observed rather than what the control plane asked for, so that the two
+// can be compared.
+func validateObservedDestination(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 3, maxLength: 64, pattern: pattern19})
+}
+
 // validateRepositoryIdentityCanonical checks normalised host and path, lowercase host,
 // no scheme, no credentials, no .git suffix and no trailing slash, for example
 // github.com/example/refresh-surplus.
@@ -295,7 +373,7 @@ func validateRepositoryIdentityCanonical(value any, path string, out *[]SchemaVi
 
 // validateRepositoryIdentityCloneURLsItem checks a generated schema node.
 func validateRepositoryIdentityCloneURLsItem(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 3, maxLength: 512, pattern: pattern16})
+	checkString(value, path, out, stringOpts{minLength: 3, maxLength: 512, pattern: pattern20})
 }
 
 // validateRepositoryIdentityCloneURLs checks clone URLs that reduce to canonical, in
@@ -1008,7 +1086,7 @@ func validateSessionRevokedPayload(value any, path string, out *[]SchemaViolatio
 
 // validateProjectUpdatedPayloadChangedFieldsItem checks a generated schema node.
 func validateProjectUpdatedPayloadChangedFieldsItem(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern17})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern21})
 }
 
 // validateProjectUpdatedPayloadChangedFields checks attribute names that changed, in
@@ -1528,7 +1606,7 @@ func validateStreamErrorType(value any, path string, out *[]SchemaViolation) {
 // validateStreamErrorMessage checks human-readable explanation. It never carries
 // request data, a credential or a stack trace.
 func validateStreamErrorMessage(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 1024, pattern: pattern18})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 1024, pattern: pattern22})
 }
 
 // validateStreamErrorRetryable checks whether repeating the subscription verbatim can
@@ -1591,7 +1669,7 @@ func validateApiErrorDetailsCandidates(value any, path string, out *[]SchemaViol
 
 // validateApiErrorDetailsAllowedTransitionsItem checks a generated schema node.
 func validateApiErrorDetailsAllowedTransitionsItem(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern19})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern23})
 }
 
 // validateApiErrorDetailsAllowedTransitions checks transitions that are legal from the
@@ -1608,7 +1686,7 @@ func validateApiErrorDetailsAllowedTransitions(value any, path string, out *[]Sc
 
 // validateApiErrorDetailsRequiredEvidenceItem checks a generated schema node.
 func validateApiErrorDetailsRequiredEvidenceItem(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern17})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern21})
 }
 
 // validateApiErrorDetailsRequiredEvidence checks evidence the operation needs before
@@ -1625,7 +1703,7 @@ func validateApiErrorDetailsRequiredEvidence(value any, path string, out *[]Sche
 
 // validateApiErrorDetailsMissingContextItem checks a generated schema node.
 func validateApiErrorDetailsMissingContextItem(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern20})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern24})
 }
 
 // validateApiErrorDetailsMissingContext checks captured context the request omitted.
@@ -1649,13 +1727,13 @@ func validateApiErrorDetailsRetryAfterMs(value any, path string, out *[]SchemaVi
 
 // validateApiErrorDetailsField checks the request member the refusal is about.
 func validateApiErrorDetailsField(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 128, pattern: pattern21})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 128, pattern: pattern25})
 }
 
 // validateApiErrorDetailsReason checks stable sub-reason where one code covers several
 // causes.
 func validateApiErrorDetailsReason(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern17})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern21})
 }
 
 // validateAPIErrorDetails checks a ApiErrorDetails value.
@@ -1699,7 +1777,7 @@ func validateAPIErrorDetails(value any, path string, out *[]SchemaViolation) {
 // validateApiErrorMessage checks human-readable explanation. It never carries a
 // credential, request data or a stack trace (docs/SECURITY.md section 18).
 func validateApiErrorMessage(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 1024, pattern: pattern18})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 1024, pattern: pattern22})
 }
 
 // validateAPIError checks a ApiError value.
@@ -1756,7 +1834,7 @@ func validateCursorClaimsVersion(value any, path string, out *[]SchemaViolation)
 // validateCursorClaimsSortKey checks value of the collection's sort column at the last
 // row of the previous page.
 func validateCursorClaimsSortKey(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 128, pattern: pattern18})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 128, pattern: pattern22})
 }
 
 // validateCursorClaims checks a CursorClaims value.
@@ -1773,5 +1851,259 @@ func validateCursorClaims(value any, path string, out *[]SchemaViolation) {
 	}
 	if field, present := source["id"]; present {
 		validateIdentifier(field, path+".id", out)
+	}
+}
+
+// validatePublishedServiceAllowedBrowserSessionIDs checks browser sessions a route
+// authorises. At least one is required: a route no session may use is not published
+// (docs/CONNECTOR_PROTOCOL.md section 11).
+func validatePublishedServiceAllowedBrowserSessionIDs(value any, path string, out *[]SchemaViolation) {
+	items, ok := checkArray(value, path, out, 1, 32, true)
+	if !ok {
+		return
+	}
+	for index, item := range items {
+		validateIdentifier(item, indexPath(path, index), out)
+	}
+}
+
+// validatePublishedService checks a PublishedService value.
+func validatePublishedService(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"id", "organisation_id", "project_id", "connector_id", "workspace_id", "public_alias", "internal_origin", "local_host", "local_port", "protocol", "scope", "allowed_browser_session_ids", "expires_at", "status", "failure_class", "observed_destination", "requested_at", "ready_at", "ended_at"}, []string{"id", "organisation_id", "project_id", "connector_id", "workspace_id", "public_alias", "internal_origin", "local_host", "local_port", "protocol", "scope", "allowed_browser_session_ids", "expires_at", "status", "requested_at"})
+	if !ok {
+		return
+	}
+	if field, present := source["id"]; present {
+		validateIdentifier(field, path+".id", out)
+	}
+	if field, present := source["organisation_id"]; present {
+		validateIdentifier(field, path+".organisation_id", out)
+	}
+	if field, present := source["project_id"]; present {
+		validateIdentifier(field, path+".project_id", out)
+	}
+	if field, present := source["connector_id"]; present {
+		validateIdentifier(field, path+".connector_id", out)
+	}
+	if field, present := source["workspace_id"]; present {
+		validateIdentifier(field, path+".workspace_id", out)
+	}
+	if field, present := source["public_alias"]; present {
+		validatePublicAlias(field, path+".public_alias", out)
+	}
+	if field, present := source["internal_origin"]; present {
+		validateInternalOrigin(field, path+".internal_origin", out)
+	}
+	if field, present := source["local_host"]; present {
+		validateLocalHost(field, path+".local_host", out)
+	}
+	if field, present := source["local_port"]; present {
+		validateLocalPort(field, path+".local_port", out)
+	}
+	if field, present := source["protocol"]; present {
+		validateDestinationProtocol(field, path+".protocol", out)
+	}
+	if field, present := source["scope"]; present {
+		validatePublishedServiceScope(field, path+".scope", out)
+	}
+	if field, present := source["allowed_browser_session_ids"]; present {
+		validatePublishedServiceAllowedBrowserSessionIDs(field, path+".allowed_browser_session_ids", out)
+	}
+	if field, present := source["expires_at"]; present {
+		validateTimestamp(field, path+".expires_at", out)
+	}
+	if field, present := source["status"]; present {
+		validatePublishedServiceStatus(field, path+".status", out)
+	}
+	if field, present := source["failure_class"]; present {
+		validatePublishedServiceFailureClass(field, path+".failure_class", out)
+	}
+	if field, present := source["observed_destination"]; present {
+		validateObservedDestination(field, path+".observed_destination", out)
+	}
+	if field, present := source["requested_at"]; present {
+		validateTimestamp(field, path+".requested_at", out)
+	}
+	if field, present := source["ready_at"]; present {
+		validateTimestamp(field, path+".ready_at", out)
+	}
+	if field, present := source["ended_at"]; present {
+		validateTimestamp(field, path+".ended_at", out)
+	}
+}
+
+// validatePublishedServiceRequestedPayloadAllowedBrowserSessionIDs checks browser
+// sessions a route authorises. At least one is required: a route no session may use is
+// not published (docs/CONNECTOR_PROTOCOL.md section 11).
+func validatePublishedServiceRequestedPayloadAllowedBrowserSessionIDs(value any, path string, out *[]SchemaViolation) {
+	items, ok := checkArray(value, path, out, 1, 32, true)
+	if !ok {
+		return
+	}
+	for index, item := range items {
+		validateIdentifier(item, indexPath(path, index), out)
+	}
+}
+
+// validatePublishedServiceRequestedPayload checks a PublishedServiceRequestedPayload
+// value.
+func validatePublishedServiceRequestedPayload(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"published_service_id", "connector_id", "workspace_id", "local_host", "local_port", "protocol", "public_alias", "expires_at", "allowed_browser_session_ids", "new_status"}, []string{"published_service_id", "connector_id", "workspace_id", "local_host", "local_port", "protocol", "public_alias", "expires_at", "allowed_browser_session_ids", "new_status"})
+	if !ok {
+		return
+	}
+	if field, present := source["published_service_id"]; present {
+		validateIdentifier(field, path+".published_service_id", out)
+	}
+	if field, present := source["connector_id"]; present {
+		validateIdentifier(field, path+".connector_id", out)
+	}
+	if field, present := source["workspace_id"]; present {
+		validateIdentifier(field, path+".workspace_id", out)
+	}
+	if field, present := source["local_host"]; present {
+		validateLocalHost(field, path+".local_host", out)
+	}
+	if field, present := source["local_port"]; present {
+		validateLocalPort(field, path+".local_port", out)
+	}
+	if field, present := source["protocol"]; present {
+		validateDestinationProtocol(field, path+".protocol", out)
+	}
+	if field, present := source["public_alias"]; present {
+		validatePublicAlias(field, path+".public_alias", out)
+	}
+	if field, present := source["expires_at"]; present {
+		validateTimestamp(field, path+".expires_at", out)
+	}
+	if field, present := source["allowed_browser_session_ids"]; present {
+		validatePublishedServiceRequestedPayloadAllowedBrowserSessionIDs(field, path+".allowed_browser_session_ids", out)
+	}
+	if field, present := source["new_status"]; present {
+		validatePublishedServiceStatus(field, path+".new_status", out)
+	}
+}
+
+// validatePublishedServiceReadyPayloadConnectorConnected checks whether the gateway
+// held the connector's data channel when it registered the route.
+func validatePublishedServiceReadyPayloadConnectorConnected(value any, path string, out *[]SchemaViolation) {
+	checkBoolean(value, path, out)
+}
+
+// validatePublishedServiceReadyPayloadKeyID checks signing key the capability was
+// minted with, so that a rotation can be audited.
+func validatePublishedServiceReadyPayloadKeyID(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern26})
+}
+
+// validatePublishedServiceReadyPayload checks a PublishedServiceReadyPayload value.
+func validatePublishedServiceReadyPayload(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"published_service_id", "previous_status", "new_status", "observed_destination", "internal_origin", "connector_connected", "capability_id", "browser_session_id", "key_id", "expires_at"}, []string{"published_service_id"})
+	if !ok {
+		return
+	}
+	if field, present := source["published_service_id"]; present {
+		validateIdentifier(field, path+".published_service_id", out)
+	}
+	if field, present := source["previous_status"]; present {
+		validatePublishedServiceStatus(field, path+".previous_status", out)
+	}
+	if field, present := source["new_status"]; present {
+		validatePublishedServiceStatus(field, path+".new_status", out)
+	}
+	if field, present := source["observed_destination"]; present {
+		validateObservedDestination(field, path+".observed_destination", out)
+	}
+	if field, present := source["internal_origin"]; present {
+		validateInternalOrigin(field, path+".internal_origin", out)
+	}
+	if field, present := source["connector_connected"]; present {
+		validatePublishedServiceReadyPayloadConnectorConnected(field, path+".connector_connected", out)
+	}
+	if field, present := source["capability_id"]; present {
+		validateIdentifier(field, path+".capability_id", out)
+	}
+	if field, present := source["browser_session_id"]; present {
+		validateIdentifier(field, path+".browser_session_id", out)
+	}
+	if field, present := source["key_id"]; present {
+		validatePublishedServiceReadyPayloadKeyID(field, path+".key_id", out)
+	}
+	if field, present := source["expires_at"]; present {
+		validateTimestamp(field, path+".expires_at", out)
+	}
+}
+
+// validatePublishedServiceFailedPayload checks a PublishedServiceFailedPayload value.
+func validatePublishedServiceFailedPayload(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"published_service_id", "previous_status", "new_status", "error_class"}, []string{"published_service_id", "previous_status", "new_status", "error_class"})
+	if !ok {
+		return
+	}
+	if field, present := source["published_service_id"]; present {
+		validateIdentifier(field, path+".published_service_id", out)
+	}
+	if field, present := source["previous_status"]; present {
+		validatePublishedServiceStatus(field, path+".previous_status", out)
+	}
+	if field, present := source["new_status"]; present {
+		validatePublishedServiceStatus(field, path+".new_status", out)
+	}
+	if field, present := source["error_class"]; present {
+		validatePublishedServiceFailureClass(field, path+".error_class", out)
+	}
+}
+
+// validatePublishedServiceExpiredPayload checks a PublishedServiceExpiredPayload
+// value.
+func validatePublishedServiceExpiredPayload(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"published_service_id", "previous_status", "new_status", "expires_at"}, []string{"published_service_id", "previous_status", "new_status", "expires_at"})
+	if !ok {
+		return
+	}
+	if field, present := source["published_service_id"]; present {
+		validateIdentifier(field, path+".published_service_id", out)
+	}
+	if field, present := source["previous_status"]; present {
+		validatePublishedServiceStatus(field, path+".previous_status", out)
+	}
+	if field, present := source["new_status"]; present {
+		validatePublishedServiceStatus(field, path+".new_status", out)
+	}
+	if field, present := source["expires_at"]; present {
+		validateTimestamp(field, path+".expires_at", out)
+	}
+}
+
+// validatePublishedServiceRevokedPayloadRevokedCapabilityIDs checks capabilities
+// withdrawn with the route. Identifiers only: a token never appears in an event.
+func validatePublishedServiceRevokedPayloadRevokedCapabilityIDs(value any, path string, out *[]SchemaViolation) {
+	items, ok := checkArray(value, path, out, 0, 64, true)
+	if !ok {
+		return
+	}
+	for index, item := range items {
+		validateIdentifier(item, indexPath(path, index), out)
+	}
+}
+
+// validatePublishedServiceRevokedPayload checks a PublishedServiceRevokedPayload
+// value.
+func validatePublishedServiceRevokedPayload(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"published_service_id", "previous_status", "new_status", "revoked_capability_ids"}, []string{"published_service_id", "previous_status", "new_status"})
+	if !ok {
+		return
+	}
+	if field, present := source["published_service_id"]; present {
+		validateIdentifier(field, path+".published_service_id", out)
+	}
+	if field, present := source["previous_status"]; present {
+		validatePublishedServiceStatus(field, path+".previous_status", out)
+	}
+	if field, present := source["new_status"]; present {
+		validatePublishedServiceStatus(field, path+".new_status", out)
+	}
+	if field, present := source["revoked_capability_ids"]; present {
+		validatePublishedServiceRevokedPayloadRevokedCapabilityIDs(field, path+".revoked_capability_ids", out)
 	}
 }

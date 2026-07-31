@@ -1,12 +1,15 @@
 /**
- * The Stage 0 tool catalogue (`docs/MCP_SPEC.md` sections 7.1, 7.4, 7.6, 7.7).
+ * The tool catalogue (`docs/MCP_SPEC.md` sections 7.1, 7.2, 7.4, 7.6, 7.7).
  *
  * The set is exactly `MESSAGE_TYPE_VALUES` from the schema, which is what
  * section 14 calls the tool availability set. Nothing else is registered, so a
- * client discovers the Stage 0 boundary from `tools/list` rather than from a
- * refusal: there is no inbox tool, no development-service tool, no visual
- * inspection, no completion gate, no review listing or search, and — the one
- * that matters most — **no secret tool at all**.
+ * client discovers the boundary from `tools/list` rather than from a refusal:
+ * there is no inbox tool, no visual inspection, no completion gate, no review
+ * listing or search, and — the one that matters most — **no secret tool at
+ * all**. The published-service tools of section 7.2 joined the set with RVP-24;
+ * they take no connector and no browser-session argument, because a caller that
+ * could name either would be choosing which development machine the central
+ * browser reaches (`src/development-services.ts`).
  *
  * Every state-changing tool goes through the same four gates, in this order:
  *
@@ -35,6 +38,9 @@ import {
 } from "@reviewplane/protocol/mcp";
 import {
   validateAgentSessionStatusInput,
+  validateDevelopmentServicePublishInput,
+  validateDevelopmentServiceUnpublishInput,
+  validateDevelopmentServicesListInput,
   validateBrowserTakeScreenshotInput,
   validateFindingAddCommentInput,
   validateFindingClaimInput,
@@ -49,11 +55,17 @@ import {
 import {
   ApiError,
   agentActor,
+  type ErrorCode,
   agentTransitionsFrom,
   requestDigest,
 } from "@reviewplane/server/domain";
 
 import { STAGE_0_POLICY, type McpConnection, type McpServices } from "./context.ts";
+import {
+  DEFAULT_ROUTE_TTL_SECONDS,
+  scopeOf,
+  toDevelopmentServiceView,
+} from "./development-services.ts";
 import { Warnings, refusalFrom, successEnvelope } from "./envelope.ts";
 import { toolInputDescription, toolInputSchema, toolResultDescription } from "./schemas.ts";
 import {
@@ -79,6 +91,8 @@ export interface ToolRun {
 export interface ToolContext {
   readonly connection: McpConnection;
   readonly services: McpServices;
+  /** The identifier this call is recorded under, echoed in the envelope. */
+  readonly requestId: string;
   readonly warnings: Warnings;
   readonly views: ViewContext;
 }
@@ -628,6 +642,109 @@ const TOOLS: readonly ToolDefinition[] = [
       };
     },
   },
+  {
+    name: "development_services_list",
+    title: "List the project's published development services",
+    capability: "project:read",
+    stateChanging: false,
+    validate: validateDevelopmentServicesListInput,
+    async run(args, context) {
+      const services = await context.services.developmentServices.list(
+        context.connection.project.id,
+        scopeOf(context.connection),
+        args["limit"] as number | undefined,
+      );
+      return {
+        trust: "trusted_project_configuration",
+        data: { services: services.map(toDevelopmentServiceView) },
+      };
+    },
+  },
+  {
+    name: "development_service_publish",
+    title: "Publish a local development service through the connector",
+    capability: "service:publish",
+    stateChanging: true,
+    validate: validateDevelopmentServicePublishInput,
+    async run(args, context) {
+      const { connection, services } = context;
+      const workspaceId = args["workspace_id"] as string;
+      // The workspace must belong to this session's project. A workspace in
+      // another project is reported absent rather than forbidden, so a foreign
+      // identifier and an unknown one are indistinguishable (`docs/API.md` §5).
+      const workspace = await services.workspaces.get(workspaceId);
+      if (workspace === null || workspace.project_id !== connection.project.id) {
+        throw new ApiError("WORKSPACE_NOT_FOUND", "No such workspace in this project.");
+      }
+      const connector = await services.developmentServices.connectorForProject(
+        connection.project.id,
+      );
+      const sessions = await services.developmentServices.publishableSessions(
+        connection.project.id,
+        connection.session.id,
+      );
+      if (sessions.length === 0) {
+        // `docs/CONNECTOR_PROTOCOL.md` §11: a route no session may use is not
+        // published. Saying so here is better than a schema complaint about an
+        // array the agent has no way to fill in.
+        throw new ApiError(
+          "BROWSER_SESSION_NOT_ACTIVE",
+          "This project has no browser session for a route to authorise. Start one first.",
+        );
+      }
+
+      const outcome = await services.developmentServices.publish(
+        {
+          projectId: connection.project.id,
+          organisationId: connection.credential.organisationId,
+          connectorId: connector.id,
+          workspaceId,
+          localHost: (args["local_host"] as string | undefined) ?? "127.0.0.1",
+          localPort: args["local_port"] as number,
+          protocol: (args["protocol"] as string | undefined) ?? "http",
+          ttlSeconds: (args["ttl_seconds"] as number | undefined) ?? DEFAULT_ROUTE_TTL_SECONDS,
+          allowedBrowserSessionIds: sessions,
+        },
+        scopeOf(connection),
+        agentActor(connection.session, connection.client.name),
+        context.requestId,
+      );
+      if (outcome.status === "failed" && outcome.failure_class !== null) {
+        // One failure, one code, from the connector to the caller
+        // (`docs/API.md` §10). The record already carries the class; renaming
+        // it here would give the agent a different diagnosis from the audit
+        // trail's.
+        throw new ApiError(
+          outcome.failure_class as ErrorCode,
+          "The connector or the tunnel gateway refused this publication.",
+          { published_service_id: outcome.id },
+        );
+      }
+      return {
+        trust: "trusted_project_configuration",
+        data: { service: toDevelopmentServiceView(outcome) },
+      };
+    },
+  },
+  {
+    name: "development_service_unpublish",
+    title: "Revoke a published development service",
+    capability: "service:publish",
+    stateChanging: true,
+    validate: validateDevelopmentServiceUnpublishInput,
+    async run(args, context) {
+      const revoked = await context.services.developmentServices.revoke(
+        args["published_service_id"] as string,
+        scopeOf(context.connection),
+        agentActor(context.connection.session, context.connection.client.name),
+        context.requestId,
+      );
+      return {
+        trust: "trusted_project_configuration",
+        data: { service: toDevelopmentServiceView(revoked) },
+      };
+    },
+  },
 ];
 
 const BY_NAME = new Map(TOOLS.map((tool) => [tool.name, tool]));
@@ -680,7 +797,7 @@ export async function callTool(
 ): Promise<ToolOutcome> {
   const tool = BY_NAME.get(name as MessageType);
   if (tool === undefined) {
-    throw new ApiError("UNSUPPORTED_CAPABILITY", `${name} is not a Stage 0 tool.`);
+    throw new ApiError("UNSUPPORTED_CAPABILITY", `${name} is not an available tool.`);
   }
   const requestId = `req_${randomUUID().replaceAll("-", "")}`;
   const warnings = new Warnings();
@@ -691,7 +808,7 @@ export async function callTool(
     apiPathPrefix: services.config.apiPathPrefix,
     warnings,
   };
-  const context: ToolContext = { connection, services, warnings, views };
+  const context: ToolContext = { connection, services, requestId, warnings, views };
 
   let scope: Parameters<McpServices["idempotency"]["complete"]>[0] | null = null;
   try {

@@ -15,7 +15,7 @@ import {
   MESSAGE_TYPE_VALUES,
   PAYLOAD_MAX_BYTES,
   RESOURCE_URI_FORMS,
-  STAGE_0_TOOL_AVAILABILITY,
+  TOOL_AVAILABILITY,
   ERROR_CLASS_VALUES,
   AGENT_FINDING_STATUS_VALUES,
   AGENT_REVIEW_STATUS_VALUES,
@@ -59,11 +59,11 @@ function screenshotFrame(): McpFrame {
 test("the tool availability set is the message-type enumeration", () => {
   // docs/MCP_SPEC.md section 14: a client relies on negotiated availability. If
   // the two could differ, a tool could be advertised with no result schema.
-  assert.deepEqual([...STAGE_0_TOOL_AVAILABILITY], [...MESSAGE_TYPE_VALUES]);
-  assert.equal(MESSAGE_TYPE_VALUES.length, 11);
+  assert.deepEqual([...TOOL_AVAILABILITY], [...MESSAGE_TYPE_VALUES]);
+  assert.equal(MESSAGE_TYPE_VALUES.length, 14);
 });
 
-test("no Stage 0 tool names a secret, an inbox, a completion gate or a listing", () => {
+test("no available tool names a secret, an inbox, a completion gate or a listing", () => {
   // The strongest form of "no secret value is returned" is that no tool exists
   // that could return one (docs/SECURITY.md section 12.1).
   for (const tool of MESSAGE_TYPE_VALUES) {

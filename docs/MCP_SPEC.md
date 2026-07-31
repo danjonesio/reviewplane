@@ -266,9 +266,20 @@ Input requires `inbox_item_id` and an idempotency key.
 
 ## 7.2 Published-service tools
 
+These three tools are the agent's half of `docs/DOMAIN_MODEL.md` §10. What they
+have in common matters more than what each does: **none of them takes a
+connector, a browser session or a project**. A caller that could name any of the
+three would be choosing which development machine the central browser reaches,
+which is the SSRF surface `docs/SECURITY.md` §9 exists to close. The project is
+the session's, and the connector and the authorised browser sessions are
+resolved from it by the server. The schemas have no member to put them in
+either, so the rule is structural rather than a check somebody can forget.
+
 ### `development_services_list`
 
-Returns connector-published services available to the current project.
+Returns connector-published services available to the current project, newest
+first. It takes no arguments and it lists that project only, so an agent cannot
+discover what another project publishes.
 
 ### `development_service_publish`
 
@@ -282,15 +293,39 @@ Input:
   "local_host": "127.0.0.1",
   "local_port": 4321,
   "protocol": "http",
-  "ttl_seconds": 3600
+  "ttl_seconds": 3600,
+  "idempotency_key": "publish-4321-once"
 }
 ```
 
-The server validates project policy and connector capability.
+`workspace_id` is required and MUST belong to the session's project; one that
+does not is reported as absent rather than as forbidden (`API.md` §5).
+`local_host` defaults to `127.0.0.1`, `protocol` to `http` and `ttl_seconds` to
+one hour, and every one of them is then checked again by the destination policy
+of `SECURITY.md` §9 and independently by the connector (`CONNECTOR_PROTOCOL.md`
+§11). A requested lifetime beyond the deployment's maximum is refused rather
+than clipped: silently shortening it would leave an agent believing it has
+access it does not have.
+
+The route authorises the browser sessions this agent session already holds in
+the project, and the project's other live sessions when it holds none. A project
+with no session at all is refused with `BROWSER_SESSION_NOT_ACTIVE`, because
+§11 does not publish a route no session may use.
+
+The tool waits, bounded, for the outcome and answers with the record as it
+stands: `ready` with the internal origin an authorised browser session can open,
+`failed` raised as the stable class that refused it, or `requested` when the wait
+expired before the connector answered. It never reports a route as ready when it
+is not — an agent navigating to an origin nothing was carrying would read the
+failure as a fault in the application it is reviewing. The two-phase shape behind
+that wait is ADR-0021.
 
 ### `development_service_unpublish`
 
-Revokes a published route immediately.
+Revokes a published route immediately, including streams already in flight and
+connections already upgraded to a WebSocket (`ARCHITECTURE.md` §7.3). It is
+idempotent, and a route outside the session's project is reported absent rather
+than forbidden.
 
 ## 7.3 Browser lifecycle tools
 
@@ -909,7 +944,7 @@ Breaking tool changes require a new major protocol version or a parallel tool na
 The product protocol version is `protocol_version` in the response envelope.
 Stage 0 pins `1`; any other value is refused rather than best-effort parsed.
 
-### 14.1 Stage 0 tool availability set
+### 14.1 Tool availability set
 
 A client relies on negotiated availability rather than discovering gaps at
 runtime, so the set is recorded here and is the same list the server advertises
@@ -931,14 +966,16 @@ registered set and the schema's set are the same list.
 | `finding_add_comment` | 7.7 | `finding:write` |
 | `finding_submit_verification` | 7.7 | `verification:submit` |
 | `browser_take_screenshot` | 7.4 | `browser:capture` |
+| `development_services_list` | 7.2 | `project:read` |
+| `development_service_publish` | 7.2 | `service:publish` |
+| `development_service_unpublish` | 7.2 | `service:publish` |
 
-Everything else in the section 7 catalogue is **absent** from Stage 0 rather
-than present and failing:
+Everything else in the section 7 catalogue is **absent** rather than present and
+failing:
 
 | Absent | Section | Arrives |
 |---|---|---|
 | `agent_inbox_list`, `agent_inbox_acknowledge` | 7.1, 9 | Stage 1 |
-| `development_services_list`, `development_service_publish`, `development_service_unpublish` | 7.2 | Stage 1 |
 | `browser_session_*` lifecycle, `browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_wait`, `browser_console_messages`, `browser_network_requests` | 7.3, 7.4 | Stage 1 |
 | `visual_inspect`, `finding_create_from_observation` | 7.5 | Stage 1 |
 | `review_list`, `review_search`, `review_add_comment` | 7.6 | Stage 1 |

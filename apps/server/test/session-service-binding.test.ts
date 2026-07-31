@@ -200,12 +200,12 @@ test("a session the route does not name is refused before anything is minted", a
   assert.equal(minted.rows[0]?.count, "0", "a capability was minted for an unauthorised session");
 });
 
-test("a route from another project is refused", async () => {
+test("a route from another project is absent, exactly as one that does not exist", async () => {
   const { projectId, organisationId } = await seedProjectAndWorker(harness);
   const sessionId = await reserveSession(projectId, organisationId);
 
   // A route in a project this session does not belong to. It names the session,
-  // so only the project check can refuse it.
+  // so nothing but the project scope can refuse it.
   await postgres.pool.query(
     "INSERT INTO projects (id, organisation_id, name, slug) VALUES ($1, $2, $3, $4)",
     ["prj_elsewhere", organisationId, "Elsewhere", "elsewhere"],
@@ -214,17 +214,43 @@ test("a route from another project is refused", async () => {
   assert.equal(published.statusCode, 201, published.body);
   const service = (published.json() as { data: Record<string, string> }).data;
 
-  const refused = await harness.built.app.inject({
-    method: "POST",
-    url: `/api/v1/browser-sessions/${sessionId}/allocate`,
-    headers: authorised,
-    payload: { published_service_id: service["id"] },
-  });
-  assert.equal(refused.statusCode, 403, refused.body);
+  const allocate = async (publishedServiceId: string) =>
+    harness.built.app.inject({
+      method: "POST",
+      url: `/api/v1/browser-sessions/${sessionId}/allocate`,
+      headers: authorised,
+      payload: { published_service_id: publishedServiceId },
+    });
+
+  // The binder reads the route inside the session's project, so a route in
+  // another project produces no row at all. That is why this is
+  // RESOURCE_NOT_FOUND rather than the PROJECT_CONTEXT_MISMATCH it used to be:
+  // `docs/API.md` section 5 requires a foreign identifier and an unknown one to
+  // be indistinguishable, and a refusal that said "wrong project" would confirm
+  // that the route exists. The equality below is the assertion — a status code
+  // alone would not catch a message that differed.
+  const foreign = await allocate(service["id"] as string);
+  const unknown = await allocate("svc_does_not_exist_at_all");
+  assert.equal(foreign.statusCode, 404, foreign.body);
+  assert.equal(unknown.statusCode, 404, unknown.body);
+
+  const normalise = (body: string): unknown => {
+    const parsed = JSON.parse(body) as { meta?: { request_id?: string } };
+    if (parsed.meta !== undefined) parsed.meta.request_id = "req_normalised";
+    return parsed;
+  };
+  assert.deepEqual(normalise(foreign.body), normalise(unknown.body));
   assert.equal(
-    (refused.json() as { error: { code: string } }).error.code,
-    "PROJECT_CONTEXT_MISMATCH",
+    (foreign.json() as { error: { code: string } }).error.code,
+    "RESOURCE_NOT_FOUND",
   );
+
+  // No capability was minted for the foreign route.
+  const minted = await postgres.pool.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM route_capabilities WHERE published_service_id = $1",
+    [service["id"]],
+  );
+  assert.equal(minted.rows[0]?.count, "0");
 });
 
 test("only a reserved session may be allocated", async () => {

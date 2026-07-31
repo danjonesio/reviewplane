@@ -162,3 +162,17 @@ export {
   type SubmitVerificationInput,
   type Verification,
 } from "./modules/reviews/service.ts";
+
+export {
+  STAGE_0_DESTINATION_POLICY,
+  type DestinationPolicy,
+} from "./modules/published-services/destination-policy.ts";
+export { HttpTunnelGateway, type TunnelGateway } from "./modules/published-services/gateway-client.ts";
+export {
+  PublishedServiceService,
+  type CreatePublishedServiceInput,
+  type PublishedServiceConfig,
+  type PublishedServiceView,
+  type RoutePublisher,
+} from "./modules/published-services/service.ts";
+export type { CallerScope, PublishedServiceStatus } from "./modules/published-services/repository.ts";

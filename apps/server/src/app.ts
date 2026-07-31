@@ -11,7 +11,7 @@
 import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
 
-import { bearerToken, requireBootstrapAdministrator } from "./auth.ts";
+import { bearerToken } from "./auth.ts";
 import type { Environment, LogDestination, ServerConfig } from "./config.ts";
 import type { Pool } from "./db/pool.ts";
 import { renderError } from "./errors.ts";
@@ -222,22 +222,22 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     gateway,
     options.publisher ?? new ConnectorRoutePublisher(connectors.channels),
     {
-      organisationId: connectors.config.organisationId,
       destinationPolicy: options.destinationPolicy ?? STAGE_0_DESTINATION_POLICY,
       internalSuffix: config.internalSuffix,
       routeTtlMaxSeconds: config.routeTtlMaxSeconds,
       maxRoutesPerConnector: 10,
-      capabilityKeyId: config.capabilityKeyId,
-      capabilityKey: config.capabilityKey,
-      capabilityTtlSeconds: config.capabilityTtlSeconds,
+      // This process holds the signing key, so this process mints. The MCP
+      // endpoint builds the same service without one (ADR-0021).
+      capability: {
+        keyId: config.capabilityKeyId,
+        key: config.capabilityKey,
+        ttlSeconds: config.capabilityTtlSeconds,
+      },
     },
     options.now,
   );
 
-  registerPublishedServiceRoutes(app, {
-    service: publishedServices,
-    authenticate: requireBootstrapAdministrator(config.bootstrapToken),
-  });
+  registerPublishedServiceRoutes(app, { pool, service: publishedServices });
 
   // Reconnect reconciliation (`docs/CONNECTOR_PROTOCOL.md` §17). It is supplied
   // to the connector module rather than constructed inside it, because deciding

@@ -32,6 +32,33 @@ export interface McpServerConfig {
   readonly apiPathPrefix: string;
   /** Route the MCP endpoint is served on (`docs/API.md` section 3). */
   readonly mcpPath: string;
+  /**
+   * The tunnel gateway's control listener, for the published-service tools of
+   * `docs/MCP_SPEC.md` section 7.2.
+   *
+   * Revocation must reach the gateway to be a revocation at all: the gateway
+   * verifies a capability from its signature without a database read, so a
+   * record marked revoked while the gateway still carried the route would be a
+   * revocation of nothing. Publication does not need this listener — the `api`
+   * process finishes a requested route (ADR-0021) — but withdrawal does, and it
+   * must be immediate.
+   */
+  readonly tunnelControlUrl: string;
+  readonly tunnelControlToken: string;
+  /** Suffix the internal route origin is built from (`docs/ARCHITECTURE.md` section 7.3). */
+  readonly internalSuffix: string;
+  /** Longest route lifetime this deployment permits. */
+  readonly routeTtlMaxSeconds: number;
+  /**
+   * How long `development_service_publish` waits for a requested route to
+   * become `ready` or `failed`.
+   *
+   * It is bounded, and it ends in the record as it stands rather than in a
+   * timeout: `docs/CONNECTOR_PROTOCOL.md` section 11 gives the connector a ten
+   * second startup grace, so a wait shorter than that would report `requested`
+   * for a route that was about to work.
+   */
+  readonly publishWaitMs: number;
 }
 
 export type Environment = Readonly<Record<string, string | undefined>>;
@@ -135,5 +162,14 @@ export function loadMcpServerConfig(environment: Environment = process.env): Mcp
     ),
     apiPathPrefix: text(environment, "REVIEWPLANE_API_PATH_PREFIX", "/api/v1").replace(/\/+$/u, ""),
     mcpPath: mcpPath.replace(/\/+$/u, ""),
+    tunnelControlUrl: text(
+      environment,
+      "REVIEWPLANE_TUNNEL_CONTROL_URL",
+      "http://tunnel-gateway:8445",
+    ).replace(/\/+$/u, ""),
+    tunnelControlToken: secret(environment, "REVIEWPLANE_TUNNEL_CONTROL_TOKEN"),
+    internalSuffix: text(environment, "REVIEWPLANE_INTERNAL_SUFFIX", "internal.invalid"),
+    routeTtlMaxSeconds: integer(environment, "REVIEWPLANE_ROUTE_TTL_MAX_SECONDS", 28800, 60, 86400),
+    publishWaitMs: integer(environment, "REVIEWPLANE_MCP_PUBLISH_WAIT_MS", 15000, 1000, 60000),
   };
 }

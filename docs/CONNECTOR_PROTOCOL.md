@@ -479,6 +479,25 @@ The startup grace exists because agents commonly publish before the development 
 
 The control plane's wait for an acknowledgement is bounded too. A connector holding no control channel is `CONNECTOR_OFFLINE` before anything is sent; a connector that holds one and never answers is `CONTROL_PLANE_UNAVAILABLE` when the wait expires. Neither leaves a published service in `requested` for ever.
 
+**Who sends the request.** A connector dials the control plane (ADR-0002), so
+its control channel terminates in the process serving the API and nowhere else.
+Publication is therefore two phases, split exactly there (ADR-0021). Any
+control-plane process may write a route as `requested` — that phase runs the
+browser-session rule above, the lifetime bound, the destination policy of
+`SECURITY.md` §9 and the per-connector route limit, and touches nothing outside
+the database, so a refused destination still never reaches the connector. The
+process holding the channel then performs this exchange and moves the record to
+`ready` or `failed`. It does so inline for its own callers and on a short
+interval for a route another process requested, which is what makes the sentence
+above true for the agent surface as well: the sweep reaches an abandoned
+`requested` row, the exchange fails with `CONNECTOR_OFFLINE`, and the record
+becomes `failed` carrying that class.
+
+Revocation is **not** split this way. The tunnel gateway verifies a route
+capability from its signature without a database read, so a record marked
+revoked while the gateway still carried the route would be a revocation of
+nothing; every process that can revoke reaches the gateway directly (§18).
+
 The same checks are applied independently by the control plane before it publishes and by the tunnel gateway before it registers a route. Three implementations of one policy is the defence in depth `SECURITY.md` §9 requires: a control plane that had been persuaded to publish an unauthorised destination must still be refused by the gateway, and a gateway that had been misconfigured must still be refused by the connector. They are held to one shared corpus so that they cannot drift apart.
 
 ## 12. Data stream protocol
