@@ -36,6 +36,15 @@ function FindingPanel({
   readonly finding: Finding;
   readonly annotations: readonly Annotation[];
 }): ReactElement {
+  // The before-and-after comparison of `docs/UX_FLOWS.md` section 17 is a pair
+  // of artefacts recorded on a verification submission
+  // (`docs/DOMAIN_MODEL.md` section 19). There is none until an agent submits
+  // one, and the viewer says so rather than offering a control that compares
+  // nothing.
+  const verification = useQuery({
+    queryKey: ["finding-verification", finding.id],
+    queryFn: () => api.findingVerification(finding.id),
+  });
   return (
     <li
       data-finding={finding.id}
@@ -88,6 +97,7 @@ function FindingPanel({
         <ArtefactViewer
           artefactId={finding.screenshot_artefact_id}
           annotations={annotations}
+          compareArtefactId={verification.data?.after_artefact_id ?? null}
           captureScale={finding.viewport.device_scale_factor}
           caption={`Screenshot of ${finding.url} at ${String(finding.viewport.width)} by ${String(
             finding.viewport.height,

@@ -18,10 +18,23 @@ import type {
   AnnotationType,
   Artefact,
   ArtefactAccessGranted,
+  ArtefactDeleted,
+  ArtefactDisposition,
   ArtefactKind,
+  ArtefactResource,
+  ArtefactResourceDegradation,
+  ArtefactResourceDegradationReason,
+  ArtefactResourceInstructionPolicy,
+  ArtefactResourceTrust,
   ArtefactState,
+  ArtefactStorageDriver,
+  ArtefactStoreStatus,
+  ArtefactThumbnailGenerated,
   ArtefactUploadCompleted,
+  ArtefactUploadCompletionRequest,
   ArtefactUploadFailed,
+  ArtefactUploadIntentRequest,
+  ArtefactUploadIntentResponse,
   ArtefactUploadStarted,
   Comment,
   CommentCreateRequest,
@@ -75,6 +88,7 @@ import type {
   ReviewUpdateRequest,
   ScreenshotCaptured,
   ScrollPosition,
+  ThumbnailState,
   VerificationChecks,
   VerificationReference,
   VerificationStatus,
@@ -277,6 +291,134 @@ export function decodeArtefact(value: unknown): Artefact {
     created_at: source["created_at"] as string,
     ...(source["available_at"] === undefined ? {} : { available_at: source["available_at"] as string }),
     ...(source["expires_at"] === undefined ? {} : { expires_at: source["expires_at"] as string }),
+    ...(source["disposition"] === undefined ? {} : { disposition: source["disposition"] as ArtefactDisposition }),
+    ...(source["encryption_key_reference"] === undefined ? {} : { encryption_key_reference: source["encryption_key_reference"] as string }),
+    ...(source["source_artefact_id"] === undefined ? {} : { source_artefact_id: source["source_artefact_id"] as string }),
+    ...(source["thumbnail_state"] === undefined ? {} : { thumbnail_state: source["thumbnail_state"] as ThumbnailState }),
+    ...(source["thumbnail_artefact_id"] === undefined ? {} : { thumbnail_artefact_id: source["thumbnail_artefact_id"] as string }),
+    ...(source["deleted_at"] === undefined ? {} : { deleted_at: source["deleted_at"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated ArtefactUploadIntentRequest.
+ */
+export function decodeArtefactUploadIntentRequest(value: unknown): ArtefactUploadIntentRequest {
+  const source = value as Record<string, unknown>;
+  return {
+    kind: source["kind"] as ArtefactKind,
+    content_type: source["content_type"] as MediaType,
+    size_bytes: source["size_bytes"] as number,
+    sha256: source["sha256"] as string,
+    ...(source["retention_class"] === undefined ? {} : { retention_class: source["retention_class"] as RetentionClass }),
+    ...(source["browser_session_id"] === undefined ? {} : { browser_session_id: source["browser_session_id"] as string }),
+    ...(source["source_artefact_id"] === undefined ? {} : { source_artefact_id: source["source_artefact_id"] as string }),
+    ...(source["filename"] === undefined ? {} : { filename: source["filename"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated ArtefactUploadIntentResponse.
+ */
+export function decodeArtefactUploadIntentResponse(value: unknown): ArtefactUploadIntentResponse {
+  const source = value as Record<string, unknown>;
+  return {
+    artefact_id: source["artefact_id"] as string,
+    state: source["state"] as ArtefactState,
+    ...(source["upload_path"] === undefined ? {} : { upload_path: source["upload_path"] as string }),
+    ...(source["upload_url"] === undefined ? {} : { upload_url: source["upload_url"] as string }),
+    ...(source["upload_expires_at"] === undefined ? {} : { upload_expires_at: source["upload_expires_at"] as string }),
+    max_bytes: source["max_bytes"] as number,
+  };
+}
+
+/**
+ * Decodes a validated ArtefactUploadCompletionRequest.
+ */
+export function decodeArtefactUploadCompletionRequest(value: unknown): ArtefactUploadCompletionRequest {
+  const source = value as Record<string, unknown>;
+  return {
+    sha256: source["sha256"] as string,
+    ...(source["size_bytes"] === undefined ? {} : { size_bytes: source["size_bytes"] as number }),
+  };
+}
+
+/**
+ * Decodes a validated ArtefactResource.
+ */
+export function decodeArtefactResource(value: unknown): ArtefactResource {
+  const source = value as Record<string, unknown>;
+  return {
+    artefact_id: source["artefact_id"] as string,
+    kind: source["kind"] as ArtefactKind,
+    state: source["state"] as ArtefactState,
+    content_type: source["content_type"] as MediaType,
+    ...(source["sha256"] === undefined ? {} : { sha256: source["sha256"] as string }),
+    ...(source["size_bytes"] === undefined ? {} : { size_bytes: source["size_bytes"] as number }),
+    ...(source["content_rectangle"] === undefined ? {} : { content_rectangle: decodeContentRectangle(source["content_rectangle"]) }),
+    ...(source["browser_session_id"] === undefined ? {} : { browser_session_id: source["browser_session_id"] as string }),
+    ...(source["redaction_state"] === undefined ? {} : { redaction_state: source["redaction_state"] as RedactionState }),
+    ...(source["disposition"] === undefined ? {} : { disposition: source["disposition"] as ArtefactDisposition }),
+    ...(source["content_path"] === undefined ? {} : { content_path: source["content_path"] as string }),
+    ...(source["expires_at"] === undefined ? {} : { expires_at: source["expires_at"] as string }),
+    ...(source["degraded"] === undefined ? {} : { degraded: decodeArtefactResourceDegradation(source["degraded"]) }),
+    trust: source["trust"] as ArtefactResourceTrust,
+    instruction_policy: source["instruction_policy"] as ArtefactResourceInstructionPolicy,
+  };
+}
+
+/**
+ * Decodes a validated ArtefactResourceDegradation.
+ */
+export function decodeArtefactResourceDegradation(value: unknown): ArtefactResourceDegradation {
+  const source = value as Record<string, unknown>;
+  return {
+    reason: source["reason"] as ArtefactResourceDegradationReason,
+    detail: source["detail"] as string,
+  };
+}
+
+/**
+ * Decodes a validated ArtefactStoreStatus.
+ */
+export function decodeArtefactStoreStatus(value: unknown): ArtefactStoreStatus {
+  const source = value as Record<string, unknown>;
+  return {
+    driver: source["driver"] as ArtefactStorageDriver,
+    available: source["available"] as boolean,
+    ...(source["detail"] === undefined ? {} : { detail: source["detail"] as string }),
+    artefact_count: source["artefact_count"] as number,
+    stored_bytes: source["stored_bytes"] as number,
+    ...(source["pending_bytes"] === undefined ? {} : { pending_bytes: source["pending_bytes"] as number }),
+  };
+}
+
+/**
+ * Decodes a validated ArtefactDeleted.
+ */
+export function decodeArtefactDeleted(value: unknown): ArtefactDeleted {
+  const source = value as Record<string, unknown>;
+  return {
+    artefact_id: source["artefact_id"] as string,
+    kind: source["kind"] as ArtefactKind,
+    ...(source["sha256"] === undefined ? {} : { sha256: source["sha256"] as string }),
+    ...(source["size_bytes"] === undefined ? {} : { size_bytes: source["size_bytes"] as number }),
+    bytes_removed: source["bytes_removed"] as boolean,
+    ...(source["reason"] === undefined ? {} : { reason: source["reason"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated ArtefactThumbnailGenerated.
+ */
+export function decodeArtefactThumbnailGenerated(value: unknown): ArtefactThumbnailGenerated {
+  const source = value as Record<string, unknown>;
+  return {
+    artefact_id: source["artefact_id"] as string,
+    state: source["state"] as ThumbnailState,
+    ...(source["thumbnail_artefact_id"] === undefined ? {} : { thumbnail_artefact_id: source["thumbnail_artefact_id"] as string }),
+    ...(source["content_rectangle"] === undefined ? {} : { content_rectangle: decodeContentRectangle(source["content_rectangle"]) }),
+    ...(source["reason"] === undefined ? {} : { reason: source["reason"] as string }),
   };
 }
 

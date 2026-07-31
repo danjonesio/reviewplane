@@ -1,0 +1,25 @@
+{
+  "id": "evt_01JARTSVGUPLOAD",
+  "schema_version": 1,
+  "sequence": 31,
+  "type": "artefact.upload_started",
+  "occurred_at": "2026-07-30T10:12:04.118Z",
+  "recorded_at": "2026-07-30T10:12:04.126Z",
+  "organisation_id": "org_01JREFRESH",
+  "project_id": "prj_01JREFRESHSURPLUS",
+  "actor": {
+    "type": "browser_worker",
+    "id": "wkr_01JCHROMIUM01",
+    "display": "browser-worker-01"
+  },
+  "correlation": {
+    "artefact_id": "art_01JSVGATTEMPT"
+  },
+  "payload": {
+    "artefact_id": "art_01JSVGATTEMPT",
+    "kind": "screenshot",
+    "declared_size_bytes": 4096,
+    "declared_sha256": "1c1b1a191817161514131211100f0e0d0c0b0a090807060504030201000f0e0d",
+    "content_type": "image/svg+xml"
+  }
+}

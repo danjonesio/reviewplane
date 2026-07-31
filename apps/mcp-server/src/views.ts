@@ -210,9 +210,16 @@ export async function toArtefactLink(
   role: string | null,
   context: ViewContext,
 ): Promise<ArtefactLink | null> {
-  const record = await context.artefacts.get(artefactId).catch(() => null);
+  // The identifier, the session's project and its organisation are one
+  // predicate, so an artefact from another tenant is not returned and then
+  // filtered out (`docs/TESTING.md` section 10).
+  const record = await context.artefacts
+    .getInScope(artefactId, {
+      organisationId: context.session.organisationId,
+      projectIds: [context.session.projectId],
+    })
+    .catch(() => null);
   if (record === null) return null;
-  if (record.project_id !== context.session.projectId) return null;
 
   const base: ArtefactLink = {
     artefact_id: record.id,
@@ -242,7 +249,7 @@ export async function toArtefactLink(
   }
 
   const grant = await context.artefacts.grantAccess({
-    artefactId: record.id,
+    record,
     subjectType: "agent_session",
     subjectId: context.session.id,
     actor: { type: "agent_session", id: context.session.id, display: context.session.agentType },

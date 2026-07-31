@@ -192,7 +192,7 @@ test("a completion digest that contradicts the intent is refused", async () => {
   assert.equal(completed.statusCode, 409);
 });
 
-test("the artefact store is unavailable: completion fails and nothing becomes available", async () => {
+test("the artefact store is unavailable: completion fails, nothing becomes available, and the upload stays retryable", async () => {
   const { projectId } = await seedProjectAndWorker(harness);
   const created = await intent(projectId);
   const { artefact_id: artefactId, upload_path: uploadPath } = (
@@ -214,13 +214,36 @@ test("the artefact store is unavailable: completion fails and nothing becomes av
     headers: { authorization: `Bearer ${WORKER_CREDENTIAL}` },
     payload: { sha256: digest(PNG) },
   });
-  assert.equal(completed.statusCode, 409);
+  // 503, not 409: the resolution is to retry rather than to change the request.
+  assert.equal(completed.statusCode, 503);
+  const failure = completed.json() as {
+    error: { code: string; message: string; details?: { reason?: string } };
+  };
+  // `docs/ARCHITECTURE.md` section 14 asks for a clear error. The code names
+  // the store rather than blaming the uploader, which sent exactly what it
+  // declared; `ARTEFACT_UPLOAD_INCOMPLETE` would send an operator to look at an
+  // upload that had in fact completed.
+  assert.equal(failure.error.code, "ARTEFACT_STORE_UNAVAILABLE");
+  assert.equal(failure.error.details?.reason, "artefact_store_unavailable");
+
+  // And it says nothing about where the store is. `docs/SECURITY.md` section 18
+  // wants a stable code rather than free text precisely so that a refusal
+  // carries no deployment data: the artefact root, the storage key and the raw
+  // Node error all stay in the log.
+  const body = JSON.stringify(failure);
+  assert.ok(!body.includes(harness.artefactRoot), `the refusal leaked the store path: ${body}`);
+  assert.ok(!/ENOENT|no such file|sha256\//u.test(body), `the refusal leaked the driver error: ${body}`);
+  process.stdout.write(`EVIDENCE store unavailable: ${failure.error.code} ${failure.error.message}\n`);
+
   const record = await harness.built.app.inject({
     method: "GET",
     url: `/api/v1/artefacts/${artefactId}`,
     headers: { authorization: `Bearer ${BOOTSTRAP_TOKEN}` },
   });
-  assert.equal((record.json() as { data: { state: string } }).data.state, "failed");
+  // Not `failed`: a store outage is not a verification failure, and marking it
+  // failed would turn a transient fault into evidence the worker can never
+  // finish uploading. It stays where it was, so the same intent is retryable.
+  assert.equal((record.json() as { data: { state: string } }).data.state, "uploaded");
 });
 
 test("artefact keys are content-addressed and carry no caller-supplied name", async () => {

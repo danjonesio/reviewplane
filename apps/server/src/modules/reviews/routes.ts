@@ -706,6 +706,22 @@ export async function registerReviewRoutes(
     return send(reply, request, annotation, 201);
   });
 
+  /**
+   * The latest verification for a finding, or null (`docs/API.md` §13).
+   *
+   * The artefact viewer needs it: the before-and-after comparison of
+   * `docs/UX_FLOWS.md` §17 is a pair of artefact identifiers, and this is where
+   * they are recorded (`docs/DOMAIN_MODEL.md` §19). It is read-only and resolves
+   * through `scopedRecord` like every other route here, so the caller's own
+   * organisation is part of the lookup rather than taken from the row;
+   * submitting a verification is a separate change.
+   */
+  app.get("/api/v1/findings/:findingId/verification", async (request, reply) => {
+    const { findingId } = request.params as { findingId: string };
+    const { scope } = await scopedRecord(request, "findings", findingId, "read");
+    return send(reply, request, await reviews.latestVerification(scope, findingId));
+  });
+
   app.get("/api/v1/findings/:findingId/annotations", async (request, reply) => {
     const { findingId } = request.params as { findingId: string };
     const { scope } = await scopedRecord(request, "findings", findingId, "read");

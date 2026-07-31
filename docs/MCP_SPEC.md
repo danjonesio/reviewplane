@@ -760,6 +760,31 @@ resource read is an explicit request for them (section 13). Reading it mints an
 audited access grant for the agent session (`docs/SECURITY.md` section 16,
 ADR-0019).
 
+Both resources return the `artefact_resource` shape of `packages/protocol`,
+carrying the trust label and the instruction policy on every read: artefact
+bytes are browser-derived and untrusted (ADR-0010), and an agent that finds
+instructions in a DOM snapshot has found page content, not a command.
+
+**Degradation is a success with a reason.** A read that could not give the
+caller what it asked for returns the metadata, the verified digest and a
+short-lived content path, plus a `degraded` object naming the cause and saying
+what was returned instead:
+
+- `image_resources_unsupported` — the client declared no image-resource
+  capability (`docs/ARCHITECTURE.md` section 8.3, `docs/UX_FLOWS.md`
+  section 18). Refusing the read would deny the agent the digest and the
+  metadata it can use, and would say nothing about why.
+- `active_content_not_inlined` — the artefact is active markup, whose bytes are
+  only ever served as a download (`docs/SECURITY.md` section 13). A DOM snapshot
+  reached through `screenshot://` is answered this way rather than inlined.
+
+The absence of `degraded` is therefore meaningful: it says the read was
+complete.
+
+An artefact that has not been verified is refused with
+`ARTEFACT_UPLOAD_INCOMPLETE` rather than degraded, because there is no evidence
+to give.
+
 ## 9. Inbox workflow
 
 Recommended agent checkpoints:
@@ -828,11 +853,16 @@ Initial stable codes:
 - `APPROVAL_REQUIRED`
 - `EVIDENCE_REQUIRED`
 - `ARTEFACT_UPLOAD_INCOMPLETE`
+- `ARTEFACT_STORE_UNAVAILABLE`
 - `UNSUPPORTED_CAPABILITY`
 - `RATE_LIMITED`
 - `INTERNAL_ERROR`
 
-Adding a code is additive within a protocol version, and clients MUST tolerate a code they do not recognise. `BROWSER_COMMAND_TIMEOUT` reports a browser command that exceeded its declared bound; `docs/TESTING.md` section 11 requires that failure to be a stable code rather than an indefinite wait, and no existing code carried that meaning.
+Adding a code is additive within a protocol version, and clients MUST tolerate a code they do not recognise.
+
+`ARTEFACT_UPLOAD_INCOMPLETE` and `ARTEFACT_STORE_UNAVAILABLE` are distinguished on purpose, in the same way as the two connector codes below. The first says the artefact is not evidence: its upload never completed verification, and the caller must produce it again. The second says the artefact *is* evidence and the store cannot be reached: the request should be retried unchanged. Answering the second case with the first would send an operator to examine an upload that had in fact succeeded. Neither code's message names the store — an absolute path or a bucket endpoint in a refusal is deployment data in a response, which `docs/SECURITY.md` section 18 forbids — so the reason is carried by the code and the detail goes to the server log.
+
+`BROWSER_COMMAND_TIMEOUT` reports a browser command that exceeded its declared bound; `docs/TESTING.md` section 11 requires that failure to be a stable code rather than an indefinite wait, and no existing code carried that meaning.
 
 `RESOURCE_STALE` is the code for an element reference from a superseded snapshot and for a replayed command sequence. Acting on a stale reference MUST fail with it rather than target whatever now occupies that position.
 
