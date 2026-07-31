@@ -603,13 +603,28 @@ else
 fi
 
 # A missing secret file fails closed with a message naming it.
+#
+# Two properties, asserted separately, because only one of them is Compose's.
+# Which component reports the absence depends on the Compose release: a recent
+# one refuses to create the container and names the file, while an older one
+# bind-mounts a directory in its place and leaves the control plane to discover
+# it at startup. The property that must hold either way is that the API does not
+# serve without its signing key — a process minting capabilities nothing could
+# verify would be worse than one that refused to start.
 mv "${INSTALL}/secrets/capability_signing_key" "${INSTALL}/secrets/capability_signing_key.moved"
 MISSING="$("${COMPOSE[@]}" up -d --no-deps api 2>&1 || true)"
-printf '%s\n' "${MISSING}" > "${EVIDENCE}/missing-secret.txt"
-if grep -qi "capability_signing_key" <<< "${MISSING}"; then
-  pass "a missing secret file is refused with a message naming it"
+sleep 5
+MISSING_LOGS="$("${COMPOSE[@]}" logs --tail 30 api 2>&1 || true)"
+printf '%s\n\n--- api log ---\n%s\n' "${MISSING}" "${MISSING_LOGS}" > "${EVIDENCE}/missing-secret.txt"
+if ready_from api "http://127.0.0.1:8080/health/ready" > /dev/null 2>&1; then
+  fail "the API served without its capability signing key"
 else
-  fail "a missing secret file was not reported clearly: $(head -c 200 <<< "${MISSING}")"
+  pass "a missing secret file leaves the API refusing to serve"
+fi
+if grep -qi "capability_signing_key" <<< "${MISSING}${MISSING_LOGS}"; then
+  pass "the refusal names the missing file"
+else
+  fail "the refusal did not name capability_signing_key: $(tail -c 300 <<< "${MISSING}${MISSING_LOGS}")"
 fi
 mv "${INSTALL}/secrets/capability_signing_key.moved" "${INSTALL}/secrets/capability_signing_key"
 
