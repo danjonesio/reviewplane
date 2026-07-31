@@ -97,6 +97,8 @@ export {
 export {
   loadArtefactStoreConfig,
   loadRetentionWindows,
+  DEFAULT_ARTEFACT_MAX_BYTES,
+  DEFAULT_ARTEFACT_PATH,
   DEFAULT_RETENTION_DAYS,
   type ArtefactStoreConfig,
   type RetentionWindows,

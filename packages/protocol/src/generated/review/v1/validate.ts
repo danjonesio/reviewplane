@@ -844,7 +844,9 @@ export function validateArtefactUploadIntentRequest(value: unknown, path: string
 }
 
 /**
- * Server-relative path to POST the bytes to, under the filesystem driver.
+ * Server-relative path to POST the bytes to. It is returned under both drivers, because
+ * Stage 1 proxies the upload under both: the server is where content-type validation
+ * happens, so no byte reaches storage before it passes.
  */
 export function validateArtefactUploadIntentResponseUploadPath(value: unknown, path: string, out: SchemaViolation[]): void {
   checkString(value, path, out, { minLength: 1, maxLength: 512, pattern: PATTERN_11 });

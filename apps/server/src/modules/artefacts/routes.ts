@@ -13,7 +13,12 @@
  * rejected, and a foreign identifier is answered exactly as an unknown one is
  * (`docs/TESTING.md` §10). The older shape here looked the artefact up first
  * and compared afterwards, which made the two refusals distinguishable and the
- * identifier space enumerable (RVP-66, RVP-67).
+ * identifier space enumerable.
+ *
+ * That repairs the defect **in this module only**. RVP-66 and RVP-67 also name
+ * `modules/reviews/routes.ts`, whose `scopeForRecord` still authorises on the
+ * project a record names without comparing the caller's organisation; nothing
+ * here fixes that, and no comment in this file should be read as saying it did.
  *
  * **Reading bytes back works differently from every other route here**, and
  * deliberately so (ADR-0019). There is **no** path that serves an artefact from
@@ -159,6 +164,18 @@ export async function registerArtefactRoutes(
    * (`docs/API.md` §4.0). The check runs before anything else this function
    * does with the session, and outside any `catch`: swallowing its refusal
    * would be a guard that refuses nothing.
+   *
+   * **The fallthrough across three mechanisms is deliberate**, and the
+   * `.catch(() => null)` on each is narrower than it looks. Each resolver
+   * either produces a principal or does not; a rejection means "this request
+   * does not carry a credential of my kind", which is a reason to try the next
+   * mechanism and never a reason to admit anybody. Nothing here returns a
+   * principal it did not resolve, and the last step — `resolvePrincipal` —
+   * throws rather than falling through to an anonymous caller, so a request
+   * with no recognised credential is refused rather than admitted with an empty
+   * scope. `requireCsrfToken` is called before the `return` and outside the
+   * `catch` that wraps the resolver, so its refusal propagates rather than
+   * demoting a cookie session to the next mechanism.
    */
   const resolveCaller = async (
     request: FastifyRequest,
@@ -403,18 +420,22 @@ export async function registerArtefactRoutes(
    * The only route that serves artefact bytes.
    *
    * The grant is resolved first, then the caller is authenticated and matched
-   * against the grant's subject. A grant belonging to somebody else is refused
-   * exactly as an unknown one is.
+   * against the grant's subject.
+   *
+   * **Every refusal here is the same refusal.** An unknown grant, an expired
+   * one, a revoked one and a live one presented by the wrong principal all
+   * produce `unusableGrant()` — one status, one code, one message. Telling them
+   * apart is an existence oracle over grant identifiers, which is the class
+   * `docs/TESTING.md` §10 and RVP-67 are about; that the identifier is 24
+   * random bytes makes the oracle expensive to exploit rather than absent, and
+   * "expensive" is not the property the criterion asks for. It costs a caller
+   * nothing, because the remedy is the same in all four cases: mint a new
+   * grant.
    */
   app.get("/api/v1/artefact-content/:grantId", async (request, reply) => {
     const { grantId } = request.params as { grantId: string };
     const grant = await options.artefacts.resolveGrant(grantId);
-    if (grant === null) {
-      throw new ApiError(
-        "AUTHENTICATION_REQUIRED",
-        "This artefact grant is unknown, expired or revoked.",
-      );
-    }
+    if (grant === null) throw unusableGrant();
 
     if (grant.subject_type === "agent_session") {
       // ADR-0019's agent flow. The grant names one agent session; the caller
@@ -431,19 +452,18 @@ export async function registerArtefactRoutes(
         agent.organisationId === grant.organisation_id &&
         agent.projectIds.has(grant.project_id) &&
         (agent.sessionIds.has(grant.subject_id) || agent.credentialId === grant.subject_id);
-      if (!owns) {
-        throw new ApiError(
-          "AUTHORISATION_DENIED",
-          "This artefact grant was issued to a different principal.",
-        );
-      }
+      if (!owns) throw unusableGrant();
     } else {
-      const caller = await resolveCaller(request, "read");
-      if (caller.subjectType !== grant.subject_type || caller.subjectId !== grant.subject_id) {
-        throw new ApiError(
-          "AUTHORISATION_DENIED",
-          "This artefact grant was issued to a different principal.",
-        );
+      // A caller that cannot authenticate at all reaches the same refusal: the
+      // resolution below throws, and it must not be a different refusal from
+      // the one a wrong subject gets.
+      const caller = await resolveCaller(request, "read").catch(() => null);
+      if (
+        caller === null ||
+        caller.subjectType !== grant.subject_type ||
+        caller.subjectId !== grant.subject_id
+      ) {
+        throw unusableGrant();
       }
     }
 
@@ -488,6 +508,21 @@ function sendArtefactBytes(
     .header("referrer-policy", "no-referrer")
     .header("cache-control", "private, no-store")
     .send(bytes);
+}
+
+/**
+ * The one refusal `/api/v1/artefact-content/:grantId` ever gives.
+ *
+ * Unknown, expired, revoked and issued-to-somebody-else are four different
+ * facts and one answer, so a caller learns nothing about which grants exist.
+ * The message names all four, which is honest and tells the caller the remedy —
+ * mint a new grant — without saying which of them applied.
+ */
+function unusableGrant(): ApiError {
+  return new ApiError(
+    "AUTHENTICATION_REQUIRED",
+    "This artefact grant is unknown, expired, revoked, or was issued to a different principal. Mint a new one.",
+  );
 }
 
 /** Extensions, for the name a download is offered under. */

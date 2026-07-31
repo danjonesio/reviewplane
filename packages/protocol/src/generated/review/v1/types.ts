@@ -1398,7 +1398,9 @@ export interface ArtefactUploadIntentResponse {
    */
   readonly state: ArtefactState;
   /**
-   * Server-relative path to POST the bytes to, under the filesystem driver.
+   * Server-relative path to POST the bytes to. It is returned under both drivers, because
+   * Stage 1 proxies the upload under both: the server is where content-type validation
+   * happens, so no byte reaches storage before it passes.
    */
   readonly upload_path?: string;
   /**

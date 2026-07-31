@@ -214,16 +214,26 @@ test("the artefact store is unavailable: completion fails, nothing becomes avail
     headers: { authorization: `Bearer ${WORKER_CREDENTIAL}` },
     payload: { sha256: digest(PNG) },
   });
-  assert.equal(completed.statusCode, 409);
+  // 503, not 409: the resolution is to retry rather than to change the request.
+  assert.equal(completed.statusCode, 503);
   const failure = completed.json() as {
     error: { code: string; message: string; details?: { reason?: string } };
   };
-  assert.equal(failure.error.code, "ARTEFACT_UPLOAD_INCOMPLETE");
-  // `docs/ARCHITECTURE.md` section 14 asks for a clear error. The refusal names
-  // the store rather than blaming the uploader, because the uploader sent
-  // exactly what it declared.
+  // `docs/ARCHITECTURE.md` section 14 asks for a clear error. The code names
+  // the store rather than blaming the uploader, which sent exactly what it
+  // declared; `ARTEFACT_UPLOAD_INCOMPLETE` would send an operator to look at an
+  // upload that had in fact completed.
+  assert.equal(failure.error.code, "ARTEFACT_STORE_UNAVAILABLE");
   assert.equal(failure.error.details?.reason, "artefact_store_unavailable");
-  process.stdout.write(`EVIDENCE store unavailable: ${failure.error.message}\n`);
+
+  // And it says nothing about where the store is. `docs/SECURITY.md` section 18
+  // wants a stable code rather than free text precisely so that a refusal
+  // carries no deployment data: the artefact root, the storage key and the raw
+  // Node error all stay in the log.
+  const body = JSON.stringify(failure);
+  assert.ok(!body.includes(harness.artefactRoot), `the refusal leaked the store path: ${body}`);
+  assert.ok(!/ENOENT|no such file|sha256\//u.test(body), `the refusal leaked the driver error: ${body}`);
+  process.stdout.write(`EVIDENCE store unavailable: ${failure.error.code} ${failure.error.message}\n`);
 
   const record = await harness.built.app.inject({
     method: "GET",

@@ -488,11 +488,13 @@ Two of these belong to the artefact surface.
 
 **Evidence upload incomplete.** An artefact that has not passed verification is
 not evidence: no grant may be minted for it, and the refusal is
-`ARTEFACT_UPLOAD_INCOMPLETE`. When the cause is the store rather than the bytes,
-the refusal carries `details.reason = "artefact_store_unavailable"`, so the
-surface can say "the evidence store is unreachable, the upload can be retried"
-rather than "the upload was rejected", which would be untrue and would send a
-reader to recapture something that was fine.
+`ARTEFACT_UPLOAD_INCOMPLETE`. When the cause is the store rather than the bytes
+the code is `ARTEFACT_STORE_UNAVAILABLE` instead, so the surface says "the
+evidence store is unreachable, this can be retried" rather than "the upload was
+rejected" — which would be untrue and would send a reader to recapture
+something that was fine. Neither message names the store, so a surface must
+render the code's own wording and never expect a path or an endpoint to explain
+the failure to a reader.
 
 **Agent lacks image-resource capability.** A `screenshot://` read by a client
 that declared no image capability returns the metadata, the verified digest and

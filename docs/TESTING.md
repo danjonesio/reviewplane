@@ -326,7 +326,15 @@ would pass while the property was broken.
 **Cross-project access is compared byte for byte** against the refusal an
 identifier that never existed produces. `RESOURCE_NOT_FOUND` for both is not
 enough on its own: a different message, or a different `details` object, is
-still an oracle telling a caller that the identifier exists.
+still an oracle telling a caller that the identifier exists. The same comparison
+is applied to `GET /api/v1/artefact-content/:grantId`, where an unknown grant,
+an expired one, an unauthenticated caller and a live grant presented by the
+wrong subject must all produce one status and one body.
+
+**A refusal must carry no deployment data.** The store-unavailable cases assert
+that the response contains neither the server's artefact root nor the raw driver
+error, because `docs/SECURITY.md` §18 keeps both in the log rather than in a
+body an agent session or a browser worker can read.
 
 **Active content is asserted at both ends.** The server's response must carry
 `Content-Disposition: attachment` with `nosniff`, a sandboxing policy and

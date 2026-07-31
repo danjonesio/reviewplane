@@ -1212,7 +1212,7 @@
         },
         "upload_path": {
           "type": "string",
-          "description": "Server-relative path to POST the bytes to, under the filesystem driver.",
+          "description": "Server-relative path to POST the bytes to. It is returned under both drivers, because Stage 1 proxies the upload under both: the server is where content-type validation happens, so no byte reaches storage before it passes.",
           "minLength": 1,
           "maxLength": 512,
           "pattern": "^/[!-~]*$"

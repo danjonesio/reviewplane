@@ -734,12 +734,18 @@ artefact becomes `failed`, `artefact.upload_failed` is recorded, and retrying
 the same intent would be wrong because it describes something the uploader did
 not send. A store that cannot accept a write or answer a read is not the
 uploader's fault: the artefact keeps the state it had, the refusal is
-`ARTEFACT_UPLOAD_INCOMPLETE` carrying `details.reason =
+`ARTEFACT_STORE_UNAVAILABLE` carrying `details.reason =
 "artefact_store_unavailable"`, and the same intent and idempotency key remain
 retryable. Marking a store outage `failed` would turn a transient fault into
-lost evidence. Neither outcome makes anything available, and the database
-constraint `artefacts_available_is_verified` means a bug in this code cannot
-either.
+lost evidence, and answering it with `ARTEFACT_UPLOAD_INCOMPLETE` would send an
+operator to examine an upload that had in fact completed. Neither outcome makes
+anything available, and the database constraint
+`artefacts_available_is_verified` means a bug in this code cannot either.
+
+Neither refusal names the store. A filesystem error carries an absolute server
+path and an S3 error carries the bucket endpoint and a fragment of the service's
+own XML; `docs/SECURITY.md` §18 keeps both out of a response, and the control
+plane logs them against the request identifier instead.
 
 The idempotency key is the `Idempotency-Key` header on the upload intent. A
 worker that crashed after uploading and before completing resumes the artefact

@@ -53,13 +53,20 @@ const UNUSED_S3: S3DriverConfig = {
 };
 
 /**
- * Defaults for the two settings both this module and `src/config.ts` read.
+ * Defaults for the two settings that **three** loaders read.
  *
- * They are declared here because the artefact module owns them, and
- * `src/config.ts` cannot import them without a cycle: it is the file this one
- * imports its readers from. `test/artefact-store-stage-1.test.ts` asserts that
- * the two loaders agree on both values, so the duplication is guarded by a test
- * rather than by a comment asking somebody to remember.
+ * `REVIEWPLANE_ARTEFACT_PATH` and `REVIEWPLANE_ARTEFACT_MAX_BYTES` are read
+ * here, in `apps/server/src/config.ts`, and in `apps/mcp-server/src/config.ts`.
+ * They are declared here because the artefact module owns them; the server's
+ * own configuration cannot import them without a cycle, since it is the file
+ * this one imports its readers from, and the MCP server is a separate package
+ * with its own configuration surface.
+ *
+ * Both duplications are guarded by tests rather than by a comment asking
+ * somebody to remember: `apps/server/test/artefact-store-stage-1.test.ts`
+ * asserts that this loader and the server's agree, and
+ * `apps/mcp-server/test/unit.test.ts` asserts that the MCP server's agrees with
+ * this one. A default that drifts fails a gate.
  */
 export const DEFAULT_ARTEFACT_PATH = "/var/lib/reviewplane/artefacts";
 export const DEFAULT_ARTEFACT_MAX_BYTES = 20_971_520;

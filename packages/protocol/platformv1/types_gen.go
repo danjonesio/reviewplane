@@ -93,13 +93,14 @@ const (
 	ErrorClassApprovalRequired            ErrorClass = "APPROVAL_REQUIRED"
 	ErrorClassEvidenceRequired            ErrorClass = "EVIDENCE_REQUIRED"
 	ErrorClassArtefactUploadIncomplete    ErrorClass = "ARTEFACT_UPLOAD_INCOMPLETE"
+	ErrorClassArtefactStoreUnavailable    ErrorClass = "ARTEFACT_STORE_UNAVAILABLE"
 	ErrorClassUnsupportedCapability       ErrorClass = "UNSUPPORTED_CAPABILITY"
 	ErrorClassRateLimited                 ErrorClass = "RATE_LIMITED"
 	ErrorClassInternalError               ErrorClass = "INTERNAL_ERROR"
 )
 
 // ErrorClassValues lists every value in declaration order.
-var ErrorClassValues = []ErrorClass{ErrorClassAuthenticationRequired, ErrorClassAuthorisationDenied, ErrorClassProjectContextAmbiguous, ErrorClassProjectContextMismatch, ErrorClassResourceNotFound, ErrorClassResourceStale, ErrorClassVersionConflict, ErrorClassIdempotencyConflict, ErrorClassValidationFailed, ErrorClassConnectorOffline, ErrorClassPublishedServiceUnavailable, ErrorClassBrowserCapacityExhausted, ErrorClassBrowserSessionNotActive, ErrorClassBrowserCommandTimeout, ErrorClassControlNotOwned, ErrorClassControlEpochStale, ErrorClassPolicyDenied, ErrorClassApprovalRequired, ErrorClassEvidenceRequired, ErrorClassArtefactUploadIncomplete, ErrorClassUnsupportedCapability, ErrorClassRateLimited, ErrorClassInternalError}
+var ErrorClassValues = []ErrorClass{ErrorClassAuthenticationRequired, ErrorClassAuthorisationDenied, ErrorClassProjectContextAmbiguous, ErrorClassProjectContextMismatch, ErrorClassResourceNotFound, ErrorClassResourceStale, ErrorClassVersionConflict, ErrorClassIdempotencyConflict, ErrorClassValidationFailed, ErrorClassConnectorOffline, ErrorClassPublishedServiceUnavailable, ErrorClassBrowserCapacityExhausted, ErrorClassBrowserSessionNotActive, ErrorClassBrowserCommandTimeout, ErrorClassControlNotOwned, ErrorClassControlEpochStale, ErrorClassPolicyDenied, ErrorClassApprovalRequired, ErrorClassEvidenceRequired, ErrorClassArtefactUploadIncomplete, ErrorClassArtefactStoreUnavailable, ErrorClassUnsupportedCapability, ErrorClassRateLimited, ErrorClassInternalError}
 
 // ActorType is defined by the connector protocol schema.
 //

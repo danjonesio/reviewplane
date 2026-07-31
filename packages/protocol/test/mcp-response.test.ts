@@ -119,8 +119,20 @@ test("every transition target is expressible and every source is a real status",
 });
 
 test("the error-code enumeration is the section 12 list", () => {
-  assert.equal(ERROR_CLASS_VALUES.length, 22);
-  for (const code of ["PROJECT_CONTEXT_AMBIGUOUS", "IDEMPOTENCY_CONFLICT", "EVIDENCE_REQUIRED"]) {
+  // The count is a deliberate speed bump: adding a refusal code is additive and
+  // allowed, and it should still be a decision somebody made rather than one
+  // that arrived with a schema edit. Raise it together with
+  // `docs/MCP_SPEC.md` section 12.
+  assert.equal(ERROR_CLASS_VALUES.length, 23);
+  for (const code of [
+    "PROJECT_CONTEXT_AMBIGUOUS",
+    "IDEMPOTENCY_CONFLICT",
+    "EVIDENCE_REQUIRED",
+    // The artefact store being unreachable is not the same failure as an
+    // artefact whose upload never completed, and an agent has to be able to
+    // tell them apart: the first is retryable and the second is not.
+    "ARTEFACT_STORE_UNAVAILABLE",
+  ]) {
     assert.ok((ERROR_CLASS_VALUES as readonly string[]).includes(code), code);
   }
 });

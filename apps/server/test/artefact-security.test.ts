@@ -297,16 +297,23 @@ test("artefact content is unreachable without a live grant issued to the caller"
   const anonymous = await harness.built.app.inject({ method: "GET", url: grant.url });
   assert.equal(anonymous.statusCode, 401);
 
-  // A different principal holding the same grant is refused too.
+  // A different principal holding the same grant is refused too, and refused
+  // identically: an unknown grant, an unauthenticated caller and a wrong
+  // subject are three facts and one answer, or the route is an existence oracle
+  // over grant identifiers (RVP-67).
   const wrongPrincipal = await harness.built.app.inject({
     method: "GET",
     url: grant.url,
     headers: WORKER,
   });
-  assert.equal(wrongPrincipal.statusCode, 403);
+  assert.equal(wrongPrincipal.statusCode, 401);
+  const strip = (body: string): string => body.replace(/"request_id":"[^"]*"/u, '"request_id":"x"');
+  assert.equal(strip(wrongPrincipal.body), strip(invented.body));
+  assert.equal(strip(anonymous.body), strip(invented.body));
   process.stdout.write(
     `EVIDENCE grant scoping: anonymous ${String(anonymous.statusCode)}, ` +
-      `wrong principal ${String(wrongPrincipal.statusCode)}\n`,
+      `wrong principal ${String(wrongPrincipal.statusCode)}, unknown ${String(invented.statusCode)}, ` +
+      `one body ${strip(invented.body)}\n`,
   );
 
   const served = await harness.built.app.inject({

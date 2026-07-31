@@ -1026,18 +1026,31 @@ export class ArtefactService {
 /**
  * The refusal an unreachable store produces.
  *
- * `ARTEFACT_UPLOAD_INCOMPLETE` rather than `INTERNAL_ERROR`: the artefact is
- * exactly what the code says — not complete — and `docs/UX_FLOWS.md` §18 names
- * "evidence upload incomplete" as a state the UI must be able to explain.
- * `docs/ARCHITECTURE.md` §14 requires the failure to be clear and to leave
- * nothing falsely available, which is what keeping the artefact unavailable and
- * naming the store does.
+ * Two decisions here, both of which the first version of this function got
+ * wrong.
+ *
+ * **The code says what happened.** `ARTEFACT_STORE_UNAVAILABLE`, not
+ * `ARTEFACT_UPLOAD_INCOMPLETE`: an artefact whose upload completed and whose
+ * digest was verified is complete, and telling an operator otherwise sends them
+ * to look at an uploader that did nothing wrong. The resolution is to retry,
+ * which is what a 503 says.
+ *
+ * **The driver's own words never reach the caller.** A filesystem error names
+ * an absolute path on the server; an S3 error names the bucket endpoint and
+ * carries a fragment of the service's XML. `docs/SECURITY.md` §18 requires a
+ * stable code rather than free text exactly so that a failure is diagnosable
+ * without a response carrying deployment data, and an agent session or a
+ * browser worker reaches this path. The detail travels as the `diagnostic`,
+ * which the error hook logs and never renders.
  */
 function storeUnavailable(error: unknown, message: string): ApiError {
-  const detail = error instanceof ArtefactStoreError ? error.message : "the store did not respond";
-  return new ApiError("ARTEFACT_UPLOAD_INCOMPLETE", `${message} ${detail}`, {
-    reason: "artefact_store_unavailable",
-  });
+  return new ApiError(
+    "ARTEFACT_STORE_UNAVAILABLE",
+    message,
+    { reason: "artefact_store_unavailable", retryable: true },
+    undefined,
+    error instanceof ArtefactStoreError ? error.message : String(error),
+  );
 }
 
 /** How the bytes of this artefact are served (`docs/SECURITY.md` §13). */

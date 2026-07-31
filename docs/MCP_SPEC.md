@@ -843,11 +843,16 @@ Initial stable codes:
 - `APPROVAL_REQUIRED`
 - `EVIDENCE_REQUIRED`
 - `ARTEFACT_UPLOAD_INCOMPLETE`
+- `ARTEFACT_STORE_UNAVAILABLE`
 - `UNSUPPORTED_CAPABILITY`
 - `RATE_LIMITED`
 - `INTERNAL_ERROR`
 
-Adding a code is additive within a protocol version, and clients MUST tolerate a code they do not recognise. `BROWSER_COMMAND_TIMEOUT` reports a browser command that exceeded its declared bound; `docs/TESTING.md` section 11 requires that failure to be a stable code rather than an indefinite wait, and no existing code carried that meaning.
+Adding a code is additive within a protocol version, and clients MUST tolerate a code they do not recognise.
+
+`ARTEFACT_UPLOAD_INCOMPLETE` and `ARTEFACT_STORE_UNAVAILABLE` are distinguished on purpose, in the same way as the two connector codes below. The first says the artefact is not evidence: its upload never completed verification, and the caller must produce it again. The second says the artefact *is* evidence and the store cannot be reached: the request should be retried unchanged. Answering the second case with the first would send an operator to examine an upload that had in fact succeeded. Neither code's message names the store — an absolute path or a bucket endpoint in a refusal is deployment data in a response, which `docs/SECURITY.md` section 18 forbids — so the reason is carried by the code and the detail goes to the server log.
+
+`BROWSER_COMMAND_TIMEOUT` reports a browser command that exceeded its declared bound; `docs/TESTING.md` section 11 requires that failure to be a stable code rather than an indefinite wait, and no existing code carried that meaning.
 
 `RESOURCE_STALE` is the code for an element reference from a superseded snapshot and for a replayed command sequence. Acting on a stale reference MUST fail with it rather than target whatever now occupies that position.
 

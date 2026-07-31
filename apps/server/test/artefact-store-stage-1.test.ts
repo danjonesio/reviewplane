@@ -23,7 +23,11 @@ import { after, before, beforeEach, test } from "node:test";
 
 import { loadServerConfig } from "../src/config.ts";
 import { JobRunner } from "../src/jobs/runner.ts";
-import { loadArtefactStoreConfig } from "../src/modules/artefacts/config.ts";
+import {
+  DEFAULT_ARTEFACT_MAX_BYTES,
+  DEFAULT_ARTEFACT_PATH,
+  loadArtefactStoreConfig,
+} from "../src/modules/artefacts/config.ts";
 import { artefactJobHandlers } from "../src/modules/artefacts/jobs.ts";
 import {
   BOOTSTRAP_TOKEN,
@@ -369,6 +373,102 @@ test("an expired grant is refused, and refused as an unknown one is", async () =
   process.stdout.write(
     `EVIDENCE expired grant: ${(refused.json() as { error: { message: string } }).error.message}\n`,
   );
+});
+
+test("every refusal from the content route is the same refusal", async () => {
+  // RVP-67 criterion 1 applied to grants. An unknown grant, an expired one and
+  // a live one presented by the wrong principal are three facts and must be one
+  // answer: a status or a body that differs between them is an existence oracle
+  // over grant identifiers. The identifier being 24 random bytes makes the
+  // oracle expensive rather than absent, and expensive is not the property the
+  // criterion asks for.
+  const { organisationId, projectId } = await seedProjectAndWorker(harness);
+  const { artefactId } = await upload(projectId, encodePng(16, 16));
+
+  const cookies = await claimSessionFor(harness.built, postgres.pool, organisationId, {
+    email: `oracle-${Date.now()}@localhost`,
+  });
+  const mine = await mintGrant(artefactId, cookies.writeHeaders);
+  assert.equal(mine.statusCode, 201, mine.body);
+  const grant = (mine.json() as { data: { grant_id: string; url: string } }).data;
+
+  // A live grant, presented by a principal that is not its subject.
+  const wrongSubject = await harness.built.app.inject({
+    method: "GET",
+    url: grant.url,
+    headers: ADMIN,
+  });
+
+  // A grant identifier that never existed.
+  const unknown = await harness.built.app.inject({
+    method: "GET",
+    url: "/api/v1/artefact-content/agr_neverexistedatall",
+    headers: ADMIN,
+  });
+
+  // A grant that existed and has expired.
+  const expiring = await mintGrant(artefactId, cookies.writeHeaders);
+  const expired = (expiring.json() as { data: { grant_id: string; url: string } }).data;
+  await postgres.pool.query(
+    `UPDATE artefact_access_grants
+        SET created_at = now() - interval '10 minutes',
+            expires_at = now() - interval '1 second'
+      WHERE id = $1`,
+    [expired.grant_id],
+  );
+  const afterExpiry = await harness.built.app.inject({
+    method: "GET",
+    url: expired.url,
+    headers: cookies.readHeaders,
+  });
+
+  // A caller with no credential at all.
+  const anonymous = await harness.built.app.inject({ method: "GET", url: grant.url });
+
+  const strip = (body: string): string => body.replace(/"request_id":"[^"]*"/u, '"request_id":"x"');
+  const answers = [wrongSubject, unknown, afterExpiry, anonymous];
+  for (const answer of answers) {
+    assert.equal(answer.statusCode, 401, answer.body);
+  }
+  const bodies = new Set(answers.map((answer) => strip(answer.body)));
+  assert.equal(
+    bodies.size,
+    1,
+    `the content route answers four cases four ways: ${[...bodies].join("\n")}`,
+  );
+  process.stdout.write(`EVIDENCE grant oracle: 401 x4, one body ${[...bodies][0] ?? ""}\n`);
+
+  // The grant that is genuinely the caller's still works, so the unification is
+  // not simply refusing everything.
+  const served = await harness.built.app.inject({
+    method: "GET",
+    url: grant.url,
+    headers: cookies.readHeaders,
+  });
+  assert.equal(served.statusCode, 200, served.body);
+});
+
+test("a read that the store cannot satisfy says so without naming the store", async () => {
+  const { projectId } = await seedProjectAndWorker(harness);
+  const { artefactId } = await upload(projectId, encodePng(20, 20));
+  const granted = await mintGrant(artefactId);
+  const url = (granted.json() as { data: { url: string } }).data.url;
+
+  // The bytes vanish underneath a verified artefact: the row still says
+  // available, and the driver cannot produce them.
+  const { rm } = await import("node:fs/promises");
+  await rm(`${harness.artefactRoot}/sha256`, { recursive: true, force: true });
+
+  const read = await harness.built.app.inject({ method: "GET", url, headers: ADMIN });
+  assert.equal(read.statusCode, 503, read.body);
+  const failure = read.json() as { error: { code: string; message: string } };
+  assert.equal(failure.error.code, "ARTEFACT_STORE_UNAVAILABLE");
+  // `docs/SECURITY.md` section 18: no deployment data in a response. An agent
+  // session and a browser worker both reach this path, so the server's absolute
+  // artefact root must not be in it.
+  assert.ok(!read.body.includes(harness.artefactRoot), `the read leaked the store path: ${read.body}`);
+  assert.ok(!/ENOENT|no such file|\/tmp\//u.test(read.body), `the read leaked the driver error: ${read.body}`);
+  process.stdout.write(`EVIDENCE read failure: ${failure.error.code} ${failure.error.message}\n`);
 });
 
 test("minting a grant on a cookie session requires the CSRF token", async () => {
@@ -870,15 +970,20 @@ test("storage figures count verified artefacts once per content-addressed key", 
 });
 
 test("the artefact module and the server configuration agree on their shared defaults", () => {
-  // `src/config.ts` and `src/modules/artefacts/config.ts` both read
-  // `REVIEWPLANE_ARTEFACT_PATH` and `REVIEWPLANE_ARTEFACT_MAX_BYTES`, because
-  // the second cannot import the first's constants without an import cycle. A
-  // test is the guard against them drifting; a comment would not be.
+  // Three loaders read `REVIEWPLANE_ARTEFACT_PATH` and
+  // `REVIEWPLANE_ARTEFACT_MAX_BYTES`: `src/config.ts`,
+  // `src/modules/artefacts/config.ts` and `apps/mcp-server/src/config.ts`. The
+  // second cannot import the first's constants without an import cycle, and the
+  // third is a separate package. This asserts the two in this package agree;
+  // `apps/mcp-server/test/unit.test.ts` asserts the third agrees with this one.
+  // A test is the guard against them drifting; a comment would not be.
   const server = loadServerConfig(minimalServerEnvironment());
   const module = loadArtefactStoreConfig({});
   assert.equal(module.path, server.artefactPath);
   assert.equal(module.maxBytes, server.artefactMaxBytes);
   assert.equal(module.driver, "filesystem", "ADR-0012's default driver");
+  assert.equal(module.path, DEFAULT_ARTEFACT_PATH);
+  assert.equal(module.maxBytes, DEFAULT_ARTEFACT_MAX_BYTES);
 
   // The driver is the operator's only choice here, and a wrong one is refused
   // at startup rather than at the first screenshot.

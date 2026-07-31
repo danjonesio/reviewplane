@@ -736,12 +736,21 @@ may be supplied inline, and are then written in the same transaction as the
 finding.
 
 `GET /api/v1/findings/:findingId/verification` returns the most recent
-verification submission for a finding, or `null`. It is read-only and
-project-scoped like every other route here. The artefact viewer needs it: the
-before-and-after comparison of `docs/UX_FLOWS.md` section 17 is the pair of
+verification submission for a finding, or `null`. The artefact viewer needs it:
+the before-and-after comparison of `docs/UX_FLOWS.md` section 17 is the pair of
 artefact identifiers it records (`docs/DOMAIN_MODEL.md` section 19), and a
 finding with no submission yet is the honest empty state rather than a
 comparison control with nothing to compare.
+
+It resolves its scope the same way every other route in this section does — and
+**that resolution is defective**. RVP-66 and RVP-67 record it: the shared
+resolver authorises on the project named by the record without comparing the
+caller's organisation, so a session belonging to one organisation can read, and
+in the `PATCH` cases modify, a review, finding or annotation belonging to
+another. This route inherits the defect rather than introducing it, and it is
+listed here so that nobody reads "project-scoped" as a statement that the scope
+holds. The artefact routes of section 15 do not share the resolver and are not
+affected; the repair belongs with the review module's own work.
 
 Status transitions are checked in this order: version, transition legality,
 actor authority, completion evidence. A human-authored finding cannot be set to
@@ -813,14 +822,29 @@ Until that succeeds the artefact stays `pending` or `uploaded`, no grant may be
 minted for it — the attempt is refused with `ARTEFACT_UPLOAD_INCOMPLETE` — and
 no caller may treat it as evidence.
 
-**Two failures, two outcomes.** Bytes that do not match what was declared are
-the uploader's fault: the artefact is marked `failed` and `artefact.upload_failed`
-is recorded, and the intent must not be retried, because it describes something
-the uploader did not send. A store that cannot be written to or read from is
-not the uploader's fault: the artefact keeps the state it had, the refusal
-carries `details.reason = "artefact_store_unavailable"`, and the same intent —
-and the same idempotency key — may be retried when the store returns. Neither
-outcome makes anything available.
+**Two failures, two outcomes, two codes.** Bytes that do not match what was
+declared are the uploader's fault: the artefact is marked `failed`,
+`artefact.upload_failed` is recorded, the refusal is `409
+ARTEFACT_UPLOAD_INCOMPLETE`, and the intent must not be retried, because it
+describes something the uploader did not send. A store that cannot be written
+to or read from is not the uploader's fault: the artefact keeps the state it
+had, the refusal is `503 ARTEFACT_STORE_UNAVAILABLE` carrying `details.reason =
+"artefact_store_unavailable"` and `details.retryable = true`, and the same
+intent — and the same idempotency key — may be retried when the store returns.
+Neither outcome makes anything available.
+
+The second code is what a *reader* gets too: a verified artefact whose bytes
+cannot be produced answers `ARTEFACT_STORE_UNAVAILABLE`, because that upload was
+complete and saying otherwise would send an operator to look at an uploader that
+did nothing wrong.
+
+**No refusal names the store.** A filesystem error carries an absolute server
+path and an S3 error carries the bucket endpoint and a fragment of the service's
+own XML. Neither reaches a caller: `docs/SECURITY.md` section 18 requires a
+stable code rather than free text precisely so that a failure is diagnosable
+without a response carrying deployment data, and agent sessions and browser
+workers both reach this path. The detail is written to the server log against
+the same request identifier.
 
 The intent honours `Idempotency-Key` (`docs/MCP_SPEC.md` section 10). A
 repeated request with the same key and the same body replays the first intent
@@ -904,13 +928,22 @@ pins the content type and the disposition inside its signature.
 never rendered under the control-plane origin (`docs/SECURITY.md` section 13).
 
 `GET /api/v1/artefact-content/:grantId` resolves the grant, authenticates the
-caller independently, and requires the caller to be the grant's subject. An
-unknown, expired or revoked grant is refused with `AUTHENTICATION_REQUIRED`; a
-live grant presented by another principal with `AUTHORISATION_DENIED`. The
+caller independently, and requires the caller to be the grant's subject. The
 grant identifier therefore travels safely in a URL — which is what an `<img>`
 element needs — while the credential stays in the cookie or the `Authorization`
 header, as `docs/SECURITY.md` section 18 requires. Minting a grant records
 `artefact.access_granted`.
+
+**Every refusal from this route is the same refusal.** An unknown grant, an
+expired one, a revoked one, a caller with no credential and a live grant
+presented by another principal all produce `401 AUTHENTICATION_REQUIRED` with
+one message. Telling them apart is an existence oracle over grant identifiers,
+which section 5 and `docs/TESTING.md` section 10 forbid; that the identifier is
+24 random bytes makes such an oracle expensive rather than absent. It costs a
+caller nothing, because the remedy is the same in every case: mint a new grant.
+
+An earlier revision of this document specified `AUTHORISATION_DENIED` for the
+wrong-principal case. That distinction was the oracle, and it is gone.
 
 ## 15.1 Internal worker channel
 
