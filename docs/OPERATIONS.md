@@ -469,7 +469,7 @@ Commands support `--json` for automation.
 | `reviewplane connector list` | Shipped |
 | `reviewplane export-review --project P --review R [--out FILE]` | Shipped |
 | `reviewplane doctor` | Not implemented (§15) |
-| `reviewplane rotate-keys` | Not implemented. There is nothing to rotate: envelope encryption is unimplemented (`docs/SECURITY.md` §15), and the connector authority is reissued by re-enrolment |
+| `reviewplane rotate-keys` | Not implemented. Envelope encryption is unimplemented, so there is no data key to rotate (`docs/SECURITY.md` §15); the connector authority is generated when its row is absent, and the identities it signed are replaced by re-enrolment (`docs/DEPLOYMENT.md` §13) |
 | `reviewplane worker list` | Not implemented. `status` reports browser capacity |
 | `reviewplane session reconcile` | Not implemented. Reconciliation runs on reconnect (§9) |
 | `reviewplane retention run` | Not implemented. Retention is Stage 2 (§10) |

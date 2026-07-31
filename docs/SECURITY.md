@@ -766,7 +766,7 @@ Backups may contain highly sensitive data.
 | Separate configuration, data and key material | The archive holds them as separate members: `configuration.json`, `database/<table>.jsonl` and — only on the opt-in — the rows of `connector_tls_material`. The manifest states which are present |
 | Never include master keys silently | `connector_tls_material` is excluded from every archive unless `--include-key-material` is passed. The opt-in prints a warning naming what the file will contain, and the manifest's `key_material.included` and the audit event both record which way round it was |
 | Record backup and restore audit events | `backup.created` and `backup.restored` (`docs/EVENTS.md` §7). Neither payload carries the archive's path, a credential or a setting value |
-| Verify restore regularly | `reviewplane restore --dry-run` verifies an archive against its manifest and writes nothing, so a periodic verification needs no isolated installation. A full rehearsal restores into an empty database and is what `apps/server/test/upgrade-stage0.test.ts` does on every run |
+| Verify restore regularly | `reviewplane restore --dry-run` checks every member of an archive against the manifest and writes nothing. Pointed at a live installation it reports the archive intact **and** the target non-empty, and exits `4` for the second — a dry run answers "would this restore succeed here", not "is this file readable", so a clean verification runs it against an empty database. A full rehearsal restores into one, which is what `apps/server/test/upgrade-stage0.test.ts` does on every run |
 
 Three further properties are enforced rather than advised.
 
