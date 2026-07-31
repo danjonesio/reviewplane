@@ -10,13 +10,22 @@
  * path, a backslash, a symbolic link, a device node and a directory entry are
  * all refused; only regular files with a bounded relative path are accepted.
  *
- * Truncation is caught by whichever of three layers the cut lands in, and the
- * point is that none of them can be missed: zstd checks its own frame, this
- * reader refuses a stream that ends without the two zero blocks that end a tar
- * or inside a member it was told the length of, and the manifest's per-member
- * digests catch a member that decompressed cleanly and is not the member that
- * was written. Which layer reports it depends on where the copy stopped; that
- * it is reported does not.
+ * **Truncation is caught here and nowhere else.** Node's zstd decompressor does
+ * not error on an incomplete frame: it emits the bytes it could decode and ends
+ * the stream cleanly, so a file cut in half decompresses to a short but
+ * perfectly valid byte sequence and a reader that trusted its input would
+ * restore part of a backup. This reader therefore refuses a stream that ends
+ * without the two zero blocks a tar ends with, or inside a member whose length
+ * it was told.
+ *
+ * The invariant is *a truncated archive is refused or read whole, never read
+ * short* — not "every truncation is an error". A cut that removes only trailing
+ * frame bytes takes no data with it, and reading such a file returns every
+ * member intact, which is the right answer rather than a missed one.
+ * `apps/server/test/backup.test.ts` asserts the invariant at five cut points.
+ *
+ * The manifest's per-member digests are the second layer, and catch a member
+ * that decompressed in full and is not the member that was written.
  *
  * The writer never writes the destination path until it is complete. It writes
  * `<output>.partial`, closes it, and renames — so an interrupted backup leaves

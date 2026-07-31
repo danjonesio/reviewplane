@@ -18,11 +18,12 @@
 
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { createWriteStream } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, stat, truncate, writeFile } from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import { copyFile, mkdir, mkdtemp, readFile, rm, stat, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, beforeEach, describe, test } from "node:test";
+import { createZstdDecompress } from "node:zlib";
 
 import { newEntityId } from "@reviewplane/protocol/platform";
 
@@ -209,22 +210,88 @@ describe("the archive container", () => {
     await writer.abort();
   });
 
-  test("a truncated archive fails to read rather than reading short", async () => {
+  /**
+   * The case the reader exists for.
+   *
+   * Node's zstd decompressor does **not** error on an incomplete frame: it
+   * emits what it could decode and ends the stream cleanly, so a file cut in
+   * half arrives at the tar layer as a short but perfectly valid byte sequence
+   * and nothing below this reader will object to it. The guarantee is therefore
+   * this reader's alone, and it is asserted as the invariant rather than as a
+   * particular error message: **a truncated archive is either refused or read
+   * whole; it is never read short.**
+   *
+   * Both outcomes are legitimate and the test accepts either, because a cut
+   * that removes only trailing frame bytes takes no data with it — losing the
+   * last byte of a zstd epilogue leaves every member present and matching. What
+   * must never happen is a read that returns fewer members, or a shorter
+   * member, and reports success.
+   */
+  test("a truncated archive is refused or read whole, never read short", async () => {
     const places = await scratch();
+    const body = Buffer.from(randomBytes(200_000).toString("hex"), "utf8");
     const writer = ArchiveWriter.open(places.archive);
     await writer.addBuffer("manifest.json", Buffer.from("{}"));
-    await writer.addBuffer(
-      "database/events.jsonl",
-      Buffer.from(randomBytes(200_000).toString("hex"), "utf8"),
-    );
+    await writer.addBuffer("database/events.jsonl", body);
     await writer.close();
-
     const size = (await stat(places.archive)).size;
-    await truncate(places.archive, Math.floor(size / 2));
-    await assert.rejects(
-      () => readArchive(places.archive, () => Promise.resolve(null)),
-      /truncated|unexpected|Error/u,
-    );
+
+    const readMembers = async (path: string): Promise<{ path: string; bytes: number }[]> => {
+      const members: { path: string; bytes: number }[] = [];
+      await readArchive(path, (member) => {
+        let seen = 0;
+        return Promise.resolve({
+          write: (chunk: Buffer): void => {
+            seen += chunk.length;
+          },
+          end: (): void => {
+            members.push({ path: member.path, bytes: seen });
+          },
+        });
+      });
+      return members;
+    };
+
+    const whole = await readMembers(places.archive);
+    assert.deepEqual(whole, [
+      { path: "manifest.json", bytes: 2 },
+      { path: "database/events.jsonl", bytes: body.length },
+    ]);
+
+    for (const [label, bytes] of [
+      ["one byte short", size - 1],
+      ["ten bytes short", size - 10],
+      ["half", Math.floor(size / 2)],
+      ["a hundred bytes", 100],
+      ["empty", 0],
+    ] as const) {
+      const cut = `${places.archive}.cut-${String(bytes)}`;
+      await copyFile(places.archive, cut);
+      await truncate(cut, bytes);
+      let members: { path: string; bytes: number }[] | null = null;
+      try {
+        members = await readMembers(cut);
+      } catch (error) {
+        assert.match((error as Error).message, /truncated|corrupt/u, `cut to ${label}`);
+      }
+      if (members !== null) {
+        assert.deepEqual(
+          members,
+          whole,
+          `an archive cut to ${label} was read short and reported as complete`,
+        );
+      }
+    }
+
+    // Recorded as its own assertion rather than as a comment, because the
+    // reader's whole justification rests on it: if a future Node did error on
+    // an incomplete frame, this fails and the reasoning above is revisited.
+    const decompressed = createReadStream(
+      `${places.archive}.cut-${String(Math.floor(size / 2))}`,
+    ).pipe(createZstdDecompress());
+    await assert.doesNotReject(async () => {
+      for await (const chunk of decompressed) void chunk;
+    }, "Node's zstd decompressor now errors on an incomplete frame");
   });
 
   test("an interrupted write leaves nothing at the destination", async () => {
