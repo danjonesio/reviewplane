@@ -643,48 +643,48 @@ async function runRestore(pool: Pool, argv: readonly string[]): Promise<number> 
   }
 
   try {
-  const result = await restoreBackup({
-    pool,
-    archive: spool ?? resolvePath(input),
-    artefactPath: artefactPathSetting(),
-    dryRun: argv.includes("--dry-run"),
-    ...(hostname === undefined ? {} : { hostname }),
-    log: (line) => {
-      lines.push(line);
-      if (!json) write(line);
-    },
-  });
+    const result = await restoreBackup({
+      pool,
+      archive: spool ?? resolvePath(input),
+      artefactPath: artefactPathSetting(),
+      dryRun: argv.includes("--dry-run"),
+      ...(hostname === undefined ? {} : { hostname }),
+      log: (line) => {
+        lines.push(line);
+        if (!json) write(line);
+      },
+    });
 
-  if (json) {
-    write(
-      JSON.stringify(
-        {
-          applied: result.applied,
-          manifest: result.plan.manifest,
-          rows: result.plan.rows,
-          artefact_objects: result.plan.artefactObjects,
-          migrations_to_apply: result.plan.migrationsToApply,
-          migrations_pending_after: result.plan.migrationsPendingAfter,
-          blockers: result.plan.blockers,
-          missing_artefacts: result.missingArtefacts,
-          connectors_needing_re_enrolment: result.connectorsNeedingReEnrolment,
-          invalidated: result.invalidated,
-          notes: lines,
-        },
-        null,
-        2,
-      ),
-    );
-  }
+    if (json) {
+      write(
+        JSON.stringify(
+          {
+            applied: result.applied,
+            manifest: result.plan.manifest,
+            rows: result.plan.rows,
+            artefact_objects: result.plan.artefactObjects,
+            migrations_to_apply: result.plan.migrationsToApply,
+            migrations_pending_after: result.plan.migrationsPendingAfter,
+            blockers: result.plan.blockers,
+            missing_artefacts: result.missingArtefacts,
+            connectors_needing_re_enrolment: result.connectorsNeedingReEnrolment,
+            invalidated: result.invalidated,
+            notes: lines,
+          },
+          null,
+          2,
+        ),
+      );
+    }
 
-  if (!result.applied) {
-    // A dry run that found a blocker has answered its question correctly and
-    // the answer is bad, which is what 4 means.
-    return result.plan.blockers.length === 0 ? 0 : EXIT_CHECK_FAILED;
-  }
-  return result.missingArtefacts.length > 0 && result.plan.manifest.mode === "full"
-    ? EXIT_CHECK_FAILED
-    : 0;
+    if (!result.applied) {
+      // A dry run that found a blocker has answered its question correctly and
+      // the answer is bad, which is what 4 means.
+      return result.plan.blockers.length === 0 ? 0 : EXIT_CHECK_FAILED;
+    }
+    return result.missingArtefacts.length > 0 && result.plan.manifest.mode === "full"
+      ? EXIT_CHECK_FAILED
+      : 0;
   } finally {
     // The spool is a copy of the archive: it holds every review, every
     // annotation and every screenshot the installation has. It does not stay
