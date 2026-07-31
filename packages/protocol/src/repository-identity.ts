@@ -155,14 +155,22 @@ export function canonicaliseCloneUrl(
  *   bare username is kept — dropping it would store a URL that does not clone.
  *   A `user:password` pair still goes, because a password in an SSH URL is a
  *   credential whatever the transport.
- * * Over **HTTP and HTTPS**, the whole `userinfo` component goes, colon or no
- *   colon. `https://ghp_…@github.com/example/repo.git` is how every forge
- *   documents cloning with a personal access token, so a bare userinfo here is
- *   overwhelmingly a secret rather than an account name. Keeping it because it
- *   held no colon is exactly the mistake that put a token in a stored,
- *   API-returned field (RVP-12 review, F2). What is left still identifies the
- *   same repository, and `docs/SECURITY.md` section 18 does not permit the
- *   alternative.
+ * * Over **every other scheme**, the whole `userinfo` component goes, colon or
+ *   no colon. `https://ghp_…@github.com/example/repo.git` is how every forge
+ *   documents cloning with a personal access token, so a bare userinfo there is
+ *   overwhelmingly a secret rather than an account name; and `git://` is the
+ *   unauthenticated daemon protocol, which has no credential mechanism at all,
+ *   so a userinfo there cannot be an account to log in as and is an accidental
+ *   paste. Keeping either because it held no colon is exactly the mistake that
+ *   put a token in a stored, API-returned field (RVP-12 review, F2 and its
+ *   third round). What is left still identifies the same repository, and
+ *   `docs/SECURITY.md` section 18 does not permit the alternative.
+ *
+ * The test is therefore "is this SSH?" rather than a list of the schemes that
+ * carry secrets. Enumerating them is what left `git://` behind, and it would
+ * leave behind whatever scheme is accepted next: an unrecognised scheme is
+ * treated as secret-bearing, which is the direction that is safe to be wrong
+ * in.
  *
  * The rule errs towards deletion: an operator who loses a username from a URL
  * has a URL to correct, and one who does not lose a token has a token in a
@@ -175,7 +183,7 @@ export function sanitiseCloneUrl(raw: string): string {
   if (withScheme !== null) {
     const scheme = (withScheme.groups?.["scheme"] ?? "").toLowerCase();
     const userinfo = withScheme.groups?.["userinfo"] ?? "";
-    const carriesSecret = scheme === "http" || scheme === "https" || userinfo.includes(":");
+    const carriesSecret = scheme !== "ssh" || userinfo.includes(":");
     const keep = carriesSecret ? "" : userinfo;
     return `${scheme}://${keep}${withScheme.groups?.["rest"] ?? ""}`;
   }

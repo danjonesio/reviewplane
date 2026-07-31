@@ -189,8 +189,17 @@ export async function registerLiveRoutes(
    *     and ending one on a cookie alone would let another origin's markup sign
    *     a person out (`docs/API.md` section 4.0). The exchange's own sessions
    *     carry no CSRF token and may still end themselves, because a session
-   *     that cannot end is worse than one whose sign-out can be forged, and
-   *     what a forgery achieves there is a read-only viewer being logged out.
+   *     that cannot end is worse than one whose sign-out can be forged.
+   *
+   *     What that costs is bounded by the strict guard everywhere else, and
+   *     only by it. A token-less session is not read-only by nature: until
+   *     RVP-12's second review, one could retitle a review and move it from
+   *     `DRAFT` to `READY` on a cookie alone, because those routes applied no
+   *     guard. They apply the strict one now, so the whole of what a forged
+   *     request can achieve against a token-less session is to end it — no
+   *     domain record moves, and the operator obtains another session by
+   *     presenting the bootstrap token again. That is a denial of the caller's
+   *     own session, not a write to the system of record.
    *   * **It records `session.revoked`.** `AGENTS.md` requires an audit record
    *     for every meaningful state change, and a session ending is one. This
    *     route revoking silently was the one gap in the authentication trail.

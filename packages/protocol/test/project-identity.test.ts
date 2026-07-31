@@ -69,14 +69,22 @@ test("a credential in a clone URL is dropped rather than stored", () => {
   );
 });
 
-test("a bare token in an HTTPS clone URL is dropped, and an SSH account name is not", () => {
+test("a bare token in a non-SSH clone URL is dropped, and an SSH account name is not", () => {
   // The regression this exists for: `https://<token>@host/…` is how every forge
   // documents cloning with a personal access token, and a rule that only
   // stripped `user:password` kept it — in a stored, API-returned field.
+  //
+  // `git://` is the third round of the same defect. It was stored verbatim
+  // because the rule named http and https and so treated `git` like `ssh`; but
+  // the git daemon protocol is unauthenticated and has no credential mechanism,
+  // so a userinfo there cannot be an account to log in as. Only SSH keeps one.
   for (const url of [
     "https://ghp_SUPERSECRETTOKEN1234567890@github.com/example/leak.git",
     "http://glpat_SUPERSECRETTOKEN1234567890@git.example.internal/example/leak.git",
     "HTTPS://ghp_SUPERSECRETTOKEN1234567890@github.com/example/leak.git",
+    "git://ghp_SUPERSECRETTOKEN1234567890@github.com/example/leak.git",
+    "GIT://ghp_SUPERSECRETTOKEN1234567890@github.com/example/leak.git",
+    "git://ghp_SUPERSECRETTOKEN1234567890@git.example.internal:9418/example/leak.git",
   ]) {
     const sanitised = sanitiseCloneUrl(url);
     assert.ok(
@@ -106,6 +114,18 @@ test("a bare token in an HTTPS clone URL is dropped, and an SSH account name is 
   assert.equal(
     sanitiseCloneUrl("ssh://git:hunter2@github.com/example/api.git"),
     "ssh://github.com/example/api.git",
+  );
+  // The exact value that was stored verbatim, so the scheme this suite added
+  // last is asserted as itself and not only through the loop above.
+  assert.equal(
+    sanitiseCloneUrl("git://ghp_SECRETTOKEN123@github.com/example/i.git"),
+    "git://github.com/example/i.git",
+  );
+  // A scheme nothing accepts yet is treated as secret-bearing, because the
+  // predicate asks whether the URL is SSH rather than listing what leaks.
+  assert.equal(
+    sanitiseCloneUrl("ftps://ghp_SECRETTOKEN123@example.internal/example/i.git"),
+    "ftps://example.internal/example/i.git",
   );
 });
 

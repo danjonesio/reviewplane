@@ -101,13 +101,31 @@ holds, including the one that asked.
 
 A state-changing request authenticated by cookie MUST carry the session's CSRF
 token in `X-CSRF-Token`. A missing, malformed or foreign token is refused with
-`AUTHORISATION_DENIED` and `details.reason: "csrf_token_invalid"`.
+`AUTHORISATION_DENIED` and `details.reason: "csrf_token_invalid"`, before the
+request body is validated, so a forged request is refused rather than answered
+with a validation error.
 
 A request authenticated by a bearer token does not carry one and does not need
 one: a browser does not attach an `Authorization` header to a cross-site
-request. A session with no CSRF token — the ADR-0016 exchange of section 4.1 —
-therefore cannot reach a state-changing route at all, which is what keeps it the
-read-only credential that ADR-0016 describes.
+request.
+
+A session with no CSRF token — the ADR-0016 exchange of section 4.1 — cannot
+satisfy the check. No route that authenticates it by cookie therefore changes
+state for it, with exactly one exception: `DELETE
+/api/v1/auth/viewer-sessions/current`, which ends the calling session and
+applies the rule conditionally, by what the session carries (section 4.1).
+Everything that changes a project, a review, a finding, an annotation or an
+artefact grant applies the rule unconditionally, so the exchange remains the
+read-only credential that ADR-0016 describes: it can end itself, and it can
+change nothing else.
+
+Two state-changing routes here authenticate by neither cookie nor bearer:
+`POST /api/v1/auth/bootstrap` and `POST /api/v1/auth/sessions` carry their own
+credential in the body, so there is no session for a CSRF token to belong to.
+They are guarded instead by the configured `Origin` allow list — a request whose
+`Origin` the deployment does not list is refused with `AUTHORISATION_DENIED` —
+which is what stops another site signing somebody in or claiming an unclaimed
+installation.
 
 ### 4.1 Viewer sessions
 
@@ -141,8 +159,11 @@ what the session carries. A session with a CSRF token — every account session 
 MUST present it, or the route answers `AUTHORISATION_DENIED` and revokes
 nothing. A session issued by this exchange carries none and may still end
 itself: a session that cannot be ended is worse than one whose sign-out can be
-forged, and what a forgery achieves against a read-only viewer session is
-logging it out. Either way the revocation records `session.revoked`.
+forged. What that costs is bounded by the unconditional rule everywhere else,
+and only by it: a session with no CSRF token can reach no other state-changing
+route, so the whole of what a forged request achieves against one is ending it,
+after which an operator obtains another by presenting the bootstrap token again.
+Either way the revocation records `session.revoked`.
 
 ### 4.2 Agent credentials
 
@@ -385,16 +406,19 @@ shape is defined once in `packages/protocol/schemas/platform/v1.schema.json`:
   `default_branch` and `settings`. The slug is derived from the name when it is
   not supplied.
 - `repository_identity` accepts a clone URL as a string, or an object holding
-  `clone_urls`. It is normalised to the provider-agnostic canonical form before
+  `clone_urls`. Four schemes are accepted — `https`, `http`, `ssh` and `git` —
+  along with Git's scp-like `user@host:path` and the bare `host/path` a person
+  types. It is normalised to the provider-agnostic canonical form before
   storage: the scheme, any `userinfo`, a default port, a `.git` suffix and
   trailing slashes are removed and the host is lowercased. Credential material
-  in a clone URL is dropped rather than stored — over `http` and `https` the
-  whole `userinfo` component goes, because a bare userinfo there is a personal
-  access token in every forge's documented clone command; over `ssh` a bare
-  username is kept, because it names the account and the secret is a key on
-  disk, while a `user:password` pair is dropped. Clone URLs that reduce to
-  different repositories are refused with `VALIDATION_FAILED` and
-  `details.reason: "inconsistent_urls"`.
+  in a stored clone URL is dropped rather than kept — over `ssh` a bare username
+  is kept, because it names the account and the secret is a key on disk, while a
+  `user:password` pair is dropped; under every other scheme the whole `userinfo`
+  component goes, because over `https` and `http` a bare userinfo is a personal
+  access token in every forge's documented clone command, and `git` is the
+  unauthenticated daemon protocol, which has no credential mechanism for a
+  userinfo to belong to. Clone URLs that reduce to different repositories are
+  refused with `VALIDATION_FAILED` and `details.reason: "inconsistent_urls"`.
 - `settings.default_validation_viewports` defaults to 390x844 and 1440x900 and
   is bounded by the browser protocol's viewport bounds: a viewport a browser
   session could not adopt cannot be stored.

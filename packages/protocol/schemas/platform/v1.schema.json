@@ -490,7 +490,7 @@
           "uniqueItems": true,
           "items": {
             "type": "string",
-            "description": "A clone URL as an operator supplied it, with credential material removed. Over http and https the whole userinfo component is dropped, because a bare userinfo there is a personal access token in every forge's documented clone command. Over ssh a bare username is kept — it names the account to log in as, and the secret is a key on disk — while a user:password pair is dropped.",
+            "description": "A clone URL as an operator supplied it, with credential material removed. Four schemes are accepted: https, http, ssh and git. Over ssh a bare username is kept — it names the account to log in as, and the secret is a key on disk — while a user:password pair is dropped. Over every other scheme the whole userinfo component is dropped: over https and http a bare userinfo is a personal access token in every forge's documented clone command, and git is the unauthenticated daemon protocol, which has no credential mechanism for a userinfo to be part of.",
             "minLength": 3,
             "maxLength": 512,
             "pattern": "^[^\\s\\x00-\\x1f]+$"

@@ -217,8 +217,15 @@ export function requireCsrfToken(request: FastifyRequest, principal: ViewerPrinc
  * So the rule here is by what the session carries. An account session always
  * carries a CSRF token and must present it — that is the case the review
  * proved: a password session could be ended by a cookie alone. A session that
- * carries none is the read-only bootstrap exchange, and the worst a forged
- * request achieves against it is signing a viewer out.
+ * carries none is the bootstrap exchange, and the worst a forged request
+ * achieves against it is ending it.
+ *
+ * That last sentence is only true because every other state-changing route
+ * applies {@link requireCsrfToken}. It was not true when this guard was
+ * written: the review routes accepted a cookie with no guard at all, so a
+ * token-less session could write to a review, which made "read-only" a
+ * description of intent rather than of behaviour. Weakening any of those routes
+ * to this conditional guard would make it false again.
  */
 export function requireCsrfTokenWhenSessionCarriesOne(
   request: FastifyRequest,

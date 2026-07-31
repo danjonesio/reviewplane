@@ -138,8 +138,18 @@ said would survive local accounts.
 - **CSRF protection.** A session issued to a user carries a CSRF token, stored
   as a digest and delivered in a readable `reviewplane_csrf` cookie. Every
   state-changing request authenticated by cookie MUST echo it in
-  `X-CSRF-Token`. A session with no CSRF token cannot satisfy the check and is
-  refused, so the ADR-0016 exchange remains a read-only credential.
+  `X-CSRF-Token`, and the refusal comes before the request body is validated.
+  A session with no CSRF token cannot satisfy the check and is refused, so the
+  ADR-0016 exchange changes no domain state. Exactly one route applies the rule
+  by what the session carries rather than refusing outright: `DELETE
+  /api/v1/auth/viewer-sessions/current` (`docs/API.md` section 4.1), because a
+  session that cannot end itself is worse than one whose sign-out can be forged.
+  A session that carries a token MUST present it there too, and no other route
+  MAY relax the rule this way — that a forged request against a token-less
+  session achieves nothing but ending it is true only while every other
+  state-changing route refuses one. Sign-in and the installation claim carry
+  their own credential in the body and have no session for a token to belong to,
+  so they are guarded by the configured `Origin` allow list instead.
 - **Session rotation on privilege change.** Signing in revokes the session the
   request arrived with and issues a new one that names it; claiming the
   installation revokes every session the account held. Each revocation records

@@ -22,6 +22,7 @@ import type { Pool } from "pg";
 import { requireBearer, type Principal } from "../../auth.ts";
 import { ApiError, notFound } from "../../errors.ts";
 import type { ActorType, EventActor } from "../../events/append.ts";
+import { requireCsrfToken } from "../identity/authorisation.ts";
 import {
   ARTEFACT_GRANT_TTL_SECONDS,
   type ArtefactRecord,
@@ -121,14 +122,23 @@ export async function registerArtefactRoutes(
    * worker credential are accepted so an operator with `curl` and the browser
    * worker itself can read evidence back through the same mechanism rather
    * than through a second, weaker one.
+   *
+   * `intent` is what separates reading evidence from minting a grant to read
+   * it. Minting one inserts a row and records `artefact.access_granted`, so it
+   * is a state change and a cookie-authenticated caller must echo the session's
+   * CSRF token (`docs/API.md` section 4.0). The check is deliberately outside
+   * the `catch` above it: swallowing its refusal would be a guard that refuses
+   * nothing.
    */
   const resolveGrantSubject = async (
     request: FastifyRequest,
     record: ArtefactRecord,
+    intent: "read" | "write",
   ): Promise<GrantSubject> => {
     if (options.viewerAuth !== undefined) {
       const viewer = await options.viewerAuth(request).catch(() => null);
       if (viewer !== null) {
+        if (intent === "write") requireCsrfToken(request, viewer);
         if (!authorisedForProject(viewer, record.project_id)) {
           throw new ApiError(
             "PROJECT_CONTEXT_MISMATCH",
@@ -260,7 +270,7 @@ export async function registerArtefactRoutes(
     const record = await options.artefacts.get(artefactId);
     // A read of metadata is authorised the same way a read of bytes is.
     const agent = await resolveAgent(request, record);
-    if (agent === null) await resolveGrantSubject(request, record);
+    if (agent === null) await resolveGrantSubject(request, record, "read");
     return reply.send({ data: publicArtefact(record), meta: { request_id: request.id } });
   });
 
@@ -271,7 +281,7 @@ export async function registerArtefactRoutes(
   app.post("/api/v1/artefacts/:artefactId/grants", async (request, reply) => {
     const { artefactId } = request.params as { artefactId: string };
     const record = await options.artefacts.get(artefactId);
-    const subject = await resolveGrantSubject(request, record);
+    const subject = await resolveGrantSubject(request, record, "write");
     const grant = await options.artefacts.grantAccess({
       artefactId: record.id,
       subjectType: subject.type,
@@ -321,7 +331,7 @@ export async function registerArtefactRoutes(
         );
       }
     } else {
-      const subject = await resolveGrantSubject(request, record);
+      const subject = await resolveGrantSubject(request, record, "read");
       if (subject.type !== grant.subject_type || subject.id !== grant.subject_id) {
         throw new ApiError(
           "AUTHORISATION_DENIED",
