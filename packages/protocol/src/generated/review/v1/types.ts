@@ -156,9 +156,29 @@ export type FindingSeverity =
   | "suggestion";
 
 /**
+ * How urgently a review should be worked (docs/DOMAIN_MODEL.md section 14). It orders a
+ * queue and never gates a transition: an urgent review and a routine one obey the same
+ * lifecycle and the same authority rules.
+ */
+export const REVIEW_PRIORITY_VALUES = [
+  "critical",
+  "high",
+  "medium",
+  "low",
+] as const;
+
+export type ReviewPriority =
+  | "critical"
+  | "high"
+  | "medium"
+  | "low";
+
+/**
  * Whether a human or an agent authored the finding. It is recorded on the first row rather
  * than derived later, because the acceptance authority rule depends on it for the life of
- * the finding.
+ * the finding. It is derived by the control plane from the authenticated actor and is
+ * never a field a caller may supply: a client able to set it could forge a human-authored
+ * finding, or relabel its own to escape the rule that a human decides.
  */
 export const FINDING_SOURCE_VALUES = [
   "human",
@@ -302,6 +322,15 @@ export const MESSAGE_TYPE_VALUES = [
   "finding.claimed",
   "finding.comment_added",
   "finding.verification_submitted",
+  "review.assigned",
+  "review.accepted",
+  "review.reopened",
+  "review.archived",
+  "review.comment_added",
+  "finding.resolved",
+  "finding.reopened",
+  "review.status_change_denied",
+  "finding.status_change_denied",
   "artefact.upload_started",
   "artefact.upload_completed",
   "artefact.upload_failed",
@@ -320,6 +349,15 @@ export type MessageType =
   | "finding.claimed"
   | "finding.comment_added"
   | "finding.verification_submitted"
+  | "review.assigned"
+  | "review.accepted"
+  | "review.reopened"
+  | "review.archived"
+  | "review.comment_added"
+  | "finding.resolved"
+  | "finding.reopened"
+  | "review.status_change_denied"
+  | "finding.status_change_denied"
   | "artefact.upload_started"
   | "artefact.upload_completed"
   | "artefact.upload_failed"
@@ -423,6 +461,15 @@ export const MESSAGE_DIRECTIONS: Readonly<Record<MessageType, "control_plane_to_
   "finding.claimed": "control_plane_to_client",
   "finding.comment_added": "control_plane_to_client",
   "finding.verification_submitted": "control_plane_to_client",
+  "review.assigned": "control_plane_to_client",
+  "review.accepted": "control_plane_to_client",
+  "review.reopened": "control_plane_to_client",
+  "review.archived": "control_plane_to_client",
+  "review.comment_added": "control_plane_to_client",
+  "finding.resolved": "control_plane_to_client",
+  "finding.reopened": "control_plane_to_client",
+  "review.status_change_denied": "control_plane_to_client",
+  "finding.status_change_denied": "control_plane_to_client",
   "artefact.upload_started": "control_plane_to_client",
   "artefact.upload_completed": "control_plane_to_client",
   "artefact.upload_failed": "control_plane_to_client",
@@ -444,6 +491,15 @@ export const MESSAGE_CHANNELS: Readonly<Record<MessageType, Channel>> = {
   "finding.claimed": "finding",
   "finding.comment_added": "finding",
   "finding.verification_submitted": "finding",
+  "review.assigned": "review",
+  "review.accepted": "review",
+  "review.reopened": "review",
+  "review.archived": "review",
+  "review.comment_added": "review",
+  "finding.resolved": "finding",
+  "finding.reopened": "finding",
+  "review.status_change_denied": "review",
+  "finding.status_change_denied": "finding",
   "artefact.upload_started": "evidence",
   "artefact.upload_completed": "evidence",
   "artefact.upload_failed": "evidence",
@@ -466,6 +522,15 @@ export const PAYLOAD_MAX_BYTES: Readonly<Record<MessageType, number>> = {
   "finding.claimed": 2048,
   "finding.comment_added": 6144,
   "finding.verification_submitted": 8192,
+  "review.assigned": 2048,
+  "review.accepted": 2048,
+  "review.reopened": 2048,
+  "review.archived": 2048,
+  "review.comment_added": 6144,
+  "finding.resolved": 2048,
+  "finding.reopened": 2048,
+  "review.status_change_denied": 2048,
+  "finding.status_change_denied": 2048,
   "artefact.upload_started": 2048,
   "artefact.upload_completed": 2048,
   "artefact.upload_failed": 2048,
@@ -556,6 +621,120 @@ export const GEOMETRY_BY_ANNOTATION_TYPE = [
  */
 export const REFERENCE_FRAME = [
   "artefact_content_rectangle",
+] as const;
+
+/**
+ * The review lifecycle of docs/DOMAIN_MODEL.md section 14 as data, one entry per legal
+ * transition, in the form from:to:actor_types. The third field is the authority column:
+ * which actor types may request that transition. Absence from this list means refused — a
+ * status machine with an implicit "anything else is fine" branch is not a status machine.
+ * The list is the single source the control plane, the MCP layer and the web application
+ * all read (ADR-0024), so a permitted action is never computed twice from two copies of
+ * the rule. An agent may reach exactly three of the nine statuses: ASSIGNED by claiming,
+ * IN_PROGRESS and AWAITING_HUMAN_REVIEW by working. ACCEPTED is human-only, which is the
+ * authority boundary of AGENTS.md. ACCEPTED to CHANGES_REQUESTED is the reopen of section
+ * 14, an explicit and audited exception to the immutability of an accepted review.
+ */
+export const REVIEW_STATUS_TRANSITIONS = [
+  "DRAFT:READY:human_user",
+  "DRAFT:CANCELLED:human_user",
+  "READY:ASSIGNED:human_user,agent_session",
+  "READY:DRAFT:human_user",
+  "READY:CANCELLED:human_user",
+  "ASSIGNED:IN_PROGRESS:human_user,agent_session",
+  "ASSIGNED:READY:human_user",
+  "ASSIGNED:CANCELLED:human_user",
+  "IN_PROGRESS:AWAITING_HUMAN_REVIEW:human_user,agent_session",
+  "IN_PROGRESS:CHANGES_REQUESTED:human_user",
+  "IN_PROGRESS:CANCELLED:human_user",
+  "AWAITING_HUMAN_REVIEW:ACCEPTED:human_user",
+  "AWAITING_HUMAN_REVIEW:CHANGES_REQUESTED:human_user",
+  "AWAITING_HUMAN_REVIEW:CANCELLED:human_user",
+  "CHANGES_REQUESTED:IN_PROGRESS:human_user,agent_session",
+  "CHANGES_REQUESTED:ASSIGNED:human_user",
+  "CHANGES_REQUESTED:CANCELLED:human_user",
+  "ACCEPTED:CHANGES_REQUESTED:human_user",
+  "ACCEPTED:ARCHIVED:human_user",
+  "CANCELLED:ARCHIVED:human_user",
+] as const;
+
+/**
+ * The finding lifecycle of docs/DOMAIN_MODEL.md section 15 as data, one entry per legal
+ * transition, in the form from:to:actor_types. The third field is the authority column of
+ * the same section, and the entries naming agent_session are exactly the six transitions
+ * of docs/MCP_SPEC.md section 7.7 and nothing else. The list stops at
+ * AWAITING_HUMAN_REVIEW for an agent, which is the product invariant of AGENTS.md
+ * expressed as data: an agent submits work for review and a human decides. RESOLVED,
+ * WONT_FIX and DUPLICATE are final dispositions and are human-only whoever authored the
+ * finding, because Stage 1 enables no policy that would auto-resolve an agent-authored
+ * one.
+ */
+export const FINDING_STATUS_TRANSITIONS = [
+  "OPEN:CLAIMED:human_user,agent_session",
+  "OPEN:IN_PROGRESS:human_user",
+  "OPEN:BLOCKED:human_user",
+  "OPEN:WONT_FIX:human_user",
+  "OPEN:DUPLICATE:human_user",
+  "CLAIMED:IN_PROGRESS:human_user,agent_session",
+  "CLAIMED:BLOCKED:human_user",
+  "CLAIMED:OPEN:human_user",
+  "IN_PROGRESS:FIXED_UNVERIFIED:human_user,agent_session",
+  "IN_PROGRESS:BLOCKED:human_user,agent_session",
+  "IN_PROGRESS:AWAITING_HUMAN_REVIEW:human_user",
+  "BLOCKED:IN_PROGRESS:human_user",
+  "BLOCKED:OPEN:human_user",
+  "FIXED_UNVERIFIED:AWAITING_HUMAN_REVIEW:human_user,agent_session",
+  "FIXED_UNVERIFIED:IN_PROGRESS:human_user",
+  "AWAITING_HUMAN_REVIEW:RESOLVED:human_user",
+  "AWAITING_HUMAN_REVIEW:REOPENED:human_user",
+  "AWAITING_HUMAN_REVIEW:WONT_FIX:human_user",
+  "AWAITING_HUMAN_REVIEW:DUPLICATE:human_user",
+  "RESOLVED:REOPENED:human_user",
+  "REOPENED:CLAIMED:human_user",
+  "REOPENED:IN_PROGRESS:human_user,agent_session",
+  "WONT_FIX:REOPENED:human_user",
+  "DUPLICATE:REOPENED:human_user",
+] as const;
+
+/**
+ * The finding statuses that finally dispose of the reported problem. Reaching one is a
+ * decision about whether the problem was real, which docs/DOMAIN_MODEL.md section 15
+ * reserves to a human for a human-authored finding and which Stage 1 reserves to a human
+ * for an agent-authored one too, because no project policy exists yet to permit
+ * auto-resolution. Review acceptance treats them as the statuses a finding must have
+ * reached before the review may be accepted.
+ */
+export const FINAL_FINDING_DISPOSITIONS = [
+  "RESOLVED",
+  "WONT_FIX",
+  "DUPLICATE",
+] as const;
+
+/**
+ * The review statuses whose slug still reserves the project-scoped name of
+ * docs/DOMAIN_MODEL.md section 14. A withdrawn review releases its name and an accepted
+ * one keeps it, because an agent told to work on bugs-on-homepage must never face two
+ * candidates.
+ */
+export const ACTIVE_REVIEW_STATUSES = [
+  "DRAFT",
+  "READY",
+  "ASSIGNED",
+  "IN_PROGRESS",
+  "AWAITING_HUMAN_REVIEW",
+  "CHANGES_REQUESTED",
+  "ACCEPTED",
+] as const;
+
+/**
+ * The review statuses in which a review is closed to ordinary edits (docs/DOMAIN_MODEL.md
+ * section 14). Comments, archival metadata and an explicit reopen remain available;
+ * everything else is refused with POLICY_DENIED rather than silently dropped.
+ */
+export const IMMUTABLE_REVIEW_STATUSES = [
+  "ACCEPTED",
+  "CANCELLED",
+  "ARCHIVED",
 ] as const;
 
 /**
@@ -895,6 +1074,10 @@ export interface Review {
    */
   readonly status: ReviewStatus;
   /**
+   * How urgently the review should be worked. Ordering only; it gates nothing.
+   */
+  readonly priority?: ReviewPriority;
+  /**
    * Optimistic-concurrency version.
    */
   readonly version: VersionNumber;
@@ -902,6 +1085,21 @@ export interface Review {
    * Actor that created the review.
    */
   readonly created_by: Actor;
+  /**
+   * Human the review is assigned to, where one is.
+   */
+  readonly assigned_user_id?: Identifier;
+  /**
+   * Agent session the review is assigned to or claimed by, where one is.
+   */
+  readonly assigned_agent_session_id?: Identifier;
+  /**
+   * How many times the review has been reopened after acceptance. It is on the record
+   * because reopening preserves prior history rather than replacing it
+   * (docs/DOMAIN_MODEL.md section 14), so the count is the only thing that distinguishes a
+   * first acceptance from a later one.
+   */
+  readonly reopen_count?: number;
   /**
    * Branch the findings were captured from.
    */
@@ -1273,6 +1471,16 @@ export interface ErrorDetails {
    */
   readonly required_evidence?: readonly ReasonText[];
   /**
+   * The transitions this actor may make from the current status, as from:to labels,
+   * returned with a refused transition (docs/API.md section 5). A refusal that only says
+   * no makes a caller guess, and a guessing agent retries.
+   */
+  readonly allowed_transitions?: readonly ReasonText[];
+  /**
+   * Why, where one code covers several causes (docs/API.md section 5).
+   */
+  readonly reason?: ReasonText;
+  /**
    * How long to wait before retrying, returned with RATE_LIMITED.
    */
   readonly retry_after_ms?: number;
@@ -1320,6 +1528,10 @@ export interface ReviewCreateRequest {
    */
   readonly status?: ReviewStatus;
   /**
+   * How urgently the review should be worked. Defaults to medium.
+   */
+  readonly priority?: ReviewPriority;
+  /**
    * Branch the findings were captured from.
    */
   readonly captured_branch: BranchName;
@@ -1363,6 +1575,106 @@ export interface ReviewUpdateRequest {
    * Requested status.
    */
   readonly status?: ReviewStatus;
+  /**
+   * New priority.
+   */
+  readonly priority?: ReviewPriority;
+}
+
+/**
+ * Assigns a review to a human or to an agent session. Exactly one of the two is named: a
+ * review owned by both would leave the question the assignment exists to answer
+ * unanswered, and clearing an assignment is done by naming neither.
+ */
+export interface ReviewAssignRequest {
+  /**
+   * Version the caller last read.
+   */
+  readonly expected_version: VersionNumber;
+  /**
+   * Human to assign the review to.
+   */
+  readonly assigned_user_id?: Identifier;
+  /**
+   * Agent session to assign the review to.
+   */
+  readonly assigned_agent_session_id?: Identifier;
+  /**
+   * Why, recorded on the event.
+   */
+  readonly reason?: ReasonText;
+}
+
+/**
+ * Body of the review lifecycle routes: request-review, accept, reopen and archive
+ * (docs/API.md section 12). The target status is fixed by the route rather than named in
+ * the body, so a caller cannot ask one route for another route's transition.
+ */
+export interface ReviewTransitionRequest {
+  /**
+   * Version the caller last read.
+   */
+  readonly expected_version: VersionNumber;
+  /**
+   * Why, recorded on the event so an auditor reads a decision rather than a status.
+   */
+  readonly reason?: ReasonText;
+}
+
+/**
+ * Claims one finding. The claim carries the same expected_version as any other write, so a
+ * human and an agent claiming at once produce one claim and one VERSION_CONFLICT rather
+ * than two silent overwrites.
+ */
+export interface FindingClaimRequest {
+  /**
+   * Version the caller last read.
+   */
+  readonly expected_version: VersionNumber;
+}
+
+/**
+ * Body of the human-only finding disposition routes: accept, reopen and wont-fix
+ * (docs/API.md section 13). Each is refused for an agent actor in the domain layer with
+ * AUTHORISATION_DENIED, whatever credential reached the route.
+ */
+export interface FindingTransitionRequest {
+  /**
+   * Version the caller last read.
+   */
+  readonly expected_version: VersionNumber;
+  /**
+   * Why the decision was made. Required for wont-fix, because waiving a reported problem
+   * without a reason is not a decision anybody can review later.
+   */
+  readonly reason?: ReasonText;
+  /**
+   * The finding this one duplicates, where the disposition is DUPLICATE.
+   */
+  readonly duplicate_of_finding_id?: Identifier;
+}
+
+/**
+ * Appends a comment to a review or a finding. There is no author field: attribution is
+ * derived from the authenticated actor, because a caller able to name its own actor type
+ * could make an agent's note read as a human's (docs/DOMAIN_MODEL.md section 18).
+ */
+export interface CommentCreateRequest {
+  /**
+   * Comment text. Rendered as text and never as markup.
+   */
+  readonly body: BodyText;
+}
+
+/**
+ * Edits a comment. The edit appends a new revision and retains the previous one, so the
+ * history a reader needs to judge a changed instruction is never lost.
+ */
+export interface CommentUpdateRequest {
+  /**
+   * Replacement text, recorded as the next revision.
+   */
+  readonly body: BodyText;
 }
 
 /**
@@ -1383,10 +1695,6 @@ export interface FindingCreateRequest {
    * Severity.
    */
   readonly severity: FindingSeverity;
-  /**
-   * Whether a human or an agent authored the finding.
-   */
-  readonly source: FindingSource;
   /**
    * URL the finding was captured at.
    */
@@ -1607,9 +1915,11 @@ export interface FindingStatusChanged {
 }
 
 /**
- * One chronological discussion item on a finding (docs/DOMAIN_MODEL.md section 18).
- * Comments are append-only; the actor type is always explicit, because a reader must be
- * able to tell an agent's note from a human's without inferring it from the wording.
+ * One chronological discussion item on a review or on one of its findings
+ * (docs/DOMAIN_MODEL.md section 18). finding_id is absent for a comment on the review
+ * itself. Comments are append-only; the actor type is always explicit, because a reader
+ * must be able to tell an agent's note from a human's without inferring it from the
+ * wording, and it is derived from the authenticated actor rather than supplied.
  */
 export interface Comment {
   /**
@@ -1625,25 +1935,35 @@ export interface Comment {
    */
   readonly project_id?: Identifier;
   /**
-   * Review the finding belongs to.
+   * Review the comment belongs to, directly or through its finding.
    */
-  readonly review_id?: Identifier;
+  readonly review_id: Identifier;
   /**
-   * Finding the comment is on.
+   * Finding the comment is on. Absent when the comment is on the review itself.
    */
-  readonly finding_id: Identifier;
+  readonly finding_id?: Identifier;
   /**
    * Comment text. Rendered as text and never as markup.
    */
   readonly body: BodyText;
   /**
-   * Who wrote it.
+   * Who wrote it, derived from the authenticated actor and never from the request body.
    */
   readonly created_by: Actor;
   /**
    * Revision of the comment. Editing records a new revision and retains the previous one.
    */
   readonly revision: VersionNumber;
+  /**
+   * The revision this one replaces, where it is an edit. The replaced row survives: an
+   * edit appends, it does not overwrite.
+   */
+  readonly supersedes_comment_id?: Identifier;
+  /**
+   * When a later revision replaced this one. A revision carrying it is history rather than
+   * the current text.
+   */
+  readonly superseded_at?: Timestamp;
   /**
    * When it was written.
    */
@@ -1726,6 +2046,272 @@ export interface FindingCommentAdded {
    * The comment as recorded.
    */
   readonly comment: Comment;
+}
+
+/**
+ * Payload of review.comment_added.
+ */
+export interface ReviewCommentAdded {
+  /**
+   * The comment as recorded. It carries no finding_id, because it is on the review itself.
+   */
+  readonly comment: Comment;
+}
+
+/**
+ * Payload of review.assigned.
+ */
+export interface ReviewAssigned {
+  /**
+   * Review assigned.
+   */
+  readonly review_id: Identifier;
+  /**
+   * Human it was assigned to, where it was.
+   */
+  readonly assigned_user_id?: Identifier;
+  /**
+   * Agent session it was assigned to, where it was.
+   */
+  readonly assigned_agent_session_id?: Identifier;
+  /**
+   * Human it was assigned to before, where one held it.
+   */
+  readonly previous_assigned_user_id?: Identifier;
+  /**
+   * Agent session it was assigned to before, where one held it.
+   */
+  readonly previous_assigned_agent_session_id?: Identifier;
+  /**
+   * Version after the assignment.
+   */
+  readonly version: VersionNumber;
+  /**
+   * Why, where the caller supplied one.
+   */
+  readonly reason?: ReasonText;
+}
+
+/**
+ * Payload of review.accepted.
+ */
+export interface ReviewAccepted {
+  /**
+   * Review accepted.
+   */
+  readonly review_id: Identifier;
+  /**
+   * The human who decided. The type is always human_user: an agent reaching this event is
+   * not representable, because the domain layer refuses the transition before the event is
+   * written.
+   */
+  readonly accepted_by: Actor;
+  /**
+   * Version after acceptance.
+   */
+  readonly version: VersionNumber;
+  /**
+   * Findings the review held when it was accepted.
+   */
+  readonly finding_count: number;
+  /**
+   * How many of those a human authored. Acceptance rests on every one of them having
+   * reached a final disposition, so the count is recorded rather than left to be
+   * recomputed against a table that has since moved on.
+   */
+  readonly human_finding_count: number;
+  /**
+   * Why, where the caller supplied one.
+   */
+  readonly reason?: ReasonText;
+}
+
+/**
+ * Payload of review.reopened.
+ */
+export interface ReviewReopened {
+  /**
+   * Review reopened.
+   */
+  readonly review_id: Identifier;
+  /**
+   * Status it was reopened from.
+   */
+  readonly from: ReviewStatus;
+  /**
+   * Status it was reopened into.
+   */
+  readonly to: ReviewStatus;
+  /**
+   * Version after the reopen.
+   */
+  readonly version: VersionNumber;
+  /**
+   * How many times this review has now been reopened. Prior findings, evidence and
+   * comments are retained, so the count is what distinguishes one acceptance cycle from
+   * the next.
+   */
+  readonly reopen_count: number;
+  /**
+   * Why, where the caller supplied one.
+   */
+  readonly reason?: ReasonText;
+}
+
+/**
+ * Payload of review.archived.
+ */
+export interface ReviewArchived {
+  /**
+   * Review archived.
+   */
+  readonly review_id: Identifier;
+  /**
+   * Status it was archived from. Archival is not deletion: the findings, evidence and
+   * events all outlive it.
+   */
+  readonly from: ReviewStatus;
+  /**
+   * Version after archival.
+   */
+  readonly version: VersionNumber;
+  /**
+   * Why, where the caller supplied one.
+   */
+  readonly reason?: ReasonText;
+}
+
+/**
+ * Payload of finding.resolved.
+ */
+export interface FindingResolved {
+  /**
+   * Finding disposed of.
+   */
+  readonly finding_id: Identifier;
+  /**
+   * Review it belongs to.
+   */
+  readonly review_id: Identifier;
+  /**
+   * The final disposition reached: RESOLVED, WONT_FIX or DUPLICATE.
+   */
+  readonly disposition: FindingStatus;
+  /**
+   * Who authored the finding, recorded here because it is the input the authority rule of
+   * docs/DOMAIN_MODEL.md section 15 was decided on.
+   */
+  readonly source: FindingSource;
+  /**
+   * The human who decided. Stage 1 enables no policy that would let anything else reach
+   * this event.
+   */
+  readonly decided_by: Actor;
+  /**
+   * Version after the decision.
+   */
+  readonly version: VersionNumber;
+  /**
+   * The finding this one duplicates, where the disposition is DUPLICATE.
+   */
+  readonly duplicate_of_finding_id?: Identifier;
+  /**
+   * Why, where the caller supplied one. Required by the route for WONT_FIX.
+   */
+  readonly reason?: ReasonText;
+}
+
+/**
+ * Payload of review.status_change_denied.
+ */
+export interface ReviewStatusChangeDenied {
+  /**
+   * Review the transition was requested on.
+   */
+  readonly review_id: Identifier;
+  /**
+   * Status the review actually held.
+   */
+  readonly from: ReviewStatus;
+  /**
+   * Status the principal asked for.
+   */
+  readonly requested: ReviewStatus;
+  /**
+   * The stable refusal code the caller was answered with.
+   */
+  readonly code: ErrorClass;
+  /**
+   * Short explanation, drawn from the refusal rather than from the request.
+   */
+  readonly reason?: ReasonText;
+}
+
+/**
+ * Payload of finding.status_change_denied.
+ */
+export interface FindingStatusChangeDenied {
+  /**
+   * Finding the transition was requested on.
+   */
+  readonly finding_id: Identifier;
+  /**
+   * Review it belongs to.
+   */
+  readonly review_id: Identifier;
+  /**
+   * Status the finding actually held.
+   */
+  readonly from: FindingStatus;
+  /**
+   * Status the principal asked for.
+   */
+  readonly requested: FindingStatus;
+  /**
+   * Who authored the finding. It is the input the authority rule was decided on, so a
+   * reader can see why the refusal happened without re-deriving it.
+   */
+  readonly source: FindingSource;
+  /**
+   * The stable refusal code the caller was answered with.
+   */
+  readonly code: ErrorClass;
+  /**
+   * Short explanation, drawn from the refusal rather than from the request.
+   */
+  readonly reason?: ReasonText;
+}
+
+/**
+ * Payload of finding.reopened.
+ */
+export interface FindingReopened {
+  /**
+   * Finding reopened.
+   */
+  readonly finding_id: Identifier;
+  /**
+   * Review it belongs to.
+   */
+  readonly review_id: Identifier;
+  /**
+   * Status it was reopened from.
+   */
+  readonly from: FindingStatus;
+  /**
+   * Version after the reopen.
+   */
+  readonly version: VersionNumber;
+  /**
+   * Verifications the finding already holds. Reopening preserves prior verification
+   * history (docs/DOMAIN_MODEL.md section 15), so the count says what was kept rather than
+   * implying a fresh start.
+   */
+  readonly verification_count: number;
+  /**
+   * Why, where the caller supplied one.
+   */
+  readonly reason?: ReasonText;
 }
 
 /**
@@ -2007,6 +2593,51 @@ export type ReviewFrame =
       readonly envelope: Envelope;
       readonly type: "finding.verification_submitted";
       readonly payload: FindingVerificationSubmitted;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "review.assigned";
+      readonly payload: ReviewAssigned;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "review.accepted";
+      readonly payload: ReviewAccepted;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "review.reopened";
+      readonly payload: ReviewReopened;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "review.archived";
+      readonly payload: ReviewArchived;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "review.comment_added";
+      readonly payload: ReviewCommentAdded;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "finding.resolved";
+      readonly payload: FindingResolved;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "finding.reopened";
+      readonly payload: FindingReopened;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "review.status_change_denied";
+      readonly payload: ReviewStatusChangeDenied;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "finding.status_change_denied";
+      readonly payload: FindingStatusChangeDenied;
     }
   | {
       readonly envelope: Envelope;

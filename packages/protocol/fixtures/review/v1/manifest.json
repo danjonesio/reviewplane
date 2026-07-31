@@ -121,6 +121,62 @@
       "file": "valid/finding-verification-submitted.json",
       "message_type": "finding.verification_submitted",
       "note": "The Stage 0 evidence event: summary, branch, commit, both artefacts and the viewports of AGENTS.md, with status submitted. Nothing here accepts the finding, and the commit differs from the one the finding was captured at because a fix cannot exist at the revision the defect was recorded from."
+    },
+    {
+      "name": "review-assigned",
+      "kind": "review_event",
+      "file": "valid/review-assigned.json",
+      "message_type": "review.assigned",
+      "note": "A human directed the review at an agent session. It is separate from review.claimed because a human handing work over and a worker taking it are different facts an auditor has to tell apart."
+    },
+    {
+      "name": "review-accepted",
+      "kind": "review_event",
+      "file": "valid/review-accepted.json",
+      "message_type": "review.accepted",
+      "note": "The authority boundary of AGENTS.md being crossed by the only actor type that may cross it. The payload names the human and the findings the decision rested on, because a status alone would not say who decided."
+    },
+    {
+      "name": "review-reopened",
+      "kind": "review_event",
+      "file": "valid/review-reopened.json",
+      "message_type": "review.reopened",
+      "note": "An accepted review made writable again. docs/DOMAIN_MODEL.md section 14 makes an accepted review immutable, so the reopen is an explicit event and carries the count that distinguishes one acceptance cycle from the next."
+    },
+    {
+      "name": "review-archived",
+      "kind": "review_event",
+      "file": "valid/review-archived.json",
+      "message_type": "review.archived",
+      "note": "Archival records the status it happened from. Archival is not deletion: the findings, evidence and events all outlive it."
+    },
+    {
+      "name": "review-comment-added",
+      "kind": "review_event",
+      "file": "valid/review-comment-added.json",
+      "message_type": "review.comment_added",
+      "note": "A comment on the review itself, and a second revision: an edit appends a new row naming the one it supersedes rather than overwriting a body."
+    },
+    {
+      "name": "finding-resolved",
+      "kind": "review_event",
+      "file": "valid/finding-resolved.json",
+      "message_type": "finding.resolved",
+      "note": "A human's final decision about one finding, recorded beside the status change. The payload repeats the finding's source, because that is the input the authority rule of docs/DOMAIN_MODEL.md section 15 was decided on."
+    },
+    {
+      "name": "finding-reopened",
+      "kind": "review_event",
+      "file": "valid/finding-reopened.json",
+      "message_type": "finding.reopened",
+      "note": "A reopened finding, carrying how many verifications it already holds. Reopening preserves prior verification history rather than discarding it."
+    },
+    {
+      "name": "finding-status-change-denied",
+      "kind": "review_event",
+      "file": "valid/finding-status-change-denied.json",
+      "message_type": "finding.status_change_denied",
+      "note": "An agent asking to resolve a human-authored finding, and being refused. It is the audit half of the Stage 1 exit criterion: the refused transaction rolls back, so the denial is recorded outside it."
     }
   ],
   "invalid": [

@@ -58,6 +58,7 @@ import { PublishedServiceBinder } from "./modules/published-services/session-bin
 import { PublishedServiceReconciler } from "./modules/published-services/reconciliation.ts";
 import { PublishedServiceService } from "./modules/published-services/service.ts";
 import type { RoutePublisher } from "./modules/published-services/service.ts";
+import { reviewExportHandler } from "./modules/reviews/export-job.ts";
 import { registerReviewRoutes } from "./modules/reviews/routes.ts";
 import { ReviewService } from "./modules/reviews/service.ts";
 
@@ -251,7 +252,10 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
 
   const store = options.artefactStore ?? new FilesystemArtefactStore(config.artefactPath);
   const artefacts = new ArtefactService(pool, store, config.artefactMaxBytes);
-  const reviews = new ReviewService(pool, artefacts);
+  // The logger is what makes a lost audit write visible. A denied transition is
+  // recorded outside the transaction that refused it, so a database failure at
+  // that moment loses the record silently unless somebody is told.
+  const reviews = new ReviewService(pool, artefacts, app.log);
   const workers = new WorkerRegistry(pool, config.workerCredential);
   const workerClient = new BrowserWorkerClient({
     endpoint: config.workerEndpoint,
@@ -402,7 +406,7 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     options.runJobs === true
       ? new JobRunner({
           pool,
-          handlers: {},
+          handlers: { review_export: reviewExportHandler({ reviews, artefacts }) },
           publisher: outbox,
           logger: {
             info: (fields, message) => {

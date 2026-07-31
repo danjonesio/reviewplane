@@ -103,7 +103,7 @@ export function validateActorType(value: unknown, path: string, out: SchemaViola
  * meaning, not free text a caller chose.
  */
 export function validateJobKind(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["event_outbox_dispatch","idempotency_key_expiry","published_service_expiry"] });
+  checkString(value, path, out, { values: ["event_outbox_dispatch","idempotency_key_expiry","published_service_expiry","review_export"] });
 }
 
 /**

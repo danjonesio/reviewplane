@@ -147,7 +147,10 @@ export async function seedProject(
       title: "Hero heading overlaps the navigation below 900px",
       description: "The collapse breakpoint is 768px but the navigation still wraps at 880px.",
       severity: "high",
-      source: "human",
+      // No `source`: it is derived from the authenticated actor, and this
+      // finding is created through the human API, so it is human-authored —
+      // which is what makes the authority rule below it meaningful
+      // (`docs/DOMAIN_MODEL.md` section 15).
       url: "https://route-id.internal.invalid/",
       viewport: { width: 390, height: 844, device_scale_factor: 2 },
       scroll_position: { x: 0, y: 0 },

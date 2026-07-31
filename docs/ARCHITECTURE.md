@@ -533,8 +533,33 @@ The review service owns:
 - Staleness calculation
 - Verification submission
 - Human acceptance
+- Comment history
+- Review export
 
 Review commands are idempotent where network retries are likely. Human and agent actions produce immutable events.
+
+The lifecycle rules live **below the transport**, in
+`apps/server/src/modules/reviews/domain.ts`, as pure functions over a status, an
+actor type and a finding's source. The HTTP routes and the MCP server both call
+the same service, so "a human-authored finding cannot be finally accepted by an
+agent" is a property of the domain rather than of a handler, and a future caller
+— an internal job, a second transport — inherits it rather than having to
+reimplement it. The MCP layer additionally cannot *express* the request
+(ADR-0020); the two are not duplicate implementations of one rule but a removed
+vocabulary and a refused act.
+
+The tables those rules read are not in the service either. Both status machines,
+with the actor types permitted to request each transition, are data in
+`packages/protocol/schemas/review/v1.schema.json` (ADR-0024), so the control
+plane, the MCP layer and the web application derive permitted actions from one
+source instead of three copies that can drift.
+
+Export is a durable job rather than work done inside a request
+(section 4.8). A review with its findings, comments and artefact manifest is not
+something to build while a caller holds a socket open, and a job survives the
+restart a long request would not. The whole attempt is one transaction, so an
+export is either `ready` with an artefact, a digest and a size, or it is not
+`ready` at all: a partial artefact is not a state the schema admits.
 
 ## 10. Event architecture
 

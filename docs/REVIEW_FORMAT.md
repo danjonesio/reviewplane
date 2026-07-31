@@ -106,7 +106,15 @@ Export options:
 - Exclude audit actors
 - Replace internal URLs and paths
 
-The selected mode is recorded in the manifest.
+The selected mode is recorded in the manifest, as `privacy_mode` at the top
+level.
+
+Stage 1 produces **metadata only**, and only that: the review, its findings, its
+comments and an artefact manifest of kinds, sizes and digests, with no image
+bytes embedded and no archive. It is the mode a self-hosted deployment can
+produce without a second decision about who may read the evidence, and the
+manifest still carries the hashes section 7 requires. The other modes arrive with
+the bundle format.
 
 ## 9. Import
 

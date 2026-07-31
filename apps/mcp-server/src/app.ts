@@ -89,7 +89,7 @@ export async function buildMcpApp(options: BuildMcpAppOptions): Promise<BuiltMcp
 
   const store = options.artefactStore ?? new FilesystemArtefactStore(config.artefactPath);
   const artefacts = new ArtefactService(pool, store, config.artefactMaxBytes);
-  const reviews = new ReviewService(pool, artefacts);
+  const reviews = new ReviewService(pool, artefacts, app.log);
   const workers = new WorkerRegistry(pool, "");
   const workerClient = new BrowserWorkerClient({
     endpoint: config.workerEndpoint,

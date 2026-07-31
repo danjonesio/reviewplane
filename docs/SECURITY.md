@@ -295,12 +295,51 @@ calls do, and each names the rule it enforces.
 - On the project routes a foreign identifier is answered `RESOURCE_NOT_FOUND`,
   byte for byte as an unknown one is. `AUTHORISATION_DENIED` would confirm that
   the resource exists, which is the enumeration a cross-project attacker wants.
-  The review and artefact routes do not yet meet this rule: they look the row up
-  before applying scope, so a foreign identifier is answered
-  `PROJECT_CONTEXT_MISMATCH` where an unknown one is answered
-  `RESOURCE_NOT_FOUND`, and the pair is an existence oracle. That is a defect
-  against this section rather than an exemption from it, and it is tracked
-  separately; new routes MUST follow the project routes.
+  The review lifecycle, comment and finding-disposition routes follow the same
+  rule: each resolves its record in one query carrying the identifier, the
+  session's project scope and its organisation together, and answers the same
+  refusal for a foreign identifier as for an unknown one. **Every review,
+  finding, comment and annotation route now meets this**, because there is only
+  one way to reach a record by identifier: a single helper that resolves the
+  actor first and then reads the record with the identifier, the session's
+  project scope and the session's organisation in one predicate. A row failing
+  any part is not returned, so foreign and unknown produce the same bytes.
+
+  The organisation term is taken from the **authenticated principal** and never
+  from the record. Deriving it from the row is not a weaker version of this rule
+  but the absence of it: the term looks present, compares the record to itself
+  and constrains nothing. That is what these routes did until RVP-37, and
+  because every real sign-in issues an organisation-wide session — `projectIds:
+  null`, for which the project check also passes unconditionally — a signed-in
+  user of one organisation could read *and write* another organisation's
+  reviews, findings and annotations. A null organisation on a principal means
+  the ADR-0016 bootstrap administrator, which is deployment-wide by
+  construction; every account session carries a real one.
+
+  The **artefact routes** still do not meet it, and their gap is wider than a
+  scope comparison: they look the row up before authenticating at all, and
+  answer `RESOURCE_NOT_FOUND` from that lookup before any credential is
+  resolved. So they leak twice over —
+
+  - an authenticated caller in another project is answered
+    `PROJECT_CONTEXT_MISMATCH` where an unknown identifier is answered
+    `RESOURCE_NOT_FOUND`;
+  - an **unauthenticated** caller is answered `AUTHENTICATION_REQUIRED` for an
+    identifier that exists and `RESOURCE_NOT_FOUND` for one that does not, which
+    distinguishes the two while holding no credential at all.
+
+  Both are defects against this section rather than exemptions from it, and both
+  are tracked separately. New routes MUST resolve the actor first, then resolve
+  the record with the identifier, the project scope and the organisation in one
+  predicate, taking the organisation from the caller.
+- A **machine credential is refused on the review API by token shape**, before
+  any lookup, exactly as section 6.3 requires of the administrative routes. The
+  review API is a human API: an agent acts through `/mcp/v1`. Answering "sign in"
+  would report the request as unauthenticated when it authenticated perfectly
+  well and is simply not allowed, so the refusal is `AUTHORISATION_DENIED`. The
+  same act is refused again in the domain layer for an `agent_session` actor
+  arriving through MCP, and that refusal is audited
+  (`docs/DOMAIN_MODEL.md` section 15).
 
 ### Live-view authorisation
 
@@ -522,8 +561,15 @@ retention:
   console_and_network_logs: 14d
   findings_and_comments: until_project_deletion
   verification_evidence: until_project_deletion
+  review_export: until_project_deletion
   audit_events: 365d
 ```
+
+`review_export` is a rendering of the review itself rather than of the evidence
+behind it, so it keeps the review's retention rather than the evidence's. Stage 1
+exports in the metadata-only mode of `docs/REVIEW_FORMAT.md` section 8: the
+review, its findings, its comments and an artefact manifest of digests, with no
+image bytes embedded.
 
 Administrators can shorten or extend policy. Legal hold and enterprise policy are later capabilities.
 
@@ -567,6 +613,14 @@ Audit events must cover:
 - Secret requests and injections
 - Approval decisions
 - Export and backup operations
+- **Refused authority requests** on a review or a finding. A denied transition
+  writes no state, so it cannot ride along with one, and the transaction it was
+  refused in rolls back; the record is written afterwards, in its own
+  transaction, as `review.status_change_denied` or
+  `finding.status_change_denied`. An attempt with no record is
+  indistinguishable from one that never happened, and the attempt is exactly
+  what an auditor asking whether an agent tried to accept a human's finding is
+  looking for.
 
 Audit payloads must avoid raw secrets.
 

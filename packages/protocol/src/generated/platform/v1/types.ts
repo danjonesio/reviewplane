@@ -182,12 +182,14 @@ export const JOB_KIND_VALUES = [
   "event_outbox_dispatch",
   "idempotency_key_expiry",
   "published_service_expiry",
+  "review_export",
 ] as const;
 
 export type JobKind =
   | "event_outbox_dispatch"
   | "idempotency_key_expiry"
-  | "published_service_expiry";
+  | "published_service_expiry"
+  | "review_export";
 
 /**
  * Why a job attempt failed. Stable, so a dead-lettered job can be diagnosed from the audit
@@ -675,6 +677,9 @@ export const EVENT_TYPES = [
   "finding.verification_rejected",
   "finding.resolved",
   "finding.reopened",
+  "finding.status_change_denied",
+  "review.comment_added",
+  "review.status_change_denied",
   "job.enqueued",
   "job.succeeded",
   "job.failed",

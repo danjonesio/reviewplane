@@ -181,7 +181,11 @@ export function toAnnotationView(annotation: Annotation): AnnotationView {
 export function toCommentView(comment: Comment): CommentView {
   return {
     id: comment.id,
-    finding_id: comment.finding_id,
+    // A comment on the review itself carries no finding, and this view is only
+    // ever built for a finding's comments. Falling back to the review keeps the
+    // member present rather than emitting an empty string, which a client would
+    // have to special-case (`docs/DOMAIN_MODEL.md` section 18).
+    finding_id: comment.finding_id ?? comment.review_id,
     body: comment.body,
     author: {
       type: comment.created_by.type,
