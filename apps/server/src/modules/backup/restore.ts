@@ -449,12 +449,22 @@ export async function restoreBackup(options: RestoreOptions): Promise<RestoreRes
     // command began — that is the empty-installation check, made before
     // anything was applied — and only after the load has already rolled back,
     // so there is nothing here to lose.
-    await client
-      .query("drop schema public cascade")
-      .then(() => client.query("create schema public"))
-      .catch(() => undefined);
+    let returnedToEmpty = true;
+    try {
+      await client.query("drop schema public cascade");
+      await client.query("create schema public");
+    } catch {
+      // A role that cannot drop the schema it just migrated is unusual, and the
+      // operator has to be told: the alternative is their retry being refused
+      // as a non-empty installation with no explanation of why.
+      returnedToEmpty = false;
+    }
     log("restore did not complete: the database was rolled back and holds no restored data.");
-    log("The installation has been returned to empty, so the restore can be run again.");
+    log(
+      returnedToEmpty
+        ? "The installation has been returned to empty, so the restore can be run again."
+        : "The schema this restore created could not be removed. Drop and recreate the database before running the restore again; it will otherwise be refused as a non-empty installation.",
+    );
     throw error;
   } finally {
     client.release();
