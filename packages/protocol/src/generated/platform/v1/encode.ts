@@ -564,6 +564,9 @@ export function encodeConnectorRevokedPayload(value: ConnectorRevokedPayload): s
   if (value.channels_closed !== undefined) {
     fields.push(`"channels_closed":${jsonInteger(value.channels_closed)}`);
   }
+  if (value.agent_credentials_revoked !== undefined) {
+    fields.push(`"agent_credentials_revoked":${jsonInteger(value.agent_credentials_revoked)}`);
+  }
   return `{${fields.join(",")}}`;
 }
 

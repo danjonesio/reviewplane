@@ -1405,8 +1405,8 @@ type ConnectorDisconnectedPayload struct {
 // ConnectorRevokedPayload is defined by the connector protocol schema.
 //
 // Payload of connector.revoked. It records what revocation reached, because
-// docs/CONNECTOR_PROTOCOL.md section 18 makes revocation five things at once and an
-// auditor needs to see that all five happened.
+// docs/CONNECTOR_PROTOCOL.md section 18 makes revocation six things at once and an
+// auditor needs to see that all six happened.
 type ConnectorRevokedPayload struct {
 	// Status before revocation.
 	PreviousStatus ConnectorStatus `json:"previous_status"`
@@ -1418,6 +1418,11 @@ type ConnectorRevokedPayload struct {
 	SessionsDisconnected int64 `json:"sessions_disconnected"`
 	// How many live connector channels were closed. Zero when the connector held none.
 	ChannelsClosed *int64 `json:"channels_closed,omitempty"`
+	// How many live agent credentials the connector had minted were revoked with it
+	// (ADR-0023). Refusing the exchange closes only the next one, so this count is what
+	// closed the ones already issued. Each also writes its own session.revoked with the
+	// reason connector_revoked.
+	AgentCredentialsRevoked *int64 `json:"agent_credentials_revoked,omitempty"`
 }
 
 // WorkspaceObservedPayload is defined by the connector protocol schema.

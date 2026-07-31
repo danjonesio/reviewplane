@@ -662,7 +662,19 @@ Like the review table, this one is data in
   outside it: an attempt with no record is indistinguishable from one that never
   happened, and the Stage 1 exit criterion is that the attempt leaves a trail.
   Where the audit write itself fails, the refusal still stands and the loss is
-  logged rather than discarded
+  logged rather than discarded.
+
+  "Every" includes the refusals this layer never sees. The agent-facing tool
+  schemas do not contain the final dispositions at all (ADR-0020), so an agent
+  asking for one is refused by the generated validator before any domain code
+  runs — which meant the one attempt this rule exists for left no trace at all,
+  while a merely-illegal transition left a perfect record. The MCP layer
+  therefore records the attempt itself on that path, through
+  `ReviewService.recordTransitionDenied`, and the event is indistinguishable
+  from the ones the domain writes: same type, same actor, same `from` read from
+  the row rather than taken from the caller. A structural denial that cannot be
+  audited is a weaker control than a runtime one that can, and the answer is to
+  keep both rather than to choose
 
 ## 16. Annotation
 

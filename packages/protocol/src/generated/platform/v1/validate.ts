@@ -1385,12 +1385,22 @@ export function validateConnectorRevokedPayloadChannelsClosed(value: unknown, pa
 }
 
 /**
+ * How many live agent credentials the connector had minted were revoked with it
+ * (ADR-0023). Refusing the exchange closes only the next one, so this count is what closed
+ * the ones already issued. Each also writes its own session.revoked with the reason
+ * connector_revoked.
+ */
+export function validateConnectorRevokedPayloadAgentCredentialsRevoked(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 0, maximum: 1024 });
+}
+
+/**
  * Payload of connector.revoked. It records what revocation reached, because
- * docs/CONNECTOR_PROTOCOL.md section 18 makes revocation five things at once and an
- * auditor needs to see that all five happened.
+ * docs/CONNECTOR_PROTOCOL.md section 18 makes revocation six things at once and an auditor
+ * needs to see that all six happened.
  */
 export function validateConnectorRevokedPayload(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["previous_status", "new_status", "routes_revoked", "sessions_disconnected", "channels_closed"], ["previous_status", "new_status", "routes_revoked", "sessions_disconnected"]);
+  const source = checkObject(value, path, out, ["previous_status", "new_status", "routes_revoked", "sessions_disconnected", "channels_closed", "agent_credentials_revoked"], ["previous_status", "new_status", "routes_revoked", "sessions_disconnected"]);
   if (source === null) return;
   if (source["previous_status"] !== undefined) {
     validateConnectorStatus(source["previous_status"], `${path}.previous_status`, out);
@@ -1406,6 +1416,9 @@ export function validateConnectorRevokedPayload(value: unknown, path: string, ou
   }
   if (source["channels_closed"] !== undefined) {
     validateConnectorRevokedPayloadChannelsClosed(source["channels_closed"], `${path}.channels_closed`, out);
+  }
+  if (source["agent_credentials_revoked"] !== undefined) {
+    validateConnectorRevokedPayloadAgentCredentialsRevoked(source["agent_credentials_revoked"], `${path}.agent_credentials_revoked`, out);
   }
 }
 

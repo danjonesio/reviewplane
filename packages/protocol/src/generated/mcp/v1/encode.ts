@@ -673,6 +673,12 @@ export function encodeReviewGetInput(value: ReviewGetInput): string {
   if (value.findings_cursor !== undefined) {
     fields.push(`"findings_cursor":${jsonString(value.findings_cursor)}`);
   }
+  if (value.comments_limit !== undefined) {
+    fields.push(`"comments_limit":${jsonInteger(value.comments_limit)}`);
+  }
+  if (value.comments_cursor !== undefined) {
+    fields.push(`"comments_cursor":${jsonString(value.comments_cursor)}`);
+  }
   return `{${fields.join(",")}}`;
 }
 
@@ -721,6 +727,12 @@ export function encodeFindingGetInput(value: FindingGetInput): string {
   fields.push(`"finding_id":${jsonString(value.finding_id)}`);
   if (value.include !== undefined) {
     fields.push(`"include":${`[${value.include.map((item) => jsonString(item)).join(",")}]`}`);
+  }
+  if (value.comments_limit !== undefined) {
+    fields.push(`"comments_limit":${jsonInteger(value.comments_limit)}`);
+  }
+  if (value.comments_cursor !== undefined) {
+    fields.push(`"comments_cursor":${jsonString(value.comments_cursor)}`);
   }
   return `{${fields.join(",")}}`;
 }
@@ -873,6 +885,9 @@ export function encodeReviewGetResult(value: ReviewGetResult): string {
   if (value.comments !== undefined) {
     fields.push(`"comments":${`[${value.comments.map((item) => encodeCommentView(item)).join(",")}]`}`);
   }
+  if (value.comments_next_cursor !== undefined) {
+    fields.push(`"comments_next_cursor":${jsonString(value.comments_next_cursor)}`);
+  }
   if (value.staleness !== undefined) {
     fields.push(`"staleness":${encodeReviewStaleness(value.staleness)}`);
   }
@@ -957,6 +972,9 @@ export function encodeFindingGetResult(value: FindingGetResult): string {
   }
   if (value.comments !== undefined) {
     fields.push(`"comments":${`[${value.comments.map((item) => encodeCommentView(item)).join(",")}]`}`);
+  }
+  if (value.comments_next_cursor !== undefined) {
+    fields.push(`"comments_next_cursor":${jsonString(value.comments_next_cursor)}`);
   }
   if (value.artefact_links !== undefined) {
     fields.push(`"artefact_links":${`[${value.artefact_links.map((item) => encodeArtefactLink(item)).join(",")}]`}`);

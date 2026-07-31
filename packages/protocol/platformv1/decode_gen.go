@@ -542,6 +542,10 @@ func DecodeConnectorRevokedPayload(value any) ConnectorRevokedPayload {
 		decoded := decodeInt(field)
 		out.ChannelsClosed = &decoded
 	}
+	if field, present := source["agent_credentials_revoked"]; present {
+		decoded := decodeInt(field)
+		out.AgentCredentialsRevoked = &decoded
+	}
 	return out
 }
 

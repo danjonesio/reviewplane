@@ -122,11 +122,18 @@ export async function createConnectorModule(
   const channels = new ControlChannelRegistry();
   const revocationHolder: { current: RevocationEffects | undefined } = { current: undefined };
 
+  // One store for both halves of the credential's life: the listener's exchange
+  // issues through it (ADR-0023) and the human API's revocation closes what that
+  // issued (`docs/CONNECTOR_PROTOCOL.md` §18). Two stores would work, and would
+  // make it possible to change how one of them writes the row.
+  const credentials = new AgentCredentialStore(options.pool);
+
   registerConnectorRoutes(app, {
     pool: options.pool,
     config,
     authority,
     channels,
+    credentials,
     revocationEffects: () => revocationHolder.current,
   });
 
@@ -154,10 +161,7 @@ export async function createConnectorModule(
   // The local MCP bridge's credential exchange (ADR-0023). It is on this
   // listener because it authenticates with the connector's device identity, and
   // this is the only listener that terminates client certificates.
-  registerConnectorAgentCredentialRoute(listener, {
-    pool: options.pool,
-    credentials: new AgentCredentialStore(options.pool),
-  });
+  registerConnectorAgentCredentialRoute(listener, { pool: options.pool, credentials });
 
   // Work started by a channel that must finish before shutdown, so that a
   // connector disconnecting as the server stops still records its event.

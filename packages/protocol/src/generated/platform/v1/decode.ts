@@ -506,6 +506,7 @@ export function decodeConnectorRevokedPayload(value: unknown): ConnectorRevokedP
     routes_revoked: source["routes_revoked"] as number,
     sessions_disconnected: source["sessions_disconnected"] as number,
     ...(source["channels_closed"] === undefined ? {} : { channels_closed: source["channels_closed"] as number }),
+    ...(source["agent_credentials_revoked"] === undefined ? {} : { agent_credentials_revoked: source["agent_credentials_revoked"] as number }),
   };
 }
 

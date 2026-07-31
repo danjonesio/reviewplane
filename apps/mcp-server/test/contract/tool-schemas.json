@@ -301,6 +301,14 @@
         "findings_cursor": {
           "$ref": "#/$defs/cursor",
           "description": "Cursor from a previous page."
+        },
+        "comments_limit": {
+          "$ref": "#/$defs/page_limit",
+          "description": "Maximum comments on the review itself in this page. Defaults to 20."
+        },
+        "comments_cursor": {
+          "$ref": "#/$defs/cursor",
+          "description": "Cursor from a previous page of comments."
         }
       },
       "$defs": {
@@ -537,9 +545,24 @@
             "$ref": "#/$defs/finding_include",
             "description": "One section."
           }
+        },
+        "comments_limit": {
+          "$ref": "#/$defs/page_limit",
+          "description": "Maximum comments in this page. Defaults to 20."
+        },
+        "comments_cursor": {
+          "$ref": "#/$defs/cursor",
+          "description": "Cursor from a previous page of comments."
         }
       },
       "$defs": {
+        "cursor": {
+          "type": "string",
+          "description": "Opaque pagination cursor (docs/API.md section 6). Its contents are an implementation detail and MUST NOT be parsed by a client.",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
         "finding_include": {
           "type": "string",
           "description": "Optional sections of a finding response.",
@@ -556,6 +579,12 @@
           "minLength": 1,
           "maxLength": 64,
           "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "page_limit": {
+          "type": "integer",
+          "description": "Maximum records in one page. Bounded here rather than by the caller's optimism, because an unbounded response is the failure mode docs/MCP_SPEC.md section 13 exists to prevent.",
+          "minimum": 1,
+          "maximum": 50
         }
       }
     }

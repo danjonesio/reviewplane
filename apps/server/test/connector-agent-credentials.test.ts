@@ -16,10 +16,12 @@ import assert from "node:assert/strict";
 import { request as httpsRequest } from "node:https";
 import { after, afterEach, before, describe, test } from "node:test";
 
+import { AgentCredentialStore } from "../src/modules/agents/credentials.ts";
 import { pathHash } from "../src/modules/connectors/workspaces.ts";
 import { revokeConnector } from "../src/modules/connectors/repository.ts";
 import { BOOTSTRAP_TOKEN, startHarness, type Harness } from "./support/harness.ts";
 import { enrolOverWebSocket, generateDeviceKey, identityFrom } from "./support/connector-client.ts";
+import { claimSessionFor, eventsOfType, type SessionCookies } from "./support/identity.ts";
 import { truncateAll } from "./support/postgres.ts";
 
 let harness: Harness;
@@ -66,13 +68,24 @@ async function seedProject(slug = "refresh-surplus"): Promise<{
   return { organisationId, projectId };
 }
 
-async function enrol(slug = "refresh-surplus"): Promise<Enrolled> {
+/**
+ * Enrols a connector, by default for one project.
+ *
+ * `scope: "organisation"` redeems a token that names no project, which leaves
+ * `connectors.project_id` null. That enrolment is the case the exchange's
+ * project term has to stay inert for: it is legal (`docs/DOMAIN_MODEL.md` §7)
+ * and the environment is available to every project in the organisation.
+ */
+async function enrol(
+  slug = "refresh-surplus",
+  options: { readonly scope?: "project" | "organisation" } = {},
+): Promise<Enrolled> {
   const { organisationId, projectId } = await seedProject(slug);
   const issued = await harness.built.app.inject({
     method: "POST",
     url: "/api/v1/connectors/enrolment-tokens",
     headers: ADMIN,
-    payload: { project_id: projectId },
+    payload: options.scope === "organisation" ? {} : { project_id: projectId },
   });
   assert.equal(issued.statusCode, 201, issued.body);
   const token = (issued.json() as { data: { enrolment_token: string } }).data.enrolment_token;
@@ -97,7 +110,11 @@ async function enrol(slug = "refresh-surplus"): Promise<Enrolled> {
 /** Registers the workspace the way the connector's observation does. */
 async function registerWorkspace(
   enrolled: Enrolled,
-  options: { readonly path?: string; readonly environmentId?: string } = {},
+  options: {
+    readonly path?: string;
+    readonly environmentId?: string;
+    readonly projectId?: string;
+  } = {},
 ): Promise<string> {
   const path = options.path ?? CHECKOUT;
   const id = `wsp_${Math.random().toString(36).slice(2, 12)}`;
@@ -109,7 +126,7 @@ async function registerWorkspace(
     [
       id,
       enrolled.organisationId,
-      enrolled.projectId,
+      options.projectId ?? enrolled.projectId,
       options.environmentId ?? enrolled.environmentId,
       enrolled.connectorId,
       path,
@@ -118,6 +135,43 @@ async function registerWorkspace(
     ],
   );
   return id;
+}
+
+/** An administrator session for the connector's organisation, claimed once. */
+async function adminSession(enrolled: Enrolled): Promise<SessionCookies> {
+  return claimSessionFor(harness.built, harness.pool, enrolled.organisationId);
+}
+
+/** The `request_id` differs per call, and nothing else in a refusal may. */
+function stripRequestId(raw: string): string {
+  return raw.replaceAll(/"request_id":"[^"]*"/gu, "");
+}
+
+/**
+ * Revokes through the administrative route, which is the path that cascades.
+ *
+ * The session is a parameter rather than something this claims for itself: an
+ * installation is claimed once, so a test that revokes twice has to present the
+ * same session twice.
+ */
+async function revokeThroughApi(
+  enrolled: Enrolled,
+  cookies: SessionCookies,
+): Promise<{
+  readonly status: number;
+  readonly body: string;
+  readonly data: Record<string, unknown>;
+}> {
+  const response = await harness.built.app.inject({
+    method: "POST",
+    url: `/api/v1/connectors/${enrolled.connectorId}/revoke`,
+    headers: cookies.writeHeaders,
+  });
+  return {
+    status: response.statusCode,
+    body: response.body,
+    data: (response.json() as { data: Record<string, unknown> }).data,
+  };
 }
 
 interface ExchangeResult {
@@ -269,8 +323,7 @@ describe("the local MCP bridge's credential exchange", () => {
     // Byte for byte, minus the per-request identifier, so the pair is not an
     // existence oracle for another environment's checkouts
     // (`docs/TESTING.md` §10).
-    const strip = (raw: string): string => raw.replaceAll(/"request_id":"[^"]*"/gu, "");
-    assert.equal(strip(foreign.raw), strip(unknown.raw));
+    assert.equal(stripRequestId(foreign.raw), stripRequestId(unknown.raw));
     assert.equal(
       await harness.pool
         .query("select count(*) as count from agent_credentials")
@@ -320,5 +373,178 @@ describe("the local MCP bridge's credential exchange", () => {
     // No finding text reaches this shape: it can carry page-derived content and
     // this response is read by a shell prompt.
     assert.doesNotMatch(result.raw, /breakpoint|overlap/u);
+  });
+
+  test("a workspace outside the connector's enrolled project answers as an unknown one does", async () => {
+    // The gap this closes is not reachable through a shipped path: a connector
+    // only reports workspaces for projects `workspaces.ts` has already
+    // authorised. It is constructed here because ADR-0023 claims the connector
+    // "can mint a credential for a project it already carries traffic for, and
+    // for no other", and that claim should be a property of this statement
+    // rather than of an invariant another module happens to maintain.
+    const mine = await enrol();
+    const elsewhere = await seedProject("other-project");
+    await registerWorkspace(mine, {
+      path: "/workspace/not-mine",
+      projectId: elsewhere.projectId,
+    });
+
+    const foreign = await exchange({
+      certificatePem: mine.certificatePem,
+      privateKeyPem: mine.privateKeyPem,
+      body: { workspace_path_hash: pathHash("/workspace/not-mine") },
+    });
+    const unknown = await exchange({
+      certificatePem: mine.certificatePem,
+      privateKeyPem: mine.privateKeyPem,
+      body: { workspace_path_hash: `sha256:${"d".repeat(64)}` },
+    });
+    assert.equal(foreign.status, 404, foreign.raw);
+    assert.equal(foreign.status, unknown.status);
+    assert.equal(stripRequestId(foreign.raw), stripRequestId(unknown.raw));
+    assert.equal(
+      await harness.pool
+        .query("select count(*) as count from agent_credentials")
+        .then((rows) => Number((rows.rows[0] as { count: string }).count)),
+      0,
+      "a credential was minted for a project the connector is not enrolled for",
+    );
+  });
+
+  test("an organisation-scoped connector still obtains a credential", async () => {
+    // `connectors.project_id` is null for an enrolment token that named no
+    // project, and such an environment is available to every project in the
+    // organisation (`docs/DOMAIN_MODEL.md` §7). The project term must be inert
+    // for it, exactly as it is in `workspaces.ts`; a stricter rule here would
+    // make an organisation-scoped connector unable to run a bridge at all.
+    const enrolled = await enrol("refresh-surplus", { scope: "organisation" });
+    const scope = await harness.pool.query<{ project_id: string | null }>(
+      "select project_id from connectors where id = $1",
+      [enrolled.connectorId],
+    );
+    assert.equal(scope.rows[0]?.project_id, null, "the enrolment was not organisation-scoped");
+    const workspaceId = await registerWorkspace(enrolled);
+
+    const result = await exchange({
+      certificatePem: enrolled.certificatePem,
+      privateKeyPem: enrolled.privateKeyPem,
+      body: { workspace_path_hash: pathHash(CHECKOUT) },
+    });
+    assert.equal(result.status, 201, result.raw);
+    const data = result.body["data"] as { workspace_id: string; project_id: string };
+    assert.equal(data.workspace_id, workspaceId);
+    assert.equal(data.project_id, enrolled.projectId);
+  });
+});
+
+describe("revoking the connector revokes what it minted", () => {
+  test("an outstanding credential stops resolving", async () => {
+    const enrolled = await enrol();
+    await registerWorkspace(enrolled);
+    const issued = await exchange({
+      certificatePem: enrolled.certificatePem,
+      privateKeyPem: enrolled.privateKeyPem,
+      body: { workspace_path_hash: pathHash(CHECKOUT) },
+    });
+    assert.equal(issued.status, 201, issued.raw);
+    const credential = issued.body["data"] as { token: string; credential_id: string };
+
+    const store = new AgentCredentialStore(harness.pool);
+    assert.notEqual(
+      await store.resolve(credential.token),
+      null,
+      "the credential was not usable before revocation, so the test proves nothing",
+    );
+
+    const revoked = await revokeThroughApi(enrolled, await adminSession(enrolled));
+    assert.equal(revoked.status, 200, revoked.body);
+    assert.equal(revoked.data["agent_credentials_revoked"], 1);
+
+    // ADR-0023: revoking the identity is what closes the credentials it minted.
+    // Both halves are asserted, because the row being marked and the token being
+    // refused are different facts and only the second one protects anything.
+    assert.equal(await store.resolve(credential.token), null, "a revoked connector's token still resolves");
+    const row = await harness.pool.query<{ revoked_at: Date | null }>(
+      "select revoked_at from agent_credentials where id = $1",
+      [credential.credential_id],
+    );
+    assert.notEqual(row.rows[0]?.revoked_at ?? null, null);
+  });
+
+  test("the connector.revoked event reports the count, and each credential its own record", async () => {
+    const enrolled = await enrol();
+    await registerWorkspace(enrolled);
+    await registerWorkspace(enrolled, { path: "/workspace/second" });
+    for (const path of [CHECKOUT, "/workspace/second"]) {
+      const issued = await exchange({
+        certificatePem: enrolled.certificatePem,
+        privateKeyPem: enrolled.privateKeyPem,
+        body: { workspace_path_hash: pathHash(path) },
+      });
+      assert.equal(issued.status, 201, issued.raw);
+    }
+
+    const revoked = await revokeThroughApi(enrolled, await adminSession(enrolled));
+    assert.equal(revoked.data["agent_credentials_revoked"], 2);
+
+    const events = await eventsOfType(harness.pool, enrolled.projectId, "connector.revoked");
+    assert.equal(events.length, 1, "revocation recorded no audit event");
+    assert.equal(events[0]?.payload["agent_credentials_revoked"], 2);
+
+    // `docs/SECURITY.md` §16: each revoked credential is a permission change and
+    // gets its own record. The count alone says how many, never which.
+    const perCredential = await eventsOfType(harness.pool, enrolled.projectId, "session.revoked");
+    assert.equal(perCredential.length, 2);
+    for (const event of perCredential) {
+      assert.equal(event.payload["reason"], "connector_revoked");
+      assert.match(String(event.payload["credential_id"]), /^agc_/u);
+    }
+    // No event carries a token. The audit trail is append-only, so a credential
+    // that reached it would be a credential nothing can remove.
+    assert.doesNotMatch(JSON.stringify(perCredential), /rpa_/u);
+  });
+
+  test("a second revocation reports no further credentials", async () => {
+    const enrolled = await enrol();
+    await registerWorkspace(enrolled);
+    const issued = await exchange({
+      certificatePem: enrolled.certificatePem,
+      privateKeyPem: enrolled.privateKeyPem,
+      body: { workspace_path_hash: pathHash(CHECKOUT) },
+    });
+    assert.equal(issued.status, 201, issued.raw);
+
+    const cookies = await adminSession(enrolled);
+    const first = await revokeThroughApi(enrolled, cookies);
+    assert.equal(first.data["agent_credentials_revoked"], 1);
+    const again = await revokeThroughApi(enrolled, cookies);
+    // A retried request must not produce a second set of counts for work that
+    // happened once (`docs/CONNECTOR_PROTOCOL.md` §18).
+    assert.equal(again.data["already_revoked"], true);
+    assert.equal(again.data["agent_credentials_revoked"], 0);
+    assert.equal(
+      (await eventsOfType(harness.pool, enrolled.projectId, "session.revoked")).length,
+      1,
+    );
+  });
+
+  test("a revoked connector mints nothing further", async () => {
+    const enrolled = await enrol();
+    await registerWorkspace(enrolled);
+    await revokeThroughApi(enrolled, await adminSession(enrolled));
+
+    const after = await exchange({
+      certificatePem: enrolled.certificatePem,
+      privateKeyPem: enrolled.privateKeyPem,
+      body: { workspace_path_hash: pathHash(CHECKOUT) },
+    });
+    assert.equal(after.status, 401, after.raw);
+    assert.equal(
+      await harness.pool
+        .query("select count(*) as count from agent_credentials")
+        .then((rows) => Number((rows.rows[0] as { count: string }).count)),
+      0,
+      "a revoked identity minted a credential",
+    );
   });
 });

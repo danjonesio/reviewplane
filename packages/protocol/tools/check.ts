@@ -11,7 +11,9 @@
  *    bytes than the committed canonical form;
  * 3. a fixture a corpus says is invalid is accepted, or refused for a
  *    different reason;
- * 4. the Go test suite, which runs the connector corpus, fails.
+ * 4. a manifest note quotes a `key: value` pair its own fixture contradicts,
+ *    which is the one part of a corpus nothing else reads;
+ * 5. the Go test suite, which runs the connector corpus, fails.
  *
  * The Go toolchain is required, as it is for any protocol work
  * (`docs/DEVELOPMENT.md` section 2).
@@ -212,8 +214,97 @@ function codecFor(kind: string): Codec {
   return codec;
 }
 
+/**
+ * A `key: value` pair quoted inside a manifest note.
+ *
+ * Deliberately narrow. The value must be a boolean or a number literal, because
+ * that is the shape a note uses when it is **quoting the fixture** rather than
+ * describing it: "the capability set including `review_inbox: false`". Ordinary
+ * prose reaches for "is false" and names no key, so it does not match, and a
+ * colon followed by a word — the common punctuation in these notes — cannot
+ * match at all.
+ */
+const QUOTED_JSON_PAIR = /[`"']?\b([a-z_][a-z0-9_]*)[`"']?\s*:\s*(true|false|-?\d+(?:\.\d+)?)\b/gu;
+
+/** Every scalar a key takes anywhere in one fixture, keyed by that name. */
+function scalarsByKey(value: unknown, into = new Map<string, unknown[]>()): Map<string, unknown[]> {
+  if (Array.isArray(value)) {
+    for (const item of value) scalarsByKey(item, into);
+    return into;
+  }
+  if (typeof value !== "object" || value === null) return into;
+  for (const [key, member] of Object.entries(value)) {
+    if (typeof member === "boolean" || typeof member === "number") {
+      const seen = into.get(key) ?? [];
+      seen.push(member);
+      into.set(key, seen);
+    }
+    scalarsByKey(member, into);
+  }
+  return into;
+}
+
+/**
+ * Fails when a manifest note quotes a value its own fixture contradicts.
+ *
+ * Notes are the only part of a corpus nothing validates: `agent-session-status`
+ * carried a note reading `review_inbox: false` beside a fixture holding `true`,
+ * and every gate passed. A note is the first thing a reader trusts about a
+ * fixture, so a wrong one is worse than none.
+ *
+ * The check is deliberately partial, and the two rules that keep it quiet are
+ * both about staying out of the way of prose:
+ *
+ * * a key the fixture does not carry as a boolean or a number is **skipped**,
+ *   not failed, because a note may legitimately describe a member that is
+ *   absent, that is an object, or that belongs to a different message entirely;
+ * * a key that appears several times passes if **any** occurrence matches, since
+ *   a note describing one element of an array is describing the fixture
+ *   correctly.
+ *
+ * So this catches contradiction and never mere silence. A note that says nothing
+ * checkable is not an error here; it is simply not checked.
+ */
+function checkFixtureNotes(corpus: FixtureCorpus, label: string): void {
+  const manifest = loadFixtureManifest<string, string, string>(corpus);
+  let checked = 0;
+  let contradicted = 0;
+  for (const fixture of [...manifest.valid, ...manifest.invalid]) {
+    const note = fixture.note;
+    if (note === undefined) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFixture(fixture, corpus));
+    } catch {
+      // An invalid fixture is often not JSON at all, which is the whole point
+      // of it. There is nothing to contradict.
+      continue;
+    }
+    const scalars = scalarsByKey(parsed);
+    for (const [, key, literal] of note.matchAll(QUOTED_JSON_PAIR)) {
+      if (key === undefined || literal === undefined) continue;
+      const occurrences = scalars.get(key);
+      if (occurrences === undefined) continue;
+      const expected =
+        literal === "true" ? true : literal === "false" ? false : Number.parseFloat(literal);
+      checked += 1;
+      if (occurrences.includes(expected)) continue;
+      contradicted += 1;
+      fail(
+        `${label} fixture ${fixture.name}: the note says ${key}: ${literal}, ` +
+          `but ${fixture.file} holds ${key}: ${occurrences.map((value) => String(value)).join(", ")}`,
+      );
+    }
+  }
+  if (contradicted > 0) return;
+  pass(`${label} fixture notes agree with their fixtures (${String(checked)} quoted values)`);
+}
+
 function checkFixtures(corpus: FixtureCorpus, label: string): void {
   const manifest = loadFixtureManifest<string, string, string>(corpus);
+  // Before the round trips, so that `--update` still checks it: regenerating
+  // canonical bytes is exactly when a note falls out of step with its fixture.
+  checkFixtureNotes(corpus, label);
   const canonical: Record<string, string> = {};
 
   for (const fixture of manifest.valid) {

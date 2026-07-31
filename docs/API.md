@@ -625,19 +625,22 @@ connector identity rather than restoring this one.
     "routes_revoked": 2,
     "sessions_disconnected": 1,
     "channels_closed": 1,
+    "agent_credentials_revoked": 1,
     "already_revoked": false
   },
   "meta": { "request_id": "req_..." }
 }
 ```
 
-The three counts say what the revocation actually reached, so a screen can
+The four counts say what the revocation actually reached, so a screen can
 report it rather than implying more or less than happened; `sessions_disconnected`
 counts browser sessions moved to `DEGRADED`, which is what losing a connector
-does to a session (`DOMAIN_MODEL.md` §12). Revoking an already-revoked connector
-is not an error: it answers `already_revoked: true` and changes nothing, so a
-retried request cannot produce a second set of counts for work that happened
-once.
+does to a session (`DOMAIN_MODEL.md` §12), and `agent_credentials_revoked`
+counts the live agent credentials the connector had minted for a local MCP
+bridge (`CONNECTOR_PROTOCOL.md` §18, ADR-0023), which stay usable until
+something revokes them. Revoking an already-revoked connector is not an error:
+it answers `already_revoked: true` and changes nothing, so a retried request
+cannot produce a second set of counts for work that happened once.
 
 ### Administrative authentication on this surface
 

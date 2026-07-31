@@ -410,6 +410,7 @@ export interface ConnectorRevocation {
   readonly routes_revoked: number;
   readonly sessions_disconnected: number;
   readonly channels_closed: number;
+  readonly agent_credentials_revoked: number;
 }
 
 export const api = {

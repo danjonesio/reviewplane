@@ -1249,9 +1249,17 @@ func validateConnectorRevokedPayloadChannelsClosed(value any, path string, out *
 	checkInteger(value, path, out, 0, 1024)
 }
 
+// validateConnectorRevokedPayloadAgentCredentialsRevoked checks how many live agent
+// credentials the connector had minted were revoked with it (ADR-0023). Refusing the
+// exchange closes only the next one, so this count is what closed the ones already
+// issued. Each also writes its own session.revoked with the reason connector_revoked.
+func validateConnectorRevokedPayloadAgentCredentialsRevoked(value any, path string, out *[]SchemaViolation) {
+	checkInteger(value, path, out, 0, 1024)
+}
+
 // validateConnectorRevokedPayload checks a ConnectorRevokedPayload value.
 func validateConnectorRevokedPayload(value any, path string, out *[]SchemaViolation) {
-	source, ok := checkObject(value, path, out, []string{"previous_status", "new_status", "routes_revoked", "sessions_disconnected", "channels_closed"}, []string{"previous_status", "new_status", "routes_revoked", "sessions_disconnected"})
+	source, ok := checkObject(value, path, out, []string{"previous_status", "new_status", "routes_revoked", "sessions_disconnected", "channels_closed", "agent_credentials_revoked"}, []string{"previous_status", "new_status", "routes_revoked", "sessions_disconnected"})
 	if !ok {
 		return
 	}
@@ -1269,6 +1277,9 @@ func validateConnectorRevokedPayload(value any, path string, out *[]SchemaViolat
 	}
 	if field, present := source["channels_closed"]; present {
 		validateConnectorRevokedPayloadChannelsClosed(field, path+".channels_closed", out)
+	}
+	if field, present := source["agent_credentials_revoked"]; present {
+		validateConnectorRevokedPayloadAgentCredentialsRevoked(field, path+".agent_credentials_revoked", out)
 	}
 }
 

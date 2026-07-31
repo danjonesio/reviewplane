@@ -1701,7 +1701,7 @@ export function validateReviewGetInputInclude(value: unknown, path: string, out:
  * (docs/MCP_SPEC.md section 7.6).
  */
 export function validateReviewGetInput(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["review", "include", "findings_limit", "findings_cursor"], ["review"]);
+  const source = checkObject(value, path, out, ["review", "include", "findings_limit", "findings_cursor", "comments_limit", "comments_cursor"], ["review"]);
   if (source === null) return;
   if (source["review"] !== undefined) {
     validateReviewSelector(source["review"], `${path}.review`, out);
@@ -1714,6 +1714,12 @@ export function validateReviewGetInput(value: unknown, path: string, out: Schema
   }
   if (source["findings_cursor"] !== undefined) {
     validateCursor(source["findings_cursor"], `${path}.findings_cursor`, out);
+  }
+  if (source["comments_limit"] !== undefined) {
+    validatePageLimit(source["comments_limit"], `${path}.comments_limit`, out);
+  }
+  if (source["comments_cursor"] !== undefined) {
+    validateCursor(source["comments_cursor"], `${path}.comments_cursor`, out);
   }
 }
 
@@ -1789,13 +1795,19 @@ export function validateFindingGetInputInclude(value: unknown, path: string, out
  * Arguments of finding_get.
  */
 export function validateFindingGetInput(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["finding_id", "include"], ["finding_id"]);
+  const source = checkObject(value, path, out, ["finding_id", "include", "comments_limit", "comments_cursor"], ["finding_id"]);
   if (source === null) return;
   if (source["finding_id"] !== undefined) {
     validateIdentifier(source["finding_id"], `${path}.finding_id`, out);
   }
   if (source["include"] !== undefined) {
     validateFindingGetInputInclude(source["include"], `${path}.include`, out);
+  }
+  if (source["comments_limit"] !== undefined) {
+    validatePageLimit(source["comments_limit"], `${path}.comments_limit`, out);
+  }
+  if (source["comments_cursor"] !== undefined) {
+    validateCursor(source["comments_cursor"], `${path}.comments_cursor`, out);
   }
 }
 
@@ -2078,7 +2090,9 @@ export function validateReviewGetResultArtefactLinks(value: unknown, path: strin
 
 /**
  * One bounded page of comments on the review itself, oldest first. Comments on a finding
- * are read through finding_get.
+ * are read through finding_get. The page may be shorter than comments_limit asked for:
+ * members are added while they fit the response bound of section 13, and
+ * comments_next_cursor then names where the next page starts.
  */
 export function validateReviewGetResultComments(value: unknown, path: string, out: SchemaViolation[]): void {
   if (!checkArray(value, path, out, { minItems: 1, maxItems: 20, uniqueItems: false })) return;
@@ -2092,7 +2106,7 @@ export function validateReviewGetResultComments(value: unknown, path: string, ou
  * only when more remain.
  */
 export function validateReviewGetResult(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["review", "findings", "findings_next_cursor", "artefact_links", "comments", "staleness"], ["review"]);
+  const source = checkObject(value, path, out, ["review", "findings", "findings_next_cursor", "artefact_links", "comments", "comments_next_cursor", "staleness"], ["review"]);
   if (source === null) return;
   if (source["review"] !== undefined) {
     validateReviewView(source["review"], `${path}.review`, out);
@@ -2108,6 +2122,9 @@ export function validateReviewGetResult(value: unknown, path: string, out: Schem
   }
   if (source["comments"] !== undefined) {
     validateReviewGetResultComments(source["comments"], `${path}.comments`, out);
+  }
+  if (source["comments_next_cursor"] !== undefined) {
+    validateCursor(source["comments_next_cursor"], `${path}.comments_next_cursor`, out);
   }
   if (source["staleness"] !== undefined) {
     validateReviewStaleness(source["staleness"], `${path}.staleness`, out);
@@ -2241,7 +2258,9 @@ export function validateFindingGetResultAnnotations(value: unknown, path: string
 }
 
 /**
- * Comments on the finding, oldest first.
+ * Comments on the finding, oldest first. The page may be shorter than comments_limit asked
+ * for: members are added while they fit the response bound of section 13, and
+ * comments_next_cursor then names where the next page starts.
  */
 export function validateFindingGetResultComments(value: unknown, path: string, out: SchemaViolation[]): void {
   if (!checkArray(value, path, out, { minItems: 1, maxItems: 20, uniqueItems: false })) return;
@@ -2264,7 +2283,7 @@ export function validateFindingGetResultArtefactLinks(value: unknown, path: stri
  * Payload of finding_get.
  */
 export function validateFindingGetResult(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["finding", "annotations", "comments", "artefact_links", "latest_verification"], ["finding"]);
+  const source = checkObject(value, path, out, ["finding", "annotations", "comments", "comments_next_cursor", "artefact_links", "latest_verification"], ["finding"]);
   if (source === null) return;
   if (source["finding"] !== undefined) {
     validateFindingView(source["finding"], `${path}.finding`, out);
@@ -2274,6 +2293,9 @@ export function validateFindingGetResult(value: unknown, path: string, out: Sche
   }
   if (source["comments"] !== undefined) {
     validateFindingGetResultComments(source["comments"], `${path}.comments`, out);
+  }
+  if (source["comments_next_cursor"] !== undefined) {
+    validateCursor(source["comments_next_cursor"], `${path}.comments_next_cursor`, out);
   }
   if (source["artefact_links"] !== undefined) {
     validateFindingGetResultArtefactLinks(source["artefact_links"], `${path}.artefact_links`, out);

@@ -886,6 +886,10 @@ func encodeConnectorRevokedPayloadInto(w *canonicalWriter, value ConnectorRevoke
 		w.key("channels_closed")
 		w.integer((*value.ChannelsClosed))
 	}
+	if value.AgentCredentialsRevoked != nil {
+		w.key("agent_credentials_revoked")
+		w.integer((*value.AgentCredentialsRevoked))
+	}
 	w.endObject()
 }
 

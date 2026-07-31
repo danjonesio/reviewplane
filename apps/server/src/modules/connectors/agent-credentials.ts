@@ -20,11 +20,21 @@
  * client certificate's fingerprint and never from anything in the body. A body
  * that named a connector would be a request to act as one.
  *
- * **The workspace decides the project.** The workspace is resolved by its path
- * hash **and** the connector's own environment **and** the connector's
- * organisation, in one query. A workspace this connector has never reported is
- * not found, and so is one belonging to another environment: the two answer
- * identically, so the pair discloses nothing.
+ * **The workspace decides the project, inside what the enrolment allows.** The
+ * workspace is resolved by its path hash **and** the connector's own
+ * environment **and** the connector's organisation **and** the project the
+ * identity was enrolled for, in one query. A workspace this connector has never
+ * reported is not found, and so is one belonging to another environment or to a
+ * project outside the enrolment: they all answer identically, so the set
+ * discloses nothing.
+ *
+ * The enrolled-project term repeats the rule `workspaces.ts` applies to an
+ * observation, and it is here for the reason that module gives for keeping it in
+ * the predicate: ADR-0023 says a connector "can mint a credential for a project
+ * it already carries traffic for, and for no other", and a claim of that kind
+ * should be true of this statement rather than true only while a different
+ * module maintains the invariant it depends on. An organisation-scoped enrolment
+ * carries no project, and the term is inert for it — exactly as it is there.
  *
  * **The credential is as narrow as the request.** One project, one hour, and
  * the read and write capabilities of `docs/MCP_SPEC.md` section 14.1. There is
@@ -123,9 +133,10 @@ export function registerConnectorAgentCredentialRoute(
       );
     }
 
-    // Identifier, environment and organisation in one predicate. A workspace
-    // this connector's environment does not hold is simply not returned, so it
-    // answers as an unknown one does.
+    // Identifier, environment, organisation and enrolled project scope in one
+    // predicate. A workspace this connector's environment does not hold is
+    // simply not returned, and neither is one carrying a project the identity
+    // was not enrolled for, so both answer as an unknown workspace does.
     const rows = await options.pool.query<WorkspaceRow>(
       `SELECT w.id, w.project_id, p.slug AS project_slug, w.branch, w.head_commit
          FROM workspaces w
@@ -133,8 +144,9 @@ export function registerConnectorAgentCredentialRoute(
         WHERE w.path_hash = $1
           AND w.environment_id = $2
           AND w.organisation_id = $3
+          AND ($4::text IS NULL OR w.project_id = $4)
           AND p.status = 'active'`,
-      [hash, connector.environmentId, connector.organisationId],
+      [hash, connector.environmentId, connector.organisationId, connector.projectId],
     );
     const workspace = rows.rows[0];
     if (workspace === undefined) throw notFound("The workspace");

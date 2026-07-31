@@ -2038,6 +2038,14 @@ export interface ReviewGetInput {
    * Cursor from a previous page.
    */
   readonly findings_cursor?: Cursor;
+  /**
+   * Maximum comments on the review itself in this page. Defaults to 20.
+   */
+  readonly comments_limit?: PageLimit;
+  /**
+   * Cursor from a previous page of comments.
+   */
+  readonly comments_cursor?: Cursor;
 }
 
 /**
@@ -2115,6 +2123,14 @@ export interface FindingGetInput {
    * Optional sections to include.
    */
   readonly include?: readonly FindingInclude[];
+  /**
+   * Maximum comments in this page. Defaults to 20.
+   */
+  readonly comments_limit?: PageLimit;
+  /**
+   * Cursor from a previous page of comments.
+   */
+  readonly comments_cursor?: Cursor;
 }
 
 /**
@@ -2382,9 +2398,15 @@ export interface ReviewGetResult {
   readonly artefact_links?: readonly ArtefactLink[];
   /**
    * One bounded page of comments on the review itself, oldest first. Comments on a finding
-   * are read through finding_get.
+   * are read through finding_get. The page may be shorter than comments_limit asked for:
+   * members are added while they fit the response bound of section 13, and
+   * comments_next_cursor then names where the next page starts.
    */
   readonly comments?: readonly CommentView[];
+  /**
+   * Cursor for the next page of comments, present only when more remain.
+   */
+  readonly comments_next_cursor?: Cursor;
   /**
    * The captured context, with no verdict. Present only when asked for.
    */
@@ -2489,9 +2511,15 @@ export interface FindingGetResult {
    */
   readonly annotations?: readonly AnnotationView[];
   /**
-   * Comments on the finding, oldest first.
+   * Comments on the finding, oldest first. The page may be shorter than comments_limit
+   * asked for: members are added while they fit the response bound of section 13, and
+   * comments_next_cursor then names where the next page starts.
    */
   readonly comments?: readonly CommentView[];
+  /**
+   * Cursor for the next page of comments, present only when more remain.
+   */
+  readonly comments_next_cursor?: Cursor;
   /**
    * Evidence links.
    */

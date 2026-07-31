@@ -17,6 +17,7 @@
  */
 
 import {
+  McpResponseEncodeError,
   encodeMcpToolResponse,
   type ErrorClass,
   type McpFrame,
@@ -90,7 +91,18 @@ export function successEnvelope(input: EnvelopeInput): { json: string; value: un
   return { json, value: JSON.parse(json) as unknown };
 }
 
-/** Bounds a detail object to the members the refusal schema declares. */
+/**
+ * Bounds a detail object to the members the refusal schema declares.
+ *
+ * The filter is an allow list rather than a copy because `error_details` is a
+ * closed schema: a member it does not declare would be refused by the codec on
+ * the way out, turning a useful refusal into an unhelpful one. A domain refusal
+ * carrying a detail this list does not name therefore loses it — which is a
+ * real cost, and the right response is to add the member to
+ * `packages/protocol` and to `docs/MCP_SPEC.md` section 12 rather than to widen
+ * this list, because a detail an agent cannot rely on being present is not one
+ * it can act on.
+ */
 function refusalDetails(details: Readonly<Record<string, unknown>>): ToolError["details"] {
   const permitted = [
     "current_version",
@@ -160,6 +172,23 @@ export function refusalFrom(
   error: unknown,
   warnings: readonly Warning[] = [],
 ): { json: string; value: ToolRefusal } {
+  if (error instanceof McpResponseEncodeError) {
+    // A response that did not fit its bound is not an internal error and, above
+    // all, is not retryable: repeating the same call assembles the same
+    // oversized response for ever. Handlers assemble through `BoundedPayload`
+    // so this should be unreachable; it is here because the failure mode it
+    // replaces was an agent locked out of a review it had been assigned,
+    // retrying a call that could never succeed. The message tells the caller
+    // the one thing that does help.
+    return refusalEnvelope({
+      tool,
+      requestId,
+      code: "UNSUPPORTED_CAPABILITY",
+      message:
+        "The response for these arguments exceeds this tool's size limit. Ask for a smaller page, or fewer include sections.",
+      warnings,
+    });
+  }
   if (error instanceof ApiError) {
     return refusalEnvelope({
       tool,
