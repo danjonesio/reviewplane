@@ -628,9 +628,35 @@ describe("workspace observations", () => {
       dirty: true,
     });
 
-    const closed = await secondChannel.closed();
-    assert.equal(closed.code, 1008);
-    assert.equal(closed.reason, "PROJECT_NOT_AUTHORISED");
+    // Raced rather than awaited. `closed()` has no bound of its own, so a test
+    // that only waited on it would report a regression as a 45-second hang —
+    // and a hang on a loaded host reads as contention rather than as a defect.
+    // Whichever happens first is the answer: the channel is refused, or the row
+    // changes hands.
+    const outcome = await Promise.race([
+      secondChannel.closed().then((closed) => ({ kind: "refused" as const, ...closed })),
+      waitFor(
+        async () => {
+          const rows = await harness.pool.query<{ environment_id: string }>(
+            "select environment_id from workspaces where id = $1",
+            ["wsp_contested"],
+          );
+          const row = rows.rows[0];
+          return row !== undefined && row.environment_id === second.environmentId
+            ? { kind: "taken-over" as const, environment_id: row.environment_id }
+            : null;
+        },
+        "the record to change hands",
+        8_000,
+      ).catch(() => ({ kind: "unchanged" as const })),
+    ]);
+    assert.equal(
+      outcome.kind,
+      "refused",
+      `the second environment was not refused: ${JSON.stringify(outcome)}`,
+    );
+    assert.equal(outcome.kind === "refused" ? outcome.code : 0, 1008);
+    assert.equal(outcome.kind === "refused" ? outcome.reason : "", "PROJECT_NOT_AUTHORISED");
 
     const after = await harness.pool.query<typeof before>(
       `select environment_id, connector_id, path_hash, display_path, branch, head_commit
@@ -737,6 +763,64 @@ describe("workspace observations", () => {
     assert.equal(adopted.source, "connector_report");
     assert.equal(adopted.branch, "feat/checkout-tidy");
     channel.close();
+  });
+
+  test("a registered workspace is not adopted by identifier alone at a different path", async () => {
+    // Adoption is justified by the paths matching and by nothing else. Without
+    // the path check, naming a registered workspace's identifier adopted it
+    // whatever the paths were, and the record kept the `root_path` an operator
+    // supplied — which `docs/MCP_SPEC.md` §4 resolves a `workspace_hint`
+    // against — while its digest, label, branch and head commit were replaced by
+    // a machine that had never seen that directory.
+    const { projectId, organisationId } = await seedProject();
+    const registered = await harness.built.workspaces.register({
+      organisationId,
+      projectId,
+      rootPath: "/home/dan/secret-project",
+      branch: "main",
+      headCommit: "9999999999999999999999999999999999999999",
+    });
+    const columns = `id, environment_id, connector_id, path_hash, display_path,
+      root_path, branch, head_commit, dirty, source`;
+    const read = async (): Promise<Record<string, unknown> | undefined> => {
+      const rows = await harness.pool.query<Record<string, unknown>>(
+        `select ${columns} from workspaces where id = $1`,
+        [registered.id],
+      );
+      return rows.rows[0];
+    };
+    const before = await read();
+    assert.ok(before !== undefined);
+
+    const enrolled = await enrol({ projectId });
+    const channel = await openControlChannel(harness, enrolled.identity);
+    channel.sendWorkspaceObservation({
+      workspace_id: registered.id,
+      project_id: projectId,
+      // A path with nothing to do with the one the operator named.
+      path_hash: `sha256:${"e".repeat(64)}`,
+      display_label: "attacker-checkout",
+      branch: "attacker-branch",
+      head_commit: "2222222222222222222222222222222222222222",
+      dirty: true,
+    });
+
+    const outcome = await Promise.race([
+      channel.closed().then((closed) => ({ kind: "refused" as const, ...closed })),
+      waitFor(
+        async () => {
+          const row = await read();
+          return row !== undefined && row["environment_id"] !== null
+            ? { kind: "adopted" as const, environment_id: row["environment_id"] }
+            : null;
+        },
+        "the registered record to be adopted",
+        8_000,
+      ).catch(() => ({ kind: "unchanged" as const })),
+    ]);
+    assert.equal(outcome.kind, "refused", `adoption by identifier alone: ${JSON.stringify(outcome)}`);
+    assert.equal(outcome.kind === "refused" ? outcome.reason : "", "PROJECT_NOT_AUTHORISED");
+    assert.deepEqual(await read(), before, "the registered record was rewritten");
   });
 
   test("the observed workspace reaches the project's environment view", async () => {

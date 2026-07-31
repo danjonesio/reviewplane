@@ -187,21 +187,40 @@ export async function recordObservation(
     if (previous === undefined) {
       return insertObserved(client, context, observation);
     }
-    // The ownership check is here rather than folded into the predicate above,
-    // because a row owned by another environment must be **refused** rather than
-    // skipped. Skipping it would insert a second row under a primary key that is
-    // already taken, and the caller would learn about the collision as a
-    // constraint violation rather than as the authorisation failure it is.
+    // Two refusals, both here rather than folded into the predicate above,
+    // because a row this connector may not write must be **refused** rather
+    // than skipped. Skipping it would fall through to an insert under a primary
+    // key that is already taken, and the caller would learn about the collision
+    // as a constraint violation rather than as the authorisation failure it is.
     //
-    // A row with no environment was registered administratively
-    // (`docs/API.md` §4.3) and is adopted: an operator named that exact path and
-    // this connector observes that exact path, so they are the same checkout and
-    // two records for it would make "which workspace is this agent in"
-    // ambiguous for the wrong reason.
+    // **A row owned by another environment.** Somebody else's machine reports
+    // that checkout; this one may not rewrite the branch and head commit a
+    // verification is checked against (`docs/MCP_SPEC.md` §7.7).
     if (previous.environment_id !== null && previous.environment_id !== context.environmentId) {
       throw new WorkspaceObservationRefused(
         "project_not_authorised",
         "the reported workspace identifier belongs to another environment",
+      );
+    }
+    // **An unowned row at a different path.** A row with no environment was
+    // registered administratively (`docs/API.md` §4.3), and adoption is
+    // justified by one fact only: an operator named that exact path and this
+    // connector observes that exact path, so they are the same checkout.
+    //
+    // The path has to be checked, not assumed. The candidate query reaches an
+    // unowned row two ways — by path, where the paths match by construction, and
+    // by identifier, where nothing has compared them. Without this, naming a
+    // registered workspace's identifier adopted it whatever the paths were: the
+    // row kept the `root_path` an operator gave it, which
+    // `docs/MCP_SPEC.md` §4 resolves a `workspace_hint` against, while its
+    // digest, label, branch and head commit were all replaced by a machine that
+    // has never seen that directory. An identifier match at a different path is
+    // the same "identifier already held" collision as the case above, and takes
+    // the same refusal.
+    if (previous.environment_id === null && previous.path_hash !== observation.path_hash) {
+      throw new WorkspaceObservationRefused(
+        "project_not_authorised",
+        "the reported workspace identifier is held by a record for a different checkout",
       );
     }
     return updateObserved(client, context, observation, previous);

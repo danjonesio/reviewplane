@@ -39,12 +39,28 @@ func TestDeadlinesAreDerivedFromRealTime(t *testing.T) {
 
 	// Every package that *computes* a deadline, which is where the hazard lives.
 	//
-	// `internal/ws` is deliberately absent. It is the transport wrapper, and its
-	// whole job is to forward a deadline its caller worked out — `SetReadDeadline`
-	// there is a one-line pass-through of its own parameter, and the handshake
-	// forwards `ctx.Deadline()` and clears with the zero time. Holding it to this
-	// rule would flag the forwarding rather than the decision, and the decisions
-	// are all in the packages below.
+	// `internal/ws` is deliberately absent, and the reason is a limit of this
+	// rule rather than a property of that package.
+	//
+	// It is not that ws only forwards. Two deadlines are decided there:
+	// `ReadMessage` sets `SetReadDeadline(time.Now())` to unblock a read on
+	// context cancellation, and `Close` computes
+	// `SetWriteDeadline(time.Now().Add(5 * time.Second))`. Both are correct, and
+	// this rule would pass both.
+	//
+	// What it cannot express is ws's genuine pass-throughs — `SetReadDeadline`
+	// and `SetWriteDeadline` are one-line forwards of their own `deadline`
+	// parameter, and a rule phrased around argument *text* cannot tell a
+	// forwarded parameter from a smuggled clock. Whitelisting the identifier
+	// `deadline` would whitelist exactly the hazard everywhere else.
+	//
+	// The residual is worth stating: ws holds no injected clock today, so
+	// nothing is at risk. Inject one and give it to `Close`, and this guard will
+	// not see it. Reaching that point means ws stopped being a transport wrapper,
+	// which is the change to notice.
+	//
+	// The packages below are where deadlines are decided from values those
+	// packages own, which is where the RVP-61 defect actually lived.
 	packages := []string{".", "../workspaces", "../gitcontext", "../routes", "../transport"}
 
 	// Two forms that are real time without saying `time.Now()`. A context's

@@ -103,11 +103,33 @@ connector supplies the identifier.** The identifier is stored as the connector
 reported it, because it is the value a publication names. Ownership is what
 bounds that: a connector may create or update only a record belonging to its own
 environment, or one belonging to no environment at all — a workspace an operator
-registered through `docs/API.md` §4.3, which it adopts because an operator named
-that exact path and this connector observes that exact path. A record owned by
-another environment is refused with the same class a foreign project gets, so
-claiming another environment's workspace and naming a project outside the
-enrolled scope are one outcome rather than two.
+registered through `docs/API.md` §4.3.
+
+Adoption of an unowned record is justified by one fact, and the code checks that
+fact: the paths must match. An operator named a path, this connector observes a
+path, and the two hash to the same digest, so they are the same checkout. **An
+identifier match is not sufficient on its own.** The candidate lookup reaches an
+unowned record two ways — by path, where the digests agree by construction, and
+by identifier, where nothing has yet compared them — and an identifier match at a
+different path is the same "identifier already held" collision as a record owned
+elsewhere. It takes the same refusal.
+
+A record owned by another environment is refused with the same class a foreign
+project gets, so claiming another environment's workspace, claiming another
+project's, and naming a project outside the enrolled scope are one outcome
+rather than three.
+
+Both halves of that rule were written into this ADR before they were true of the
+code, and each was caught by adversarial verification rather than by review —
+which is worth recording, because the failure mode is the decision document
+describing an intent rather than a mechanism.
+
+The second half was the narrower one. The first fix scoped the *path* branch of
+the lookup to the environment and left the *identifier* branch global, so naming
+a registered workspace's identifier adopted it whatever the paths were: the
+record kept the `root_path` an operator gave it — which `docs/MCP_SPEC.md` §4
+resolves a `workspace_hint` against — while its digest, label, branch and head
+commit were replaced by a machine that had never seen that directory.
 
 Ownership has to be checked on the update path and not only on the insert. An
 earlier draft of this decision relied on `on conflict do nothing` alone, which
@@ -180,6 +202,23 @@ sent had changed.
   stream is not, so a connector serving more than eight claims a subset and
   reports all of them. The claim is not an authorisation, so the asymmetry
   costs nothing but has to be understood when reading a reconnect log line.
+- **A connector can learn whether a workspace identifier is taken**, at a cost of
+  one channel per probe: an identifier held anywhere is refused, an unheld one is
+  accepted. It is accepted rather than designed away because the identifier is
+  the value a publication names, so the connector has to be able to choose one
+  and has to be told when its choice collides. The refusals are byte-identical
+  whether the holder is another environment or another project, so a probe
+  reveals that an identifier exists and never where — and the identifier
+  namespace is the one namespace in this system a peer chooses, which is why it
+  is written down rather than left to be rediscovered.
+- **Deleting an environment orphans its reported workspaces.** `environment_id`
+  is `ON DELETE SET NULL`, so those records become unowned and therefore
+  adoptable — but only by a connector observing the same path, and an orphaned
+  reported record carries no `root_path`, so the `workspace_hint` resolution of
+  `docs/MCP_SPEC.md` §4 is unaffected. The effect is that re-enrolling a rebuilt
+  machine with the same configuration resumes its workspaces rather than
+  duplicating them, which is the behaviour an operator expects; the cost is that
+  an orphan is adoptable by whoever observes that path next.
 - A workspace whose branch flips back and forth writes an event each way. That
   is deliberate — both sides of the move are what an auditor needs — but a
   scripted branch switch is visible in the event stream.

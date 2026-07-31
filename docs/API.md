@@ -223,11 +223,19 @@ reported it (`DOMAIN_MODEL.md` §9).
 
 Both sides hash the same bytes, so a checkout registered here and later observed
 by a connector resolves to one record rather than two: the connector adopts the
-registered row and its `source` moves to `connector_report`. Adoption reaches
-only a record with no environment. A record another environment already owns is
-refused, so registering a workspace is not a way to hand one machine's checkout
-to another. The recorded branch is what `finding_submit_verification` checks a
-claimed fix against.
+registered row and its `source` moves to `connector_report`.
+
+Adoption is bounded twice. It reaches only a record with no environment — a
+record another environment owns is refused, so registering a workspace is not a
+way to hand one machine's checkout to another. And it requires the **path hash
+to match**: naming a registered workspace's identifier while reporting a
+different path is refused, because otherwise the record would keep the
+`root_path` an operator supplied — which `MCP_SPEC.md` §4 resolves a
+`workspace_hint` against — while its digest, label, branch and head commit came
+from a machine that has never seen that directory.
+
+The recorded branch is what `finding_submit_verification` checks a claimed fix
+against.
 
 A workspace registered here retains its `root_path`, because `workspace_hint`
 resolves against it (`MCP_SPEC.md` §4). A connector-reported one does not: the
