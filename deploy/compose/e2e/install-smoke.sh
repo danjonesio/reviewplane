@@ -611,9 +611,16 @@ fi
 # it at startup. The property that must hold either way is that the API does not
 # serve without its signing key — a process minting capabilities nothing could
 # verify would be worse than one that refused to start.
+#
+# The existing container is removed first, and that is load-bearing. A secret is
+# resolved when a container is created, so a running API keeps the key it was
+# started with: leaving it in place asserts nothing, and a Compose that refuses
+# to recreate leaves an API that is still serving perfectly well. What an
+# operator actually meets is a deployment brought up without the file.
+"${COMPOSE[@]}" rm --stop --force api > /dev/null 2>&1 || true
 mv "${INSTALL}/secrets/capability_signing_key" "${INSTALL}/secrets/capability_signing_key.moved"
 MISSING="$("${COMPOSE[@]}" up -d --no-deps api 2>&1 || true)"
-sleep 5
+sleep 10
 MISSING_LOGS="$("${COMPOSE[@]}" logs --tail 30 api 2>&1 || true)"
 printf '%s\n\n--- api log ---\n%s\n' "${MISSING}" "${MISSING_LOGS}" > "${EVIDENCE}/missing-secret.txt"
 if ready_from api "http://127.0.0.1:8080/health/ready" > /dev/null 2>&1; then
