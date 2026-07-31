@@ -838,6 +838,8 @@ The record flips **before** the close. The pre-upgrade guard on the control chan
 
 What the flip adds for the credentials is that the set cannot grow back: the exchange of §14 resolves the connector record on every request, so once it says `REVOKED` no further credential can be minted for that identity.
 
+It does not close the window **before** the flip, and this document says so rather than implying otherwise. A credential minted between the sweep and the flip survives the revocation that was meant to end it — milliseconds wide, and only reachable by a concurrent exchange on the same identity. Closing it properly means the flip and the sweep committing together, which is a change to how the transition is recorded rather than a second sweep: a second sweep would catch the race and then leave `connector.revoked` reporting a lower count than the API response, which is the same two-numbers-for-one-fact defect the channel count was repaired for. It is tracked as a follow-up. The accurate-count argument above is about reporting and does not extend to a security sweep, so this is a known gap rather than a decision.
+
 ### What the audit record carries
 
 The `connector.revoked` event and the API response of `API.md` §9 both report `routes_revoked`, `sessions_disconnected`, `channels_closed` and `agent_credentials_revoked`. Revocation is several things at once and an auditor needs to see that all of them happened; a revocation that closed a channel and left a route carried, or left a minted credential live, would be a revocation in name. `channels_closed` is zero when the connector held no live channel and `agent_credentials_revoked` is zero when it had minted none, both of which are ordinary outcomes rather than failures.

@@ -147,14 +147,27 @@ export async function registerProjectRoutes(
     // Keyset pagination, ordered by the same pair the cursor carries. Reading
     // `limit + 1` rows is how the endpoint knows whether another page exists
     // without a second count query (`docs/API.md` section 6).
+    //
+    // Both the predicate and the sort truncate to milliseconds, because that is
+    // the precision the cursor has: `row.created_at.toISOString()` is all a
+    // JavaScript `Date` carries, while `timestamptz` stores microseconds. This
+    // ordering is `DESC` with `<`, so an untruncated comparison rounds the
+    // cursor *down* and excludes every row sharing its millisecond — the page
+    // after a boundary silently omits them and the pager then reports no more
+    // pages, which is a lost project rather than a repeated one. Truncating the
+    // sort as well is not optional: if the filter compares truncated values and
+    // the sort orders untruncated ones, two rows inside one millisecond can be
+    // ordered one way and filtered the other, which reintroduces the gap by a
+    // different route.
     const rows = await pool.query<ProjectRow>(
       `SELECT ${PROJECT_COLUMNS}
          FROM projects
         WHERE ($1::text[] IS NULL OR id = ANY($1))
           AND ($2::text IS NULL OR organisation_id = $2)
           AND ($3::boolean OR status <> 'archived')
-          AND ($4::text IS NULL OR (created_at, id) < ($4::timestamptz, $5::text))
-        ORDER BY created_at DESC, id DESC
+          AND ($4::text IS NULL
+               OR (date_trunc('milliseconds', created_at), id) < ($4::timestamptz, $5::text))
+        ORDER BY date_trunc('milliseconds', created_at) DESC, id DESC
         LIMIT $6`,
       [
         scoped,
