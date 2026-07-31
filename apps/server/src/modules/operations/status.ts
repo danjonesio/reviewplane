@@ -87,6 +87,13 @@ export interface BrowserCapacityStatus {
   readonly in_use: number;
   readonly available: number;
   readonly sandboxed_workers: number;
+  /**
+   * The silence the counts above were computed with, in seconds. It is reported
+   * rather than assumed so that the report says what it measured, and so that
+   * the rendered line and the warning quote the threshold actually applied
+   * rather than the default constant.
+   */
+  readonly stale_after_seconds: number;
   readonly detail: string | null;
 }
 
@@ -210,7 +217,7 @@ export async function gatherStatus(options: StatusOptions): Promise<StatusReport
           ? // Two different faults with two different fixes: a worker that
             // registered and stopped answering is a container to restart; no
             // worker at all is a stack that was never brought up completely.
-            `${String(browserCapacity.stale_workers)} registered browser worker(s) have not been heard from in ${String(WORKER_STALE_AFTER_SECONDS)}s; browser sessions cannot be allocated`
+            `${String(browserCapacity.stale_workers)} registered browser worker(s) have not been heard from in ${String(browserCapacity.stale_after_seconds)}s; browser sessions cannot be allocated`
           : "no browser worker has registered; browser sessions cannot be allocated",
     );
   }
@@ -398,6 +405,7 @@ async function browserCapacityStatus(
       in_use: inUse,
       available: Math.max(capacity - inUse, 0),
       sandboxed_workers: Number(row?.sandboxed ?? 0),
+      stale_after_seconds: staleAfterSeconds,
       detail: null,
     };
   } catch (error) {
@@ -408,6 +416,7 @@ async function browserCapacityStatus(
       in_use: 0,
       available: 0,
       sandboxed_workers: 0,
+      stale_after_seconds: staleAfterSeconds,
       detail: describeFailure(error),
     };
   }
@@ -685,7 +694,7 @@ export function renderStatus(report: StatusReport): string {
     report.browser_capacity.detail === null
       ? `${String(report.browser_capacity.workers)} worker(s), ${String(report.browser_capacity.available)} of ${String(report.browser_capacity.capacity)} slot(s) free, ${String(report.browser_capacity.sandboxed_workers)} sandboxed` +
         (report.browser_capacity.stale_workers > 0
-          ? `, ${String(report.browser_capacity.stale_workers)} not heard from in ${String(WORKER_STALE_AFTER_SECONDS)}s`
+          ? `, ${String(report.browser_capacity.stale_workers)} not heard from in ${String(report.browser_capacity.stale_after_seconds)}s`
           : "")
       : `unavailable: ${report.browser_capacity.detail}`,
   );

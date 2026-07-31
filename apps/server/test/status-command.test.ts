@@ -30,6 +30,7 @@ import {
   formatBytes,
   gatherStatus,
   renderStatus,
+  WORKER_STALE_AFTER_SECONDS,
 } from "../src/modules/operations/status.ts";
 import {
   generateCertificateAuthority,
@@ -256,7 +257,23 @@ describe("reviewplane status", () => {
       report.warnings.some((warning) => warning.includes("have not been heard from")),
       `expected a stale-worker warning, got ${JSON.stringify(report.warnings)}`,
     );
-    assert.match(renderStatus(report), /not heard from in \d+s/u);
+    assert.equal(report.browser_capacity.stale_after_seconds, WORKER_STALE_AFTER_SECONDS);
+    assert.match(renderStatus(report), /not heard from in 45s/u);
+
+    // The threshold the report quotes is the one it applied, not the default
+    // constant. A report that measured one window and named another would send
+    // an operator looking for a worker that went quiet at a time it did not.
+    const wider = await gatherStatus({
+      pool: postgres.pool,
+      artefactPath: artefactRoot,
+      workerStaleAfterSeconds: 90,
+    });
+    assert.equal(wider.browser_capacity.stale_after_seconds, 90);
+    assert.match(renderStatus(wider), /not heard from in 90s/u);
+    assert.ok(
+      wider.warnings.some((warning) => warning.includes("heard from in 90s")),
+      `expected the warning to quote 90s, got ${JSON.stringify(wider.warnings)}`,
+    );
   });
 
   test("a worker that has registered but not yet heartbeated still counts", async () => {

@@ -86,7 +86,7 @@ Output includes, and the `--json` object carries a key for each:
 | Database connectivity and schema | `database` | Reachability, schema version and pending migration count |
 | Artefact store availability | `artefact_store` | Driver, path, and whether a **write** succeeds |
 | Active connectors | `connectors` | Active, degraded, disconnected and total enrolled |
-| Browser worker capacity | `browser_capacity` | Live workers, workers gone quiet, total slots, slots in use, slots free, sandboxed workers |
+| Browser worker capacity | `browser_capacity` | Live workers, workers gone quiet, total slots, slots in use, slots free, sandboxed workers, and the silence threshold the counts were computed with |
 | Active sessions | `sessions` | Sessions that have not ended |
 | Queue depth | `queue` | Pending, running and failed durable jobs |
 | Storage use | `storage` | Available artefact count and bytes, database size, volume free and total |
