@@ -165,7 +165,27 @@ info "waiting for every service to become healthy"
   fail "not every service became healthy within the timeout"
 
 run_documented ./reviewplane status || fail "./reviewplane status failed"
-run_documented ./reviewplane install-token || fail "./reviewplane install-token failed"
+
+# The last documented command is run outside `run_documented`, because its
+# output is a credential. `docs/SECURITY.md` §18 forbids credential material in
+# a log, and this transcript is uploaded as a CI artefact and attached to pull
+# requests. What the transcript records is that the command ran, printed a token
+# of the right shape, and exited 0 — which is the whole of what it is evidence
+# for. The token itself is matched and thrown away.
+printf '   $ %s\n' "./reviewplane install-token"
+TOKEN_OUTPUT="$(./reviewplane install-token 2>&1)"
+TOKEN_STATUS=$?
+{
+  printf '$ ./reviewplane install-token\n'
+  sed -E 's/\brpi_[A-Za-z0-9_-]+/rpi_[redacted]/g' <<< "${TOKEN_OUTPUT}"
+  printf '\n'
+} >> "${EVIDENCE}/documented-flow.txt"
+if [[ "${TOKEN_STATUS}" -eq 0 ]] && grep -qE '\brpi_[A-Za-z0-9_-]{20,}' <<< "${TOKEN_OUTPUT}"; then
+  pass "./reviewplane install-token printed a one-time administrator token"
+else
+  fail "./reviewplane install-token did not print a token"
+fi
+unset TOKEN_OUTPUT
 
 pass "every command in section 8 ran and exited 0"
 
