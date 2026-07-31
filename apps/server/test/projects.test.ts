@@ -419,6 +419,64 @@ describe("managing projects", () => {
     assert.equal(rest.meta.next_cursor, undefined);
   });
 
+  test("projects created inside one millisecond are each returned exactly once", async () => {
+    // The cursor carries `created_at.toISOString()`, which is milliseconds,
+    // while `timestamptz` stores microseconds. This listing is `DESC` with
+    // `<`, so an untruncated comparison rounds the cursor *down* and excludes
+    // every row sharing its millisecond: the page after a boundary omits them
+    // and the pager then reports no more pages. That is a lost project rather
+    // than a repeated one, which is the worse half of the failure — and this is
+    // the endpoint the web application lists projects from.
+    //
+    // The burst is written directly so the whole set genuinely shares one
+    // truncated millisecond; going through the create route would spread them
+    // across several and prove nothing.
+    const seed = data(await createProject({ name: "Anchor" }));
+    const burst = ["prj_burst0001", "prj_burst0002", "prj_burst0003", "prj_burst0004"];
+    for (const id of burst) {
+      await postgres.pool.query(
+        `INSERT INTO projects (id, organisation_id, name, slug, default_branch, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'main',
+                 timestamptz '2026-07-31 12:00:00.123456+00' + ($5 || ' microseconds')::interval,
+                 now())`,
+        [
+          id,
+          account.organisationId,
+          id,
+          id.replaceAll("_", "-"),
+          String(burst.indexOf(id) * 100),
+        ],
+      );
+    }
+
+    // Paged one at a time, which is the shape that exposes the gap: every page
+    // boundary lands inside the burst.
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    let pages = 0;
+    do {
+      const response = await built.app.inject({
+        method: "GET",
+        url: `/api/v1/projects?limit=1${cursor === undefined ? "" : `&cursor=${encodeURIComponent(cursor)}`}`,
+        headers: cookies.readHeaders,
+      });
+      assert.equal(response.statusCode, 200, response.body);
+      const body = response.json() as { data: Project[]; meta: { next_cursor?: string } };
+      for (const project of body.data) seen.push(project.id);
+      cursor = body.meta.next_cursor;
+      pages += 1;
+      assert.ok(pages <= 20, "the pager terminated");
+    } while (cursor !== undefined);
+
+    const expected = [...burst, seed.id].sort();
+    assert.deepEqual(
+      [...seen].sort(),
+      expected,
+      `missing ${expected.filter((id) => !seen.includes(id)).join(",")}`,
+    );
+    assert.equal(new Set(seen).size, seen.length, "no project was returned twice");
+  });
+
   test("the activity timeline pages the project's own events, newest first", async () => {
     const project = data(await createProject({ name: "Refresh Surplus" }));
     for (const name of ["One", "Two", "Three"]) {

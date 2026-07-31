@@ -470,7 +470,16 @@ export class BoundedPayload {
  * at the head of the next page. Every keyset query that accepts one of these
  * therefore compares — and orders by — `date_trunc('milliseconds', ...)`, so
  * both sides carry the same precision and the boundary row appears exactly
- * once.
+ * once. Truncating the sort is not optional: a filter on truncated values and a
+ * sort on untruncated ones can order two rows inside one millisecond one way
+ * and filter them the other, which reintroduces the fault by a different route.
+ *
+ * The cost is that the plain btree indexes on those columns no longer serve
+ * either the predicate or the sort, so these pages are sorted rather than
+ * scanned in index order. That is irrelevant at the volumes this stage carries
+ * — tens of findings in a review, tens of reviews in a project — and the fix
+ * when it stops being irrelevant is a functional index on the same expression
+ * rather than a return to comparing raw timestamps.
  */
 export function encodeCursor(cursor: { createdAt: string; id: string }): string {
   return Buffer.from(`${cursor.createdAt} ${cursor.id}`, "utf8").toString("base64url");

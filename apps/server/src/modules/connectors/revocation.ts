@@ -131,15 +131,32 @@ export async function revokeConnectorIdentity(
   // and `finding:write` until it expired.
   //
   // Swept before the record flips, for the reason the routes are: the count the
-  // audit event reports is then a count of rows this revocation closed. The
-  // flip is what stops the set growing back, because the exchange resolves the
-  // connector record on every request and refuses a revoked one.
-  const revokedCredentials = await context.credentials.revokeIssuedToClient(connector.id);
+  // audit event reports is then a count of rows this revocation closed.
+  //
+  // That ordering leaves a window, and this comment says so rather than
+  // claiming otherwise. The exchange refuses a revoked connector because it
+  // resolves the record on every request — but the record does not say
+  // `REVOKED` until further down, so a credential minted between this sweep and
+  // that flip survives a revocation that was meant to end it. It is
+  // milliseconds wide and needs a concurrent exchange on the same identity.
+  //
+  // It is not closed here because the obvious fix trades one inconsistency for
+  // another: a second sweep after the flip would catch the race, but
+  // `connector.revoked` is written atomically with the flip, so its count would
+  // then be a lower bound while the API response reported the total — two
+  // numbers for one fact, which is the defect this module's channel counting
+  // was repaired for. Closing it properly means the flip and the sweep sharing
+  // a transaction, which is a change to `transitionConnector`'s contract rather
+  // than a line here. Tracked as a follow-up; the accurate-count argument that
+  // justifies ending routes before the flip is about reporting and does not
+  // carry to a security sweep, so this is a gap rather than a decision.
+  const swept = await context.credentials.revokeIssuedToClient(connector.id);
   const actor =
     input.actor.id === undefined
       ? { type: input.actor.type }
       : { type: input.actor.type, id: input.actor.id };
-  for (const credential of revokedCredentials) {
+
+  for (const credential of swept) {
     // One record per project the credential reached, which is the shape
     // `DELETE /api/v1/agent-credentials/:credentialId` already writes for an
     // administrative revocation: an auditor asking what a project's agent
@@ -184,7 +201,7 @@ export async function revokeConnectorIdentity(
       routes_revoked: effects.routesRevoked,
       sessions_disconnected: effects.sessionsDisconnected,
       channels_closed: channelsClosed,
-      agent_credentials_revoked: revokedCredentials.length,
+      agent_credentials_revoked: swept.length,
     },
   });
 
@@ -199,7 +216,7 @@ export async function revokeConnectorIdentity(
       routes_revoked: effects.routesRevoked,
       sessions_disconnected: effects.sessionsDisconnected,
       channels_closed: channelsClosed,
-      agent_credentials_revoked: revokedCredentials.length,
+      agent_credentials_revoked: swept.length,
       already_revoked: event === null,
     },
     "connector identity revoked",
@@ -216,7 +233,7 @@ export async function revokeConnectorIdentity(
     routesRevoked: effects.routesRevoked,
     sessionsDisconnected: effects.sessionsDisconnected,
     channelsClosed,
-    agentCredentialsRevoked: revokedCredentials.length,
+    agentCredentialsRevoked: swept.length,
     changed: event !== null,
   };
 }
