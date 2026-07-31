@@ -32,6 +32,11 @@ export interface LogRecord {
 
 export interface Harness {
   readonly pool: Pool;
+  /**
+   * The disposable database's URL, for a test that exercises a command reading
+   * `REVIEWPLANE_DATABASE_URL` rather than a pool somebody handed it.
+   */
+  readonly databaseUrl: string;
   readonly built: BuiltApp;
   readonly config: ServerConfig;
   readonly connectorConfig: ConnectorModuleConfig;
@@ -173,6 +178,7 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
 
   const harness: Harness = {
     pool,
+    databaseUrl: database.url,
     get built() {
       return built;
     },

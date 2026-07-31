@@ -20,6 +20,8 @@ import { after, afterEach, before, describe, test } from "node:test";
 
 import { decodePlatformEvent } from "@reviewplane/protocol/platform";
 
+import { main } from "../src/cli.ts";
+
 import { HeartbeatFloor } from "../src/modules/connectors/channel.ts";
 import { sweepConnectorHealth } from "../src/modules/connectors/monitor.ts";
 import { displayLabel, pathHash } from "../src/modules/connectors/workspaces.ts";
@@ -754,6 +756,44 @@ describe("the events this module writes satisfy their published schemas", () => 
       assert.ok(seen.has(type), `${type} was never written, so nothing checked its shape`);
     }
     void organisationId;
+  });
+});
+
+describe("the operator command line", () => {
+  test("`reviewplane connector list` reports what is enrolled, and says so when nothing is", async () => {
+    const { projectId } = await seedProject();
+
+    const written: string[] = [];
+    const stdout = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string | Uint8Array): boolean => {
+      written.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+      return true;
+    }) as typeof process.stdout.write;
+    const previousUrl = process.env["REVIEWPLANE_DATABASE_URL"];
+    process.env["REVIEWPLANE_DATABASE_URL"] = harness.databaseUrl;
+    try {
+      // Nothing enrolled: an empty report is an actionable one, not a blank.
+      assert.equal(await main(["connector", "list"]), 0);
+      assert.match(written.join(""), /no connector is enrolled/u);
+      assert.match(written.join(""), /reviewplane-connector enrol/u);
+
+      written.length = 0;
+      const enrolled = await enrol({ projectId });
+      assert.equal(await main(["connector", "list"]), 0);
+      const report = written.join("");
+      assert.match(report, new RegExp(enrolled.connectorId, "u"));
+      assert.match(report, /PENDING_ENROLMENT/u);
+      assert.match(report, /environment /u);
+      assert.match(report, /last heartbeat/u);
+
+      // It reads. There is no revoke here: revocation is an authorised, audited
+      // action, and a command taking no credential could not record who did it.
+      assert.equal(await main(["connector", "revoke", enrolled.connectorId]), 1);
+    } finally {
+      process.stdout.write = stdout;
+      if (previousUrl === undefined) delete process.env["REVIEWPLANE_DATABASE_URL"];
+      else process.env["REVIEWPLANE_DATABASE_URL"] = previousUrl;
+    }
   });
 });
 
