@@ -10,6 +10,11 @@ import type { SchemaViolation } from "./types.ts";
 import type {
   AuthenticationLoginFailedPayload,
   AuthenticationLoginSucceededPayload,
+  ConnectorConnectedPayload,
+  ConnectorDegradedPayload,
+  ConnectorDisconnectedPayload,
+  ConnectorEnrolledPayload,
+  ConnectorRevokedPayload,
   Envelope,
   JobEnqueuedPayload,
   JobFailedPayload,
@@ -24,10 +29,17 @@ import type {
   SessionRevokedPayload,
   UserCredentialsSetPayload,
   UserInvitedPayload,
+  WorkspaceHeadChangedPayload,
+  WorkspaceObservedPayload,
 } from "./types.ts";
 import {
   decodeAuthenticationLoginFailedPayload,
   decodeAuthenticationLoginSucceededPayload,
+  decodeConnectorConnectedPayload,
+  decodeConnectorDegradedPayload,
+  decodeConnectorDisconnectedPayload,
+  decodeConnectorEnrolledPayload,
+  decodeConnectorRevokedPayload,
   decodeJobEnqueuedPayload,
   decodeJobFailedPayload,
   decodeJobSucceededPayload,
@@ -39,10 +51,17 @@ import {
   decodeSessionRevokedPayload,
   decodeUserCredentialsSetPayload,
   decodeUserInvitedPayload,
+  decodeWorkspaceHeadChangedPayload,
+  decodeWorkspaceObservedPayload,
 } from "./decode.ts";
 import {
   encodeAuthenticationLoginFailedPayload,
   encodeAuthenticationLoginSucceededPayload,
+  encodeConnectorConnectedPayload,
+  encodeConnectorDegradedPayload,
+  encodeConnectorDisconnectedPayload,
+  encodeConnectorEnrolledPayload,
+  encodeConnectorRevokedPayload,
   encodeJobEnqueuedPayload,
   encodeJobFailedPayload,
   encodeJobSucceededPayload,
@@ -54,10 +73,17 @@ import {
   encodeSessionRevokedPayload,
   encodeUserCredentialsSetPayload,
   encodeUserInvitedPayload,
+  encodeWorkspaceHeadChangedPayload,
+  encodeWorkspaceObservedPayload,
 } from "./encode.ts";
 import {
   validateAuthenticationLoginFailedPayload,
   validateAuthenticationLoginSucceededPayload,
+  validateConnectorConnectedPayload,
+  validateConnectorDegradedPayload,
+  validateConnectorDisconnectedPayload,
+  validateConnectorEnrolledPayload,
+  validateConnectorRevokedPayload,
   validateJobEnqueuedPayload,
   validateJobFailedPayload,
   validateJobSucceededPayload,
@@ -69,6 +95,8 @@ import {
   validateSessionRevokedPayload,
   validateUserCredentialsSetPayload,
   validateUserInvitedPayload,
+  validateWorkspaceHeadChangedPayload,
+  validateWorkspaceObservedPayload,
 } from "./validate.ts";
 
 /**
@@ -85,6 +113,13 @@ export type PlatformPayload =
   | AuthenticationLoginSucceededPayload
   | AuthenticationLoginFailedPayload
   | SessionRevokedPayload
+  | ConnectorEnrolledPayload
+  | ConnectorConnectedPayload
+  | ConnectorDegradedPayload
+  | ConnectorDisconnectedPayload
+  | ConnectorRevokedPayload
+  | WorkspaceObservedPayload
+  | WorkspaceHeadChangedPayload
   | JobEnqueuedPayload
   | JobSucceededPayload
   | JobFailedPayload;
@@ -124,6 +159,27 @@ export function validatePayload(type: MessageType, value: unknown, path: string,
     case "session.revoked":
       validateSessionRevokedPayload(value, path, out);
       return;
+    case "connector.enrolled":
+      validateConnectorEnrolledPayload(value, path, out);
+      return;
+    case "connector.connected":
+      validateConnectorConnectedPayload(value, path, out);
+      return;
+    case "connector.degraded":
+      validateConnectorDegradedPayload(value, path, out);
+      return;
+    case "connector.disconnected":
+      validateConnectorDisconnectedPayload(value, path, out);
+      return;
+    case "connector.revoked":
+      validateConnectorRevokedPayload(value, path, out);
+      return;
+    case "workspace.observed":
+      validateWorkspaceObservedPayload(value, path, out);
+      return;
+    case "workspace.head_changed":
+      validateWorkspaceHeadChangedPayload(value, path, out);
+      return;
     case "job.enqueued":
       validateJobEnqueuedPayload(value, path, out);
       return;
@@ -161,6 +217,20 @@ export function decodeFrame(envelope: Envelope, value: unknown): PlatformFrame {
       return { envelope, type: "authentication.login_failed", payload: decodeAuthenticationLoginFailedPayload(value) };
     case "session.revoked":
       return { envelope, type: "session.revoked", payload: decodeSessionRevokedPayload(value) };
+    case "connector.enrolled":
+      return { envelope, type: "connector.enrolled", payload: decodeConnectorEnrolledPayload(value) };
+    case "connector.connected":
+      return { envelope, type: "connector.connected", payload: decodeConnectorConnectedPayload(value) };
+    case "connector.degraded":
+      return { envelope, type: "connector.degraded", payload: decodeConnectorDegradedPayload(value) };
+    case "connector.disconnected":
+      return { envelope, type: "connector.disconnected", payload: decodeConnectorDisconnectedPayload(value) };
+    case "connector.revoked":
+      return { envelope, type: "connector.revoked", payload: decodeConnectorRevokedPayload(value) };
+    case "workspace.observed":
+      return { envelope, type: "workspace.observed", payload: decodeWorkspaceObservedPayload(value) };
+    case "workspace.head_changed":
+      return { envelope, type: "workspace.head_changed", payload: decodeWorkspaceHeadChangedPayload(value) };
     case "job.enqueued":
       return { envelope, type: "job.enqueued", payload: decodeJobEnqueuedPayload(value) };
     case "job.succeeded":
@@ -195,6 +265,20 @@ export function encodeFramePayload(frame: PlatformFrame): string {
       return encodeAuthenticationLoginFailedPayload(frame.payload);
     case "session.revoked":
       return encodeSessionRevokedPayload(frame.payload);
+    case "connector.enrolled":
+      return encodeConnectorEnrolledPayload(frame.payload);
+    case "connector.connected":
+      return encodeConnectorConnectedPayload(frame.payload);
+    case "connector.degraded":
+      return encodeConnectorDegradedPayload(frame.payload);
+    case "connector.disconnected":
+      return encodeConnectorDisconnectedPayload(frame.payload);
+    case "connector.revoked":
+      return encodeConnectorRevokedPayload(frame.payload);
+    case "workspace.observed":
+      return encodeWorkspaceObservedPayload(frame.payload);
+    case "workspace.head_changed":
+      return encodeWorkspaceHeadChangedPayload(frame.payload);
     case "job.enqueued":
       return encodeJobEnqueuedPayload(frame.payload);
     case "job.succeeded":

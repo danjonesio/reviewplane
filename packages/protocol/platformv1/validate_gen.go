@@ -12,12 +12,21 @@ var pattern3 = regexp.MustCompile("^[^\\x00-\\x1f]+$")
 var pattern4 = regexp.MustCompile("^[^\\s@\\x00-\\x1f]+@[^\\s@\\x00-\\x1f]+$")
 var pattern5 = regexp.MustCompile("^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 var pattern6 = regexp.MustCompile("^[a-z0-9][a-z0-9.-]*(:[0-9]{1,5})?(/[A-Za-z0-9._~-]+)+$")
-var pattern7 = regexp.MustCompile("^[^\\s\\x00-\\x1f]+$")
-var pattern8 = regexp.MustCompile("^[a-z][a-z0-9_]*$")
-var pattern9 = regexp.MustCompile("^[^\\x00]+$")
-var pattern10 = regexp.MustCompile("^[A-Za-z0-9_.-]+$")
-var pattern11 = regexp.MustCompile("^[a-z][a-z0-9_.]*$")
-var pattern12 = regexp.MustCompile("^[a-z][a-z0-9_.\\[\\]]*$")
+var pattern7 = regexp.MustCompile("^[a-z0-9][a-z0-9._-]*$")
+var pattern8 = regexp.MustCompile("^[a-z0-9]+$")
+var pattern9 = regexp.MustCompile("^[a-z0-9_]+$")
+var pattern10 = regexp.MustCompile("^[a-z][a-z0-9-]*$")
+var pattern11 = regexp.MustCompile("^[0-9A-Za-z][0-9A-Za-z.+-]*$")
+var pattern12 = regexp.MustCompile("^[A-Za-z0-9:._-]+$")
+var pattern13 = regexp.MustCompile("^sha256:[0-9a-f]{64}$")
+var pattern14 = regexp.MustCompile("^[^\\x00-\\x1f\\x7f/\\\\]+$")
+var pattern15 = regexp.MustCompile("^[0-9a-f]+$")
+var pattern16 = regexp.MustCompile("^[^\\s\\x00-\\x1f]+$")
+var pattern17 = regexp.MustCompile("^[a-z][a-z0-9_]*$")
+var pattern18 = regexp.MustCompile("^[^\\x00]+$")
+var pattern19 = regexp.MustCompile("^[A-Za-z0-9_.-]+$")
+var pattern20 = regexp.MustCompile("^[a-z][a-z0-9_.]*$")
+var pattern21 = regexp.MustCompile("^[a-z][a-z0-9_.\\[\\]]*$")
 
 // validateIdentifier checks opaque durable identifier (docs/DOMAIN_MODEL.md section
 // 3). Consumers MUST treat the value as opaque: the schema bounds only its length and
@@ -51,7 +60,7 @@ func validateCursor(value any, path string, out *[]SchemaViolation) {
 // x-protocol.messages, and is a subset of the event_types vocabulary: an event type
 // defined in another schema source is decoded by that source.
 func validateMessageType(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{values: []string{"organisation.created", "project.created", "project.updated", "project.repository_changed", "project.archived", "user.invited", "user.credentials_set", "authentication.login_succeeded", "authentication.login_failed", "session.revoked", "job.enqueued", "job.succeeded", "job.failed"}})
+	checkString(value, path, out, stringOpts{values: []string{"organisation.created", "project.created", "project.updated", "project.repository_changed", "project.archived", "user.invited", "user.credentials_set", "authentication.login_succeeded", "authentication.login_failed", "session.revoked", "connector.enrolled", "connector.connected", "connector.degraded", "connector.disconnected", "connector.revoked", "workspace.observed", "workspace.head_changed", "job.enqueued", "job.succeeded", "job.failed"}})
 }
 
 // validateErrorClass checks stable API error code (docs/API.md section 5,
@@ -128,6 +137,136 @@ func validateGitRefName(value any, path string, out *[]SchemaViolation) {
 	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 255, pattern: pattern5})
 }
 
+// validateRepositoryCanonical checks the canonical member of a repository identity on
+// its own, for the records that store the normalised form without the clone URLs
+// beside it (docs/DOMAIN_MODEL.md section 9). Its shape is
+// repository_identity.canonical, and the shared normaliser in packages/protocol
+// produces both, so a workspace and a project cannot disagree about what one
+// repository is.
+func validateRepositoryCanonical(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 3, maxLength: 255, pattern: pattern6})
+}
+
+// validateEnvironmentStatus checks environment lifecycle status (docs/DOMAIN_MODEL.md
+// section 7). Stage 1 defines one value: retiring an environment arrives with
+// environment lifecycle management, and an enumeration promising a value nothing can
+// reach would misdescribe the product.
+func validateEnvironmentStatus(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"ACTIVE"}})
+}
+
+// validateEnvironmentTrustLevel checks environment trust level (docs/DOMAIN_MODEL.md
+// section 7). Stage 1 has a single default value; a trust level that changes what an
+// environment may do is a policy change rather than a field change, and arrives with
+// the permission model.
+func validateEnvironmentTrustLevel(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"standard"}})
+}
+
+// validateEnvironmentLabel checks operator-assigned environment label. Its shape is
+// the connector protocol's environment_label, because an enrolment token pins the
+// labels a registering environment must declare (docs/CONNECTOR_PROTOCOL.md section
+// 4.1).
+func validateEnvironmentLabel(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern7})
+}
+
+// validatePlatformName checks operating system an environment runs, as the connector
+// reported it.
+func validatePlatformName(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 32, pattern: pattern8})
+}
+
+// validateArchitectureName checks cPU architecture an environment runs, as the
+// connector reported it.
+func validateArchitectureName(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 32, pattern: pattern9})
+}
+
+// validateConnectorStatus checks connector lifecycle status (docs/DOMAIN_MODEL.md
+// section 8). DEGRADED and DISCONNECTED are conclusions the control plane draws from
+// heartbeat silence and are never self-reported; REVOKED is terminal, and a connector
+// in it is refused before a channel is established.
+func validateConnectorStatus(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"PENDING_ENROLMENT", "ACTIVE", "DEGRADED", "DISCONNECTED", "REVOKED"}})
+}
+
+// validateConnectorCapability checks capability a connector build advertises, such as
+// http-tunnel, websocket-tunnel, git-context or local-mcp-bridge. Unknown values are
+// accepted so that a newer connector is classified by docs/CONNECTOR_PROTOCOL.md
+// section 19 rather than rejected outright.
+func validateConnectorCapability(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern10})
+}
+
+// validateConnectorVersion checks connector release version, for example 0.1.0. Its
+// shape is the connector protocol's semantic_version.
+func validateConnectorVersion(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 32, pattern: pattern11})
+}
+
+// validateCertificateFingerprint checks sha256:<hex> digest of the DER form of an
+// issued connector certificate (ADR-0014). It is unique across connectors and is how a
+// verified peer certificate is resolved to a connector record.
+func validateCertificateFingerprint(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 8, maxLength: 128, pattern: pattern12})
+}
+
+// validateConnectorConnectedTrigger checks what returned a connector to ACTIVE. A
+// closed vocabulary, so an audit record needs no free text (docs/SECURITY.md section
+// 18).
+func validateConnectorConnectedTrigger(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"channel_opened", "heartbeat"}})
+}
+
+// validateConnectorDegradedTrigger checks what made a connector DEGRADED. It has one
+// cause: the control plane concluding delay from missed heartbeats.
+func validateConnectorDegradedTrigger(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"heartbeat_delay"}})
+}
+
+// validateConnectorDisconnectedTrigger checks what made a connector DISCONNECTED: its
+// channel closed, or its silence exceeded the disconnect threshold.
+func validateConnectorDisconnectedTrigger(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"channel_closed", "heartbeat_timeout"}})
+}
+
+// validateSilenceSeconds checks a lower bound, in seconds, on how long a connector had
+// been silent when a conclusion was drawn about it.
+func validateSilenceSeconds(value any, path string, out *[]SchemaViolation) {
+	checkInteger(value, path, out, 0, 86400)
+}
+
+// validatePathHash checks stable sha256:<hex> digest of a workspace's absolute path on
+// the development machine. The control plane stores the digest rather than the path,
+// because a display label and a stable local hash are sufficient to recognise the same
+// checkout again (docs/DOMAIN_MODEL.md section 9).
+func validatePathHash(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 71, maxLength: 71, pattern: pattern13})
+}
+
+// validateWorkspaceDisplayLabel checks human-readable workspace label, which is the
+// checkout directory's own name and never its full path. Path separators and control
+// characters are refused, so a full path cannot be smuggled through it.
+func validateWorkspaceDisplayLabel(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 128, pattern: pattern14})
+}
+
+// validateGitCommit checks a commit identifier, lowercase hexadecimal. Bounded so that
+// an abbreviated and a full identifier are both accepted and nothing else is.
+func validateGitCommit(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 7, maxLength: 64, pattern: pattern15})
+}
+
+// validateWorkspaceObservationSource checks how a workspace came to be known
+// (docs/CONNECTOR_PROTOCOL.md section 9). connector_report is a connector observing a
+// configured path; administrative_registration is an operator or an agent session
+// registering one directly. Broad filesystem scanning is disabled by default and has
+// no value here, because this build performs none.
+func validateWorkspaceObservationSource(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"connector_report", "administrative_registration"}})
+}
+
 // validateLoginMethod checks how a human authenticated. bootstrap_token is the
 // ADR-0016 exchange, install_token is the one-time administrator bootstrap, and
 // password is a local account.
@@ -156,7 +295,7 @@ func validateRepositoryIdentityCanonical(value any, path string, out *[]SchemaVi
 
 // validateRepositoryIdentityCloneURLsItem checks a generated schema node.
 func validateRepositoryIdentityCloneURLsItem(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 3, maxLength: 512, pattern: pattern7})
+	checkString(value, path, out, stringOpts{minLength: 3, maxLength: 512, pattern: pattern16})
 }
 
 // validateRepositoryIdentityCloneURLs checks clone URLs that reduce to canonical, in
@@ -395,6 +534,173 @@ func validateHumanSession(value any, path string, out *[]SchemaViolation) {
 	}
 	if field, present := source["expires_at"]; present {
 		validateTimestamp(field, path+".expires_at", out)
+	}
+}
+
+// validateEnvironmentLabels checks operator-assigned labels. An enrolment token may
+// pin the labels a registering environment must declare.
+func validateEnvironmentLabels(value any, path string, out *[]SchemaViolation) {
+	items, ok := checkArray(value, path, out, 0, 16, true)
+	if !ok {
+		return
+	}
+	for index, item := range items {
+		validateEnvironmentLabel(item, indexPath(path, index), out)
+	}
+}
+
+// validateEnvironment checks a Environment value.
+func validateEnvironment(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"id", "organisation_id", "project_id", "name", "platform", "architecture", "labels", "trust_level", "status", "last_seen_at", "created_at"}, []string{"id", "organisation_id", "name", "platform", "architecture", "labels", "trust_level", "status", "created_at"})
+	if !ok {
+		return
+	}
+	if field, present := source["id"]; present {
+		validateIdentifier(field, path+".id", out)
+	}
+	if field, present := source["organisation_id"]; present {
+		validateIdentifier(field, path+".organisation_id", out)
+	}
+	if field, present := source["project_id"]; present {
+		validateIdentifier(field, path+".project_id", out)
+	}
+	if field, present := source["name"]; present {
+		validateDisplayName(field, path+".name", out)
+	}
+	if field, present := source["platform"]; present {
+		validatePlatformName(field, path+".platform", out)
+	}
+	if field, present := source["architecture"]; present {
+		validateArchitectureName(field, path+".architecture", out)
+	}
+	if field, present := source["labels"]; present {
+		validateEnvironmentLabels(field, path+".labels", out)
+	}
+	if field, present := source["trust_level"]; present {
+		validateEnvironmentTrustLevel(field, path+".trust_level", out)
+	}
+	if field, present := source["status"]; present {
+		validateEnvironmentStatus(field, path+".status", out)
+	}
+	if field, present := source["last_seen_at"]; present {
+		validateTimestamp(field, path+".last_seen_at", out)
+	}
+	if field, present := source["created_at"]; present {
+		validateTimestamp(field, path+".created_at", out)
+	}
+}
+
+// validateConnectorCapabilities checks capabilities the connector build advertises.
+func validateConnectorCapabilities(value any, path string, out *[]SchemaViolation) {
+	items, ok := checkArray(value, path, out, 0, 32, true)
+	if !ok {
+		return
+	}
+	for index, item := range items {
+		validateConnectorCapability(item, indexPath(path, index), out)
+	}
+}
+
+// validateConnector checks a Connector value.
+func validateConnector(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"id", "organisation_id", "environment_id", "project_id", "certificate_fingerprint", "certificate_not_after", "version", "capabilities", "status", "connected_at", "last_heartbeat_at", "revoked_at", "created_at"}, []string{"id", "organisation_id", "environment_id", "certificate_fingerprint", "certificate_not_after", "version", "capabilities", "status", "created_at"})
+	if !ok {
+		return
+	}
+	if field, present := source["id"]; present {
+		validateIdentifier(field, path+".id", out)
+	}
+	if field, present := source["organisation_id"]; present {
+		validateIdentifier(field, path+".organisation_id", out)
+	}
+	if field, present := source["environment_id"]; present {
+		validateIdentifier(field, path+".environment_id", out)
+	}
+	if field, present := source["project_id"]; present {
+		validateIdentifier(field, path+".project_id", out)
+	}
+	if field, present := source["certificate_fingerprint"]; present {
+		validateCertificateFingerprint(field, path+".certificate_fingerprint", out)
+	}
+	if field, present := source["certificate_not_after"]; present {
+		validateTimestamp(field, path+".certificate_not_after", out)
+	}
+	if field, present := source["version"]; present {
+		validateConnectorVersion(field, path+".version", out)
+	}
+	if field, present := source["capabilities"]; present {
+		validateConnectorCapabilities(field, path+".capabilities", out)
+	}
+	if field, present := source["status"]; present {
+		validateConnectorStatus(field, path+".status", out)
+	}
+	if field, present := source["connected_at"]; present {
+		validateTimestamp(field, path+".connected_at", out)
+	}
+	if field, present := source["last_heartbeat_at"]; present {
+		validateTimestamp(field, path+".last_heartbeat_at", out)
+	}
+	if field, present := source["revoked_at"]; present {
+		validateTimestamp(field, path+".revoked_at", out)
+	}
+	if field, present := source["created_at"]; present {
+		validateTimestamp(field, path+".created_at", out)
+	}
+}
+
+// validateWorkspaceDirty checks whether the working tree has uncommitted changes.
+// Which files changed is deliberately not recorded.
+func validateWorkspaceDirty(value any, path string, out *[]SchemaViolation) {
+	checkBoolean(value, path, out)
+}
+
+// validateWorkspace checks a Workspace value.
+func validateWorkspace(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"id", "organisation_id", "project_id", "environment_id", "connector_id", "path_hash", "display_path", "repository_identity", "branch", "head_commit", "dirty", "source", "last_observed_at", "created_at"}, []string{"id", "organisation_id", "project_id", "path_hash", "display_path", "branch", "head_commit", "dirty", "source", "created_at"})
+	if !ok {
+		return
+	}
+	if field, present := source["id"]; present {
+		validateIdentifier(field, path+".id", out)
+	}
+	if field, present := source["organisation_id"]; present {
+		validateIdentifier(field, path+".organisation_id", out)
+	}
+	if field, present := source["project_id"]; present {
+		validateIdentifier(field, path+".project_id", out)
+	}
+	if field, present := source["environment_id"]; present {
+		validateIdentifier(field, path+".environment_id", out)
+	}
+	if field, present := source["connector_id"]; present {
+		validateIdentifier(field, path+".connector_id", out)
+	}
+	if field, present := source["path_hash"]; present {
+		validatePathHash(field, path+".path_hash", out)
+	}
+	if field, present := source["display_path"]; present {
+		validateWorkspaceDisplayLabel(field, path+".display_path", out)
+	}
+	if field, present := source["repository_identity"]; present {
+		validateRepositoryCanonical(field, path+".repository_identity", out)
+	}
+	if field, present := source["branch"]; present {
+		validateGitRefName(field, path+".branch", out)
+	}
+	if field, present := source["head_commit"]; present {
+		validateGitCommit(field, path+".head_commit", out)
+	}
+	if field, present := source["dirty"]; present {
+		validateWorkspaceDirty(field, path+".dirty", out)
+	}
+	if field, present := source["source"]; present {
+		validateWorkspaceObservationSource(field, path+".source", out)
+	}
+	if field, present := source["last_observed_at"]; present {
+		validateTimestamp(field, path+".last_observed_at", out)
+	}
+	if field, present := source["created_at"]; present {
+		validateTimestamp(field, path+".created_at", out)
 	}
 }
 
@@ -702,7 +1008,7 @@ func validateSessionRevokedPayload(value any, path string, out *[]SchemaViolatio
 
 // validateProjectUpdatedPayloadChangedFieldsItem checks a generated schema node.
 func validateProjectUpdatedPayloadChangedFieldsItem(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern8})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern17})
 }
 
 // validateProjectUpdatedPayloadChangedFields checks attribute names that changed, in
@@ -739,6 +1045,237 @@ func validateProjectArchivedPayload(value any, path string, out *[]SchemaViolati
 	}
 	if field, present := source["new_status"]; present {
 		validateProjectStatus(field, path+".new_status", out)
+	}
+}
+
+// validateConnectorEnrolledPayloadCapabilities checks capabilities the connector build
+// advertised.
+func validateConnectorEnrolledPayloadCapabilities(value any, path string, out *[]SchemaViolation) {
+	items, ok := checkArray(value, path, out, 0, 32, true)
+	if !ok {
+		return
+	}
+	for index, item := range items {
+		validateConnectorCapability(item, indexPath(path, index), out)
+	}
+}
+
+// validateConnectorEnrolledPayload checks a ConnectorEnrolledPayload value.
+func validateConnectorEnrolledPayload(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"environment_id", "environment_name", "platform", "architecture", "connector_version", "capabilities", "certificate_fingerprint", "identity_expires_at", "enrolment_token_id", "new_status"}, []string{"environment_id", "environment_name", "platform", "architecture", "connector_version", "capabilities", "certificate_fingerprint", "identity_expires_at", "new_status"})
+	if !ok {
+		return
+	}
+	if field, present := source["environment_id"]; present {
+		validateIdentifier(field, path+".environment_id", out)
+	}
+	if field, present := source["environment_name"]; present {
+		validateDisplayName(field, path+".environment_name", out)
+	}
+	if field, present := source["platform"]; present {
+		validatePlatformName(field, path+".platform", out)
+	}
+	if field, present := source["architecture"]; present {
+		validateArchitectureName(field, path+".architecture", out)
+	}
+	if field, present := source["connector_version"]; present {
+		validateConnectorVersion(field, path+".connector_version", out)
+	}
+	if field, present := source["capabilities"]; present {
+		validateConnectorEnrolledPayloadCapabilities(field, path+".capabilities", out)
+	}
+	if field, present := source["certificate_fingerprint"]; present {
+		validateCertificateFingerprint(field, path+".certificate_fingerprint", out)
+	}
+	if field, present := source["identity_expires_at"]; present {
+		validateTimestamp(field, path+".identity_expires_at", out)
+	}
+	if field, present := source["enrolment_token_id"]; present {
+		validateIdentifier(field, path+".enrolment_token_id", out)
+	}
+	if field, present := source["new_status"]; present {
+		validateConnectorStatus(field, path+".new_status", out)
+	}
+}
+
+// validateConnectorConnectedPayload checks a ConnectorConnectedPayload value.
+func validateConnectorConnectedPayload(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"previous_status", "new_status", "trigger"}, []string{"previous_status", "new_status", "trigger"})
+	if !ok {
+		return
+	}
+	if field, present := source["previous_status"]; present {
+		validateConnectorStatus(field, path+".previous_status", out)
+	}
+	if field, present := source["new_status"]; present {
+		validateConnectorStatus(field, path+".new_status", out)
+	}
+	if field, present := source["trigger"]; present {
+		validateConnectorConnectedTrigger(field, path+".trigger", out)
+	}
+}
+
+// validateConnectorDegradedPayload checks a ConnectorDegradedPayload value.
+func validateConnectorDegradedPayload(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"previous_status", "new_status", "trigger", "silent_for_seconds_at_least"}, []string{"previous_status", "new_status", "trigger", "silent_for_seconds_at_least"})
+	if !ok {
+		return
+	}
+	if field, present := source["previous_status"]; present {
+		validateConnectorStatus(field, path+".previous_status", out)
+	}
+	if field, present := source["new_status"]; present {
+		validateConnectorStatus(field, path+".new_status", out)
+	}
+	if field, present := source["trigger"]; present {
+		validateConnectorDegradedTrigger(field, path+".trigger", out)
+	}
+	if field, present := source["silent_for_seconds_at_least"]; present {
+		validateSilenceSeconds(field, path+".silent_for_seconds_at_least", out)
+	}
+}
+
+// validateConnectorDisconnectedPayload checks a ConnectorDisconnectedPayload value.
+func validateConnectorDisconnectedPayload(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"previous_status", "new_status", "trigger", "silent_for_seconds_at_least"}, []string{"previous_status", "new_status", "trigger"})
+	if !ok {
+		return
+	}
+	if field, present := source["previous_status"]; present {
+		validateConnectorStatus(field, path+".previous_status", out)
+	}
+	if field, present := source["new_status"]; present {
+		validateConnectorStatus(field, path+".new_status", out)
+	}
+	if field, present := source["trigger"]; present {
+		validateConnectorDisconnectedTrigger(field, path+".trigger", out)
+	}
+	if field, present := source["silent_for_seconds_at_least"]; present {
+		validateSilenceSeconds(field, path+".silent_for_seconds_at_least", out)
+	}
+}
+
+// validateConnectorRevokedPayloadRoutesRevoked checks how many published services the
+// revocation closed.
+func validateConnectorRevokedPayloadRoutesRevoked(value any, path string, out *[]SchemaViolation) {
+	checkInteger(value, path, out, 0, 1024)
+}
+
+// validateConnectorRevokedPayloadSessionsDisconnected checks how many browser sessions
+// were marked disconnected by it.
+func validateConnectorRevokedPayloadSessionsDisconnected(value any, path string, out *[]SchemaViolation) {
+	checkInteger(value, path, out, 0, 1024)
+}
+
+// validateConnectorRevokedPayloadChannelsClosed checks how many live connector
+// channels were closed. Zero when the connector held none.
+func validateConnectorRevokedPayloadChannelsClosed(value any, path string, out *[]SchemaViolation) {
+	checkInteger(value, path, out, 0, 1024)
+}
+
+// validateConnectorRevokedPayload checks a ConnectorRevokedPayload value.
+func validateConnectorRevokedPayload(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"previous_status", "new_status", "routes_revoked", "sessions_disconnected", "channels_closed"}, []string{"previous_status", "new_status", "routes_revoked", "sessions_disconnected"})
+	if !ok {
+		return
+	}
+	if field, present := source["previous_status"]; present {
+		validateConnectorStatus(field, path+".previous_status", out)
+	}
+	if field, present := source["new_status"]; present {
+		validateConnectorStatus(field, path+".new_status", out)
+	}
+	if field, present := source["routes_revoked"]; present {
+		validateConnectorRevokedPayloadRoutesRevoked(field, path+".routes_revoked", out)
+	}
+	if field, present := source["sessions_disconnected"]; present {
+		validateConnectorRevokedPayloadSessionsDisconnected(field, path+".sessions_disconnected", out)
+	}
+	if field, present := source["channels_closed"]; present {
+		validateConnectorRevokedPayloadChannelsClosed(field, path+".channels_closed", out)
+	}
+}
+
+// validateWorkspaceObservedPayloadDirty checks whether the working tree had
+// uncommitted changes.
+func validateWorkspaceObservedPayloadDirty(value any, path string, out *[]SchemaViolation) {
+	checkBoolean(value, path, out)
+}
+
+// validateWorkspaceObservedPayload checks a WorkspaceObservedPayload value.
+func validateWorkspaceObservedPayload(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"workspace_id", "environment_id", "path_hash", "display_path", "repository_identity", "branch", "head_commit", "dirty", "source"}, []string{"workspace_id", "path_hash", "display_path", "branch", "head_commit", "dirty", "source"})
+	if !ok {
+		return
+	}
+	if field, present := source["workspace_id"]; present {
+		validateIdentifier(field, path+".workspace_id", out)
+	}
+	if field, present := source["environment_id"]; present {
+		validateIdentifier(field, path+".environment_id", out)
+	}
+	if field, present := source["path_hash"]; present {
+		validatePathHash(field, path+".path_hash", out)
+	}
+	if field, present := source["display_path"]; present {
+		validateWorkspaceDisplayLabel(field, path+".display_path", out)
+	}
+	if field, present := source["repository_identity"]; present {
+		validateRepositoryCanonical(field, path+".repository_identity", out)
+	}
+	if field, present := source["branch"]; present {
+		validateGitRefName(field, path+".branch", out)
+	}
+	if field, present := source["head_commit"]; present {
+		validateGitCommit(field, path+".head_commit", out)
+	}
+	if field, present := source["dirty"]; present {
+		validateWorkspaceObservedPayloadDirty(field, path+".dirty", out)
+	}
+	if field, present := source["source"]; present {
+		validateWorkspaceObservationSource(field, path+".source", out)
+	}
+}
+
+// validateWorkspaceHeadChangedPayloadPreviousDirty checks dirty state before it.
+func validateWorkspaceHeadChangedPayloadPreviousDirty(value any, path string, out *[]SchemaViolation) {
+	checkBoolean(value, path, out)
+}
+
+// validateWorkspaceHeadChangedPayloadDirty checks dirty state after it.
+func validateWorkspaceHeadChangedPayloadDirty(value any, path string, out *[]SchemaViolation) {
+	checkBoolean(value, path, out)
+}
+
+// validateWorkspaceHeadChangedPayload checks a WorkspaceHeadChangedPayload value.
+func validateWorkspaceHeadChangedPayload(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"workspace_id", "environment_id", "previous_branch", "previous_head_commit", "previous_dirty", "branch", "head_commit", "dirty"}, []string{"workspace_id", "previous_branch", "previous_head_commit", "previous_dirty", "branch", "head_commit", "dirty"})
+	if !ok {
+		return
+	}
+	if field, present := source["workspace_id"]; present {
+		validateIdentifier(field, path+".workspace_id", out)
+	}
+	if field, present := source["environment_id"]; present {
+		validateIdentifier(field, path+".environment_id", out)
+	}
+	if field, present := source["previous_branch"]; present {
+		validateGitRefName(field, path+".previous_branch", out)
+	}
+	if field, present := source["previous_head_commit"]; present {
+		validateGitCommit(field, path+".previous_head_commit", out)
+	}
+	if field, present := source["previous_dirty"]; present {
+		validateWorkspaceHeadChangedPayloadPreviousDirty(field, path+".previous_dirty", out)
+	}
+	if field, present := source["branch"]; present {
+		validateGitRefName(field, path+".branch", out)
+	}
+	if field, present := source["head_commit"]; present {
+		validateGitCommit(field, path+".head_commit", out)
+	}
+	if field, present := source["dirty"]; present {
+		validateWorkspaceHeadChangedPayloadDirty(field, path+".dirty", out)
 	}
 }
 
@@ -991,7 +1528,7 @@ func validateStreamErrorType(value any, path string, out *[]SchemaViolation) {
 // validateStreamErrorMessage checks human-readable explanation. It never carries
 // request data, a credential or a stack trace.
 func validateStreamErrorMessage(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 1024, pattern: pattern9})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 1024, pattern: pattern18})
 }
 
 // validateStreamErrorRetryable checks whether repeating the subscription verbatim can
@@ -1054,7 +1591,7 @@ func validateApiErrorDetailsCandidates(value any, path string, out *[]SchemaViol
 
 // validateApiErrorDetailsAllowedTransitionsItem checks a generated schema node.
 func validateApiErrorDetailsAllowedTransitionsItem(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern10})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern19})
 }
 
 // validateApiErrorDetailsAllowedTransitions checks transitions that are legal from the
@@ -1071,7 +1608,7 @@ func validateApiErrorDetailsAllowedTransitions(value any, path string, out *[]Sc
 
 // validateApiErrorDetailsRequiredEvidenceItem checks a generated schema node.
 func validateApiErrorDetailsRequiredEvidenceItem(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern8})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern17})
 }
 
 // validateApiErrorDetailsRequiredEvidence checks evidence the operation needs before
@@ -1088,7 +1625,7 @@ func validateApiErrorDetailsRequiredEvidence(value any, path string, out *[]Sche
 
 // validateApiErrorDetailsMissingContextItem checks a generated schema node.
 func validateApiErrorDetailsMissingContextItem(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern11})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern20})
 }
 
 // validateApiErrorDetailsMissingContext checks captured context the request omitted.
@@ -1112,13 +1649,13 @@ func validateApiErrorDetailsRetryAfterMs(value any, path string, out *[]SchemaVi
 
 // validateApiErrorDetailsField checks the request member the refusal is about.
 func validateApiErrorDetailsField(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 128, pattern: pattern12})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 128, pattern: pattern21})
 }
 
 // validateApiErrorDetailsReason checks stable sub-reason where one code covers several
 // causes.
 func validateApiErrorDetailsReason(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern8})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern17})
 }
 
 // validateAPIErrorDetails checks a ApiErrorDetails value.
@@ -1162,7 +1699,7 @@ func validateAPIErrorDetails(value any, path string, out *[]SchemaViolation) {
 // validateApiErrorMessage checks human-readable explanation. It never carries a
 // credential, request data or a stack trace (docs/SECURITY.md section 18).
 func validateApiErrorMessage(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 1024, pattern: pattern9})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 1024, pattern: pattern18})
 }
 
 // validateAPIError checks a ApiError value.
@@ -1219,7 +1756,7 @@ func validateCursorClaimsVersion(value any, path string, out *[]SchemaViolation)
 // validateCursorClaimsSortKey checks value of the collection's sort column at the last
 // row of the previous page.
 func validateCursorClaimsSortKey(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 128, pattern: pattern9})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 128, pattern: pattern18})
 }
 
 // validateCursorClaims checks a CursorClaims value.

@@ -203,6 +203,25 @@ func DecodeWorkspaceHead(value any) WorkspaceHead {
 	return out
 }
 
+// DecodeWorkspaceObservation builds a WorkspaceObservation from a validated tree.
+func DecodeWorkspaceObservation(value any) WorkspaceObservation {
+	source, _ := value.(map[string]any)
+	var out WorkspaceObservation
+	out.WorkspaceID = decodeString(source["workspace_id"])
+	out.ProjectID = decodeString(source["project_id"])
+	out.PathHash = decodeString(source["path_hash"])
+	out.DisplayLabel = decodeString(source["display_label"])
+	if field, present := source["repository_identity"]; present {
+		decoded := decodeString(field)
+		out.RepositoryIdentity = &decoded
+	}
+	out.Branch = decodeString(source["branch"])
+	out.HeadCommit = decodeString(source["head_commit"])
+	out.Dirty = decodeBool(source["dirty"])
+	out.ObservedAt = decodeString(source["observed_at"])
+	return out
+}
+
 // DecodeReconnectRequest builds a ReconnectRequest from a validated tree.
 func DecodeReconnectRequest(value any) ReconnectRequest {
 	source, _ := value.(map[string]any)

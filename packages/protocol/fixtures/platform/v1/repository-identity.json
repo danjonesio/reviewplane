@@ -1,0 +1,257 @@
+{
+  "description": "Golden repository-identity corpus (docs/DOMAIN_MODEL.md section 6). The connector reduces a checkout's remote to the canonical form and the control plane reduces what an operator typed; both must produce the same value, so both languages run this file. expect_canonical is what canonicaliseCloneUrl returns, expect_reason the stable failure it reports instead, and expect_sanitised what sanitiseCloneUrl leaves behind.",
+  "cases": [
+    {
+      "name": "https-clone-url",
+      "input": "https://github.com/example/refresh-surplus.git",
+      "expect_canonical": "github.com/example/refresh-surplus",
+      "expect_sanitised": "https://github.com/example/refresh-surplus.git",
+      "note": "The form a forge's copy button produces."
+    },
+    {
+      "name": "ssh-scp-like",
+      "input": "git@github.com:example/refresh-surplus.git",
+      "expect_canonical": "github.com/example/refresh-surplus",
+      "expect_sanitised": "git@github.com:example/refresh-surplus.git",
+      "note": "Git's scp-like remote. The account name is not a credential, so sanitisation keeps it."
+    },
+    {
+      "name": "ssh-url",
+      "input": "ssh://git@github.com/example/refresh-surplus.git",
+      "expect_canonical": "github.com/example/refresh-surplus",
+      "expect_sanitised": "ssh://git@github.com/example/refresh-surplus.git",
+      "note": "The same repository spelled as a URL. It must reduce to the same identity as the scp-like form."
+    },
+    {
+      "name": "bare-host-and-path",
+      "input": "github.com/example/refresh-surplus",
+      "expect_canonical": "github.com/example/refresh-surplus",
+      "expect_sanitised": "github.com/example/refresh-surplus",
+      "note": "What a human types. No scheme, no colon, no suffix."
+    },
+    {
+      "name": "default-https-port-dropped",
+      "input": "https://git.example.internal:443/platform/api.git",
+      "expect_canonical": "git.example.internal/platform/api",
+      "expect_sanitised": "https://git.example.internal:443/platform/api.git",
+      "note": "A port the scheme already implies is noise; keeping it would make one repository into two."
+    },
+    {
+      "name": "default-ssh-port-dropped",
+      "input": "ssh://git@github.com:22/example/refresh-surplus.git",
+      "expect_canonical": "github.com/example/refresh-surplus",
+      "expect_sanitised": "ssh://git@github.com:22/example/refresh-surplus.git",
+      "note": "The same rule over SSH."
+    },
+    {
+      "name": "non-default-port-kept",
+      "input": "ssh://git@git.example.internal:2222/platform/api.git",
+      "expect_canonical": "git.example.internal:2222/platform/api",
+      "expect_sanitised": "ssh://git@git.example.internal:2222/platform/api.git",
+      "note": "A self-hosted forge on a non-default port is a different endpoint and the port is part of the identity."
+    },
+    {
+      "name": "bare-host-with-port-is-not-scp-like",
+      "input": "git.example.internal:8443/platform/api.git",
+      "expect_canonical": "git.example.internal:8443/platform/api",
+      "expect_sanitised": "git.example.internal:8443/platform/api.git",
+      "note": "host:8443/path is a host and a port, not Git's host:path. Reading it as scp-like would make 8443/platform/api the path."
+    },
+    {
+      "name": "git-suffix-is-case-insensitive",
+      "input": "https://github.com/example/api.GIT",
+      "expect_canonical": "github.com/example/api",
+      "expect_sanitised": "https://github.com/example/api.GIT",
+      "note": "repo and repo.GIT are one repository on every forge."
+    },
+    {
+      "name": "trailing-slash-dropped",
+      "input": "https://github.com/example/api/",
+      "expect_canonical": "github.com/example/api",
+      "expect_sanitised": "https://github.com/example/api/",
+      "note": "A trailing slash is a spelling difference, not a different repository."
+    },
+    {
+      "name": "trailing-slash-after-git-suffix",
+      "input": "https://github.com/example/api.git/",
+      "expect_canonical": "github.com/example/api",
+      "expect_sanitised": "https://github.com/example/api.git/",
+      "note": "Both are removed, in that order."
+    },
+    {
+      "name": "host-case-is-normalised",
+      "input": "https://GITHUB.com/example/api",
+      "expect_canonical": "github.com/example/api",
+      "expect_sanitised": "https://GITHUB.com/example/api",
+      "note": "A host name is case-insensitive."
+    },
+    {
+      "name": "path-case-is-preserved",
+      "input": "https://GITHUB.com/Example/Refresh-Surplus.git",
+      "expect_canonical": "github.com/Example/Refresh-Surplus",
+      "expect_sanitised": "https://GITHUB.com/Example/Refresh-Surplus.git",
+      "note": "Most forges treat the path as case-sensitive, so Example/Repo and example/repo may be two repositories."
+    },
+    {
+      "name": "deep-group-hierarchy",
+      "input": "git@gitlab.example.internal:group/subgroup/service.git",
+      "expect_canonical": "gitlab.example.internal/group/subgroup/service",
+      "expect_sanitised": "git@gitlab.example.internal:group/subgroup/service.git",
+      "note": "Self-hosted GitLab nests groups; every segment is part of the identity."
+    },
+    {
+      "name": "https-token-is-dropped",
+      "input": "https://ghp_SUPERSECRETTOKEN1234567890@github.com/example/leak.git",
+      "expect_canonical": "github.com/example/leak",
+      "expect_sanitised": "https://github.com/example/leak.git",
+      "note": "How every forge documents cloning with a personal access token. A bare userinfo outside SSH is a secret, not an account name (docs/SECURITY.md section 18)."
+    },
+    {
+      "name": "uppercase-scheme-token-is-dropped",
+      "input": "HTTPS://ghp_SUPERSECRETTOKEN1234567890@github.com/example/leak.git",
+      "expect_canonical": "github.com/example/leak",
+      "expect_sanitised": "https://github.com/example/leak.git",
+      "note": "The scheme comparison is case-insensitive, and sanitisation lowercases the scheme it rewrote."
+    },
+    {
+      "name": "git-daemon-userinfo-is-dropped",
+      "input": "git://ghp_SUPERSECRETTOKEN1234567890@git.example.internal:9418/example/leak.git",
+      "expect_canonical": "git.example.internal/example/leak",
+      "expect_sanitised": "git://git.example.internal:9418/example/leak.git",
+      "note": "The git daemon protocol is unauthenticated and has no credential mechanism, so a userinfo there cannot be an account to log in as."
+    },
+    {
+      "name": "ssh-username-is-kept",
+      "input": "ssh://git@github.com/example/api.git",
+      "expect_canonical": "github.com/example/api",
+      "expect_sanitised": "ssh://git@github.com/example/api.git",
+      "note": "The secret in an SSH remote is a key on disk. Dropping the account name would store a URL that does not clone."
+    },
+    {
+      "name": "ssh-password-is-dropped",
+      "input": "ssh://git:hunter2@github.com/example/api.git",
+      "expect_canonical": "github.com/example/api",
+      "expect_sanitised": "ssh://github.com/example/api.git",
+      "note": "A password in an SSH URL is still a credential."
+    },
+    {
+      "name": "scp-like-password-is-dropped",
+      "input": "git:hunter2@github.com:example/api.git",
+      "expect_reason": "invalid_characters",
+      "expect_sanitised": "github.com:example/api.git",
+      "note": "Sanitisation drops the pair. Canonicalisation splits at the first colon, so what is left is not a repository and is refused rather than guessed at."
+    },
+    {
+      "name": "unsupported-scheme-still-loses-its-userinfo",
+      "input": "ftps://ghp_SUPERSECRETTOKEN1234567890@example.internal/example/i.git",
+      "expect_reason": "unsupported_scheme",
+      "expect_sanitised": "ftps://example.internal/example/i.git",
+      "note": "A scheme nothing accepts yet is treated as secret-bearing, because the predicate asks whether the URL is SSH rather than listing what leaks."
+    },
+    {
+      "name": "file-scheme-is-refused",
+      "input": "file:///srv/git/repo.git",
+      "expect_reason": "unsupported_scheme",
+      "expect_sanitised": "file:///srv/git/repo.git",
+      "note": "A path on one machine is not an identity another machine can resolve."
+    },
+    {
+      "name": "empty",
+      "input": "",
+      "expect_reason": "empty",
+      "expect_sanitised": "",
+      "note": "Nothing to normalise."
+    },
+    {
+      "name": "whitespace-only",
+      "input": "   ",
+      "expect_reason": "empty",
+      "expect_sanitised": "",
+      "note": "Trimmed to nothing."
+    },
+    {
+      "name": "leading-and-trailing-whitespace-is-trimmed",
+      "input": "  https://github.com/example/api.git\t",
+      "expect_canonical": "github.com/example/api",
+      "expect_sanitised": "https://github.com/example/api.git",
+      "note": "A pasted value keeps its surrounding whitespace; the repository is the same one."
+    },
+    {
+      "name": "interior-whitespace-is-refused",
+      "input": "github.com/example/re po",
+      "expect_reason": "invalid_characters",
+      "expect_sanitised": "github.com/example/re po",
+      "note": "A space inside a remote is a paste accident, not a repository."
+    },
+    {
+      "name": "control-character-is-refused",
+      "input": "github.com/example/re\u0001po",
+      "expect_reason": "invalid_characters",
+      "expect_sanitised": "github.com/example/re\u0001po",
+      "note": "Control characters never belong in a remote."
+    },
+    {
+      "name": "delete-character-is-refused",
+      "input": "github.com/example/repo",
+      "expect_reason": "invalid_characters",
+      "expect_sanitised": "github.com/example/repo",
+      "note": "U+007F is refused with the C0 range it sits beside."
+    },
+    {
+      "name": "over-length",
+      "input": "https://github.com/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expect_reason": "too_long",
+      "expect_sanitised": "https://github.com/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "note": "Longer than the schema's 512-character clone-URL bound, so it is refused before anything is parsed."
+    },
+    {
+      "name": "canonical-over-length",
+      "input": "https://git.example.internal/segment0/segment1/segment2/segment3/segment4/segment5/segment6/segment7/segment8/segment9/segment10/segment11/segment12/segment13/segment14/segment15/segment16/segment17/segment18/segment19/segment20/segment21/segment22/segment23/segment24/segment25/segment26/segment27/segment28/segment29/segment30/segment31/segment32/segment33/segment34/segment35/segment36/segment37/segment38/segment39",
+      "expect_reason": "too_long",
+      "expect_sanitised": "https://git.example.internal/segment0/segment1/segment2/segment3/segment4/segment5/segment6/segment7/segment8/segment9/segment10/segment11/segment12/segment13/segment14/segment15/segment16/segment17/segment18/segment19/segment20/segment21/segment22/segment23/segment24/segment25/segment26/segment27/segment28/segment29/segment30/segment31/segment32/segment33/segment34/segment35/segment36/segment37/segment38/segment39",
+      "note": "Short enough to parse and too long to store: the canonical form exceeds the schema's 255-character bound."
+    },
+    {
+      "name": "host-without-a-path",
+      "input": "https://github.com",
+      "expect_reason": "missing_path",
+      "expect_sanitised": "https://github.com",
+      "note": "A host alone names no repository."
+    },
+    {
+      "name": "bare-host-without-a-path",
+      "input": "github.com",
+      "expect_reason": "missing_path",
+      "expect_sanitised": "github.com",
+      "note": "The same without a scheme."
+    },
+    {
+      "name": "scp-like-without-a-path",
+      "input": "git@github.com:",
+      "expect_reason": "missing_path",
+      "expect_sanitised": "git@github.com:",
+      "note": "The colon is there and the path is not."
+    },
+    {
+      "name": "path-that-is-only-a-git-suffix",
+      "input": "https://github.com/.git",
+      "expect_reason": "missing_path",
+      "expect_sanitised": "https://github.com/.git",
+      "note": "Removing the suffix leaves an empty segment, which is not a repository name."
+    },
+    {
+      "name": "empty-host",
+      "input": "https://@/example/api",
+      "expect_reason": "missing_host",
+      "expect_sanitised": "https:///example/api",
+      "note": "Dropping the userinfo leaves no host at all."
+    },
+    {
+      "name": "uppercase-path-segment-with-permitted-punctuation",
+      "input": "https://git.example.internal/Team_One/api.service~v2",
+      "expect_canonical": "git.example.internal/Team_One/api.service~v2",
+      "expect_sanitised": "https://git.example.internal/Team_One/api.service~v2",
+      "note": "The canonical character class permits letters, digits, dot, underscore, tilde and hyphen in a path segment."
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "id": "evt_3000000000000000000000000000000f",
+  "schema_version": 1,
+  "sequence": 4,
+  "type": "workspace.observed",
+  "occurred_at": "2026-07-30T10:58:16.200Z",
+  "recorded_at": "2026-07-30T10:58:16.214Z",
+  "organisation_id": "org_2f1c8ba0d9e34a7f8b6c5d4e3f2a1b09",
+  "project_id": "prj_9a8b7c6d5e4f30291827364554637281",
+  "actor": {
+    "type": "connector",
+    "id": "con_4c2e6d8fa0315b7c9d1e3f5071829304"
+  },
+  "correlation": {
+    "connector_id": "con_4c2e6d8fa0315b7c9d1e3f5071829304",
+    "environment_id": "env_3b1d5c7e9f204a6b8c0d2e4f60718293",
+    "workspace_id": "wsp_5d3f7e90b1426c8dae2f405182930415"
+  },
+  "payload": {
+    "workspace_id": "wsp_5d3f7e90b1426c8dae2f405182930415",
+    "environment_id": "env_3b1d5c7e9f204a6b8c0d2e4f60718293",
+    "path_hash": "sha256:9f2c4b1e7a83d05e6c1f4a29b8d3e70c5a6b4d2f18e93c07ab5d6e4f3c2b1a09",
+    "display_path": "refresh-surplus",
+    "repository_identity": "github.com/example/refresh-surplus",
+    "branch": "main",
+    "head_commit": "4f3a9c1d2e8b7a6053f4e3d2c1b0a9f8e7d6c5b4",
+    "dirty": false,
+    "source": "connector_report"
+  }
+}

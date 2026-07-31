@@ -15,6 +15,7 @@
     "envelope_limit": "max_event_bytes",
     "channels": {
       "organisation": "Organisation and project lifecycle (docs/EVENTS.md section 7).",
+      "environment": "Development environments, connectors and workspaces (docs/EVENTS.md section 7, docs/DOMAIN_MODEL.md sections 7 to 9). It is a channel of its own because a connector enrolment can precede any project association, so these occurrences are not organisation lifecycle and are not project lifecycle either.",
       "jobs": "Durable background work (docs/ARCHITECTURE.md section 4.8).",
       "stream": "The project event stream of docs/API.md section 18.1.",
       "api": "The HTTP response metadata and refusal envelope of docs/API.md section 5."
@@ -80,6 +81,48 @@
         "direction": "control_plane_to_subscriber",
         "payload": "session_revoked_payload",
         "description": "A human session stopped being usable. Sign-out, rotation on privilege change and administrative revocation are the same fact to a reader of the audit trail, distinguished by reason."
+      },
+      "connector.enrolled": {
+        "channel": "environment",
+        "direction": "control_plane_to_subscriber",
+        "payload": "connector_enrolled_payload",
+        "description": "An enrolment token was redeemed and a device identity issued (docs/CONNECTOR_PROTOCOL.md section 4). The payload names the environment, the build and the certificate fingerprint, and never the enrolment token: the token is a credential and an event is append-only (docs/SECURITY.md section 18)."
+      },
+      "connector.connected": {
+        "channel": "environment",
+        "direction": "control_plane_to_subscriber",
+        "payload": "connector_connected_payload",
+        "description": "A connector reached ACTIVE, either by opening an authenticated channel or by sending a heartbeat from a degraded state (docs/DOMAIN_MODEL.md section 8)."
+      },
+      "connector.degraded": {
+        "channel": "environment",
+        "direction": "control_plane_to_subscriber",
+        "payload": "connector_degraded_payload",
+        "description": "A connector missed enough heartbeats to be considered delayed. It is a conclusion the control plane draws from silence, never a self-report (docs/CONNECTOR_PROTOCOL.md section 8)."
+      },
+      "connector.disconnected": {
+        "channel": "environment",
+        "direction": "control_plane_to_subscriber",
+        "payload": "connector_disconnected_payload",
+        "description": "A connector's channel closed or its silence exceeded the disconnect threshold. It exists so that a connector which simply goes quiet leaves an audit trail rather than ceasing to appear."
+      },
+      "connector.revoked": {
+        "channel": "environment",
+        "direction": "control_plane_to_subscriber",
+        "payload": "connector_revoked_payload",
+        "description": "A connector identity was revoked (docs/CONNECTOR_PROTOCOL.md section 18). Revocation is terminal: the channels are closed, the routes are revoked, the associated sessions are marked disconnected and the credential is refused before any later channel is established."
+      },
+      "workspace.observed": {
+        "channel": "environment",
+        "direction": "control_plane_to_subscriber",
+        "payload": "workspace_observed_payload",
+        "description": "A connector reported bounded Git context for an authorised workspace, or an operator registered one (docs/CONNECTOR_PROTOCOL.md section 9, ADR-0022). It is recorded when a workspace becomes known; an unchanged repeat observation refreshes the record's last_observed_at without writing another event."
+      },
+      "workspace.head_changed": {
+        "channel": "environment",
+        "direction": "control_plane_to_subscriber",
+        "payload": "workspace_head_changed_payload",
+        "description": "A known workspace's branch, head commit or dirty state changed. It carries both sides of the move, because a review captured before it was captured against the previous head."
       },
       "job.enqueued": {
         "channel": "jobs",
@@ -377,6 +420,13 @@
         "authentication.login_succeeded",
         "authentication.login_failed",
         "session.revoked",
+        "connector.enrolled",
+        "connector.connected",
+        "connector.degraded",
+        "connector.disconnected",
+        "connector.revoked",
+        "workspace.observed",
+        "workspace.head_changed",
         "job.enqueued",
         "job.succeeded",
         "job.failed"
@@ -468,6 +518,117 @@
       "minLength": 1,
       "maxLength": 255,
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$"
+    },
+    "repository_canonical": {
+      "type": "string",
+      "description": "The canonical member of a repository identity on its own, for the records that store the normalised form without the clone URLs beside it (docs/DOMAIN_MODEL.md section 9). Its shape is repository_identity.canonical, and the shared normaliser in packages/protocol produces both, so a workspace and a project cannot disagree about what one repository is.",
+      "minLength": 3,
+      "maxLength": 255,
+      "pattern": "^[a-z0-9][a-z0-9.-]*(:[0-9]{1,5})?(/[A-Za-z0-9._~-]+)+$"
+    },
+    "environment_status": {
+      "type": "string",
+      "description": "Environment lifecycle status (docs/DOMAIN_MODEL.md section 7). Stage 1 defines one value: retiring an environment arrives with environment lifecycle management, and an enumeration promising a value nothing can reach would misdescribe the product.",
+      "enum": ["ACTIVE"]
+    },
+    "environment_trust_level": {
+      "type": "string",
+      "description": "Environment trust level (docs/DOMAIN_MODEL.md section 7). Stage 1 has a single default value; a trust level that changes what an environment may do is a policy change rather than a field change, and arrives with the permission model.",
+      "enum": ["standard"]
+    },
+    "environment_label": {
+      "type": "string",
+      "description": "Operator-assigned environment label. Its shape is the connector protocol's environment_label, because an enrolment token pins the labels a registering environment must declare (docs/CONNECTOR_PROTOCOL.md section 4.1).",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "platform_name": {
+      "type": "string",
+      "description": "Operating system an environment runs, as the connector reported it.",
+      "minLength": 1,
+      "maxLength": 32,
+      "pattern": "^[a-z0-9]+$"
+    },
+    "architecture_name": {
+      "type": "string",
+      "description": "CPU architecture an environment runs, as the connector reported it.",
+      "minLength": 1,
+      "maxLength": 32,
+      "pattern": "^[a-z0-9_]+$"
+    },
+    "connector_status": {
+      "type": "string",
+      "description": "Connector lifecycle status (docs/DOMAIN_MODEL.md section 8). DEGRADED and DISCONNECTED are conclusions the control plane draws from heartbeat silence and are never self-reported; REVOKED is terminal, and a connector in it is refused before a channel is established.",
+      "enum": ["PENDING_ENROLMENT", "ACTIVE", "DEGRADED", "DISCONNECTED", "REVOKED"]
+    },
+    "connector_capability": {
+      "type": "string",
+      "description": "Capability a connector build advertises, such as http-tunnel, websocket-tunnel, git-context or local-mcp-bridge. Unknown values are accepted so that a newer connector is classified by docs/CONNECTOR_PROTOCOL.md section 19 rather than rejected outright.",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "connector_version": {
+      "type": "string",
+      "description": "Connector release version, for example 0.1.0. Its shape is the connector protocol's semantic_version.",
+      "minLength": 1,
+      "maxLength": 32,
+      "pattern": "^[0-9A-Za-z][0-9A-Za-z.+-]*$"
+    },
+    "certificate_fingerprint": {
+      "type": "string",
+      "description": "sha256:<hex> digest of the DER form of an issued connector certificate (ADR-0014). It is unique across connectors and is how a verified peer certificate is resolved to a connector record.",
+      "minLength": 8,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9:._-]+$"
+    },
+    "connector_connected_trigger": {
+      "type": "string",
+      "description": "What returned a connector to ACTIVE. A closed vocabulary, so an audit record needs no free text (docs/SECURITY.md section 18).",
+      "enum": ["channel_opened", "heartbeat"]
+    },
+    "connector_degraded_trigger": {
+      "type": "string",
+      "description": "What made a connector DEGRADED. It has one cause: the control plane concluding delay from missed heartbeats.",
+      "enum": ["heartbeat_delay"]
+    },
+    "connector_disconnected_trigger": {
+      "type": "string",
+      "description": "What made a connector DISCONNECTED: its channel closed, or its silence exceeded the disconnect threshold.",
+      "enum": ["channel_closed", "heartbeat_timeout"]
+    },
+    "silence_seconds": {
+      "type": "integer",
+      "description": "A lower bound, in seconds, on how long a connector had been silent when a conclusion was drawn about it.",
+      "minimum": 0,
+      "maximum": 86400
+    },
+    "path_hash": {
+      "type": "string",
+      "description": "Stable sha256:<hex> digest of a workspace's absolute path on the development machine. The control plane stores the digest rather than the path, because a display label and a stable local hash are sufficient to recognise the same checkout again (docs/DOMAIN_MODEL.md section 9).",
+      "minLength": 71,
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "workspace_display_label": {
+      "type": "string",
+      "description": "Human-readable workspace label, which is the checkout directory's own name and never its full path. Path separators and control characters are refused, so a full path cannot be smuggled through it.",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[^\\x00-\\x1f\\x7f/\\\\]+$"
+    },
+    "git_commit": {
+      "type": "string",
+      "description": "A commit identifier, lowercase hexadecimal. Bounded so that an abbreviated and a full identifier are both accepted and nothing else is.",
+      "minLength": 7,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]+$"
+    },
+    "workspace_observation_source": {
+      "type": "string",
+      "description": "How a workspace came to be known (docs/CONNECTOR_PROTOCOL.md section 9). connector_report is a connector observing a configured path; administrative_registration is an operator or an agent session registering one directly. Broad filesystem scanning is disabled by default and has no value here, because this build performs none.",
+      "enum": ["connector_report", "administrative_registration"]
     },
     "repository_identity": {
       "type": "object",
@@ -640,6 +801,167 @@
           "items": { "$ref": "#/$defs/identifier", "description": "One project the session is scoped to." }
         },
         "expires_at": { "$ref": "#/$defs/timestamp", "description": "When the session stops being usable without revocation." }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "description": "A registered development location such as a VM or workstation (docs/DOMAIN_MODEL.md section 7). An environment may host several workspaces, but every published service and session association is explicitly project scoped, so project_id is a default rather than the whole of the authorisation.",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "organisation_id",
+        "name",
+        "platform",
+        "architecture",
+        "labels",
+        "trust_level",
+        "status",
+        "created_at"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier", "description": "Environment identity, conventionally prefixed env_." },
+        "organisation_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Owning organisation, carried for defence-in-depth filtering."
+        },
+        "project_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Project the environment was enrolled for. Absent when the enrolment token was organisation scoped."
+        },
+        "name": {
+          "$ref": "#/$defs/display_name",
+          "description": "Operator-visible environment name, as the connector reported it. It is description and never an authorisation input."
+        },
+        "platform": { "$ref": "#/$defs/platform_name", "description": "Operating system the environment runs." },
+        "architecture": { "$ref": "#/$defs/architecture_name", "description": "CPU architecture the environment runs." },
+        "labels": {
+          "type": "array",
+          "description": "Operator-assigned labels. An enrolment token may pin the labels a registering environment must declare.",
+          "minItems": 0,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/environment_label", "description": "One environment label." }
+        },
+        "trust_level": { "$ref": "#/$defs/environment_trust_level", "description": "Trust level. Stage 1 has one." },
+        "status": { "$ref": "#/$defs/environment_status", "description": "Lifecycle status." },
+        "last_seen_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When a connector for this environment was last heard from. Absent until one has been."
+        },
+        "created_at": { "$ref": "#/$defs/timestamp", "description": "When the environment was registered." }
+      }
+    },
+    "connector": {
+      "type": "object",
+      "description": "A connector installation and its cryptographic identity (docs/DOMAIN_MODEL.md section 8). The device private key is generated on the development machine and never leaves it, so this record has no member capable of carrying one: it holds the certificate fingerprint the control plane resolves a verified peer certificate by, and nothing secret.",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "organisation_id",
+        "environment_id",
+        "certificate_fingerprint",
+        "certificate_not_after",
+        "version",
+        "capabilities",
+        "status",
+        "created_at"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier", "description": "Connector identity, conventionally prefixed con_." },
+        "organisation_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Owning organisation, carried for defence-in-depth filtering."
+        },
+        "environment_id": { "$ref": "#/$defs/identifier", "description": "Environment this connector runs in." },
+        "project_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Project the connector was enrolled for. Absent when the enrolment token was organisation scoped."
+        },
+        "certificate_fingerprint": {
+          "$ref": "#/$defs/certificate_fingerprint",
+          "description": "Fingerprint of the issued client certificate, unique across connectors."
+        },
+        "certificate_not_after": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the issued identity expires. Identities are bounded in time."
+        },
+        "version": { "$ref": "#/$defs/connector_version", "description": "Connector release the environment runs." },
+        "capabilities": {
+          "type": "array",
+          "description": "Capabilities the connector build advertises.",
+          "minItems": 0,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/connector_capability", "description": "One advertised capability." }
+        },
+        "status": { "$ref": "#/$defs/connector_status", "description": "Lifecycle status." },
+        "connected_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the connector most recently reached ACTIVE. Absent before its first channel."
+        },
+        "last_heartbeat_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the last heartbeat arrived. Absent before the first one."
+        },
+        "revoked_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the identity was revoked. Absent unless the connector is REVOKED."
+        },
+        "created_at": { "$ref": "#/$defs/timestamp", "description": "When the identity was issued." }
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "description": "A repository checkout a connector reports or an operator registers (docs/DOMAIN_MODEL.md section 9). It holds a stable path hash and a display label rather than the checkout's full path, and it has no member capable of carrying source file contents or a changed-path list: what is reportable about somebody else's machine is bounded by this schema rather than by the code that fills it in.",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "organisation_id",
+        "project_id",
+        "path_hash",
+        "display_path",
+        "branch",
+        "head_commit",
+        "dirty",
+        "source",
+        "created_at"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier", "description": "Workspace identity, conventionally prefixed wsp_." },
+        "organisation_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Owning organisation, carried for defence-in-depth filtering."
+        },
+        "project_id": { "$ref": "#/$defs/identifier", "description": "Project the checkout belongs to." },
+        "environment_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Environment holding the checkout. Absent for a workspace registered administratively rather than observed by a connector."
+        },
+        "connector_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Connector that last reported the checkout. Absent for an administratively registered workspace."
+        },
+        "path_hash": { "$ref": "#/$defs/path_hash", "description": "Stable digest of the checkout's absolute path." },
+        "display_path": {
+          "$ref": "#/$defs/workspace_display_label",
+          "description": "Label a human reads, which is the checkout directory's own name."
+        },
+        "repository_identity": {
+          "$ref": "#/$defs/repository_canonical",
+          "description": "Canonical identity of the checkout's remote. Absent when the checkout has no remote that could be normalised; an absent value is reported as absent rather than guessed at."
+        },
+        "branch": { "$ref": "#/$defs/git_ref_name", "description": "Checked-out branch." },
+        "head_commit": { "$ref": "#/$defs/git_commit", "description": "HEAD commit." },
+        "dirty": {
+          "type": "boolean",
+          "description": "Whether the working tree has uncommitted changes. Which files changed is deliberately not recorded."
+        },
+        "source": { "$ref": "#/$defs/workspace_observation_source", "description": "How the workspace came to be known." },
+        "last_observed_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the control plane last received this state. Absent until a first observation."
+        },
+        "created_at": { "$ref": "#/$defs/timestamp", "description": "When the workspace record was created." }
       }
     },
     "login_method": {
@@ -946,6 +1268,194 @@
       "properties": {
         "previous_status": { "$ref": "#/$defs/project_status", "description": "Status before the change." },
         "new_status": { "$ref": "#/$defs/project_status", "description": "Status after the change." }
+      }
+    },
+    "connector_enrolled_payload": {
+      "type": "object",
+      "description": "Payload of connector.enrolled. It records the identity that was issued and the environment it was issued to, and it never carries the enrolment token that was redeemed: an event is append-only, so a credential written into one cannot be taken out again (docs/EVENTS.md section 8).",
+      "additionalProperties": false,
+      "x-max-bytes": 1024,
+      "required": [
+        "environment_id",
+        "environment_name",
+        "platform",
+        "architecture",
+        "connector_version",
+        "capabilities",
+        "certificate_fingerprint",
+        "identity_expires_at",
+        "new_status"
+      ],
+      "properties": {
+        "environment_id": { "$ref": "#/$defs/identifier", "description": "Environment the identity was issued to." },
+        "environment_name": {
+          "$ref": "#/$defs/display_name",
+          "description": "Name the environment reported for itself. Description, never an authorisation input."
+        },
+        "platform": { "$ref": "#/$defs/platform_name", "description": "Operating system the environment reported." },
+        "architecture": {
+          "$ref": "#/$defs/architecture_name",
+          "description": "CPU architecture the environment reported."
+        },
+        "connector_version": { "$ref": "#/$defs/connector_version", "description": "Connector release that enrolled." },
+        "capabilities": {
+          "type": "array",
+          "description": "Capabilities the connector build advertised.",
+          "minItems": 0,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/connector_capability", "description": "One advertised capability." }
+        },
+        "certificate_fingerprint": {
+          "$ref": "#/$defs/certificate_fingerprint",
+          "description": "Fingerprint of the certificate that was issued."
+        },
+        "identity_expires_at": { "$ref": "#/$defs/timestamp", "description": "When the issued identity expires." },
+        "enrolment_token_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Identifier of the token that was redeemed. The identifier, never the token."
+        },
+        "new_status": {
+          "$ref": "#/$defs/connector_status",
+          "description": "Status the record entered, which is PENDING_ENROLMENT until the first authenticated channel."
+        }
+      }
+    },
+    "connector_connected_payload": {
+      "type": "object",
+      "description": "Payload of connector.connected. Both sides of the transition are named, so the audit trail states what moved rather than only where it landed, and the trigger is a closed vocabulary so no free text is needed.",
+      "additionalProperties": false,
+      "x-max-bytes": 512,
+      "required": ["previous_status", "new_status", "trigger"],
+      "properties": {
+        "previous_status": { "$ref": "#/$defs/connector_status", "description": "Status before the transition." },
+        "new_status": { "$ref": "#/$defs/connector_status", "description": "Status after it, which is ACTIVE." },
+        "trigger": {
+          "$ref": "#/$defs/connector_connected_trigger",
+          "description": "Whether a channel was established or a heartbeat arrived from a degraded state."
+        }
+      }
+    },
+    "connector_degraded_payload": {
+      "type": "object",
+      "description": "Payload of connector.degraded. Degradation is a conclusion drawn from silence, so the payload states how long the silence had lasted rather than what the connector said about itself.",
+      "additionalProperties": false,
+      "x-max-bytes": 512,
+      "required": ["previous_status", "new_status", "trigger", "silent_for_seconds_at_least"],
+      "properties": {
+        "previous_status": { "$ref": "#/$defs/connector_status", "description": "Status before the transition." },
+        "new_status": { "$ref": "#/$defs/connector_status", "description": "Status after it, which is DEGRADED." },
+        "trigger": {
+          "$ref": "#/$defs/connector_degraded_trigger",
+          "description": "What caused it. Degradation has one cause: missed heartbeats."
+        },
+        "silent_for_seconds_at_least": {
+          "$ref": "#/$defs/silence_seconds",
+          "description": "Lower bound on the silence, because the sweep observes silence rather than measuring it."
+        }
+      }
+    },
+    "connector_disconnected_payload": {
+      "type": "object",
+      "description": "Payload of connector.disconnected. A closed channel and an exhausted heartbeat budget are different observations and are distinguished by trigger, so an operator can tell a clean stop from a network that went away.",
+      "additionalProperties": false,
+      "x-max-bytes": 512,
+      "required": ["previous_status", "new_status", "trigger"],
+      "properties": {
+        "previous_status": { "$ref": "#/$defs/connector_status", "description": "Status before the transition." },
+        "new_status": { "$ref": "#/$defs/connector_status", "description": "Status after it, which is DISCONNECTED." },
+        "trigger": {
+          "$ref": "#/$defs/connector_disconnected_trigger",
+          "description": "Whether the channel closed or the disconnect threshold was exceeded."
+        },
+        "silent_for_seconds_at_least": {
+          "$ref": "#/$defs/silence_seconds",
+          "description": "Lower bound on the silence. Present only for heartbeat_timeout: a closed channel is observed rather than inferred."
+        }
+      }
+    },
+    "connector_revoked_payload": {
+      "type": "object",
+      "description": "Payload of connector.revoked. It records what revocation reached, because docs/CONNECTOR_PROTOCOL.md section 18 makes revocation five things at once and an auditor needs to see that all five happened.",
+      "additionalProperties": false,
+      "x-max-bytes": 512,
+      "required": ["previous_status", "new_status", "routes_revoked", "sessions_disconnected"],
+      "properties": {
+        "previous_status": { "$ref": "#/$defs/connector_status", "description": "Status before revocation." },
+        "new_status": { "$ref": "#/$defs/connector_status", "description": "Status after it, which is REVOKED." },
+        "routes_revoked": {
+          "type": "integer",
+          "description": "How many published services the revocation closed.",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "sessions_disconnected": {
+          "type": "integer",
+          "description": "How many browser sessions were marked disconnected by it.",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "channels_closed": {
+          "type": "integer",
+          "description": "How many live connector channels were closed. Zero when the connector held none.",
+          "minimum": 0,
+          "maximum": 1024
+        }
+      }
+    },
+    "workspace_observed_payload": {
+      "type": "object",
+      "description": "Payload of workspace.observed. It carries exactly what docs/CONNECTOR_PROTOCOL.md section 9 permits a connector to report about a checkout, and has no member capable of carrying file contents, a changed-path list or a full filesystem path.",
+      "additionalProperties": false,
+      "x-max-bytes": 1024,
+      "required": ["workspace_id", "path_hash", "display_path", "branch", "head_commit", "dirty", "source"],
+      "properties": {
+        "workspace_id": { "$ref": "#/$defs/identifier", "description": "Workspace that was observed." },
+        "environment_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Environment holding it. Absent for an administratively registered workspace."
+        },
+        "path_hash": { "$ref": "#/$defs/path_hash", "description": "Stable digest of the checkout's absolute path." },
+        "display_path": {
+          "$ref": "#/$defs/workspace_display_label",
+          "description": "The checkout directory's own name."
+        },
+        "repository_identity": {
+          "$ref": "#/$defs/repository_canonical",
+          "description": "Canonical identity of the checkout's remote, when it has one that could be normalised."
+        },
+        "branch": { "$ref": "#/$defs/git_ref_name", "description": "Checked-out branch." },
+        "head_commit": { "$ref": "#/$defs/git_commit", "description": "HEAD commit." },
+        "dirty": { "type": "boolean", "description": "Whether the working tree had uncommitted changes." },
+        "source": { "$ref": "#/$defs/workspace_observation_source", "description": "How the workspace came to be known." }
+      }
+    },
+    "workspace_head_changed_payload": {
+      "type": "object",
+      "description": "Payload of workspace.head_changed. It carries both sides of the move, because a review captured before it was captured against the previous head and an auditor reading only the new one could not tell.",
+      "additionalProperties": false,
+      "x-max-bytes": 1024,
+      "required": [
+        "workspace_id",
+        "previous_branch",
+        "previous_head_commit",
+        "previous_dirty",
+        "branch",
+        "head_commit",
+        "dirty"
+      ],
+      "properties": {
+        "workspace_id": { "$ref": "#/$defs/identifier", "description": "Workspace whose head moved." },
+        "environment_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Environment holding it, when a connector reported the change."
+        },
+        "previous_branch": { "$ref": "#/$defs/git_ref_name", "description": "Branch before the change." },
+        "previous_head_commit": { "$ref": "#/$defs/git_commit", "description": "HEAD commit before it." },
+        "previous_dirty": { "type": "boolean", "description": "Dirty state before it." },
+        "branch": { "$ref": "#/$defs/git_ref_name", "description": "Branch after it." },
+        "head_commit": { "$ref": "#/$defs/git_commit", "description": "HEAD commit after it." },
+        "dirty": { "type": "boolean", "description": "Dirty state after it." }
       }
     },
     "job_enqueued_payload": {

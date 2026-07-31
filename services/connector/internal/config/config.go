@@ -45,6 +45,17 @@ const (
 	DefaultReconnectJitter       = 0.3
 )
 
+// Workspace-observation bounds. docs/CONNECTOR_PROTOCOL.md section 9 fixes no
+// interval, so the range is chosen rather than quoted: below the minimum the
+// connector would run git more or less continuously on somebody's development
+// machine, and above the maximum an operator has effectively turned the feature
+// off and should say so by removing the workspaces block.
+const (
+	DefaultGitContextInterval = 30 * time.Second
+	MinGitContextInterval     = 5 * time.Second
+	MaxGitContextInterval     = time.Hour
+)
+
 // ControlPlane is the control_plane block.
 type ControlPlane struct {
 	URL           *url.URL
@@ -87,6 +98,17 @@ type Reconnect struct {
 type Environment struct {
 	Name   string
 	Labels []string
+}
+
+// GitContext is the git_context block: how often the connector re-observes the
+// workspaces the workspaces block names (docs/CONNECTOR_PROTOCOL.md section 9).
+//
+// It is its own block rather than a key under privacy or heartbeat because it
+// governs neither. privacy says what may be reported; heartbeat says how often
+// the connector proves it is alive; this says how often it looks at a checkout,
+// which is a cost on the development machine and nothing else.
+type GitContext struct {
+	Interval time.Duration
 }
 
 // Privacy is the privacy block of docs/CONNECTOR_PROTOCOL.md section 20.
@@ -170,6 +192,7 @@ type Config struct {
 	Heartbeat    HeartbeatSettings
 	Reconnect    Reconnect
 	Environment  Environment
+	GitContext   GitContext
 	Privacy      Privacy
 	Logging      Logging
 	Workspaces   []Workspace
@@ -195,6 +218,7 @@ func Defaults() *Config {
 			Jitter:       DefaultReconnectJitter,
 		},
 		Environment: Environment{Name: hostinfo.EnvironmentName()},
+		GitContext:  GitContext{Interval: DefaultGitContextInterval},
 		Logging:     Logging{Level: "info", Format: "json"},
 		Publication: Publication{MaxRoutes: 10},
 	}
@@ -236,14 +260,14 @@ func Parse(data []byte) (*Config, error) {
 	}
 	if err := root.RejectUnknownKeys("configuration",
 		"control_plane", "identity", "heartbeat", "reconnect",
-		"environment", "workspaces", "publication", "privacy", "logging"); err != nil {
+		"environment", "workspaces", "git_context", "publication", "privacy", "logging"); err != nil {
 		return nil, err
 	}
 
 	cfg := Defaults()
 	for _, section := range []func(*Config, *yamlmin.Node) error{
 		loadControlPlane, loadIdentity, loadHeartbeat, loadReconnect,
-		loadEnvironment, loadWorkspaces, loadPublication, loadPrivacy, loadLogging,
+		loadEnvironment, loadWorkspaces, loadGitContext, loadPublication, loadPrivacy, loadLogging,
 	} {
 		if err := section(cfg, root); err != nil {
 			return nil, err
@@ -529,6 +553,29 @@ func loadWorkspaces(cfg *Config, root *yamlmin.Node) error {
 	return nil
 }
 
+func loadGitContext(cfg *Config, root *yamlmin.Node) error {
+	node, err := root.Child("git_context").Mapping("git_context")
+	if err != nil {
+		return err
+	}
+	if err := node.RejectUnknownKeys("git_context", "interval"); err != nil {
+		return err
+	}
+	interval, err := node.Child("interval").Duration("git_context.interval")
+	if errors.Is(err, yamlmin.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if interval < MinGitContextInterval || interval > MaxGitContextInterval {
+		return fmt.Errorf("git_context.interval must be between %s and %s, found %s",
+			MinGitContextInterval, MaxGitContextInterval, interval)
+	}
+	cfg.GitContext.Interval = interval
+	return nil
+}
+
 func loadPublication(cfg *Config, root *yamlmin.Node) error {
 	node, err := root.Child("publication").Mapping("publication")
 	if err != nil {
@@ -599,9 +646,30 @@ func loadPrivacy(cfg *Config, root *yamlmin.Node) error {
 		return errors.New(
 			"privacy.report_process_details must be false: the heartbeat resource summary reports only load and memory_available_bytes (docs/CONNECTOR_PROTOCOL.md section 8)")
 	}
+	// The three settings above and below are refused for the same reason and
+	// not for the same cause. Each names precisely what this build cannot do,
+	// because "not supported" would leave an operator unable to tell a missing
+	// feature from a rejected one.
+	//
+	// Workspace discovery from explicitly configured paths now exists: the
+	// workspaces block is observed and reported as workspace.observed. What does
+	// not exist is the third discovery mode of section 9 — bounded scanning of a
+	// configured root for checkouts nobody listed — and that is the one this
+	// setting turns on.
 	if cfg.Privacy.DiscoverWorkspaces {
 		return errors.New(
-			"privacy.discover_workspaces must be false: workspace discovery is not implemented by this connector build (docs/CONNECTOR_PROTOCOL.md section 9)")
+			"privacy.discover_workspaces must be false: this build observes the checkouts named in the workspaces block, but bounded root scanning for unlisted checkouts is not implemented (docs/CONNECTOR_PROTOCOL.md section 9)")
+	}
+	// Section 9 permits reporting changed file paths "where policy permits", and
+	// the version 1 workspace_observation payload has no member capable of
+	// carrying a list of them: dirty is a boolean and there is nothing beside
+	// it. Accepting the setting would tell an operator their policy had been
+	// applied when nothing had changed about what is sent, so it is refused
+	// rather than ignored. Carrying paths would be a protocol change requiring
+	// an ADR, not a configuration option.
+	if cfg.Privacy.ReportChangedPaths {
+		return errors.New(
+			"privacy.report_changed_paths must be false: the version 1 workspace_observation payload reports dirty as a boolean and has no member that can carry a changed-path list (docs/CONNECTOR_PROTOCOL.md section 9)")
 	}
 	return nil
 }

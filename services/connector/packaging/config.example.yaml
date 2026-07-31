@@ -1,0 +1,100 @@
+# ReviewPlane connector configuration.
+#
+# Install at /etc/reviewplane-connector/config.yaml
+# (docs/CONNECTOR_PROTOCOL.md section 3). Every setting is validated at startup
+# and an unknown one is an error, never a value that is silently ignored
+# (docs/CONFIGURATION.md section 1), so this file is a complete example rather
+# than a menu: the connector's own test suite parses it, and a setting that
+# drifted from the parser would fail the build.
+#
+# The file holds no credential. The one-time enrolment token is supplied to
+# "reviewplane-connector enrol" through --token-file or REVIEWPLANE_ENROLMENT_TOKEN,
+# and the device identity it establishes lives under identity.data_dir with
+# owner-only permissions (docs/SECURITY.md section 6.2).
+
+control_plane:
+  # Must use https. A plaintext URL is refused rather than downgraded, because
+  # the enrolment token would otherwise travel unencrypted
+  # (docs/SECURITY.md section 15).
+  url: https://agents.example.internal
+  # Optional. Defaults to /connector/v1/enrol. The post-enrolment endpoints are
+  # supplied by the registration response and are not configured here.
+  enrolment_path: /connector/v1/enrol
+  tls:
+    # Optional additional trust anchor for the control-plane server
+    # certificate. Remove this line to use the system trust store.
+    ca_file: /etc/reviewplane-connector/control-plane-ca.pem
+
+identity:
+  # Matches StateDirectory= in the systemd unit, which systemd creates 0700.
+  data_dir: /var/lib/reviewplane-connector
+
+heartbeat:
+  # docs/CONNECTOR_PROTOCOL.md section 8. The control plane draws DEGRADED and
+  # DISCONNECTED from silence; a connector never reports either about itself.
+  interval: 15s
+
+reconnect:
+  initial_delay: 1s
+  max_delay: 60s
+  factor: 2
+  jitter: 0.3
+  # 0 means unbounded, which is the default for the long-running channel.
+  max_attempts: 0
+
+environment:
+  # Defaults to the host name.
+  name: dev-ai-03
+  labels: [proxmox, development]
+
+workspaces:
+  # These are the only paths the connector ever looks at. id is the workspace
+  # identifier a publication names, and project is what an observation is
+  # attributed to; an entry missing either is skipped with a warning, because a
+  # publication names both (docs/CONNECTOR_PROTOCOL.md section 11).
+  - id: wsp_refresh_surplus
+    path: /home/dan/projects/refresh-surplus
+    project: refresh-surplus
+
+git_context:
+  # How often the connector re-reads the branch, head commit and dirty state of
+  # the checkouts above (docs/CONNECTOR_PROTOCOL.md section 9). Only a change is
+  # reported, so a machine nobody is working on is silent. Between 5s and 1h.
+  interval: 30s
+
+publication:
+  # This connector's own say over what it will carry. An omitted allowed_hosts
+  # or allowed_ports means the loopback-only default of docs/SECURITY.md
+  # section 9, never "everything".
+  allowed_hosts:
+    - 127.0.0.1
+    - ::1
+  allowed_ports:
+    - 3000-3999
+    - 4321
+    - 5173
+  max_routes: 10
+  # Optional. Defaults to the projects named in the workspaces block, so an
+  # operator who has declared their workspaces does not declare them twice.
+  allowed_projects:
+    - refresh-surplus
+
+privacy:
+  # All three must be false in this build, and each is refused with a message
+  # naming what is missing rather than a blanket "unsupported":
+  #
+  #   report_changed_paths     the version 1 workspace_observation payload has
+  #                            no member that can carry a changed-path list
+  #   report_process_details   the heartbeat resource summary permits only load
+  #                            and memory_available_bytes (section 8)
+  #   discover_workspaces      bounded root scanning for unlisted checkouts is
+  #                            not implemented; the workspaces block above is
+  #                            observed either way
+  report_changed_paths: false
+  report_process_details: false
+  discover_workspaces: false
+
+logging:
+  level: info
+  # Structured JSON is the only supported format (docs/ARCHITECTURE.md section 15).
+  format: json

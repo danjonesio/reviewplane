@@ -202,7 +202,14 @@ Responsibilities:
 - Report health and capabilities
 - Display local notifications
 
-The connector must not upload repository contents by default.
+The connector must not upload repository contents by default. At version 1 of
+the connector protocol it cannot: the payload that carries workspace state has
+members for repository identity, branch, head commit, a boolean dirty state, a
+display label and a path hash, and no member capable of carrying file contents,
+a changed-path list or a full filesystem path (`CONNECTOR_PROTOCOL.md` §9,
+ADR-0022). "Detect configured workspaces" is also literal — only paths an
+operator configured are ever read, and no directory walk exists in the
+connector.
 
 ### 4.8 Background worker
 

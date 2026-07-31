@@ -296,6 +296,17 @@ func TestChannelRefusesHostileFramesWithoutPanic(t *testing.T) {
 		{"unknown property", []byte(`{"protocol_version":1,"message_id":"msg_a","type":"route.publish","sent_at":"2026-07-28T11:00:00Z","connector_id":"con_a","payload":{},"surprise":1}`)},
 		{"oversized frame", oversizedFrame()},
 		{"wrong direction", []byte(`{"protocol_version":1,"message_id":"msg_a","type":"heartbeat","sent_at":"2026-07-28T11:00:00Z","connector_id":"con_a","payload":{"status":"healthy","uptime_seconds":1,"version":"0.1.0","active_routes":0,"active_streams":0}}`)},
+		// docs/CONNECTOR_PROTOCOL.md section 9: workspace.observed travels from
+		// the connector to the control plane. A control plane sending one is
+		// telling this environment what its own checkouts contain, which is a
+		// peer to stop talking to rather than a frame to interpret.
+		{"workspace observation in the wrong direction", workspaceObservationFrame("")},
+		// The version 1 payload has no member that can carry a changed-path
+		// list, so a frame inventing one is refused rather than partly read.
+		{"workspace observation carrying changed paths", workspaceObservationFrame(`,"changed_paths":["src/app.ts"]`)},
+		// A display label is a name, and the schema refuses a path in it.
+		{"workspace observation whose label is a path", workspaceObservationWithLabel(`/home/dan/projects/api`)},
+		{"oversized workspace observation", oversizedWorkspaceObservation()},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -321,6 +332,38 @@ func TestChannelRefusesHostileFramesWithoutPanic(t *testing.T) {
 			}
 		})
 	}
+}
+
+// workspaceObservationFrame builds a workspace.observed frame, optionally with
+// extra payload members appended, so that one helper covers both the
+// wrong-direction case and the unknown-property case.
+func workspaceObservationFrame(extra string) []byte {
+	return []byte(`{"protocol_version":1,"message_id":"msg_workspace","type":"workspace.observed",` +
+		`"sent_at":"2026-07-28T11:00:00Z","connector_id":"con_a","payload":{` +
+		`"workspace_id":"wsp_a","project_id":"prj_a",` +
+		`"path_hash":"sha256:9f2c4b1e7a83d05e6c1f4a29b8d3e70c5a6b4d2f18e93c07ab5d6e4f3c2b1a09",` +
+		`"display_label":"refresh-surplus","branch":"main",` +
+		`"head_commit":"4f3a9c1d2e8b7a6053f4e3d2c1b0a9f8e7d6c5b4","dirty":false,` +
+		`"observed_at":"2026-07-28T10:59:58Z"` + extra + `}}`)
+}
+
+func workspaceObservationWithLabel(label string) []byte {
+	return []byte(`{"protocol_version":1,"message_id":"msg_workspace","type":"workspace.observed",` +
+		`"sent_at":"2026-07-28T11:00:00Z","connector_id":"con_a","payload":{` +
+		`"workspace_id":"wsp_a","project_id":"prj_a",` +
+		`"path_hash":"sha256:9f2c4b1e7a83d05e6c1f4a29b8d3e70c5a6b4d2f18e93c07ab5d6e4f3c2b1a09",` +
+		`"display_label":"` + label + `","branch":"main",` +
+		`"head_commit":"4f3a9c1d2e8b7a6053f4e3d2c1b0a9f8e7d6c5b4","dirty":false,` +
+		`"observed_at":"2026-07-28T10:59:58Z"}}`)
+}
+
+// oversizedWorkspaceObservation exceeds the control-frame bound, so it is
+// refused before deserialisation rather than assembled and then judged. That is
+// what docs/CONNECTOR_PROTOCOL.md section 22 means by bounded allocation: the
+// bytes are never turned into a payload at all.
+func oversizedWorkspaceObservation() []byte {
+	padding := strings.Repeat("b", connectorv1.MaxControlFrameBytes)
+	return workspaceObservationWithLabel(padding)
 }
 
 func oversizedFrame() []byte {

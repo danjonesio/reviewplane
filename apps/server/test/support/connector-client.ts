@@ -20,6 +20,7 @@ import {
   type ReconnectRequest,
   type ReconnectResponse,
   type RegistrationResponse,
+  type WorkspaceObservation,
 } from "@reviewplane/protocol";
 import { WebSocket, type ClientOptions } from "ws";
 
@@ -158,6 +159,14 @@ export interface ControlChannel {
    * reconciliation has to refuse.
    */
   reconnect(overrides?: Partial<ReconnectRequest>, timeoutMs?: number): Promise<ReconnectResponse>;
+  /**
+   * Sends the `docs/CONNECTOR_PROTOCOL.md` §9 workspace observation.
+   *
+   * A double again, and for the same reason: the observations that must be
+   * refused — a project this identity is not enrolled for, an identifier held
+   * elsewhere — are ones a correct connector never sends.
+   */
+  sendWorkspaceObservation(overrides?: Partial<WorkspaceObservation>): void;
   closed(): Promise<{ code: number; reason: string }>;
   close(): void;
 }
@@ -251,6 +260,31 @@ export function openControlChannel(
             connector_id: identity.connectorId,
           },
           type: "heartbeat",
+          payload,
+        };
+        socket.send(encodeControlFrame(frame));
+      },
+      sendWorkspaceObservation(overrides = {}) {
+        const payload: WorkspaceObservation = {
+          workspace_id: "wsp_test_workspace",
+          project_id: "prj_test_project",
+          path_hash: `sha256:${"a".repeat(64)}`,
+          display_label: "refresh-surplus",
+          branch: "main",
+          head_commit: "4f3a9c1d2e8b7a6053f4e3d2c1b0a9f8e7d6c5b4",
+          dirty: false,
+          observed_at: rfc3339(),
+          ...overrides,
+        };
+        const frame: ConnectorFrame = {
+          envelope: {
+            protocol_version: 1,
+            message_id: messageId(),
+            type: "workspace.observed",
+            sent_at: rfc3339(),
+            connector_id: identity.connectorId,
+          },
+          type: "workspace.observed",
           payload,
         };
         socket.send(encodeControlFrame(frame));

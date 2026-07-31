@@ -26,6 +26,12 @@ const (
 	// ChannelOrganisation carries organisation and project lifecycle (docs/EVENTS.md
 	// section 7).
 	ChannelOrganisation Channel = "organisation"
+	// ChannelEnvironment carries development environments, connectors and workspaces
+	// (docs/EVENTS.md section 7, docs/DOMAIN_MODEL.md sections 7 to 9). It is a channel
+	// of its own because a connector enrolment can precede any project association, so
+	// these occurrences are not organisation lifecycle and are not project lifecycle
+	// either.
+	ChannelEnvironment Channel = "environment"
 	// ChannelJobs carries durable background work (docs/ARCHITECTURE.md section 4.8).
 	ChannelJobs Channel = "jobs"
 	// ChannelStream carries the project event stream of docs/API.md section 18.1.
@@ -36,7 +42,7 @@ const (
 )
 
 // ChannelValues lists every channel in declaration order.
-var ChannelValues = []Channel{ChannelOrganisation, ChannelJobs, ChannelStream, ChannelAPI}
+var ChannelValues = []Channel{ChannelOrganisation, ChannelEnvironment, ChannelJobs, ChannelStream, ChannelAPI}
 
 // MessageType is defined by the connector protocol schema.
 //
@@ -57,13 +63,20 @@ const (
 	MessageTypeAuthenticationLoginSucceeded MessageType = "authentication.login_succeeded"
 	MessageTypeAuthenticationLoginFailed    MessageType = "authentication.login_failed"
 	MessageTypeSessionRevoked               MessageType = "session.revoked"
+	MessageTypeConnectorEnrolled            MessageType = "connector.enrolled"
+	MessageTypeConnectorConnected           MessageType = "connector.connected"
+	MessageTypeConnectorDegraded            MessageType = "connector.degraded"
+	MessageTypeConnectorDisconnected        MessageType = "connector.disconnected"
+	MessageTypeConnectorRevoked             MessageType = "connector.revoked"
+	MessageTypeWorkspaceObserved            MessageType = "workspace.observed"
+	MessageTypeWorkspaceHeadChanged         MessageType = "workspace.head_changed"
 	MessageTypeJobEnqueued                  MessageType = "job.enqueued"
 	MessageTypeJobSucceeded                 MessageType = "job.succeeded"
 	MessageTypeJobFailed                    MessageType = "job.failed"
 )
 
 // MessageTypeValues lists every value in declaration order.
-var MessageTypeValues = []MessageType{MessageTypeOrganisationCreated, MessageTypeProjectCreated, MessageTypeProjectUpdated, MessageTypeProjectRepositoryChanged, MessageTypeProjectArchived, MessageTypeUserInvited, MessageTypeUserCredentialsSet, MessageTypeAuthenticationLoginSucceeded, MessageTypeAuthenticationLoginFailed, MessageTypeSessionRevoked, MessageTypeJobEnqueued, MessageTypeJobSucceeded, MessageTypeJobFailed}
+var MessageTypeValues = []MessageType{MessageTypeOrganisationCreated, MessageTypeProjectCreated, MessageTypeProjectUpdated, MessageTypeProjectRepositoryChanged, MessageTypeProjectArchived, MessageTypeUserInvited, MessageTypeUserCredentialsSet, MessageTypeAuthenticationLoginSucceeded, MessageTypeAuthenticationLoginFailed, MessageTypeSessionRevoked, MessageTypeConnectorEnrolled, MessageTypeConnectorConnected, MessageTypeConnectorDegraded, MessageTypeConnectorDisconnected, MessageTypeConnectorRevoked, MessageTypeWorkspaceObserved, MessageTypeWorkspaceHeadChanged, MessageTypeJobEnqueued, MessageTypeJobSucceeded, MessageTypeJobFailed}
 
 // ErrorClass is defined by the connector protocol schema.
 //
@@ -190,6 +203,111 @@ const (
 
 // UserStatusValues lists every value in declaration order.
 var UserStatusValues = []UserStatus{UserStatusActive, UserStatusSuspended}
+
+// EnvironmentStatus is defined by the connector protocol schema.
+//
+// Environment lifecycle status (docs/DOMAIN_MODEL.md section 7). Stage 1 defines one
+// value: retiring an environment arrives with environment lifecycle management, and an
+// enumeration promising a value nothing can reach would misdescribe the product.
+type EnvironmentStatus string
+
+const (
+	EnvironmentStatusActive EnvironmentStatus = "ACTIVE"
+)
+
+// EnvironmentStatusValues lists every value in declaration order.
+var EnvironmentStatusValues = []EnvironmentStatus{EnvironmentStatusActive}
+
+// EnvironmentTrustLevel is defined by the connector protocol schema.
+//
+// Environment trust level (docs/DOMAIN_MODEL.md section 7). Stage 1 has a single
+// default value; a trust level that changes what an environment may do is a policy
+// change rather than a field change, and arrives with the permission model.
+type EnvironmentTrustLevel string
+
+const (
+	EnvironmentTrustLevelStandard EnvironmentTrustLevel = "standard"
+)
+
+// EnvironmentTrustLevelValues lists every value in declaration order.
+var EnvironmentTrustLevelValues = []EnvironmentTrustLevel{EnvironmentTrustLevelStandard}
+
+// ConnectorStatus is defined by the connector protocol schema.
+//
+// Connector lifecycle status (docs/DOMAIN_MODEL.md section 8). DEGRADED and
+// DISCONNECTED are conclusions the control plane draws from heartbeat silence and are
+// never self-reported; REVOKED is terminal, and a connector in it is refused before a
+// channel is established.
+type ConnectorStatus string
+
+const (
+	ConnectorStatusPendingEnrolment ConnectorStatus = "PENDING_ENROLMENT"
+	ConnectorStatusActive           ConnectorStatus = "ACTIVE"
+	ConnectorStatusDegraded         ConnectorStatus = "DEGRADED"
+	ConnectorStatusDisconnected     ConnectorStatus = "DISCONNECTED"
+	ConnectorStatusRevoked          ConnectorStatus = "REVOKED"
+)
+
+// ConnectorStatusValues lists every value in declaration order.
+var ConnectorStatusValues = []ConnectorStatus{ConnectorStatusPendingEnrolment, ConnectorStatusActive, ConnectorStatusDegraded, ConnectorStatusDisconnected, ConnectorStatusRevoked}
+
+// ConnectorConnectedTrigger is defined by the connector protocol schema.
+//
+// What returned a connector to ACTIVE. A closed vocabulary, so an audit record needs
+// no free text (docs/SECURITY.md section 18).
+type ConnectorConnectedTrigger string
+
+const (
+	ConnectorConnectedTriggerChannelOpened ConnectorConnectedTrigger = "channel_opened"
+	ConnectorConnectedTriggerHeartbeat     ConnectorConnectedTrigger = "heartbeat"
+)
+
+// ConnectorConnectedTriggerValues lists every value in declaration order.
+var ConnectorConnectedTriggerValues = []ConnectorConnectedTrigger{ConnectorConnectedTriggerChannelOpened, ConnectorConnectedTriggerHeartbeat}
+
+// ConnectorDegradedTrigger is defined by the connector protocol schema.
+//
+// What made a connector DEGRADED. It has one cause: the control plane concluding delay
+// from missed heartbeats.
+type ConnectorDegradedTrigger string
+
+const (
+	ConnectorDegradedTriggerHeartbeatDelay ConnectorDegradedTrigger = "heartbeat_delay"
+)
+
+// ConnectorDegradedTriggerValues lists every value in declaration order.
+var ConnectorDegradedTriggerValues = []ConnectorDegradedTrigger{ConnectorDegradedTriggerHeartbeatDelay}
+
+// ConnectorDisconnectedTrigger is defined by the connector protocol schema.
+//
+// What made a connector DISCONNECTED: its channel closed, or its silence exceeded the
+// disconnect threshold.
+type ConnectorDisconnectedTrigger string
+
+const (
+	ConnectorDisconnectedTriggerChannelClosed    ConnectorDisconnectedTrigger = "channel_closed"
+	ConnectorDisconnectedTriggerHeartbeatTimeout ConnectorDisconnectedTrigger = "heartbeat_timeout"
+)
+
+// ConnectorDisconnectedTriggerValues lists every value in declaration order.
+var ConnectorDisconnectedTriggerValues = []ConnectorDisconnectedTrigger{ConnectorDisconnectedTriggerChannelClosed, ConnectorDisconnectedTriggerHeartbeatTimeout}
+
+// WorkspaceObservationSource is defined by the connector protocol schema.
+//
+// How a workspace came to be known (docs/CONNECTOR_PROTOCOL.md section 9).
+// connector_report is a connector observing a configured path;
+// administrative_registration is an operator or an agent session registering one
+// directly. Broad filesystem scanning is disabled by default and has no value here,
+// because this build performs none.
+type WorkspaceObservationSource string
+
+const (
+	WorkspaceObservationSourceConnectorReport            WorkspaceObservationSource = "connector_report"
+	WorkspaceObservationSourceAdministrativeRegistration WorkspaceObservationSource = "administrative_registration"
+)
+
+// WorkspaceObservationSourceValues lists every value in declaration order.
+var WorkspaceObservationSourceValues = []WorkspaceObservationSource{WorkspaceObservationSourceConnectorReport, WorkspaceObservationSourceAdministrativeRegistration}
 
 // LoginMethod is defined by the connector protocol schema.
 //
@@ -335,6 +453,13 @@ var MessageDirections = map[MessageType]MessageDirection{
 	MessageTypeAuthenticationLoginSucceeded: DirectionControlPlaneToSubscriber,
 	MessageTypeAuthenticationLoginFailed:    DirectionControlPlaneToSubscriber,
 	MessageTypeSessionRevoked:               DirectionControlPlaneToSubscriber,
+	MessageTypeConnectorEnrolled:            DirectionControlPlaneToSubscriber,
+	MessageTypeConnectorConnected:           DirectionControlPlaneToSubscriber,
+	MessageTypeConnectorDegraded:            DirectionControlPlaneToSubscriber,
+	MessageTypeConnectorDisconnected:        DirectionControlPlaneToSubscriber,
+	MessageTypeConnectorRevoked:             DirectionControlPlaneToSubscriber,
+	MessageTypeWorkspaceObserved:            DirectionControlPlaneToSubscriber,
+	MessageTypeWorkspaceHeadChanged:         DirectionControlPlaneToSubscriber,
 	MessageTypeJobEnqueued:                  DirectionControlPlaneToSubscriber,
 	MessageTypeJobSucceeded:                 DirectionControlPlaneToSubscriber,
 	MessageTypeJobFailed:                    DirectionControlPlaneToSubscriber,
@@ -352,6 +477,13 @@ var MessageChannels = map[MessageType]Channel{
 	MessageTypeAuthenticationLoginSucceeded: ChannelOrganisation,
 	MessageTypeAuthenticationLoginFailed:    ChannelOrganisation,
 	MessageTypeSessionRevoked:               ChannelOrganisation,
+	MessageTypeConnectorEnrolled:            ChannelEnvironment,
+	MessageTypeConnectorConnected:           ChannelEnvironment,
+	MessageTypeConnectorDegraded:            ChannelEnvironment,
+	MessageTypeConnectorDisconnected:        ChannelEnvironment,
+	MessageTypeConnectorRevoked:             ChannelEnvironment,
+	MessageTypeWorkspaceObserved:            ChannelEnvironment,
+	MessageTypeWorkspaceHeadChanged:         ChannelEnvironment,
 	MessageTypeJobEnqueued:                  ChannelJobs,
 	MessageTypeJobSucceeded:                 ChannelJobs,
 	MessageTypeJobFailed:                    ChannelJobs,
@@ -370,6 +502,13 @@ var PayloadMaxBytes = map[MessageType]int{
 	MessageTypeAuthenticationLoginSucceeded: 512,
 	MessageTypeAuthenticationLoginFailed:    512,
 	MessageTypeSessionRevoked:               512,
+	MessageTypeConnectorEnrolled:            1024,
+	MessageTypeConnectorConnected:           512,
+	MessageTypeConnectorDegraded:            512,
+	MessageTypeConnectorDisconnected:        512,
+	MessageTypeConnectorRevoked:             512,
+	MessageTypeWorkspaceObserved:            1024,
+	MessageTypeWorkspaceHeadChanged:         1024,
 	MessageTypeJobEnqueued:                  1024,
 	MessageTypeJobSucceeded:                 1024,
 	MessageTypeJobFailed:                    1024,
@@ -552,6 +691,80 @@ type EmailAddress = string
 // stored here cannot become an argument to something else.
 type GitRefName = string
 
+// RepositoryCanonical is defined by the connector protocol schema.
+//
+// The canonical member of a repository identity on its own, for the records that store
+// the normalised form without the clone URLs beside it (docs/DOMAIN_MODEL.md section
+// 9). Its shape is repository_identity.canonical, and the shared normaliser in
+// packages/protocol produces both, so a workspace and a project cannot disagree about
+// what one repository is.
+type RepositoryCanonical = string
+
+// EnvironmentLabel is defined by the connector protocol schema.
+//
+// Operator-assigned environment label. Its shape is the connector protocol's
+// environment_label, because an enrolment token pins the labels a registering
+// environment must declare (docs/CONNECTOR_PROTOCOL.md section 4.1).
+type EnvironmentLabel = string
+
+// PlatformName is defined by the connector protocol schema.
+//
+// Operating system an environment runs, as the connector reported it.
+type PlatformName = string
+
+// ArchitectureName is defined by the connector protocol schema.
+//
+// CPU architecture an environment runs, as the connector reported it.
+type ArchitectureName = string
+
+// ConnectorCapability is defined by the connector protocol schema.
+//
+// Capability a connector build advertises, such as http-tunnel, websocket-tunnel,
+// git-context or local-mcp-bridge. Unknown values are accepted so that a newer
+// connector is classified by docs/CONNECTOR_PROTOCOL.md section 19 rather than
+// rejected outright.
+type ConnectorCapability = string
+
+// ConnectorVersion is defined by the connector protocol schema.
+//
+// Connector release version, for example 0.1.0. Its shape is the connector protocol's
+// semantic_version.
+type ConnectorVersion = string
+
+// CertificateFingerprint is defined by the connector protocol schema.
+//
+// sha256:<hex> digest of the DER form of an issued connector certificate (ADR-0014).
+// It is unique across connectors and is how a verified peer certificate is resolved to
+// a connector record.
+type CertificateFingerprint = string
+
+// SilenceSeconds is defined by the connector protocol schema.
+//
+// A lower bound, in seconds, on how long a connector had been silent when a conclusion
+// was drawn about it.
+type SilenceSeconds = int64
+
+// PathHash is defined by the connector protocol schema.
+//
+// Stable sha256:<hex> digest of a workspace's absolute path on the development
+// machine. The control plane stores the digest rather than the path, because a display
+// label and a stable local hash are sufficient to recognise the same checkout again
+// (docs/DOMAIN_MODEL.md section 9).
+type PathHash = string
+
+// WorkspaceDisplayLabel is defined by the connector protocol schema.
+//
+// Human-readable workspace label, which is the checkout directory's own name and never
+// its full path. Path separators and control characters are refused, so a full path
+// cannot be smuggled through it.
+type WorkspaceDisplayLabel = string
+
+// GitCommit is defined by the connector protocol schema.
+//
+// A commit identifier, lowercase hexadecimal. Bounded so that an abbreviated and a
+// full identifier are both accepted and nothing else is.
+type GitCommit = string
+
 // RepositoryIdentity is defined by the connector protocol schema.
 //
 // Provider-agnostic repository identity (docs/DOMAIN_MODEL.md section 6). canonical is
@@ -696,6 +909,121 @@ type HumanSession struct {
 	ProjectIDs []string `json:"project_ids,omitempty"`
 	// When the session stops being usable without revocation.
 	ExpiresAt string `json:"expires_at"`
+}
+
+// Environment is defined by the connector protocol schema.
+//
+// A registered development location such as a VM or workstation (docs/DOMAIN_MODEL.md
+// section 7). An environment may host several workspaces, but every published service
+// and session association is explicitly project scoped, so project_id is a default
+// rather than the whole of the authorisation.
+type Environment struct {
+	// Environment identity, conventionally prefixed env_.
+	ID string `json:"id"`
+	// Owning organisation, carried for defence-in-depth filtering.
+	OrganisationID string `json:"organisation_id"`
+	// Project the environment was enrolled for. Absent when the enrolment token was
+	// organisation scoped.
+	ProjectID *string `json:"project_id,omitempty"`
+	// Operator-visible environment name, as the connector reported it. It is description
+	// and never an authorisation input.
+	Name string `json:"name"`
+	// Operating system the environment runs.
+	Platform string `json:"platform"`
+	// CPU architecture the environment runs.
+	Architecture string `json:"architecture"`
+	// Operator-assigned labels. An enrolment token may pin the labels a registering
+	// environment must declare.
+	Labels []string `json:"labels"`
+	// Trust level. Stage 1 has one.
+	TrustLevel EnvironmentTrustLevel `json:"trust_level"`
+	// Lifecycle status.
+	Status EnvironmentStatus `json:"status"`
+	// When a connector for this environment was last heard from. Absent until one has
+	// been.
+	LastSeenAt *string `json:"last_seen_at,omitempty"`
+	// When the environment was registered.
+	CreatedAt string `json:"created_at"`
+}
+
+// Connector is defined by the connector protocol schema.
+//
+// A connector installation and its cryptographic identity (docs/DOMAIN_MODEL.md
+// section 8). The device private key is generated on the development machine and never
+// leaves it, so this record has no member capable of carrying one: it holds the
+// certificate fingerprint the control plane resolves a verified peer certificate by,
+// and nothing secret.
+type Connector struct {
+	// Connector identity, conventionally prefixed con_.
+	ID string `json:"id"`
+	// Owning organisation, carried for defence-in-depth filtering.
+	OrganisationID string `json:"organisation_id"`
+	// Environment this connector runs in.
+	EnvironmentID string `json:"environment_id"`
+	// Project the connector was enrolled for. Absent when the enrolment token was
+	// organisation scoped.
+	ProjectID *string `json:"project_id,omitempty"`
+	// Fingerprint of the issued client certificate, unique across connectors.
+	CertificateFingerprint string `json:"certificate_fingerprint"`
+	// When the issued identity expires. Identities are bounded in time.
+	CertificateNotAfter string `json:"certificate_not_after"`
+	// Connector release the environment runs.
+	Version string `json:"version"`
+	// Capabilities the connector build advertises.
+	Capabilities []string `json:"capabilities"`
+	// Lifecycle status.
+	Status ConnectorStatus `json:"status"`
+	// When the connector most recently reached ACTIVE. Absent before its first channel.
+	ConnectedAt *string `json:"connected_at,omitempty"`
+	// When the last heartbeat arrived. Absent before the first one.
+	LastHeartbeatAt *string `json:"last_heartbeat_at,omitempty"`
+	// When the identity was revoked. Absent unless the connector is REVOKED.
+	RevokedAt *string `json:"revoked_at,omitempty"`
+	// When the identity was issued.
+	CreatedAt string `json:"created_at"`
+}
+
+// Workspace is defined by the connector protocol schema.
+//
+// A repository checkout a connector reports or an operator registers
+// (docs/DOMAIN_MODEL.md section 9). It holds a stable path hash and a display label
+// rather than the checkout's full path, and it has no member capable of carrying
+// source file contents or a changed-path list: what is reportable about somebody
+// else's machine is bounded by this schema rather than by the code that fills it in.
+type Workspace struct {
+	// Workspace identity, conventionally prefixed wsp_.
+	ID string `json:"id"`
+	// Owning organisation, carried for defence-in-depth filtering.
+	OrganisationID string `json:"organisation_id"`
+	// Project the checkout belongs to.
+	ProjectID string `json:"project_id"`
+	// Environment holding the checkout. Absent for a workspace registered
+	// administratively rather than observed by a connector.
+	EnvironmentID *string `json:"environment_id,omitempty"`
+	// Connector that last reported the checkout. Absent for an administratively
+	// registered workspace.
+	ConnectorID *string `json:"connector_id,omitempty"`
+	// Stable digest of the checkout's absolute path.
+	PathHash string `json:"path_hash"`
+	// Label a human reads, which is the checkout directory's own name.
+	DisplayPath string `json:"display_path"`
+	// Canonical identity of the checkout's remote. Absent when the checkout has no remote
+	// that could be normalised; an absent value is reported as absent rather than guessed
+	// at.
+	RepositoryIdentity *string `json:"repository_identity,omitempty"`
+	// Checked-out branch.
+	Branch string `json:"branch"`
+	// HEAD commit.
+	HeadCommit string `json:"head_commit"`
+	// Whether the working tree has uncommitted changes. Which files changed is
+	// deliberately not recorded.
+	Dirty bool `json:"dirty"`
+	// How the workspace came to be known.
+	Source WorkspaceObservationSource `json:"source"`
+	// When the control plane last received this state. Absent until a first observation.
+	LastObservedAt *string `json:"last_observed_at,omitempty"`
+	// When the workspace record was created.
+	CreatedAt string `json:"created_at"`
 }
 
 // Actor is defined by the connector protocol schema.
@@ -907,6 +1235,154 @@ type ProjectArchivedPayload struct {
 	PreviousStatus ProjectStatus `json:"previous_status"`
 	// Status after the change.
 	NewStatus ProjectStatus `json:"new_status"`
+}
+
+// ConnectorEnrolledPayload is defined by the connector protocol schema.
+//
+// Payload of connector.enrolled. It records the identity that was issued and the
+// environment it was issued to, and it never carries the enrolment token that was
+// redeemed: an event is append-only, so a credential written into one cannot be taken
+// out again (docs/EVENTS.md section 8).
+type ConnectorEnrolledPayload struct {
+	// Environment the identity was issued to.
+	EnvironmentID string `json:"environment_id"`
+	// Name the environment reported for itself. Description, never an authorisation
+	// input.
+	EnvironmentName string `json:"environment_name"`
+	// Operating system the environment reported.
+	Platform string `json:"platform"`
+	// CPU architecture the environment reported.
+	Architecture string `json:"architecture"`
+	// Connector release that enrolled.
+	ConnectorVersion string `json:"connector_version"`
+	// Capabilities the connector build advertised.
+	Capabilities []string `json:"capabilities"`
+	// Fingerprint of the certificate that was issued.
+	CertificateFingerprint string `json:"certificate_fingerprint"`
+	// When the issued identity expires.
+	IdentityExpiresAt string `json:"identity_expires_at"`
+	// Identifier of the token that was redeemed. The identifier, never the token.
+	EnrolmentTokenID *string `json:"enrolment_token_id,omitempty"`
+	// Status the record entered, which is PENDING_ENROLMENT until the first authenticated
+	// channel.
+	NewStatus ConnectorStatus `json:"new_status"`
+}
+
+// ConnectorConnectedPayload is defined by the connector protocol schema.
+//
+// Payload of connector.connected. Both sides of the transition are named, so the audit
+// trail states what moved rather than only where it landed, and the trigger is a
+// closed vocabulary so no free text is needed.
+type ConnectorConnectedPayload struct {
+	// Status before the transition.
+	PreviousStatus ConnectorStatus `json:"previous_status"`
+	// Status after it, which is ACTIVE.
+	NewStatus ConnectorStatus `json:"new_status"`
+	// Whether a channel was established or a heartbeat arrived from a degraded state.
+	Trigger ConnectorConnectedTrigger `json:"trigger"`
+}
+
+// ConnectorDegradedPayload is defined by the connector protocol schema.
+//
+// Payload of connector.degraded. Degradation is a conclusion drawn from silence, so
+// the payload states how long the silence had lasted rather than what the connector
+// said about itself.
+type ConnectorDegradedPayload struct {
+	// Status before the transition.
+	PreviousStatus ConnectorStatus `json:"previous_status"`
+	// Status after it, which is DEGRADED.
+	NewStatus ConnectorStatus `json:"new_status"`
+	// What caused it. Degradation has one cause: missed heartbeats.
+	Trigger ConnectorDegradedTrigger `json:"trigger"`
+	// Lower bound on the silence, because the sweep observes silence rather than
+	// measuring it.
+	SilentForSecondsAtLeast int64 `json:"silent_for_seconds_at_least"`
+}
+
+// ConnectorDisconnectedPayload is defined by the connector protocol schema.
+//
+// Payload of connector.disconnected. A closed channel and an exhausted heartbeat
+// budget are different observations and are distinguished by trigger, so an operator
+// can tell a clean stop from a network that went away.
+type ConnectorDisconnectedPayload struct {
+	// Status before the transition.
+	PreviousStatus ConnectorStatus `json:"previous_status"`
+	// Status after it, which is DISCONNECTED.
+	NewStatus ConnectorStatus `json:"new_status"`
+	// Whether the channel closed or the disconnect threshold was exceeded.
+	Trigger ConnectorDisconnectedTrigger `json:"trigger"`
+	// Lower bound on the silence. Present only for heartbeat_timeout: a closed channel is
+	// observed rather than inferred.
+	SilentForSecondsAtLeast *int64 `json:"silent_for_seconds_at_least,omitempty"`
+}
+
+// ConnectorRevokedPayload is defined by the connector protocol schema.
+//
+// Payload of connector.revoked. It records what revocation reached, because
+// docs/CONNECTOR_PROTOCOL.md section 18 makes revocation five things at once and an
+// auditor needs to see that all five happened.
+type ConnectorRevokedPayload struct {
+	// Status before revocation.
+	PreviousStatus ConnectorStatus `json:"previous_status"`
+	// Status after it, which is REVOKED.
+	NewStatus ConnectorStatus `json:"new_status"`
+	// How many published services the revocation closed.
+	RoutesRevoked int64 `json:"routes_revoked"`
+	// How many browser sessions were marked disconnected by it.
+	SessionsDisconnected int64 `json:"sessions_disconnected"`
+	// How many live connector channels were closed. Zero when the connector held none.
+	ChannelsClosed *int64 `json:"channels_closed,omitempty"`
+}
+
+// WorkspaceObservedPayload is defined by the connector protocol schema.
+//
+// Payload of workspace.observed. It carries exactly what docs/CONNECTOR_PROTOCOL.md
+// section 9 permits a connector to report about a checkout, and has no member capable
+// of carrying file contents, a changed-path list or a full filesystem path.
+type WorkspaceObservedPayload struct {
+	// Workspace that was observed.
+	WorkspaceID string `json:"workspace_id"`
+	// Environment holding it. Absent for an administratively registered workspace.
+	EnvironmentID *string `json:"environment_id,omitempty"`
+	// Stable digest of the checkout's absolute path.
+	PathHash string `json:"path_hash"`
+	// The checkout directory's own name.
+	DisplayPath string `json:"display_path"`
+	// Canonical identity of the checkout's remote, when it has one that could be
+	// normalised.
+	RepositoryIdentity *string `json:"repository_identity,omitempty"`
+	// Checked-out branch.
+	Branch string `json:"branch"`
+	// HEAD commit.
+	HeadCommit string `json:"head_commit"`
+	// Whether the working tree had uncommitted changes.
+	Dirty bool `json:"dirty"`
+	// How the workspace came to be known.
+	Source WorkspaceObservationSource `json:"source"`
+}
+
+// WorkspaceHeadChangedPayload is defined by the connector protocol schema.
+//
+// Payload of workspace.head_changed. It carries both sides of the move, because a
+// review captured before it was captured against the previous head and an auditor
+// reading only the new one could not tell.
+type WorkspaceHeadChangedPayload struct {
+	// Workspace whose head moved.
+	WorkspaceID string `json:"workspace_id"`
+	// Environment holding it, when a connector reported the change.
+	EnvironmentID *string `json:"environment_id,omitempty"`
+	// Branch before the change.
+	PreviousBranch string `json:"previous_branch"`
+	// HEAD commit before it.
+	PreviousHeadCommit string `json:"previous_head_commit"`
+	// Dirty state before it.
+	PreviousDirty bool `json:"previous_dirty"`
+	// Branch after it.
+	Branch string `json:"branch"`
+	// HEAD commit after it.
+	HeadCommit string `json:"head_commit"`
+	// Dirty state after it.
+	Dirty bool `json:"dirty"`
 }
 
 // JobEnqueuedPayload is defined by the connector protocol schema.
@@ -1185,6 +1661,43 @@ func (AuthenticationLoginFailedPayload) isConnectorPayload() {}
 func (SessionRevokedPayload) MessageType() MessageType { return MessageTypeSessionRevoked }
 
 func (SessionRevokedPayload) isConnectorPayload() {}
+
+// MessageType reports the envelope type carrying a ConnectorEnrolledPayload.
+func (ConnectorEnrolledPayload) MessageType() MessageType { return MessageTypeConnectorEnrolled }
+
+func (ConnectorEnrolledPayload) isConnectorPayload() {}
+
+// MessageType reports the envelope type carrying a ConnectorConnectedPayload.
+func (ConnectorConnectedPayload) MessageType() MessageType { return MessageTypeConnectorConnected }
+
+func (ConnectorConnectedPayload) isConnectorPayload() {}
+
+// MessageType reports the envelope type carrying a ConnectorDegradedPayload.
+func (ConnectorDegradedPayload) MessageType() MessageType { return MessageTypeConnectorDegraded }
+
+func (ConnectorDegradedPayload) isConnectorPayload() {}
+
+// MessageType reports the envelope type carrying a ConnectorDisconnectedPayload.
+func (ConnectorDisconnectedPayload) MessageType() MessageType {
+	return MessageTypeConnectorDisconnected
+}
+
+func (ConnectorDisconnectedPayload) isConnectorPayload() {}
+
+// MessageType reports the envelope type carrying a ConnectorRevokedPayload.
+func (ConnectorRevokedPayload) MessageType() MessageType { return MessageTypeConnectorRevoked }
+
+func (ConnectorRevokedPayload) isConnectorPayload() {}
+
+// MessageType reports the envelope type carrying a WorkspaceObservedPayload.
+func (WorkspaceObservedPayload) MessageType() MessageType { return MessageTypeWorkspaceObserved }
+
+func (WorkspaceObservedPayload) isConnectorPayload() {}
+
+// MessageType reports the envelope type carrying a WorkspaceHeadChangedPayload.
+func (WorkspaceHeadChangedPayload) MessageType() MessageType { return MessageTypeWorkspaceHeadChanged }
+
+func (WorkspaceHeadChangedPayload) isConnectorPayload() {}
 
 // MessageType reports the envelope type carrying a JobEnqueuedPayload.
 func (JobEnqueuedPayload) MessageType() MessageType { return MessageTypeJobEnqueued }

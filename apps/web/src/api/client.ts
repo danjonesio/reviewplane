@@ -11,9 +11,15 @@
  * code rather than a status number.
  */
 
+import type {
+  Connector,
+  ConnectorStatus,
+  Environment,
+  Workspace,
+} from "@reviewplane/protocol/platform";
 import type { Annotation, Finding, Review } from "@reviewplane/protocol/review";
 
-export type { Annotation, Finding, Review };
+export type { Annotation, Connector, ConnectorStatus, Environment, Finding, Review, Workspace };
 
 export interface ApiErrorBody {
   readonly error?: { readonly code?: string; readonly message?: string };
@@ -225,6 +231,110 @@ export interface ArtefactGrant {
   readonly expires_in_seconds: number;
 }
 
+/**
+ * Environments, connectors and workspaces (`docs/API.md` section 9,
+ * `docs/DOMAIN_MODEL.md` sections 7 to 9).
+ *
+ * The records themselves come from `@reviewplane/protocol/platform`, which is
+ * generated from the schema every service validates against. What is declared
+ * here is only the shape of the responses that carry them: which members a list
+ * answers with, and what the detail endpoint adds. A hand-written second copy of
+ * `Connector` would be another thing to keep in step with the schema, which
+ * `docs/DEVELOPMENT.md` section 3 forbids.
+ */
+/**
+ * A member the schema records by absence and the API answers with `null`.
+ *
+ * Both spellings mean "the control plane does not know", and a page that
+ * accepted only one of them would render the other as a date in 1970.
+ */
+type Absent<T> = T | null | undefined;
+
+export type ConnectorSummary = Pick<
+  Connector,
+  "id" | "environment_id" | "certificate_fingerprint" | "version" | "capabilities" | "status"
+> & {
+  readonly project_id?: Absent<Connector["project_id"]>;
+  readonly connected_at?: Absent<Connector["connected_at"]>;
+  readonly last_heartbeat_at?: Absent<Connector["last_heartbeat_at"]>;
+  readonly revoked_at?: Absent<Connector["revoked_at"]>;
+};
+
+/** One connector read on its own, which also answers with its environment. */
+export interface ConnectorRecord extends ConnectorSummary {
+  readonly certificate_not_after?: Absent<Connector["certificate_not_after"]>;
+  readonly environment?: Absent<EnvironmentSummary>;
+}
+
+export type EnvironmentSummary = Pick<
+  Environment,
+  "id" | "name" | "platform" | "architecture" | "labels" | "trust_level" | "status"
+> & {
+  readonly project_id?: Absent<Environment["project_id"]>;
+  readonly last_seen_at?: Absent<Environment["last_seen_at"]>;
+};
+
+/**
+ * A checkout a connector reported. `display_path` is a label rather than a
+ * path, and there is no member that could carry one: what is reportable about
+ * somebody else's machine is bounded by the schema (`docs/DOMAIN_MODEL.md`
+ * section 9).
+ */
+export type WorkspaceSummary = Pick<
+  Workspace,
+  "id" | "path_hash" | "display_path" | "branch" | "head_commit" | "dirty"
+> & {
+  readonly repository_identity?: Absent<Workspace["repository_identity"]>;
+  readonly last_observed_at?: Absent<Workspace["last_observed_at"]>;
+};
+
+export interface EnvironmentRecord extends EnvironmentSummary {
+  readonly connectors: readonly ConnectorSummary[];
+  readonly workspaces: readonly WorkspaceSummary[];
+}
+
+/** What the enrolment form sends (`docs/API.md` section 9). */
+export interface EnrolmentTokenDraft {
+  readonly project_id?: string;
+  readonly expires_in_seconds?: number;
+  readonly max_uses?: number;
+  readonly environment_labels?: readonly string[];
+}
+
+/**
+ * The issued token, which is the only place its value ever appears: the control
+ * plane stores a digest and cannot reproduce it (`docs/API.md` section 9,
+ * `docs/CONNECTOR_PROTOCOL.md` section 4.1). Nothing here is cached, and the
+ * value is held for the life of the page that minted it and no longer.
+ *
+ * This response has no schema in `packages/protocol` yet, so it is declared
+ * here; it belongs there once the platform schema covers the enrolment-token
+ * surface.
+ */
+export interface EnrolmentToken {
+  readonly id: string;
+  readonly organisation_id: string;
+  readonly project_id?: string | null;
+  readonly environment_labels: readonly string[];
+  readonly max_uses: number;
+  readonly expires_at: string;
+  readonly enrolment_token: string;
+  readonly enrolment_endpoint: string;
+  readonly control_plane_url: string;
+  /** The ready-to-run command, assembled by the control plane. */
+  readonly connector_command: string;
+}
+
+/** What revocation did, so the page can report it rather than imply it. */
+export interface ConnectorRevocation {
+  readonly id: string;
+  readonly status: ConnectorStatus;
+  readonly revoked_at: string;
+  readonly routes_revoked: number;
+  readonly sessions_disconnected: number;
+  readonly channels_closed: number;
+}
+
 export const api = {
   /** Whether this installation still has to be claimed. */
   async bootstrapStatus(): Promise<BootstrapStatus> {
@@ -303,6 +413,42 @@ export const api = {
 
   async browserSession(sessionId: string): Promise<BrowserSession> {
     return request<BrowserSession>(`/api/v1/browser-sessions/${encodeURIComponent(sessionId)}`);
+  },
+
+  /**
+   * Mints an enrolment token. The response is the only sight of its value, so
+   * nothing here retries: a retried mint would issue a second credential.
+   */
+  async createEnrolmentToken(draft: EnrolmentTokenDraft): Promise<EnrolmentToken> {
+    return request<EnrolmentToken>("/api/v1/connectors/enrolment-tokens", {
+      method: "POST",
+      body: JSON.stringify(draft),
+    });
+  },
+
+  async connectors(): Promise<ConnectorSummary[]> {
+    return request<ConnectorSummary[]>("/api/v1/connectors");
+  },
+
+  async connector(connectorId: string): Promise<ConnectorRecord> {
+    return request<ConnectorRecord>(`/api/v1/connectors/${encodeURIComponent(connectorId)}`);
+  },
+
+  async revokeConnector(connectorId: string): Promise<ConnectorRevocation> {
+    return request<ConnectorRevocation>(
+      `/api/v1/connectors/${encodeURIComponent(connectorId)}/revoke`,
+      { method: "POST" },
+    );
+  },
+
+  async environments(projectId: string): Promise<EnvironmentRecord[]> {
+    return request<EnvironmentRecord[]>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/environments`,
+    );
+  },
+
+  async environment(environmentId: string): Promise<EnvironmentRecord> {
+    return request<EnvironmentRecord>(`/api/v1/environments/${encodeURIComponent(environmentId)}`);
   },
 
   async reviews(projectId: string): Promise<Review[]> {

@@ -296,10 +296,15 @@ Key areas:
 - Control-plane URL
 - Identity storage
 - Explicit workspaces
+- Git-context observation interval
 - Allowed local hosts and ports
 - Privacy reporting
 - Logging
 - Proxy and certificate trust
+
+The full example is maintained as a file the connector's own test suite parses,
+`services/connector/packaging/config.example.yaml`, so it cannot drift from the
+parser. `CONNECTOR_PROTOCOL.md` §20 reproduces it.
 
 ### 5.1 Publication settings
 
@@ -311,9 +316,37 @@ The `publication` block is what the connector enforces on a `route.publish`, ind
 | `publication.allowed_ports` | `3000-3999`, `4321`, `5173` | Port ranges a route may target |
 | `publication.max_routes` | `10` | Concurrent routes this connector will carry |
 | `publication.allowed_projects` | the projects named in `workspaces` | Projects a publication may name |
-| `workspaces[].id` | none | The workspace identifier a publication may name. Discovery is Stage 1, so it is configured until then. |
+| `workspaces[].id` | none | The workspace identifier a publication may name, and the identifier an observation reports (`CONNECTOR_PROTOCOL.md` §9). It is configured rather than discovered. |
 
 Omitting a setting selects the default, which is the narrowest option — never the widest. `SECURITY.md` §9 requires deny by default, and a configuration file that leaves a block out MUST NOT be the most permissive configuration of the connector.
+
+### 5.2 Workspace and Git-context settings
+
+The `workspaces` block names the only paths the connector ever looks at, and `git_context` says how often it looks (`CONNECTOR_PROTOCOL.md` §9, ADR-0022).
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `workspaces[].path` | none | Absolute path to a checkout. Required, and refused if relative. |
+| `workspaces[].project` | none | The project an observation of this checkout is attributed to |
+| `git_context.interval` | `30s` | How often branch, head commit and dirty state are re-read. Between `5s` and `1h`. |
+
+An entry missing `id` or `project` is skipped with a warning naming which entry it was, rather than being reported under a guess: a publication names both.
+
+Omitting the `workspaces` block entirely means the connector reports no workspace context. It does **not** mean the connector goes looking for checkouts; there is no configuration under which it does.
+
+Bounds rather than quoted requirements: below 5 seconds the connector would run `git` more or less continuously on somebody's development machine, and above an hour an operator has effectively turned the feature off and should say so by removing the `workspaces` block.
+
+### 5.3 Privacy settings
+
+Three settings exist and all three MUST be `false`. Each is refused at startup with a message naming precisely what this build cannot do, because "not supported" would leave an operator unable to tell a missing feature from a rejected one.
+
+| Setting | Default | Why `true` is refused |
+|---|---|---|
+| `privacy.report_changed_paths` | `false` | The version 1 `workspace_observation` payload reports `dirty` as a boolean and has no member that can carry a changed-path list |
+| `privacy.report_process_details` | `false` | A heartbeat's resource summary permits only `load` and `memory_available_bytes` (`CONNECTOR_PROTOCOL.md` §8) |
+| `privacy.discover_workspaces` | `false` | The `workspaces` block is observed either way; bounded root scanning for unlisted checkouts is not implemented |
+
+They are refused rather than ignored on the principle of §1: a setting accepted and then not honoured would tell an operator their privacy policy had been applied when nothing about what is reported had changed.
 
 ## 6. Feature flags
 

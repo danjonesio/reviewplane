@@ -21,11 +21,20 @@ heartbeat:
   interval: 5s
 
 workspaces:
-  # Workspace discovery is Stage 1 (section 9), so the identifier a publication
-  # names is configured. The path is where the fixture application lives.
+  # The workspaces the connector serves and observes (section 9). The
+  # identifier is the one a publication names, so it is configured rather than
+  # discovered; the path is where the fixture application lives, and it is the
+  # only path this connector ever looks at — broad filesystem scanning is
+  # disabled and this build performs none.
   - id: wsp_fixture
     path: /opt/reviewplane/dev-fixture
     project: prj_fixture
+
+git_context:
+  # How often the connector re-observes the workspaces above. The scenario
+  # switches the fixture's branch and expects workspace.head_changed promptly,
+  # so it is well below the 30s default.
+  interval: 5s
 
 publication:
   # The connector's own say over what it will carry, enforced independently of
@@ -41,7 +50,14 @@ publication:
     - prj_fixture
 
 privacy:
-  report_changed_paths: true
+  # All three are refused when true, each because this build cannot honour it:
+  # the version 1 workspace_observation payload has no member that can carry a
+  # changed-path list, the heartbeat resource summary permits only load and
+  # available memory, and bounded root scanning is not implemented. A setting
+  # accepted and quietly ignored would tell an operator their policy had been
+  # applied when nothing about what is sent had changed
+  # (docs/CONNECTOR_PROTOCOL.md sections 8, 9 and 20).
+  report_changed_paths: false
   report_process_details: false
   discover_workspaces: false
 

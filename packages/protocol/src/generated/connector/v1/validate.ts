@@ -23,13 +23,16 @@ const PATTERN_4 = new RegExp("^[A-Za-z0-9:._-]+$", "u");
 const PATTERN_5 = new RegExp("^[A-Za-z0-9._~+/=-]+$", "u");
 const PATTERN_6 = new RegExp("^[A-Za-z0-9+/]+={0,2}$", "u");
 const PATTERN_7 = new RegExp("^[a-z0-9][a-z0-9._-]*$", "u");
-const PATTERN_8 = new RegExp("^[a-z][a-z0-9-]*$", "u");
-const PATTERN_9 = new RegExp("^[^\\x00-\\x1f\\x7f]+$", "u");
-const PATTERN_10 = new RegExp("^[a-z0-9]+$", "u");
-const PATTERN_11 = new RegExp("^[a-z0-9_]+$", "u");
-const PATTERN_12 = new RegExp("^[A-Za-z0-9.:_-]+$", "u");
-const PATTERN_13 = new RegExp("^[A-Za-z0-9.:_\\[\\]-]+:[0-9]{1,5}$", "u");
-const PATTERN_14 = new RegExp("^[0-9a-f]+$", "u");
+const PATTERN_8 = new RegExp("^[^\\x00-\\x1f\\x7f]+$", "u");
+const PATTERN_9 = new RegExp("^[0-9a-f]+$", "u");
+const PATTERN_10 = new RegExp("^sha256:[0-9a-f]{64}$", "u");
+const PATTERN_11 = new RegExp("^[^\\x00-\\x1f\\x7f/\\\\]+$", "u");
+const PATTERN_12 = new RegExp("^[a-z0-9][a-z0-9.-]*(:[0-9]{1,5})?(/[A-Za-z0-9._~-]+)+$", "u");
+const PATTERN_13 = new RegExp("^[a-z][a-z0-9-]*$", "u");
+const PATTERN_14 = new RegExp("^[a-z0-9]+$", "u");
+const PATTERN_15 = new RegExp("^[a-z0-9_]+$", "u");
+const PATTERN_16 = new RegExp("^[A-Za-z0-9.:_-]+$", "u");
+const PATTERN_17 = new RegExp("^[A-Za-z0-9.:_\\[\\]-]+:[0-9]{1,5}$", "u");
 
 /**
  * Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the
@@ -111,12 +114,57 @@ export function validateEnvironmentLabel(value: unknown, path: string, out: Sche
 }
 
 /**
+ * Checked-out branch name. A detached HEAD is reported as the literal HEAD rather than as
+ * an invented branch.
+ */
+export function validateGitBranch(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 255, pattern: PATTERN_8 });
+}
+
+/**
+ * HEAD commit identifier, lowercase hexadecimal.
+ */
+export function validateGitCommit(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 7, maxLength: 64, pattern: PATTERN_9 });
+}
+
+/**
+ * Stable sha256:<hex> digest of the workspace's absolute path on the development machine
+ * (docs/DOMAIN_MODEL.md section 9). The digest is reported instead of the path so that the
+ * control plane can recognise the same checkout across observations without storing
+ * somebody else's directory layout.
+ */
+export function validatePathHash(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 71, maxLength: 71, pattern: PATTERN_10 });
+}
+
+/**
+ * Human-readable label for the workspace, which is the checkout directory's own name and
+ * never its full path (docs/CONNECTOR_PROTOCOL.md section 9). It is bounded and refuses
+ * control characters and path separators, so a full path cannot be smuggled through it.
+ */
+export function validateWorkspaceDisplayLabel(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 128, pattern: PATTERN_11 });
+}
+
+/**
+ * Provider-agnostic canonical repository identity such as
+ * github.com/example/refresh-surplus (docs/DOMAIN_MODEL.md section 6). It is derived from
+ * the checkout's remote by the shared normaliser in packages/protocol, so the connector,
+ * the control plane and the web application cannot disagree about what one repository is.
+ * A userinfo component is dropped by that normaliser and never reaches this field.
+ */
+export function validateRepositoryIdentity(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 3, maxLength: 255, pattern: PATTERN_12 });
+}
+
+/**
  * Capability advertised by the connector build. Known version 1 values are listed in
  * x-protocol.known_capabilities; unknown values are accepted so that a newer connector is
  * classified by docs/CONNECTOR_PROTOCOL.md section 19 rather than rejected outright.
  */
 export function validateConnectorCapability(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_8 });
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_13 });
 }
 
 /**
@@ -145,7 +193,7 @@ export function validateStreamMode(value: unknown, path: string, out: SchemaViol
  * equal the keys of x-protocol.messages.
  */
 export function validateMessageType(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["connector.registration.request","connector.registration.response","heartbeat","route.publish","route.publish.ack","connector.reconnect.request","connector.reconnect.response"] });
+  checkString(value, path, out, { values: ["connector.registration.request","connector.registration.response","heartbeat","route.publish","route.publish.ack","connector.reconnect.request","connector.reconnect.response","workspace.observed"] });
 }
 
 /**
@@ -247,7 +295,7 @@ export function validateEnvelope(value: unknown, path: string, out: SchemaViolat
   if (matchesCondition(source["type"], ["connector.registration.request", "connector.registration.response"])) {
     forbidProperty(source, path, "connector_id", "the registration exchange precedes connector identity assignment", out);
   }
-  if (matchesCondition(source["type"], ["heartbeat", "route.publish", "route.publish.ack", "connector.reconnect.request", "connector.reconnect.response"])) {
+  if (matchesCondition(source["type"], ["heartbeat", "route.publish", "route.publish.ack", "connector.reconnect.request", "connector.reconnect.response", "workspace.observed"])) {
     requireProperty(source, path, "connector_id", "every post-enrolment message is attributed to a connector identity", out);
   }
 }
@@ -256,21 +304,21 @@ export function validateEnvelope(value: unknown, path: string, out: SchemaViolat
  * Operator-visible environment name.
  */
 export function validateEnvironmentDescriptorName(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 128, pattern: PATTERN_9 });
+  checkString(value, path, out, { minLength: 1, maxLength: 128, pattern: PATTERN_8 });
 }
 
 /**
  * Operating system. Known version 1 values are in x-protocol.known_platforms.
  */
 export function validateEnvironmentDescriptorPlatform(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 32, pattern: PATTERN_10 });
+  checkString(value, path, out, { minLength: 1, maxLength: 32, pattern: PATTERN_14 });
 }
 
 /**
  * CPU architecture. Known version 1 values are in x-protocol.known_architectures.
  */
 export function validateEnvironmentDescriptorArchitecture(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 32, pattern: PATTERN_11 });
+  checkString(value, path, out, { minLength: 1, maxLength: 32, pattern: PATTERN_15 });
 }
 
 /**
@@ -492,7 +540,7 @@ export function validateHeartbeat(value: unknown, path: string, out: SchemaViola
  * acceptance is not authorisation.
  */
 export function validateRoutePublishLocalHost(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 255, pattern: PATTERN_12 });
+  checkString(value, path, out, { minLength: 1, maxLength: 255, pattern: PATTERN_16 });
 }
 
 /**
@@ -556,7 +604,7 @@ export function validateRoutePublishAckStatus(value: unknown, path: string, out:
  * Destination the connector actually opened, as host:port.
  */
 export function validateRoutePublishAckObservedDestination(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 3, maxLength: 262, pattern: PATTERN_13 });
+  checkString(value, path, out, { minLength: 3, maxLength: 262, pattern: PATTERN_17 });
 }
 
 /**
@@ -627,7 +675,7 @@ export function validateDataStreamHeader(value: unknown, path: string, out: Sche
  * environment.
  */
 export function validateReconnectRouteObservedDestination(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 3, maxLength: 262, pattern: PATTERN_13 });
+  checkString(value, path, out, { minLength: 3, maxLength: 262, pattern: PATTERN_17 });
 }
 
 /**
@@ -677,20 +725,6 @@ export function validateReconnectStream(value: unknown, path: string, out: Schem
 }
 
 /**
- * Checked-out branch.
- */
-export function validateWorkspaceHeadBranch(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 255, pattern: PATTERN_9 });
-}
-
-/**
- * HEAD commit identifier.
- */
-export function validateWorkspaceHeadHeadCommit(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 7, maxLength: 64, pattern: PATTERN_14 });
-}
-
-/**
  * Whether the working tree has uncommitted changes.
  */
 export function validateWorkspaceHeadDirty(value: unknown, path: string, out: SchemaViolation[]): void {
@@ -698,10 +732,10 @@ export function validateWorkspaceHeadDirty(value: unknown, path: string, out: Sc
 }
 
 /**
- * Head state of one workspace (docs/CONNECTOR_PROTOCOL.md section 9). Stage 0 reports no
- * workspace head state; the field exists so that Stage 1 Git context does not change the
- * message shape. Source file contents are never reported and this object has no field
- * capable of carrying them.
+ * Head state of one workspace, carried in the reconnect claim of
+ * docs/CONNECTOR_PROTOCOL.md section 17. Its scalar members are the same definitions
+ * workspace_observation uses, so the two cannot drift. Source file contents are never
+ * reported and this object has no field capable of carrying them.
  */
 export function validateWorkspaceHead(value: unknown, path: string, out: SchemaViolation[]): void {
   const source = checkObject(value, path, out, ["workspace_id", "branch", "head_commit", "dirty"], ["workspace_id", "branch", "head_commit", "dirty"]);
@@ -710,13 +744,62 @@ export function validateWorkspaceHead(value: unknown, path: string, out: SchemaV
     validateIdentifier(source["workspace_id"], `${path}.workspace_id`, out);
   }
   if (source["branch"] !== undefined) {
-    validateWorkspaceHeadBranch(source["branch"], `${path}.branch`, out);
+    validateGitBranch(source["branch"], `${path}.branch`, out);
   }
   if (source["head_commit"] !== undefined) {
-    validateWorkspaceHeadHeadCommit(source["head_commit"], `${path}.head_commit`, out);
+    validateGitCommit(source["head_commit"], `${path}.head_commit`, out);
   }
   if (source["dirty"] !== undefined) {
     validateWorkspaceHeadDirty(source["dirty"], `${path}.dirty`, out);
+  }
+}
+
+/**
+ * Whether the working tree has uncommitted changes. Which files changed is deliberately
+ * not reportable at this version.
+ */
+export function validateWorkspaceObservationDirty(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * Bounded Git context for one authorised workspace (docs/CONNECTOR_PROTOCOL.md section 9,
+ * ADR-0022). It carries repository identity, branch, head commit, dirty state, a display
+ * label and a stable path hash, and nothing else: there is no member capable of carrying
+ * source file contents, a changed-path list, a process detail or a full filesystem path,
+ * so the privacy rule is a property of the schema rather than of the code that fills it
+ * in. project_id is a claim the control plane re-checks against the enrolled identity's
+ * scope before it stores anything.
+ */
+export function validateWorkspaceObservation(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["workspace_id", "project_id", "path_hash", "display_label", "repository_identity", "branch", "head_commit", "dirty", "observed_at"], ["workspace_id", "project_id", "path_hash", "display_label", "branch", "head_commit", "dirty", "observed_at"]);
+  if (source === null) return;
+  if (source["workspace_id"] !== undefined) {
+    validateIdentifier(source["workspace_id"], `${path}.workspace_id`, out);
+  }
+  if (source["project_id"] !== undefined) {
+    validateIdentifier(source["project_id"], `${path}.project_id`, out);
+  }
+  if (source["path_hash"] !== undefined) {
+    validatePathHash(source["path_hash"], `${path}.path_hash`, out);
+  }
+  if (source["display_label"] !== undefined) {
+    validateWorkspaceDisplayLabel(source["display_label"], `${path}.display_label`, out);
+  }
+  if (source["repository_identity"] !== undefined) {
+    validateRepositoryIdentity(source["repository_identity"], `${path}.repository_identity`, out);
+  }
+  if (source["branch"] !== undefined) {
+    validateGitBranch(source["branch"], `${path}.branch`, out);
+  }
+  if (source["head_commit"] !== undefined) {
+    validateGitCommit(source["head_commit"], `${path}.head_commit`, out);
+  }
+  if (source["dirty"] !== undefined) {
+    validateWorkspaceObservationDirty(source["dirty"], `${path}.dirty`, out);
+  }
+  if (source["observed_at"] !== undefined) {
+    validateTimestamp(source["observed_at"], `${path}.observed_at`, out);
   }
 }
 

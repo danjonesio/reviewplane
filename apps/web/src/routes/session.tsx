@@ -1,11 +1,12 @@
 /**
  * One session's live view.
  *
- * This is the seed of the session room of `docs/UX_FLOWS.md` section 7. Stage
- * 0 deliberately omits the activity, findings, approvals, console, network,
- * Git and trace panels; what is here is the browser surface and the session
- * facts a human needs to decide whether what they are looking at is worth
- * annotating.
+ * This is the seed of the session room of `docs/UX_FLOWS.md` section 7. The
+ * activity, findings, approvals, console, network and trace panels are still
+ * absent; what is here is the browser surface, the session facts a human needs
+ * to decide whether what they are looking at is worth annotating, and the Git
+ * panel — which arrived with the connector-reported workspaces of
+ * `docs/DOMAIN_MODEL.md` section 9.
  */
 
 import { Link, createRoute } from "@tanstack/react-router";
@@ -13,6 +14,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useCallback, useState, type ReactElement } from "react";
 
 import { api, ApiFailure } from "../api/client.ts";
+import { GitContextPanel } from "../components/GitContext.tsx";
 import { LiveSurface } from "../components/LiveSurface.tsx";
 import { StatusBadge } from "../components/StatusBadge.tsx";
 import { rootRoute } from "./root.tsx";
@@ -118,6 +120,13 @@ function SessionView(): ReactElement {
       </dl>
 
       <LiveSurface session={record} onSessionStatus={onSessionStatus} />
+
+      {/*
+        The Git panel of `docs/UX_FLOWS.md` section 7, after the browser surface
+        rather than beside it: at 390 px the layout is one column, and the
+        picture is what a person opened this page for.
+      */}
+      <GitContextPanel projectId={record.project_id} />
     </section>
   );
 }

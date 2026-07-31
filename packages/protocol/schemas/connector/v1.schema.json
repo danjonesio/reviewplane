@@ -61,6 +61,12 @@
         "direction": "control_plane_to_connector",
         "payload": "reconnect_response",
         "description": "The control plane's authoritative desired state: continue route, revoke route, re-establish session and the upgrade classification (docs/CONNECTOR_PROTOCOL.md sections 17 and 19). The connector obeys it; it never assumes its own view is correct."
+      },
+      "workspace.observed": {
+        "channel": "events",
+        "direction": "connector_to_control_plane",
+        "payload": "workspace_observation",
+        "description": "Bounded Git context for one authorised workspace, sent on connect, on change and on reconnect (docs/CONNECTOR_PROTOCOL.md section 9, ADR-0022). It is a report and never an authorisation: the control plane re-checks the project scope against the enrolled identity before it stores anything. The payload has no field capable of carrying source file contents, a changed-path list or a full filesystem path."
       }
     },
     "standalone": {
@@ -229,6 +235,41 @@
       "maxLength": 64,
       "pattern": "^[a-z0-9][a-z0-9._-]*$"
     },
+    "git_branch": {
+      "type": "string",
+      "description": "Checked-out branch name. A detached HEAD is reported as the literal HEAD rather than as an invented branch.",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+    },
+    "git_commit": {
+      "type": "string",
+      "description": "HEAD commit identifier, lowercase hexadecimal.",
+      "minLength": 7,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]+$"
+    },
+    "path_hash": {
+      "type": "string",
+      "description": "Stable sha256:<hex> digest of the workspace's absolute path on the development machine (docs/DOMAIN_MODEL.md section 9). The digest is reported instead of the path so that the control plane can recognise the same checkout across observations without storing somebody else's directory layout.",
+      "minLength": 71,
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "workspace_display_label": {
+      "type": "string",
+      "description": "Human-readable label for the workspace, which is the checkout directory's own name and never its full path (docs/CONNECTOR_PROTOCOL.md section 9). It is bounded and refuses control characters and path separators, so a full path cannot be smuggled through it.",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[^\\x00-\\x1f\\x7f/\\\\]+$"
+    },
+    "repository_identity": {
+      "type": "string",
+      "description": "Provider-agnostic canonical repository identity such as github.com/example/refresh-surplus (docs/DOMAIN_MODEL.md section 6). It is derived from the checkout's remote by the shared normaliser in packages/protocol, so the connector, the control plane and the web application cannot disagree about what one repository is. A userinfo component is dropped by that normaliser and never reaches this field.",
+      "minLength": 3,
+      "maxLength": 255,
+      "pattern": "^[a-z0-9][a-z0-9.-]*(:[0-9]{1,5})?(/[A-Za-z0-9._~-]+)+$"
+    },
     "connector_capability": {
       "type": "string",
       "description": "Capability advertised by the connector build. Known version 1 values are listed in x-protocol.known_capabilities; unknown values are accepted so that a newer connector is classified by docs/CONNECTOR_PROTOCOL.md section 19 rather than rejected outright.",
@@ -256,7 +297,8 @@
         "route.publish",
         "route.publish.ack",
         "connector.reconnect.request",
-        "connector.reconnect.response"
+        "connector.reconnect.response",
+        "workspace.observed"
       ]
     },
     "error_class": {
@@ -334,7 +376,8 @@
               "route.publish",
               "route.publish.ack",
               "connector.reconnect.request",
-              "connector.reconnect.response"
+              "connector.reconnect.response",
+              "workspace.observed"
             ]
           },
           "required": ["connector_id"],
@@ -797,7 +840,7 @@
     },
     "workspace_head": {
       "type": "object",
-      "description": "Head state of one workspace (docs/CONNECTOR_PROTOCOL.md section 9). Stage 0 reports no workspace head state; the field exists so that Stage 1 Git context does not change the message shape. Source file contents are never reported and this object has no field capable of carrying them.",
+      "description": "Head state of one workspace, carried in the reconnect claim of docs/CONNECTOR_PROTOCOL.md section 17. Its scalar members are the same definitions workspace_observation uses, so the two cannot drift. Source file contents are never reported and this object has no field capable of carrying them.",
       "additionalProperties": false,
       "required": ["workspace_id", "branch", "head_commit", "dirty"],
       "properties": {
@@ -806,22 +849,70 @@
           "description": "Workspace this head state describes."
         },
         "branch": {
-          "type": "string",
-          "description": "Checked-out branch.",
-          "minLength": 1,
-          "maxLength": 255,
-          "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+          "$ref": "#/$defs/git_branch",
+          "description": "Checked-out branch."
         },
         "head_commit": {
-          "type": "string",
-          "description": "HEAD commit identifier.",
-          "minLength": 7,
-          "maxLength": 64,
-          "pattern": "^[0-9a-f]+$"
+          "$ref": "#/$defs/git_commit",
+          "description": "HEAD commit identifier."
         },
         "dirty": {
           "type": "boolean",
           "description": "Whether the working tree has uncommitted changes."
+        }
+      }
+    },
+    "workspace_observation": {
+      "type": "object",
+      "description": "Bounded Git context for one authorised workspace (docs/CONNECTOR_PROTOCOL.md section 9, ADR-0022). It carries repository identity, branch, head commit, dirty state, a display label and a stable path hash, and nothing else: there is no member capable of carrying source file contents, a changed-path list, a process detail or a full filesystem path, so the privacy rule is a property of the schema rather than of the code that fills it in. project_id is a claim the control plane re-checks against the enrolled identity's scope before it stores anything.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": [
+        "workspace_id",
+        "project_id",
+        "path_hash",
+        "display_label",
+        "branch",
+        "head_commit",
+        "dirty",
+        "observed_at"
+      ],
+      "properties": {
+        "workspace_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Workspace this observation describes, conventionally prefixed wsp_. It is the identifier a route publication names (section 11)."
+        },
+        "project_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Project the connector believes the workspace belongs to. A project outside the enrolled identity's scope is refused with PROJECT_NOT_AUTHORISED (section 21)."
+        },
+        "path_hash": {
+          "$ref": "#/$defs/path_hash",
+          "description": "Stable digest of the checkout's absolute path, which identifies the same checkout across observations without disclosing the path."
+        },
+        "display_label": {
+          "$ref": "#/$defs/workspace_display_label",
+          "description": "The checkout directory's own name, for an operator reading the environment. Never the full path."
+        },
+        "repository_identity": {
+          "$ref": "#/$defs/repository_identity",
+          "description": "Canonical identity of the checkout's remote. Absent when the checkout has no remote this connector could normalise; an absent value is reported as absent rather than guessed at."
+        },
+        "branch": {
+          "$ref": "#/$defs/git_branch",
+          "description": "Checked-out branch."
+        },
+        "head_commit": {
+          "$ref": "#/$defs/git_commit",
+          "description": "HEAD commit identifier."
+        },
+        "dirty": {
+          "type": "boolean",
+          "description": "Whether the working tree has uncommitted changes. Which files changed is deliberately not reportable at this version."
+        },
+        "observed_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the connector observed this state. The control plane records its own instant beside it, because a development machine's clock is not authoritative."
         }
       }
     },

@@ -64,6 +64,10 @@ func TestClassifyTerminalRefusals(t *testing.T) {
 		connectorv1.ErrorClassEnrolmentTokenInvalid,
 		connectorv1.ErrorClassIdentityRevoked,
 		connectorv1.ErrorClassProtocolUnsupported,
+		// A connector configured to report or serve a project it may not touch
+		// is a misconfiguration only an operator can fix, so retrying with the
+		// same configuration cannot succeed and would loop.
+		connectorv1.ErrorClassProjectNotAuthorised,
 		connectorv1.ErrorClassUpgradeRequired,
 	}
 	for _, class := range terminal {
@@ -74,6 +78,35 @@ func TestClassifyTerminalRefusals(t *testing.T) {
 		if !failure.Terminal {
 			t.Fatalf("%s must be terminal", class)
 		}
+	}
+}
+
+// A close reason is not an acknowledgement. PROJECT_NOT_AUTHORISED refuses the
+// channel when it closes one, and refuses a single publication when it arrives
+// in a route.publish.ack payload; only the first stops the connector
+// (docs/CONNECTOR_PROTOCOL.md sections 5.3 and 11).
+func TestProjectNotAuthorisedIsTerminalOnlyAsACloseReason(t *testing.T) {
+	closed := Classify(&ws.CloseError{
+		Code:   ws.ClosePolicyViolation,
+		Reason: string(connectorv1.ErrorClassProjectNotAuthorised),
+	})
+	if !closed.Terminal {
+		t.Fatal("a channel closed with PROJECT_NOT_AUTHORISED must not be retried with the same configuration")
+	}
+
+	// The acknowledgement path never reaches Classify: it is a payload the
+	// connector itself produced for one publication, and the channel carries on.
+	class := connectorv1.ErrorClassProjectNotAuthorised
+	ack := connectorv1.RoutePublishAck{
+		RouteID:    "svc_transport",
+		Status:     connectorv1.RoutePublishAckStatusRejected,
+		ErrorClass: &class,
+	}
+	if ack.ErrorClass == nil || *ack.ErrorClass != connectorv1.ErrorClassProjectNotAuthorised {
+		t.Fatal("the acknowledgement no longer carries the class this test is about")
+	}
+	if failure := Classify(errors.New("a route was refused")); failure.Terminal {
+		t.Fatal("an ordinary error must not become terminal")
 	}
 }
 

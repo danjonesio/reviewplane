@@ -19,6 +19,7 @@ import { MAX_INBOUND_MESSAGE_BYTES, registerConnectorChannels } from "./channel.
 import { loadConnectorModuleConfig, type ConnectorModuleConfig } from "./config.ts";
 import { ControlChannelRegistry } from "./publication.ts";
 import type { ConnectorReconciler } from "./reconciliation.ts";
+import type { RevocationEffects } from "./revocation.ts";
 import { startHeartbeatMonitor, type HeartbeatMonitor } from "./monitor.ts";
 import { ensureOrganisation } from "./repository.ts";
 import { registerConnectorRoutes } from "./routes.ts";
@@ -27,6 +28,7 @@ export { loadConnectorModuleConfig } from "./config.ts";
 export type { ConnectorModuleConfig } from "./config.ts";
 export { ControlChannelRegistry } from "./publication.ts";
 export type { ConnectorReconciler } from "./reconciliation.ts";
+export type { RevocationEffects } from "./revocation.ts";
 
 export interface ConnectorModule {
   readonly config: ConnectorModuleConfig;
@@ -47,6 +49,14 @@ export interface ConnectorModule {
    * unreconciled one.
    */
   useReconciler(reconciler: ConnectorReconciler): void;
+  /**
+   * Supplies what revocation must reach beyond the connector record
+   * (`docs/CONNECTOR_PROTOCOL.md` §18): the routes and the browser sessions.
+   * It arrives after composition for the same reason the reconciler does, and
+   * until it does a revocation still invalidates the identity and closes the
+   * channel — the parts this module owns — and reports having revoked no route.
+   */
+  useRevocationEffects(effects: RevocationEffects): void;
   /** The address the connector listener bound to, once started. */
   listenerAddress(): string | null;
   start(): Promise<void>;
@@ -55,7 +65,6 @@ export interface ConnectorModule {
 
 export interface ConnectorModuleOptions {
   readonly pool: Pool;
-  readonly bootstrapToken: string;
   readonly logLevel: LogLevel;
   readonly config?: ConnectorModuleConfig;
   readonly logDestination?: LogDestination;
@@ -75,11 +84,15 @@ export async function createConnectorModule(
   const authority = await ensureCertificateAuthority(options.pool);
   const listenerCertificate = await ensureListenerCertificate(options.pool, config, authority);
 
+  const channels = new ControlChannelRegistry();
+  const revocationHolder: { current: RevocationEffects | undefined } = { current: undefined };
+
   registerConnectorRoutes(app, {
     pool: options.pool,
     config,
     authority,
-    bootstrapToken: options.bootstrapToken,
+    channels,
+    revocationEffects: () => revocationHolder.current,
   });
 
   const listener = Fastify({
@@ -106,7 +119,6 @@ export async function createConnectorModule(
   // Work started by a channel that must finish before shutdown, so that a
   // connector disconnecting as the server stops still records its event.
   const inFlight = new Set<Promise<unknown>>();
-  const channels = new ControlChannelRegistry();
   const reconcilerHolder: { current: ConnectorReconciler | undefined } = { current: undefined };
   registerConnectorChannels(listener, {
     pool: options.pool,
@@ -131,6 +143,9 @@ export async function createConnectorModule(
     channels,
     useReconciler(reconciler: ConnectorReconciler): void {
       reconcilerHolder.current = reconciler;
+    },
+    useRevocationEffects(effects: RevocationEffects): void {
+      revocationHolder.current = effects;
     },
     listenerAddress(): string | null {
       const address = listener.server.address();

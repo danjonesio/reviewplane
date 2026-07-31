@@ -1,0 +1,17 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JQ8ZR3M4T5V6W7X8Y9Z0A1EA",
+  "type": "workspace.observed",
+  "sent_at": "2026-07-30T11:00:00Z",
+  "connector_id": "con_01JQ8ZR3M4T5V6W7X8Y9Z0A1C2",
+  "payload": {
+    "workspace_id": "wsp_01JQ8ZR3M4T5V6W7X8Y9Z0A1F1",
+    "project_id": "prj_01JQ8ZR3M4T5V6W7X8Y9Z0A1B3",
+    "path_hash": "sha256:9f2c4b1e7a83d05e6c1f4a29b8d3e70c5a6b4d2f18e93c07ab5d6e4f3c2b1a09",
+    "display_label": "/home/dan/projects/refresh-surplus",
+    "branch": "main",
+    "head_commit": "4f3a9c1d2e8b7a6053f4e3d2c1b0a9f8e7d6c5b4",
+    "dirty": false,
+    "observed_at": "2026-07-30T10:59:58Z"
+  }
+}

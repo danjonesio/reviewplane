@@ -39,6 +39,7 @@ import type {
   StreamMode,
   UpgradeClassification,
   WorkspaceHead,
+  WorkspaceObservation,
 } from "./types.ts";
 
 /**
@@ -238,6 +239,24 @@ export function decodeWorkspaceHead(value: unknown): WorkspaceHead {
     branch: source["branch"] as string,
     head_commit: source["head_commit"] as string,
     dirty: source["dirty"] as boolean,
+  };
+}
+
+/**
+ * Decodes a validated WorkspaceObservation.
+ */
+export function decodeWorkspaceObservation(value: unknown): WorkspaceObservation {
+  const source = value as Record<string, unknown>;
+  return {
+    workspace_id: source["workspace_id"] as string,
+    project_id: source["project_id"] as string,
+    path_hash: source["path_hash"] as string,
+    display_label: source["display_label"] as string,
+    ...(source["repository_identity"] === undefined ? {} : { repository_identity: source["repository_identity"] as string }),
+    branch: source["branch"] as string,
+    head_commit: source["head_commit"] as string,
+    dirty: source["dirty"] as boolean,
+    observed_at: source["observed_at"] as string,
   };
 }
 

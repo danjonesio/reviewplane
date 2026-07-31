@@ -119,6 +119,20 @@
       "kind": "data_stream_header",
       "file": "valid/data-stream-header-upgrade.json",
       "note": "The section 13.3 upgraded stream: stream_mode selects the idle window the connector applies, and still carries no host or port. Its deadline is the route's expiry, not one exchange's."
+    },
+    {
+      "name": "workspace-observed",
+      "kind": "control_frame",
+      "file": "valid/workspace-observed.json",
+      "message_type": "workspace.observed",
+      "note": "Bounded Git context for one authorised workspace, on the events channel (section 9, ADR-0022). Repository identity, branch, head commit, dirty state, a display label and a path hash: no path and no file contents."
+    },
+    {
+      "name": "workspace-observed-no-remote",
+      "kind": "control_frame",
+      "file": "valid/workspace-observed-no-remote.json",
+      "message_type": "workspace.observed",
+      "note": "A checkout with no normalisable remote and a detached HEAD. repository_identity is absent rather than invented, and the branch is the literal HEAD."
     }
   ],
   "invalid": [
@@ -315,6 +329,27 @@
       "file": "invalid/data-stream-header-unknown-mode.json",
       "expect_reason": "schema_violation",
       "note": "stream_mode is a closed set. A mode this version does not define is refused rather than treated as request_response, so a future framing cannot be silently downgraded into one this connector would relay on different terms."
+    },
+    {
+      "name": "workspace-observed-with-changed-paths",
+      "kind": "control_frame",
+      "file": "invalid/workspace-observed-with-changed-paths.json",
+      "expect_reason": "schema_violation",
+      "note": "Changed-path reporting is not expressible at this version. The refusal comes from additionalProperties rather than from a check somebody has to remember to write."
+    },
+    {
+      "name": "workspace-observed-display-label-is-a-path",
+      "kind": "control_frame",
+      "file": "invalid/workspace-observed-display-label-is-a-path.json",
+      "expect_reason": "schema_violation",
+      "note": "A full filesystem path cannot be smuggled through the display label: the pattern refuses path separators."
+    },
+    {
+      "name": "workspace-observed-without-connector-id",
+      "kind": "control_frame",
+      "file": "invalid/workspace-observed-without-connector-id.json",
+      "expect_reason": "schema_violation",
+      "note": "Every post-enrolment message is attributed to a connector identity."
     }
   ]
 }

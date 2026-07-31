@@ -174,10 +174,64 @@ Required transition tests:
 - Stream and memory limits
 - Malformed frames, in the data channel and on an upgraded connection
 - Slow consumer and backpressure
+- Heartbeat flood dropped, and a channel ended when the flood persists
+- Workspace observation refused for a project the identity is not enrolled for
+- Workspace identifier already held in another project refused
+- No workspace observation for an unchanged repeat
+- Connector reports nothing about paths it was not configured with
 
 Connector reconnect is the Stage 0 exit criterion "Protocol round trip survives connector reconnect", and it is a three-part assertion rather than a single one: a request issued before the interruption succeeds, a request issued during it fails with `CONNECTOR_OFFLINE` or `PUBLISHED_SERVICE_UNAVAILABLE` and does not hang, and an equivalent request issued afterwards succeeds over the same `route_id` against the same destination with no operator action. A test making it MUST also show that no request was served by a different environment, which needs a second environment to be wrong about.
 
 Running today: `services/connector/internal/protocolsim` (the Protocol simulation mode of `DEVELOPMENT.md` §4 — the three-part round trip, the six-field reconnect payload, routes closed on reconciliation, the desired-state timeout, flapping reconnects, the terminal upgrade classification, and the measured reconnect-time distribution over ten forced disconnects), `apps/server/test/connector-reconnect.test.ts` (a real connector process killed and restarted, a control-plane restart, claims on another connector's route, an expired route, a revoked identity, and browser sessions degraded and resumed) and `apps/server/test/reconciliation.test.ts` (the decision table).
+
+### Connector lifecycle and workspace observation
+
+Running today: `apps/server/test/connector-lifecycle.test.ts`, against a real
+database, covering enrolment-token issuance from a human session (a cookie
+session with its CSRF header succeeds; the cookie alone, a wrong token and an
+absent token are each refused; a project the caller cannot reach is absent
+rather than forbidden; a machine credential mints nothing; the bootstrap
+operator token still works and needs no CSRF header), the environment and
+connector views (an enrolled connector appears with its environment and health;
+a foreign connector identifier answers exactly as an unknown one), revocation
+(the channel closes, the credential is refused afterwards, and the response
+reports what the revocation reached; a forged revocation is refused; a connector
+in another organisation is reported absent) and workspace observations (a first
+observation creates the record and a change records both sides; a connector
+enrolled for one project cannot report for another; an identifier held in
+another project cannot be claimed; the observed workspace reaches the project's
+environment view). Its derivation tests pin the path hash's shape and
+stability, that a display label is a directory name and never a path, that the
+enrolment command names the control plane over `https` and reads the token from
+a file, and that the heartbeat floor drops a flood and ends a channel that keeps
+it up.
+
+On the connector side: `services/connector/internal/gitcontext` (every field of
+a clean checkout, every spelling of a remote normalising to one identity, a
+credential in a remote being dropped, a dirty tree, a detached HEAD reported as
+`HEAD`, an absent or unnormalisable remote reported as absent, a slashed branch
+name, a directory that is not a checkout, a missing directory, a repository with
+no commit, a missing `git` executable, a `git` that never returns being bounded
+by its deadline, and allocation bounded against a flood of output) and
+`services/connector/internal/workspaces` (only what moved is reported, a lost
+channel makes the next report a full one, a workspace that disappears is not
+reported stale, entries without an identifier or a project are skipped, and the
+reconnect claim is bounded and stable across attempts).
+
+Two of those tests assert an **absence** mechanically rather than by reading the
+code: `TestPackageReadsNoFileContentsAndWalksNoDirectory` and
+`TestPackageWalksNoDirectory` fail if a directory walk or a file read appears
+anywhere in either package. "Broad filesystem scanning is disabled"
+(`CONNECTOR_PROTOCOL.md` §9) is a privacy boundary rather than a preference, and
+a boundary nothing checks is a comment.
+
+The protocol corpus carries the same rules as refusals a decoder must produce in
+both languages: `workspace-observed-with-changed-paths`,
+`workspace-observed-display-label-is-a-path` and
+`workspace-observed-without-connector-id` are refused, and
+`workspace-observed` and `workspace-observed-no-remote` are accepted. A payload
+that could carry a changed-path list would fail the corpus before it failed a
+review.
 
 A streaming test MUST assert on **arrival timing**, not only on the final body. Server-sent events fail in a specific and recognisable way when any hop buffers — every event arrives at once at stream close — and a test that compared only the assembled result would pass against exactly the implementation the capability exists to exclude.
 
@@ -263,6 +317,15 @@ advertised tool schemas, so a breaking tool change cannot land silently
 - Project A agent cannot access project B review
 - Worker session credentials cannot call admin API
 - Connector token cannot become human session
+- A connector cannot report a workspace into a project it was not enrolled for
+- A connector cannot claim a workspace identifier another project holds
+
+`apps/server/test/connector-lifecycle.test.ts` covers the connector surface's
+share of this: a foreign connector identifier and an unknown one produce
+**byte-identical** response bodies, asserted as equality of the bodies rather
+than of their status codes, because a difference in wording is as much an
+existence oracle as a difference in status. The two workspace refusals above are
+one outcome in the implementation for the same reason.
 
 ### Human authentication
 
@@ -412,6 +475,20 @@ container resize, a panel scroll and a zoom change. The contained-rectangle
 arithmetic is recomputed inside the test from `getBoundingClientRect` and
 `naturalWidth` rather than read from the component, so a mistake shared between
 renderer and test cannot cancel itself out.
+
+Connector enrolment is proved in `apps/web/test/ui/connector.browser.test.ts` at
+both viewports: the enrolment page states the command, the expiry, the project
+scope, the expected labels and the shown-once warning; connector health is
+stated as text beside its badge rather than by colour alone; the empty state
+names a cause and an action; completion is announced in a live region; and
+revocation asks for confirmation and then reports what it did. One case covers
+the command's reachability specifically — that it can be focused, selected and
+copied by keyboard alone, and that a refused clipboard falls back to selecting
+it and saying so — because a page whose only route out was a clipboard the
+browser declined would be a page a keyboard user could not finish
+(`UX_FLOWS.md` §5). Two further cases assert that a session room states the
+workspace's branch, commit and dirty state, and names the absence of a workspace
+rather than showing nothing.
 
 These live in `apps/web/test/ui/` and run with `pnpm test:ui`, which builds the
 bundle and drives it in a real Chromium against a stub control plane that

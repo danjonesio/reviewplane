@@ -24,9 +24,17 @@ import { newMessageId } from "./identifiers.ts";
 /** How long the control plane waits for an acknowledgement. */
 export const DEFAULT_PUBLISH_TIMEOUT_MS = 30_000;
 
-/** The socket surface this module needs. `ws` and Fastify both satisfy it. */
+/**
+ * The socket surface this module needs. `ws` and Fastify both satisfy it.
+ *
+ * `close` is here because revocation has to reach a channel that is open now:
+ * `docs/CONNECTOR_PROTOCOL.md` §18 requires revocation to close the control and
+ * data channels, and a revocation that only wrote a row would leave the refused
+ * identity serving traffic until it happened to reconnect.
+ */
 export interface ControlSocket {
   send(data: string): void;
+  close(code?: number, reason?: string): void;
 }
 
 interface PendingPublication {
@@ -81,6 +89,29 @@ export class ControlChannelRegistry {
   /** Reports whether a connector currently holds a channel. */
   connected(connectorId: string): boolean {
     return this.#channels.has(connectorId);
+  }
+
+  /**
+   * Closes a connector's channel and reports how many were closed.
+   *
+   * The reason is a `docs/CONNECTOR_PROTOCOL.md` §21 error class, because §5.3
+   * makes a close code and a class the whole of the refusal vocabulary at
+   * version 1. `IDENTITY_REVOKED` is terminal for the connector, so it reports
+   * the class and stops rather than reconnecting with a credential this control
+   * plane has just refused (§18).
+   */
+  closeChannel(connectorId: string, code: number, reason: string): number {
+    const socket = this.#channels.get(connectorId);
+    if (socket === undefined) return 0;
+    this.#channels.delete(connectorId);
+    try {
+      socket.close(code, reason);
+    } catch {
+      // A socket that is already gone needed no closing. The count still
+      // reports one, because the channel this connector held is now not one it
+      // holds.
+    }
+    return 1;
   }
 
   /** Delivers an acknowledgement to whoever is waiting for it. */

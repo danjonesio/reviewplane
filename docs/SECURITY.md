@@ -186,7 +186,35 @@ Enrolment flow:
 4. Enrolment token is consumed.
 5. Subsequent connections use mutually authenticated transport.
 
-Connector private keys must be stored with operating-system permissions and never sent to the control plane.
+Connector private keys must be stored with operating-system permissions and never sent to the control plane. The connector MUST validate those permissions on every start, not only at enrolment, and MUST refuse to start when the key file is readable or writable by group or other, or is owned by another account.
+
+### The enrolment token
+
+The token is a credential and is treated as one throughout:
+
+- It appears in exactly one place, the response that mints it (`API.md` §9). The control plane stores only its digest and cannot reproduce it.
+- It MUST NOT reach a log line or an event payload. `connector.enrolled` records the token's **identifier**, never its value: an event is append-only, so a credential written into one cannot be taken out again.
+- It is marked sensitive in the protocol schema, so generated models in both languages redact it in every default log, debug and JSON representation; only the canonical wire encoder reveals it (§18).
+- It is supplied to the connector through a file or an environment variable, never on a command line, because a command line is in the process table and in shell history.
+- It travels only over TLS: a plaintext control-plane URL is refused rather than downgraded (§15).
+
+Minting a token is a state-changing administrative action reachable by a session cookie, so it carries the CSRF guard of `API.md` §4 and the caller must be an organisation-wide human session. A machine credential — browser worker, agent or connector — reaches none of these endpoints (§6.3).
+
+### Revocation
+
+Revocation is terminal and it reaches more than the identity. In one action it revokes the connector's active routes, marks the browser sessions bound to them `DEGRADED`, marks the record `REVOKED` and closes the live channel with `IDENTITY_REVOKED`. The record is marked before the channel is closed, so a connector racing the close meets a record that already refuses it; the routes end before the record flips, so a partial failure leaves the connector usable rather than revoked with its routes still carried.
+
+A revoked identity is refused **before** a channel is established, on the certificate fingerprint, and the connector MUST NOT retry with it (`CONNECTOR_PROTOCOL.md` §18). Re-enrolment produces a new identity and new routes; it does not restore the old ones, and it does not return a degraded session to service.
+
+The audit record states what the revocation reached — routes revoked, sessions degraded, channels closed — because a revocation that closed a channel and left a route carried would be a revocation in name.
+
+### What a connector may report about a development machine
+
+A connector is inside the development-environment trust zone (§3) and reports on a machine holding somebody's source code, so what it may say is bounded rather than open-ended. It reports, per authorised workspace, the checkout's canonical remote identity, branch, HEAD commit, a boolean dirty state, a digest of its absolute path and the checkout directory's own name — and, in its heartbeat, its own version, uptime, route and stream counts and optionally load and available memory.
+
+It does not report source file contents, which files changed, full filesystem paths or process details. Those are not defaults that could be configured away: the version 1 payloads have no member capable of carrying any of them, and the connector settings that would ask for them are refused at startup (`CONNECTOR_PROTOCOL.md` §9 and §20, ADR-0022). Broad filesystem scanning is disabled and this build performs none; only explicitly configured paths are ever read.
+
+Everything a connector reports is description, never an authorisation input. The project it names for a workspace is re-checked against the project its identity was enrolled for before anything is stored, and a project outside that scope is refused with `PROJECT_NOT_AUTHORISED`.
 
 ### 6.3 Agent authentication
 

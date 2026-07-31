@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/danjonesio/reviewplane/services/connector/internal/buildinfo"
+	"github.com/danjonesio/reviewplane/services/connector/internal/identity"
 )
 
 // capture runs the command with temporary files standing in for the process's
@@ -123,6 +124,166 @@ func TestRunRefusesAnUnenrolledEnvironment(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "enrol") {
 		t.Fatalf("stderr = %q", stderr)
+	}
+}
+
+// enrolledEnvironment writes the two files that make a data directory look
+// enrolled, without standing up a control plane: the mcp command reads the
+// identity and never uses it to connect.
+func enrolledEnvironment(t *testing.T) string {
+	t.Helper()
+	dataDir := filepath.Join(t.TempDir(), "data")
+	store := identity.NewStore(dataDir)
+	if err := store.EnsureDir(); err != nil {
+		t.Fatalf("EnsureDir: %v", err)
+	}
+	if _, err := store.GenerateKey(); err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	if err := store.SaveRecord(identity.Record{
+		ConnectorID: "con_mcptest",
+		ControlURL:  "wss://agents.example.internal/connector/v1/control",
+	}); err != nil {
+		t.Fatalf("SaveRecord: %v", err)
+	}
+	return dataDir
+}
+
+// writeConfig writes a configuration file naming one workspace at path.
+func writeConfig(t *testing.T, workspacePath string) string {
+	t.Helper()
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	source := "control_plane:\n  url: https://agents.example.internal\n" +
+		"workspaces:\n" +
+		"  - id: wsp_refresh_surplus\n" +
+		"    path: " + workspacePath + "\n" +
+		"    project: refresh-surplus\n"
+	if err := os.WriteFile(file, []byte(source), 0o600); err != nil {
+		t.Fatalf("writing configuration: %v", err)
+	}
+	return file
+}
+
+// docs/CONNECTOR_PROTOCOL.md section 14: the local MCP bridge resolves the
+// workspace and project for the environment it is run in. This build stops
+// there, and says so with a stable message rather than inventing the credential
+// exchange that follows (RVP-49).
+func TestMCPResolvesTheWorkspaceAndThenRefuses(t *testing.T) {
+	workspacePath := t.TempDir()
+	code, stdout, stderr := capture(t, "mcp",
+		"--config", writeConfig(t, workspacePath),
+		"--data-dir", enrolledEnvironment(t),
+		"--directory", filepath.Join(workspacePath, "src", "components"),
+	)
+	if code != exitRefused {
+		t.Fatalf("exit code = %d, want %d\nstderr: %s", code, exitRefused, stderr)
+	}
+	if !strings.Contains(stderr, bridgeUnavailable) {
+		t.Fatalf("stderr = %q, want the stable refusal message", stderr)
+	}
+	if !strings.Contains(stderr, "RVP-49") {
+		t.Fatal("the refusal must name the issue that tracks the missing exchange")
+	}
+	// What was resolved is reported, so that "the bridge does not exist yet" is
+	// distinguishable from "the bridge cannot see my project".
+	for _, expected := range []string{"con_mcptest", "wsp_refresh_surplus", "refresh-surplus"} {
+		if !strings.Contains(stdout, expected) {
+			t.Errorf("stdout = %q, want it to name %s", stdout, expected)
+		}
+	}
+}
+
+// An environment with no identity has nothing to bridge to, and says which
+// command establishes one.
+func TestMCPRefusesAnUnenrolledEnvironment(t *testing.T) {
+	code, _, stderr := capture(t, "mcp",
+		"--config", writeConfig(t, t.TempDir()),
+		"--data-dir", filepath.Join(t.TempDir(), "empty"),
+	)
+	if code != exitRefused {
+		t.Fatalf("exit code = %d, want %d", code, exitRefused)
+	}
+	if !strings.Contains(stderr, "enrol") {
+		t.Fatalf("stderr = %q", stderr)
+	}
+	if strings.Contains(stderr, bridgeUnavailable) {
+		t.Fatal("an unenrolled environment must not be told about the credential exchange first")
+	}
+}
+
+// Nothing is discovered. A directory inside no configured workspace is reported
+// as such rather than registered on the spot, because a publication names a
+// workspace the operator authorised (section 11).
+func TestMCPRefusesADirectoryOutsideEveryWorkspace(t *testing.T) {
+	code, _, stderr := capture(t, "mcp",
+		"--config", writeConfig(t, filepath.Join(t.TempDir(), "projects", "api")),
+		"--data-dir", enrolledEnvironment(t),
+		"--directory", filepath.Join(t.TempDir(), "somewhere", "else"),
+	)
+	if code != exitRefused {
+		t.Fatalf("exit code = %d, want %d", code, exitRefused)
+	}
+	if !strings.Contains(stderr, "inside no configured workspace") {
+		t.Fatalf("stderr = %q", stderr)
+	}
+	if !strings.Contains(stderr, "wsp_refresh_surplus") {
+		t.Fatal("the refusal must name the workspaces that are configured")
+	}
+}
+
+// A sibling directory whose name merely starts with a workspace path is not
+// inside it.
+func TestMCPDoesNotMatchASiblingDirectoryByPrefix(t *testing.T) {
+	root := t.TempDir()
+	code, _, stderr := capture(t, "mcp",
+		"--config", writeConfig(t, filepath.Join(root, "api")),
+		"--data-dir", enrolledEnvironment(t),
+		"--directory", filepath.Join(root, "api-old"),
+	)
+	if code != exitRefused || !strings.Contains(stderr, "inside no configured workspace") {
+		t.Fatalf("exit code = %d, stderr = %q; api-old is not inside api", code, stderr)
+	}
+}
+
+func TestMCPRefusesAnUnknownNamedWorkspace(t *testing.T) {
+	code, _, stderr := capture(t, "mcp",
+		"--config", writeConfig(t, t.TempDir()),
+		"--data-dir", enrolledEnvironment(t),
+		"--workspace", "wsp_not_configured",
+	)
+	if code != exitRefused {
+		t.Fatalf("exit code = %d, want %d", code, exitRefused)
+	}
+	if !strings.Contains(stderr, "wsp_not_configured") || !strings.Contains(stderr, "wsp_refresh_surplus") {
+		t.Fatalf("stderr = %q; the refusal must name both what was asked for and what exists", stderr)
+	}
+}
+
+// A workspaces block with no usable entry is a configuration problem, not a
+// missing feature, and the message says which.
+func TestMCPRefusesWhenNoWorkspaceIsConfigured(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	source := "control_plane:\n  url: https://agents.example.internal\n" +
+		"workspaces:\n  - path: " + t.TempDir() + "\n"
+	if err := os.WriteFile(file, []byte(source), 0o600); err != nil {
+		t.Fatalf("writing configuration: %v", err)
+	}
+	code, _, stderr := capture(t, "mcp", "--config", file, "--data-dir", enrolledEnvironment(t))
+	if code != exitRefused {
+		t.Fatalf("exit code = %d, want %d", code, exitRefused)
+	}
+	if !strings.Contains(stderr, "both an id and a project") {
+		t.Fatalf("stderr = %q", stderr)
+	}
+}
+
+func TestUsageDocumentsTheMCPCommand(t *testing.T) {
+	code, stdout, _ := capture(t, "help")
+	if code != exitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+	if !strings.Contains(stdout, "reviewplane-connector mcp") {
+		t.Fatalf("stdout = %q", stdout)
 	}
 }
 

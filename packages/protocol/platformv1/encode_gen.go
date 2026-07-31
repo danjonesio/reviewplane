@@ -206,6 +206,151 @@ func EncodeHumanSession(value HumanSession) ([]byte, error) {
 	return w.result()
 }
 
+// encodeEnvironmentInto writes the canonical encoding of a Environment.
+func encodeEnvironmentInto(w *canonicalWriter, value Environment) {
+	w.beginObject()
+	w.key("id")
+	w.string(value.ID)
+	w.key("organisation_id")
+	w.string(value.OrganisationID)
+	if value.ProjectID != nil {
+		w.key("project_id")
+		w.string((*value.ProjectID))
+	}
+	w.key("name")
+	w.string(value.Name)
+	w.key("platform")
+	w.string(value.Platform)
+	w.key("architecture")
+	w.string(value.Architecture)
+	w.key("labels")
+	w.beginArray()
+	for _, item := range value.Labels {
+		w.item()
+		w.string(item)
+	}
+	w.endArray()
+	w.key("trust_level")
+	w.string(string(value.TrustLevel))
+	w.key("status")
+	w.string(string(value.Status))
+	if value.LastSeenAt != nil {
+		w.key("last_seen_at")
+		w.string((*value.LastSeenAt))
+	}
+	w.key("created_at")
+	w.string(value.CreatedAt)
+	w.endObject()
+}
+
+// EncodeEnvironment returns the canonical encoding of a Environment.
+func EncodeEnvironment(value Environment) ([]byte, error) {
+	var w canonicalWriter
+	encodeEnvironmentInto(&w, value)
+	return w.result()
+}
+
+// encodeConnectorInto writes the canonical encoding of a Connector.
+func encodeConnectorInto(w *canonicalWriter, value Connector) {
+	w.beginObject()
+	w.key("id")
+	w.string(value.ID)
+	w.key("organisation_id")
+	w.string(value.OrganisationID)
+	w.key("environment_id")
+	w.string(value.EnvironmentID)
+	if value.ProjectID != nil {
+		w.key("project_id")
+		w.string((*value.ProjectID))
+	}
+	w.key("certificate_fingerprint")
+	w.string(value.CertificateFingerprint)
+	w.key("certificate_not_after")
+	w.string(value.CertificateNotAfter)
+	w.key("version")
+	w.string(value.Version)
+	w.key("capabilities")
+	w.beginArray()
+	for _, item := range value.Capabilities {
+		w.item()
+		w.string(item)
+	}
+	w.endArray()
+	w.key("status")
+	w.string(string(value.Status))
+	if value.ConnectedAt != nil {
+		w.key("connected_at")
+		w.string((*value.ConnectedAt))
+	}
+	if value.LastHeartbeatAt != nil {
+		w.key("last_heartbeat_at")
+		w.string((*value.LastHeartbeatAt))
+	}
+	if value.RevokedAt != nil {
+		w.key("revoked_at")
+		w.string((*value.RevokedAt))
+	}
+	w.key("created_at")
+	w.string(value.CreatedAt)
+	w.endObject()
+}
+
+// EncodeConnector returns the canonical encoding of a Connector.
+func EncodeConnector(value Connector) ([]byte, error) {
+	var w canonicalWriter
+	encodeConnectorInto(&w, value)
+	return w.result()
+}
+
+// encodeWorkspaceInto writes the canonical encoding of a Workspace.
+func encodeWorkspaceInto(w *canonicalWriter, value Workspace) {
+	w.beginObject()
+	w.key("id")
+	w.string(value.ID)
+	w.key("organisation_id")
+	w.string(value.OrganisationID)
+	w.key("project_id")
+	w.string(value.ProjectID)
+	if value.EnvironmentID != nil {
+		w.key("environment_id")
+		w.string((*value.EnvironmentID))
+	}
+	if value.ConnectorID != nil {
+		w.key("connector_id")
+		w.string((*value.ConnectorID))
+	}
+	w.key("path_hash")
+	w.string(value.PathHash)
+	w.key("display_path")
+	w.string(value.DisplayPath)
+	if value.RepositoryIdentity != nil {
+		w.key("repository_identity")
+		w.string((*value.RepositoryIdentity))
+	}
+	w.key("branch")
+	w.string(value.Branch)
+	w.key("head_commit")
+	w.string(value.HeadCommit)
+	w.key("dirty")
+	w.boolean(value.Dirty)
+	w.key("source")
+	w.string(string(value.Source))
+	if value.LastObservedAt != nil {
+		w.key("last_observed_at")
+		w.string((*value.LastObservedAt))
+	}
+	w.key("created_at")
+	w.string(value.CreatedAt)
+	w.endObject()
+}
+
+// EncodeWorkspace returns the canonical encoding of a Workspace.
+func EncodeWorkspace(value Workspace) ([]byte, error) {
+	var w canonicalWriter
+	encodeWorkspaceInto(&w, value)
+	return w.result()
+}
+
 // encodeActorInto writes the canonical encoding of a Actor.
 func encodeActorInto(w *canonicalWriter, value Actor) {
 	w.beginObject()
@@ -549,6 +694,214 @@ func encodeProjectArchivedPayloadInto(w *canonicalWriter, value ProjectArchivedP
 func EncodeProjectArchivedPayload(value ProjectArchivedPayload) ([]byte, error) {
 	var w canonicalWriter
 	encodeProjectArchivedPayloadInto(&w, value)
+	return w.result()
+}
+
+// encodeConnectorEnrolledPayloadInto writes the canonical encoding of a
+// ConnectorEnrolledPayload.
+func encodeConnectorEnrolledPayloadInto(w *canonicalWriter, value ConnectorEnrolledPayload) {
+	w.beginObject()
+	w.key("environment_id")
+	w.string(value.EnvironmentID)
+	w.key("environment_name")
+	w.string(value.EnvironmentName)
+	w.key("platform")
+	w.string(value.Platform)
+	w.key("architecture")
+	w.string(value.Architecture)
+	w.key("connector_version")
+	w.string(value.ConnectorVersion)
+	w.key("capabilities")
+	w.beginArray()
+	for _, item := range value.Capabilities {
+		w.item()
+		w.string(item)
+	}
+	w.endArray()
+	w.key("certificate_fingerprint")
+	w.string(value.CertificateFingerprint)
+	w.key("identity_expires_at")
+	w.string(value.IdentityExpiresAt)
+	if value.EnrolmentTokenID != nil {
+		w.key("enrolment_token_id")
+		w.string((*value.EnrolmentTokenID))
+	}
+	w.key("new_status")
+	w.string(string(value.NewStatus))
+	w.endObject()
+}
+
+// EncodeConnectorEnrolledPayload returns the canonical encoding of a
+// ConnectorEnrolledPayload.
+func EncodeConnectorEnrolledPayload(value ConnectorEnrolledPayload) ([]byte, error) {
+	var w canonicalWriter
+	encodeConnectorEnrolledPayloadInto(&w, value)
+	return w.result()
+}
+
+// encodeConnectorConnectedPayloadInto writes the canonical encoding of a
+// ConnectorConnectedPayload.
+func encodeConnectorConnectedPayloadInto(w *canonicalWriter, value ConnectorConnectedPayload) {
+	w.beginObject()
+	w.key("previous_status")
+	w.string(string(value.PreviousStatus))
+	w.key("new_status")
+	w.string(string(value.NewStatus))
+	w.key("trigger")
+	w.string(string(value.Trigger))
+	w.endObject()
+}
+
+// EncodeConnectorConnectedPayload returns the canonical encoding of a
+// ConnectorConnectedPayload.
+func EncodeConnectorConnectedPayload(value ConnectorConnectedPayload) ([]byte, error) {
+	var w canonicalWriter
+	encodeConnectorConnectedPayloadInto(&w, value)
+	return w.result()
+}
+
+// encodeConnectorDegradedPayloadInto writes the canonical encoding of a
+// ConnectorDegradedPayload.
+func encodeConnectorDegradedPayloadInto(w *canonicalWriter, value ConnectorDegradedPayload) {
+	w.beginObject()
+	w.key("previous_status")
+	w.string(string(value.PreviousStatus))
+	w.key("new_status")
+	w.string(string(value.NewStatus))
+	w.key("trigger")
+	w.string(string(value.Trigger))
+	w.key("silent_for_seconds_at_least")
+	w.integer(value.SilentForSecondsAtLeast)
+	w.endObject()
+}
+
+// EncodeConnectorDegradedPayload returns the canonical encoding of a
+// ConnectorDegradedPayload.
+func EncodeConnectorDegradedPayload(value ConnectorDegradedPayload) ([]byte, error) {
+	var w canonicalWriter
+	encodeConnectorDegradedPayloadInto(&w, value)
+	return w.result()
+}
+
+// encodeConnectorDisconnectedPayloadInto writes the canonical encoding of a
+// ConnectorDisconnectedPayload.
+func encodeConnectorDisconnectedPayloadInto(w *canonicalWriter, value ConnectorDisconnectedPayload) {
+	w.beginObject()
+	w.key("previous_status")
+	w.string(string(value.PreviousStatus))
+	w.key("new_status")
+	w.string(string(value.NewStatus))
+	w.key("trigger")
+	w.string(string(value.Trigger))
+	if value.SilentForSecondsAtLeast != nil {
+		w.key("silent_for_seconds_at_least")
+		w.integer((*value.SilentForSecondsAtLeast))
+	}
+	w.endObject()
+}
+
+// EncodeConnectorDisconnectedPayload returns the canonical encoding of a
+// ConnectorDisconnectedPayload.
+func EncodeConnectorDisconnectedPayload(value ConnectorDisconnectedPayload) ([]byte, error) {
+	var w canonicalWriter
+	encodeConnectorDisconnectedPayloadInto(&w, value)
+	return w.result()
+}
+
+// encodeConnectorRevokedPayloadInto writes the canonical encoding of a
+// ConnectorRevokedPayload.
+func encodeConnectorRevokedPayloadInto(w *canonicalWriter, value ConnectorRevokedPayload) {
+	w.beginObject()
+	w.key("previous_status")
+	w.string(string(value.PreviousStatus))
+	w.key("new_status")
+	w.string(string(value.NewStatus))
+	w.key("routes_revoked")
+	w.integer(value.RoutesRevoked)
+	w.key("sessions_disconnected")
+	w.integer(value.SessionsDisconnected)
+	if value.ChannelsClosed != nil {
+		w.key("channels_closed")
+		w.integer((*value.ChannelsClosed))
+	}
+	w.endObject()
+}
+
+// EncodeConnectorRevokedPayload returns the canonical encoding of a
+// ConnectorRevokedPayload.
+func EncodeConnectorRevokedPayload(value ConnectorRevokedPayload) ([]byte, error) {
+	var w canonicalWriter
+	encodeConnectorRevokedPayloadInto(&w, value)
+	return w.result()
+}
+
+// encodeWorkspaceObservedPayloadInto writes the canonical encoding of a
+// WorkspaceObservedPayload.
+func encodeWorkspaceObservedPayloadInto(w *canonicalWriter, value WorkspaceObservedPayload) {
+	w.beginObject()
+	w.key("workspace_id")
+	w.string(value.WorkspaceID)
+	if value.EnvironmentID != nil {
+		w.key("environment_id")
+		w.string((*value.EnvironmentID))
+	}
+	w.key("path_hash")
+	w.string(value.PathHash)
+	w.key("display_path")
+	w.string(value.DisplayPath)
+	if value.RepositoryIdentity != nil {
+		w.key("repository_identity")
+		w.string((*value.RepositoryIdentity))
+	}
+	w.key("branch")
+	w.string(value.Branch)
+	w.key("head_commit")
+	w.string(value.HeadCommit)
+	w.key("dirty")
+	w.boolean(value.Dirty)
+	w.key("source")
+	w.string(string(value.Source))
+	w.endObject()
+}
+
+// EncodeWorkspaceObservedPayload returns the canonical encoding of a
+// WorkspaceObservedPayload.
+func EncodeWorkspaceObservedPayload(value WorkspaceObservedPayload) ([]byte, error) {
+	var w canonicalWriter
+	encodeWorkspaceObservedPayloadInto(&w, value)
+	return w.result()
+}
+
+// encodeWorkspaceHeadChangedPayloadInto writes the canonical encoding of a
+// WorkspaceHeadChangedPayload.
+func encodeWorkspaceHeadChangedPayloadInto(w *canonicalWriter, value WorkspaceHeadChangedPayload) {
+	w.beginObject()
+	w.key("workspace_id")
+	w.string(value.WorkspaceID)
+	if value.EnvironmentID != nil {
+		w.key("environment_id")
+		w.string((*value.EnvironmentID))
+	}
+	w.key("previous_branch")
+	w.string(value.PreviousBranch)
+	w.key("previous_head_commit")
+	w.string(value.PreviousHeadCommit)
+	w.key("previous_dirty")
+	w.boolean(value.PreviousDirty)
+	w.key("branch")
+	w.string(value.Branch)
+	w.key("head_commit")
+	w.string(value.HeadCommit)
+	w.key("dirty")
+	w.boolean(value.Dirty)
+	w.endObject()
+}
+
+// EncodeWorkspaceHeadChangedPayload returns the canonical encoding of a
+// WorkspaceHeadChangedPayload.
+func EncodeWorkspaceHeadChangedPayload(value WorkspaceHeadChangedPayload) ([]byte, error) {
+	var w canonicalWriter
+	encodeWorkspaceHeadChangedPayloadInto(&w, value)
 	return w.result()
 }
 

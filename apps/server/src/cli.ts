@@ -51,6 +51,8 @@ const USAGE = `reviewplane <command>
   install-token [--ttl-seconds N]
                        mint the one-time administrator bootstrap token and print
                        it once; it is single-use and expires (default 24 hours)
+  connector list       report the enrolled connectors, their environments and
+                       their connection health
   version              print the build information
 
 Configuration is read from the environment; see docs/CONFIGURATION.md.
@@ -278,6 +280,78 @@ function readTtlSeconds(argv: readonly string[]): number | undefined {
   return value;
 }
 
+/**
+ * `reviewplane connector list` (`docs/API.md` §9, `docs/OPERATIONS.md`).
+ *
+ * The same facts the connector health screen shows, for an operator who has a
+ * shell and no browser — which is the state a deployment is in while the first
+ * connector is being enrolled. It reads; it never revokes, because revocation
+ * is an authorised, audited action and a command that took no credential could
+ * not record who performed it.
+ */
+async function runConnectorList(pool: Pool, argv: readonly string[]): Promise<number> {
+  if (argv[0] !== "list") {
+    process.stderr.write(`unknown connector command: ${argv[0] ?? "(none)"}\n\nreviewplane connector list\n`);
+    return 1;
+  }
+  const state = await migrationState(pool);
+  if (state.pending.length > 0) {
+    process.stderr.write(
+      `the schema is behind this build (${String(state.pending.length)} migration(s) pending); run reviewplane migrate first\n`,
+    );
+    return 1;
+  }
+
+  const rows = await pool.query<{
+    id: string;
+    status: string;
+    version: string;
+    capabilities: string[];
+    connected_at: Date | null;
+    last_heartbeat_at: Date | null;
+    revoked_at: Date | null;
+    environment_id: string;
+    environment_name: string;
+    platform: string;
+    architecture: string;
+    project_id: string | null;
+    workspaces: string;
+  }>(
+    `select c.id, c.status, c.version, c.capabilities, c.connected_at, c.last_heartbeat_at,
+            c.revoked_at, c.environment_id, e.name as environment_name, e.platform, e.architecture,
+            c.project_id,
+            (select count(*)::text from workspaces w where w.environment_id = e.id) as workspaces
+       from connectors c
+       join environments e on e.id = c.environment_id
+      order by c.created_at desc
+      limit 200`,
+  );
+
+  if (rows.rows.length === 0) {
+    write("no connector is enrolled");
+    write("");
+    write("Mint an enrolment token from the web application, or with the API of docs/API.md section 9,");
+    write("then run reviewplane-connector enrol on the development machine.");
+    return 0;
+  }
+
+  const instant = (value: Date | null): string => (value === null ? "-" : value.toISOString());
+  for (const row of rows.rows) {
+    write(`${row.id}  ${row.status}`);
+    write(`  environment    ${row.environment_name} (${row.environment_id})`);
+    write(`  platform       ${row.platform}/${row.architecture}`);
+    write(`  project        ${row.project_id ?? "(organisation-wide)"}`);
+    write(`  version        ${row.version}`);
+    write(`  capabilities   ${row.capabilities.join(", ") || "(none)"}`);
+    write(`  connected at   ${instant(row.connected_at)}`);
+    write(`  last heartbeat ${instant(row.last_heartbeat_at)}`);
+    if (row.revoked_at !== null) write(`  revoked at     ${instant(row.revoked_at)}`);
+    write(`  workspaces     ${row.workspaces}`);
+    write("");
+  }
+  return 0;
+}
+
 /** Listen address for the jobs role's health endpoints. */
 function jobsHealthHost(): string {
   return process.env["REVIEWPLANE_JOBS_HEALTH_HOST"] ?? "0.0.0.0";
@@ -344,6 +418,8 @@ export async function main(argv: readonly string[]): Promise<number> {
         return await runJobs(pool, rest.includes("--once"));
       case "install-token":
         return await runInstallToken(pool, rest, rest.includes("--force"));
+      case "connector":
+        return await runConnectorList(pool, rest);
       default:
         process.stderr.write(`unknown command: ${command}\n\n${USAGE}`);
         return 1;

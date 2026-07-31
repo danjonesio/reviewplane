@@ -179,6 +179,11 @@ export async function enrol(
       },
       payload: {
         new_status: "PENDING_ENROLMENT",
+        // The environment is named in the payload as well as in the
+        // correlation, because the payload is the record a consumer of
+        // `packages/protocol`'s `connector_enrolled_payload` decodes and a
+        // correlation identifier is not part of it.
+        environment_id: environmentId,
         environment_name: request.environment.name,
         platform: request.environment.platform,
         architecture: request.environment.architecture,

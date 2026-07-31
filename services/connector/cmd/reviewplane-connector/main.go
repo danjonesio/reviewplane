@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -32,6 +33,7 @@ import (
 	"github.com/danjonesio/reviewplane/services/connector/internal/logging"
 	"github.com/danjonesio/reviewplane/services/connector/internal/routes"
 	"github.com/danjonesio/reviewplane/services/connector/internal/transport"
+	"github.com/danjonesio/reviewplane/services/connector/internal/workspaces"
 )
 
 // Exit codes. They are stable so that a systemd unit or a test can distinguish
@@ -61,6 +63,8 @@ func run(args []string, stdout, stderr *os.File) int {
 		return runEnrol(args[1:], stdout, stderr)
 	case "run":
 		return runChannel(args[1:], stdout, stderr)
+	case "mcp":
+		return runMCPBridge(args[1:], stdout, stderr)
 	case "version", "--version", "-version":
 		fmt.Fprintf(stdout, "%s %s\n", buildinfo.Name, buildinfo.Version)
 		return exitOK
@@ -80,11 +84,16 @@ func usage(out *os.File) {
 Usage:
   reviewplane-connector enrol --control-plane <url> --token <one-time-token>
   reviewplane-connector run
+  reviewplane-connector mcp
   reviewplane-connector version
 
 Commands:
   enrol    Exchange a one-time enrolment token for a device identity.
-  run      Hold the outbound authenticated channel open and send heartbeats.
+  run      Hold the outbound authenticated channel open, publish authorised
+           routes and report workspace Git context.
+  mcp      Local MCP bridge for an agent in this environment. It resolves the
+           workspace and project for the working directory; the short-lived
+           agent-session credential exchange is not available in this build.
   version  Print the connector version.
 
 Configuration is read from %s unless --config names another file.
@@ -274,6 +283,14 @@ func runChannel(args []string, _, stderr *os.File) int {
 		Store:  store,
 		Logger: logger,
 		Routes: manager,
+		// Only the paths named in the workspaces block are ever looked at
+		// (docs/CONNECTOR_PROTOCOL.md section 9). An empty block means the
+		// connector reports no workspace context, not that it goes looking.
+		Workspaces: workspaces.New(workspaces.Options{
+			Workspaces: cfg.Workspaces,
+			Interval:   cfg.GitContext.Interval,
+			Logger:     logger,
+		}),
 	}
 
 	// The data channel is a second outbound connection with its own life. It
@@ -304,6 +321,174 @@ func runChannel(args []string, _, stderr *os.File) int {
 	}
 	logger.Info("connector stopped")
 	return exitOK
+}
+
+// bridgeUnavailable is the stable message the local MCP bridge reports until
+// the agent-session credential exchange lands. It is a constant so that an
+// operator, a shell wrapper and a test all read the same sentence.
+const bridgeUnavailable = "the local MCP bridge credential exchange is not available in this build (RVP-49)"
+
+// runMCPBridge is the local MCP bridge command surface of
+// docs/CONNECTOR_PROTOCOL.md section 14.
+//
+// Section 14 gives the bridge four responsibilities: resolve the local
+// workspace and project, request short-lived agent-session credentials, proxy
+// MCP traffic to the control plane, and avoid storing long-lived agent tokens.
+// This build implements the first and refuses rather than inventing the rest.
+//
+// Refusing is the point. A bridge that invented a credential exchange would be
+// inventing an authentication path, which docs/SECURITY.md section 6.3 fixes and
+// AGENTS.md "Architecture changes" puts behind an ADR; and one that proxied
+// without a credential would hand an agent whatever authority the connector
+// holds, which section 14 forbids in terms ("It must not grant the agent
+// connector-administrator privileges"). So the command validates everything it
+// can validate locally, tells the operator exactly what it found, and exits with
+// the refusal code rather than with success.
+func runMCPBridge(args []string, stdout, stderr *os.File) int {
+	flags := flag.NewFlagSet("mcp", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	var (
+		configPath  = flags.String("config", "", "configuration file (default "+config.DefaultPath+")")
+		dataDir     = flags.String("data-dir", "", "identity data directory (default "+config.DefaultDataDir+")")
+		workspaceID = flags.String("workspace", "", "workspace to resolve (default: the one containing the working directory)")
+		directory   = flags.String("directory", "", "working directory to resolve (default: the current one)")
+		logLevel    = flags.String("log-level", "", "debug, info, warn or error")
+	)
+	if err := flags.Parse(args); err != nil {
+		return exitUsage
+	}
+
+	cfg, err := loadConfig(*configPath, "", *dataDir, "", "", "", *logLevel)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitUsage
+	}
+	logger := logging.New(stderr, cfg.Logging.Level)
+
+	// An environment with no identity has nothing to bridge to: the session the
+	// agent would use is issued against this connector, and there is no
+	// connector yet.
+	store := identity.NewStore(cfg.Identity.DataDir)
+	// Enrolment is checked before the key file, unlike the channel's own start:
+	// an environment that was never enrolled has no key to have permissions on,
+	// and "there is no device.key" is a worse answer to "why will the bridge not
+	// start" than "this environment holds no connector identity".
+	if !store.Enrolled() {
+		fmt.Fprintln(stderr, channel.ErrNotEnrolled.Error())
+		return exitRefused
+	}
+	if err := store.CheckKeyPermissions(); err != nil {
+		return reportFailure(stderr, logger, err)
+	}
+	record, err := store.LoadRecord()
+	if err != nil {
+		return reportFailure(stderr, logger, err)
+	}
+
+	workspace, err := resolveWorkspace(cfg, *workspaceID, *directory)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitRefused
+	}
+
+	// What was resolved is printed before the refusal, so that an operator can
+	// tell "the bridge does not exist yet" from "the bridge cannot see my
+	// project", which are two quite different problems with the same exit code.
+	fmt.Fprintf(stdout, "Connector:  %s\n", record.ConnectorID)
+	fmt.Fprintf(stdout, "Workspace:  %s\n", workspace.ID)
+	fmt.Fprintf(stdout, "Project:    %s\n", workspace.Project)
+	fmt.Fprintf(stdout, "Checkout:   %s\n", workspace.Path)
+
+	logger.Error("refusing to start the local MCP bridge",
+		slog.String("reason", bridgeUnavailable),
+		slog.String("connector_id", record.ConnectorID),
+		slog.String("workspace_id", workspace.ID),
+	)
+	fmt.Fprintln(stderr, bridgeUnavailable)
+	return exitRefused
+}
+
+// resolveWorkspace finds the configured workspace an agent in directory belongs
+// to (docs/CONNECTOR_PROTOCOL.md section 14, "Resolve local workspace and
+// project").
+//
+// The match is on the configured paths only. Nothing is discovered: a directory
+// that is inside no configured workspace is reported as such rather than
+// registered on the spot, because a publication names a workspace the operator
+// authorised (section 11). The longest matching path wins, so a workspace nested
+// inside another resolves to the nearer one.
+func resolveWorkspace(cfg *config.Config, workspaceID, directory string) (config.Workspace, error) {
+	usable := make([]config.Workspace, 0, len(cfg.Workspaces))
+	for _, workspace := range cfg.Workspaces {
+		if workspace.ID != "" && workspace.Project != "" {
+			usable = append(usable, workspace)
+		}
+	}
+	if len(usable) == 0 {
+		return config.Workspace{}, errors.New(
+			"no workspace is configured with both an id and a project; add one to the workspaces block")
+	}
+
+	if workspaceID != "" {
+		for _, workspace := range usable {
+			if workspace.ID == workspaceID {
+				return workspace, nil
+			}
+		}
+		return config.Workspace{}, fmt.Errorf(
+			"no configured workspace is named %q; the workspaces block names %s",
+			workspaceID, strings.Join(workspaceIDs(usable), ", "))
+	}
+
+	if directory == "" {
+		working, err := os.Getwd()
+		if err != nil {
+			return config.Workspace{}, fmt.Errorf("resolving the working directory: %w", err)
+		}
+		directory = working
+	}
+	if !filepath.IsAbs(directory) {
+		absolute, err := filepath.Abs(directory)
+		if err != nil {
+			return config.Workspace{}, fmt.Errorf("resolving %s: %w", directory, err)
+		}
+		directory = absolute
+	}
+	directory = filepath.Clean(directory)
+
+	var resolved config.Workspace
+	for _, workspace := range usable {
+		if !withinWorkspace(directory, workspace.Path) {
+			continue
+		}
+		if len(workspace.Path) > len(resolved.Path) {
+			resolved = workspace
+		}
+	}
+	if resolved.ID == "" {
+		return config.Workspace{}, fmt.Errorf(
+			"%s is inside no configured workspace; the workspaces block names %s, or pass --workspace",
+			directory, strings.Join(workspaceIDs(usable), ", "))
+	}
+	return resolved, nil
+}
+
+// withinWorkspace reports whether directory is the workspace path or is beneath
+// it. The separator check is what stops /home/dan/projects/api-old matching a
+// workspace at /home/dan/projects/api.
+func withinWorkspace(directory, workspacePath string) bool {
+	if directory == workspacePath {
+		return true
+	}
+	return strings.HasPrefix(directory, workspacePath+string(filepath.Separator))
+}
+
+func workspaceIDs(configured []config.Workspace) []string {
+	identifiers := make([]string, 0, len(configured))
+	for _, workspace := range configured {
+		identifiers = append(identifiers, workspace.ID)
+	}
+	return identifiers
 }
 
 // reportFailure prints a stable error class where one applies, so that an

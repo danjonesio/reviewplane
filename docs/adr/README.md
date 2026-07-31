@@ -34,6 +34,7 @@ ADRs record decisions that materially affect architecture, security, protocols o
 | [0018](0018-reconnect-reconciliation.md) | Reconnect reconciliation is control-plane authoritative and fails closed | Accepted |
 | [0019](0019-artefact-access-grants.md) | Reach artefact content through subject-bound access grants | Accepted |
 | [0020](0020-remote-mcp-endpoint-and-agent-credentials.md) | Serve the agent interface as a remote authenticated MCP endpoint with scoped agent credentials | Accepted |
+| [0022](0022-connector-workspace-observation.md) | Report workspace Git context as its own bounded message on the connector `events` channel | Accepted |
 
 ## Pending decisions
 

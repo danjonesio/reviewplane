@@ -42,8 +42,27 @@ interface ConnectorRow {
   revoked_at: Date | null;
 }
 
-const CONNECTOR_COLUMNS = `id, organisation_id, environment_id, project_id, certificate_fingerprint,
-  certificate_not_after, version, capabilities, status, connected_at, last_heartbeat_at, revoked_at`;
+const CONNECTOR_COLUMN_NAMES = [
+  "id",
+  "organisation_id",
+  "environment_id",
+  "project_id",
+  "certificate_fingerprint",
+  "certificate_not_after",
+  "version",
+  "capabilities",
+  "status",
+  "connected_at",
+  "last_heartbeat_at",
+  "revoked_at",
+] as const;
+
+const CONNECTOR_COLUMNS = CONNECTOR_COLUMN_NAMES.join(", ");
+
+/** The same columns qualified, for a statement that joins another relation. */
+const QUALIFIED_CONNECTOR_COLUMNS = CONNECTOR_COLUMN_NAMES.map((column) => `connectors.${column}`).join(
+  ", ",
+);
 
 function toConnector(row: ConnectorRow): ConnectorRecord {
   return {
@@ -270,6 +289,37 @@ export async function findConnectorByFingerprint(
   return row === undefined ? null : toConnector(row);
 }
 
+/**
+ * Resolves one connector inside the caller's organisation and project scope.
+ *
+ * The identifier, the organisation and the session's project scope are all in
+ * the predicate rather than in an `if` after the read. A row that satisfies one
+ * and not the others is not returned at all, so a foreign identifier and an
+ * unknown one produce the same empty result and the caller cannot answer them
+ * differently even by accident (`docs/API.md` §5; RVP-66 and RVP-67 record what
+ * happens when this is a check instead of a predicate).
+ */
+export async function findConnectorInScope(
+  pool: Pool,
+  input: {
+    readonly connectorId: string;
+    readonly organisationId: string;
+    readonly projectIds: readonly string[] | null;
+  },
+): Promise<ConnectorRecord | null> {
+  const scope = input.projectIds === null ? null : [...input.projectIds];
+  const result = await pool.query<ConnectorRow>(
+    `select ${CONNECTOR_COLUMNS}
+       from connectors
+      where id = $1
+        and organisation_id = $2
+        and ($3::text[] is null or project_id = any($3))`,
+    [input.connectorId, input.organisationId, scope],
+  );
+  const row = result.rows[0];
+  return row === undefined ? null : toConnector(row);
+}
+
 export async function findConnectorById(pool: Pool, id: string): Promise<ConnectorRecord | null> {
   const result = await pool.query<ConnectorRow>(`select ${CONNECTOR_COLUMNS} from connectors where id = $1`, [
     id,
@@ -278,12 +328,133 @@ export async function findConnectorById(pool: Pool, id: string): Promise<Connect
   return row === undefined ? null : toConnector(row);
 }
 
-export async function listConnectors(pool: Pool, organisationId: string): Promise<ConnectorRecord[]> {
+export async function listConnectors(
+  pool: Pool,
+  organisationId: string,
+  projectIds: readonly string[] | null = null,
+): Promise<ConnectorRecord[]> {
+  const scope = projectIds === null ? null : [...projectIds];
   const result = await pool.query<ConnectorRow>(
-    `select ${CONNECTOR_COLUMNS} from connectors where organisation_id = $1 order by created_at desc`,
-    [organisationId],
+    `select ${CONNECTOR_COLUMNS}
+       from connectors
+      where organisation_id = $1
+        and ($2::text[] is null or project_id = any($2))
+      order by created_at desc`,
+    [organisationId, scope],
   );
   return result.rows.map(toConnector);
+}
+
+/** Connectors belonging to one environment, newest identity first. */
+export async function listConnectorsForEnvironments(
+  pool: Pool,
+  environmentIds: readonly string[],
+): Promise<ConnectorRecord[]> {
+  if (environmentIds.length === 0) return [];
+  const result = await pool.query<ConnectorRow>(
+    `select ${CONNECTOR_COLUMNS} from connectors where environment_id = any($1::text[])
+      order by created_at desc`,
+    [[...environmentIds]],
+  );
+  return result.rows.map(toConnector);
+}
+
+/** `docs/DOMAIN_MODEL.md` §7. */
+export interface EnvironmentRecord {
+  readonly id: string;
+  readonly organisationId: string;
+  readonly projectId: string | null;
+  readonly name: string;
+  readonly platform: string;
+  readonly architecture: string;
+  readonly labels: readonly string[];
+  readonly trustLevel: string;
+  readonly status: string;
+  readonly lastSeenAt: Date | null;
+  readonly createdAt: Date;
+}
+
+interface EnvironmentRow {
+  id: string;
+  organisation_id: string;
+  project_id: string | null;
+  name: string;
+  platform: string;
+  architecture: string;
+  labels: string[];
+  trust_level: string;
+  status: string;
+  last_seen_at: Date | null;
+  created_at: Date;
+}
+
+const ENVIRONMENT_COLUMNS = `id, organisation_id, project_id, name, platform, architecture, labels,
+  trust_level, status, last_seen_at, created_at`;
+
+function toEnvironment(row: EnvironmentRow): EnvironmentRecord {
+  return {
+    id: row.id,
+    organisationId: row.organisation_id,
+    projectId: row.project_id,
+    name: row.name,
+    platform: row.platform,
+    architecture: row.architecture,
+    labels: row.labels,
+    trustLevel: row.trust_level,
+    status: row.status,
+    lastSeenAt: row.last_seen_at,
+    createdAt: row.created_at,
+  };
+}
+
+/**
+ * The environments a project may use.
+ *
+ * An environment enrolled with an organisation-scoped token carries no
+ * `project_id` and is available to every project in the organisation, which is
+ * what `docs/DOMAIN_MODEL.md` §7 means by "or authorised project set". The
+ * organisation is in the predicate either way.
+ */
+export async function listEnvironmentsForProject(
+  pool: Pool,
+  input: { readonly organisationId: string; readonly projectId: string },
+): Promise<EnvironmentRecord[]> {
+  const result = await pool.query<EnvironmentRow>(
+    `select ${ENVIRONMENT_COLUMNS}
+       from environments
+      where organisation_id = $1
+        and (project_id is null or project_id = $2)
+      order by created_at desc
+      limit 200`,
+    [input.organisationId, input.projectId],
+  );
+  return result.rows.map(toEnvironment);
+}
+
+/**
+ * Resolves one environment inside the caller's organisation and project scope,
+ * with every clause in the predicate for the reason
+ * {@link findConnectorInScope} gives.
+ */
+export async function findEnvironmentInScope(
+  pool: Pool,
+  input: {
+    readonly environmentId: string;
+    readonly organisationId: string;
+    readonly projectIds: readonly string[] | null;
+  },
+): Promise<EnvironmentRecord | null> {
+  const scope = input.projectIds === null ? null : [...input.projectIds];
+  const result = await pool.query<EnvironmentRow>(
+    `select ${ENVIRONMENT_COLUMNS}
+       from environments
+      where id = $1
+        and organisation_id = $2
+        and ($3::text[] is null or project_id is null or project_id = any($3))`,
+    [input.environmentId, input.organisationId, scope],
+  );
+  const row = result.rows[0];
+  return row === undefined ? null : toEnvironment(row);
 }
 
 /**
@@ -302,17 +473,30 @@ export async function transitionConnector(
     readonly eventType: string;
     readonly touchConnectedAt?: boolean;
     readonly touchRevokedAt?: boolean;
+    readonly actor?: { readonly type: "connector" | "human_user" | "system"; readonly id?: string };
     readonly payload?: Record<string, unknown>;
   },
 ): Promise<AppendedEvent | null> {
   return inTransaction(pool, async (client) => {
-    const updated = await client.query<ConnectorRow>(
-      `update connectors
+    // The previous status comes out of a locked read in the same statement,
+    // rather than from the list of statuses the transition was willing to
+    // accept. Recording the willing set was wrong in a way an auditor could
+    // not see through: `previous_status` read `PENDING_ENROLMENT|DEGRADED|
+    // DISCONNECTED`, which names three states the connector was not in and one
+    // it was, and no consumer could tell which. The event payload schema in
+    // `packages/protocol/schemas/platform/v1.schema.json` now says
+    // `previous_status` is a single status, and this is what makes that true.
+    const updated = await client.query<ConnectorRow & { previous_status: ConnectorStatus }>(
+      `with previous as (
+         select id, status from connectors where id = $1 for update
+       )
+       update connectors
           set status       = $3,
               connected_at = case when $4 then now() else connected_at end,
               revoked_at   = case when $5 then now() else revoked_at end
-        where id = $1 and status = any($2::text[])
-        returning ${CONNECTOR_COLUMNS}`,
+         from previous
+        where connectors.id = previous.id and previous.status = any($2::text[])
+        returning ${QUALIFIED_CONNECTOR_COLUMNS}, previous.status as previous_status`,
       [
         input.connectorId,
         input.from,
@@ -324,14 +508,15 @@ export async function transitionConnector(
     const row = updated.rows[0];
     if (row === undefined) return null;
     const connector = toConnector(row);
+    const actor = input.actor ?? { type: "connector" as const, id: connector.id };
     return appendEvent(client, {
       type: input.eventType,
       organisationId: connector.organisationId,
       projectId: connector.projectId,
-      actor: { type: "connector", id: connector.id },
+      actor: actor.id === undefined ? { type: actor.type } : { type: actor.type, id: actor.id },
       correlation: { connector_id: connector.id, environment_id: connector.environmentId },
       payload: {
-        previous_status: input.from.join("|"),
+        previous_status: row.previous_status,
         new_status: input.to,
         ...(input.payload ?? {}),
       },

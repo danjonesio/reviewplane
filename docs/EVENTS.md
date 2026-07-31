@@ -154,6 +154,60 @@ deletion: the project's reviews, evidence and events all outlive it.
 - `workspace.observed`
 - `workspace.head_changed`
 
+These occurrences share a channel of their own, `environment`, because a
+connector enrolment can precede any project association: they are neither
+organisation lifecycle nor project lifecycle, and the envelope's `project_id` is
+absent for the ones that have no project yet (section 2).
+
+`connector.enrolled` records the identity that was issued and the environment it
+was issued to — environment name, platform, architecture, connector version,
+advertised capabilities, certificate fingerprint and identity expiry. It records
+the enrolment token's **identifier** and never the token. An event is
+append-only, so a credential written into one cannot be taken out again
+(`docs/SECURITY.md` section 18).
+
+The three status events name **both** sides of the transition. `previous_status`
+is the status the record was actually in, read under the same lock that changed
+it — not the set of statuses the transition was willing to accept. Recording the
+willing set was wrong in a way an auditor could not see through: a
+`previous_status` reading `PENDING_ENROLMENT|DEGRADED|DISCONNECTED` names three
+states the connector was not in and one it was, and no consumer can tell which.
+
+`connector.degraded` and `connector.disconnected` are conclusions the control
+plane draws from silence, never self-reports
+(`docs/CONNECTOR_PROTOCOL.md` section 8), so their payloads state how long the
+silence had lasted as a **lower bound**: a sweep observes silence rather than
+measuring it. `connector.disconnected` distinguishes a closed channel from an
+exhausted heartbeat budget by `trigger`, so an operator can tell a clean stop
+from a network that went away, and carries the silence bound only for the
+latter, because a closed channel is observed rather than inferred.
+
+`connector.revoked` reports what the revocation reached: `routes_revoked`,
+`sessions_disconnected` and `channels_closed`. Revocation is several things at
+once (`docs/CONNECTOR_PROTOCOL.md` section 18) and an auditor needs to see that
+all of them happened; `sessions_disconnected` counts browser sessions moved to
+`DEGRADED`, and each of those also writes its own `browser_session.degraded`
+with the reason `connector_revoked`.
+
+`workspace.observed` records that a checkout became known — by a connector
+reporting a configured path, or by an operator or agent session registering one,
+distinguished by `source`. It carries the path hash, the display label, the
+canonical repository identity where there is one, the branch, the head commit
+and the dirty state, and it has no member capable of carrying file contents, a
+changed-path list or a full filesystem path (ADR-0022).
+
+**An unchanged repeat observation writes no event.** A connector re-observes on
+an interval whether or not anything happened, and an identical report refreshes
+the workspace's `last_observed_at` and stops there. Writing one every interval
+would fill the audit trail with the fact that nothing changed, which is the
+sampling this section requires of a high-frequency signal — and it would drown
+the events that do carry a change.
+
+`workspace.head_changed` is that change: a move in branch, head commit or dirty
+state, carrying **both** sides. A review captured before the move was captured
+against the previous head, and an auditor reading only the new one could not
+tell.
+
 ### Published service
 
 - `published_service.requested`

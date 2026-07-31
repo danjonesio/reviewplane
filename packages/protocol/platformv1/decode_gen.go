@@ -116,6 +116,95 @@ func DecodeHumanSession(value any) HumanSession {
 	return out
 }
 
+// DecodeEnvironment builds a Environment from a validated tree.
+func DecodeEnvironment(value any) Environment {
+	source, _ := value.(map[string]any)
+	var out Environment
+	out.ID = decodeString(source["id"])
+	out.OrganisationID = decodeString(source["organisation_id"])
+	if field, present := source["project_id"]; present {
+		decoded := decodeString(field)
+		out.ProjectID = &decoded
+	}
+	out.Name = decodeString(source["name"])
+	out.Platform = decodeString(source["platform"])
+	out.Architecture = decodeString(source["architecture"])
+	out.Labels = decodeSlice(source["labels"], func(item any) string { return decodeString(item) })
+	out.TrustLevel = EnvironmentTrustLevel(decodeString(source["trust_level"]))
+	out.Status = EnvironmentStatus(decodeString(source["status"]))
+	if field, present := source["last_seen_at"]; present {
+		decoded := decodeString(field)
+		out.LastSeenAt = &decoded
+	}
+	out.CreatedAt = decodeString(source["created_at"])
+	return out
+}
+
+// DecodeConnector builds a Connector from a validated tree.
+func DecodeConnector(value any) Connector {
+	source, _ := value.(map[string]any)
+	var out Connector
+	out.ID = decodeString(source["id"])
+	out.OrganisationID = decodeString(source["organisation_id"])
+	out.EnvironmentID = decodeString(source["environment_id"])
+	if field, present := source["project_id"]; present {
+		decoded := decodeString(field)
+		out.ProjectID = &decoded
+	}
+	out.CertificateFingerprint = decodeString(source["certificate_fingerprint"])
+	out.CertificateNotAfter = decodeString(source["certificate_not_after"])
+	out.Version = decodeString(source["version"])
+	out.Capabilities = decodeSlice(source["capabilities"], func(item any) string { return decodeString(item) })
+	out.Status = ConnectorStatus(decodeString(source["status"]))
+	if field, present := source["connected_at"]; present {
+		decoded := decodeString(field)
+		out.ConnectedAt = &decoded
+	}
+	if field, present := source["last_heartbeat_at"]; present {
+		decoded := decodeString(field)
+		out.LastHeartbeatAt = &decoded
+	}
+	if field, present := source["revoked_at"]; present {
+		decoded := decodeString(field)
+		out.RevokedAt = &decoded
+	}
+	out.CreatedAt = decodeString(source["created_at"])
+	return out
+}
+
+// DecodeWorkspace builds a Workspace from a validated tree.
+func DecodeWorkspace(value any) Workspace {
+	source, _ := value.(map[string]any)
+	var out Workspace
+	out.ID = decodeString(source["id"])
+	out.OrganisationID = decodeString(source["organisation_id"])
+	out.ProjectID = decodeString(source["project_id"])
+	if field, present := source["environment_id"]; present {
+		decoded := decodeString(field)
+		out.EnvironmentID = &decoded
+	}
+	if field, present := source["connector_id"]; present {
+		decoded := decodeString(field)
+		out.ConnectorID = &decoded
+	}
+	out.PathHash = decodeString(source["path_hash"])
+	out.DisplayPath = decodeString(source["display_path"])
+	if field, present := source["repository_identity"]; present {
+		decoded := decodeString(field)
+		out.RepositoryIdentity = &decoded
+	}
+	out.Branch = decodeString(source["branch"])
+	out.HeadCommit = decodeString(source["head_commit"])
+	out.Dirty = decodeBool(source["dirty"])
+	out.Source = WorkspaceObservationSource(decodeString(source["source"]))
+	if field, present := source["last_observed_at"]; present {
+		decoded := decodeString(field)
+		out.LastObservedAt = &decoded
+	}
+	out.CreatedAt = decodeString(source["created_at"])
+	return out
+}
+
 // DecodeActor builds a Actor from a validated tree.
 func DecodeActor(value any) Actor {
 	source, _ := value.(map[string]any)
@@ -333,6 +422,123 @@ func DecodeProjectArchivedPayload(value any) ProjectArchivedPayload {
 	var out ProjectArchivedPayload
 	out.PreviousStatus = ProjectStatus(decodeString(source["previous_status"]))
 	out.NewStatus = ProjectStatus(decodeString(source["new_status"]))
+	return out
+}
+
+// DecodeConnectorEnrolledPayload builds a ConnectorEnrolledPayload from a validated
+// tree.
+func DecodeConnectorEnrolledPayload(value any) ConnectorEnrolledPayload {
+	source, _ := value.(map[string]any)
+	var out ConnectorEnrolledPayload
+	out.EnvironmentID = decodeString(source["environment_id"])
+	out.EnvironmentName = decodeString(source["environment_name"])
+	out.Platform = decodeString(source["platform"])
+	out.Architecture = decodeString(source["architecture"])
+	out.ConnectorVersion = decodeString(source["connector_version"])
+	out.Capabilities = decodeSlice(source["capabilities"], func(item any) string { return decodeString(item) })
+	out.CertificateFingerprint = decodeString(source["certificate_fingerprint"])
+	out.IdentityExpiresAt = decodeString(source["identity_expires_at"])
+	if field, present := source["enrolment_token_id"]; present {
+		decoded := decodeString(field)
+		out.EnrolmentTokenID = &decoded
+	}
+	out.NewStatus = ConnectorStatus(decodeString(source["new_status"]))
+	return out
+}
+
+// DecodeConnectorConnectedPayload builds a ConnectorConnectedPayload from a validated
+// tree.
+func DecodeConnectorConnectedPayload(value any) ConnectorConnectedPayload {
+	source, _ := value.(map[string]any)
+	var out ConnectorConnectedPayload
+	out.PreviousStatus = ConnectorStatus(decodeString(source["previous_status"]))
+	out.NewStatus = ConnectorStatus(decodeString(source["new_status"]))
+	out.Trigger = ConnectorConnectedTrigger(decodeString(source["trigger"]))
+	return out
+}
+
+// DecodeConnectorDegradedPayload builds a ConnectorDegradedPayload from a validated
+// tree.
+func DecodeConnectorDegradedPayload(value any) ConnectorDegradedPayload {
+	source, _ := value.(map[string]any)
+	var out ConnectorDegradedPayload
+	out.PreviousStatus = ConnectorStatus(decodeString(source["previous_status"]))
+	out.NewStatus = ConnectorStatus(decodeString(source["new_status"]))
+	out.Trigger = ConnectorDegradedTrigger(decodeString(source["trigger"]))
+	out.SilentForSecondsAtLeast = decodeInt(source["silent_for_seconds_at_least"])
+	return out
+}
+
+// DecodeConnectorDisconnectedPayload builds a ConnectorDisconnectedPayload from a
+// validated tree.
+func DecodeConnectorDisconnectedPayload(value any) ConnectorDisconnectedPayload {
+	source, _ := value.(map[string]any)
+	var out ConnectorDisconnectedPayload
+	out.PreviousStatus = ConnectorStatus(decodeString(source["previous_status"]))
+	out.NewStatus = ConnectorStatus(decodeString(source["new_status"]))
+	out.Trigger = ConnectorDisconnectedTrigger(decodeString(source["trigger"]))
+	if field, present := source["silent_for_seconds_at_least"]; present {
+		decoded := decodeInt(field)
+		out.SilentForSecondsAtLeast = &decoded
+	}
+	return out
+}
+
+// DecodeConnectorRevokedPayload builds a ConnectorRevokedPayload from a validated
+// tree.
+func DecodeConnectorRevokedPayload(value any) ConnectorRevokedPayload {
+	source, _ := value.(map[string]any)
+	var out ConnectorRevokedPayload
+	out.PreviousStatus = ConnectorStatus(decodeString(source["previous_status"]))
+	out.NewStatus = ConnectorStatus(decodeString(source["new_status"]))
+	out.RoutesRevoked = decodeInt(source["routes_revoked"])
+	out.SessionsDisconnected = decodeInt(source["sessions_disconnected"])
+	if field, present := source["channels_closed"]; present {
+		decoded := decodeInt(field)
+		out.ChannelsClosed = &decoded
+	}
+	return out
+}
+
+// DecodeWorkspaceObservedPayload builds a WorkspaceObservedPayload from a validated
+// tree.
+func DecodeWorkspaceObservedPayload(value any) WorkspaceObservedPayload {
+	source, _ := value.(map[string]any)
+	var out WorkspaceObservedPayload
+	out.WorkspaceID = decodeString(source["workspace_id"])
+	if field, present := source["environment_id"]; present {
+		decoded := decodeString(field)
+		out.EnvironmentID = &decoded
+	}
+	out.PathHash = decodeString(source["path_hash"])
+	out.DisplayPath = decodeString(source["display_path"])
+	if field, present := source["repository_identity"]; present {
+		decoded := decodeString(field)
+		out.RepositoryIdentity = &decoded
+	}
+	out.Branch = decodeString(source["branch"])
+	out.HeadCommit = decodeString(source["head_commit"])
+	out.Dirty = decodeBool(source["dirty"])
+	out.Source = WorkspaceObservationSource(decodeString(source["source"]))
+	return out
+}
+
+// DecodeWorkspaceHeadChangedPayload builds a WorkspaceHeadChangedPayload from a
+// validated tree.
+func DecodeWorkspaceHeadChangedPayload(value any) WorkspaceHeadChangedPayload {
+	source, _ := value.(map[string]any)
+	var out WorkspaceHeadChangedPayload
+	out.WorkspaceID = decodeString(source["workspace_id"])
+	if field, present := source["environment_id"]; present {
+		decoded := decodeString(field)
+		out.EnvironmentID = &decoded
+	}
+	out.PreviousBranch = decodeString(source["previous_branch"])
+	out.PreviousHeadCommit = decodeString(source["previous_head_commit"])
+	out.PreviousDirty = decodeBool(source["previous_dirty"])
+	out.Branch = decodeString(source["branch"])
+	out.HeadCommit = decodeString(source["head_commit"])
+	out.Dirty = decodeBool(source["dirty"])
 	return out
 }
 

@@ -255,22 +255,42 @@ Returning to `ACTIVE` is not the whole of a reconnect. Every established channel
 
 ## 9. Workspace
 
-A repository checkout detected by a connector.
+A repository checkout a connector reports or an operator registers.
 
 ### Fields
 
 - `id`
-- `environment_id`
+- `organisation_id`
 - `project_id`
+- `environment_id`
+- `connector_id`
 - `path_hash`
 - `display_path`
 - `repository_identity`
 - `branch`
 - `head_commit`
 - `dirty`
+- `source`
 - `last_observed_at`
 
-The control plane should avoid storing unnecessary full filesystem paths when a display label and stable local hash are sufficient.
+`source` is `connector_report` or `administrative_registration`, and it is the distinction that decides what else the record holds. A connector-reported workspace was observed at a configured path on a development machine (`CONNECTOR_PROTOCOL.md` §9) and stores **no filesystem path at all**: `environment_id` and `connector_id` name where it was seen, and the path never leaves that machine. An administratively registered workspace was named directly by an operator or an agent session and still stores its root path, because `workspace_hint` on an MCP session initialisation matches against it (`MCP_SPEC.md` §4) and removing it would break that resolution. There is no third value: broad filesystem scanning is disabled and this build performs none, so a vocabulary naming a discovery mode nothing can reach would describe a product that does not exist.
+
+The control plane should avoid storing unnecessary full filesystem paths when a display label and stable local hash are sufficient. Concretely:
+
+- `path_hash` is the `sha256:<hex>` digest of the checkout's absolute path. Both sides hash the same bytes, so a checkout registered administratively and later observed by a connector resolves to one record rather than two. It is not a secret and is not treated as one — a digest of a guessable path is guessable — and it is used for identity rather than for concealment.
+- `display_path` is the checkout directory's **own name**, never its full path. It is bounded and refuses path separators and control characters, at the schema and again at the database column, so a full path cannot be smuggled into the field that exists precisely so that one is not stored.
+- `(project_id, path_hash)` is unique. The same directory reported twice is one workspace; two records for it would make "which workspace is this agent in" ambiguous for the wrong reason.
+- `repository_identity` is the canonical provider-agnostic identity of the checkout's remote (§6), or absent. An absent value is recorded as absent rather than guessed at.
+- No field records source file contents or which files changed. `dirty` is a boolean, and the payload that carries an observation has no member capable of carrying either (ADR-0022).
+
+`last_observed_at` is when the control plane last received this state, and it is refreshed by every observation including one that changed nothing. Reading it is not a freshness claim about the checkout: it says when the connector last looked, and the connector looks on an interval.
+
+### Invariants
+
+- A workspace belongs to exactly one project, and a connector may only report one for a project its enrolled identity is authorised for (`CONNECTOR_PROTOCOL.md` §9)
+- A connector-reported workspace stores no root path
+- An environment holds at most 32 workspaces in one project
+- A first observation and a change to `branch`, `head_commit` or `dirty` each produce an event; an observation that changed nothing does not (`EVENTS.md` §7)
 
 ## 10. Published service
 

@@ -11,7 +11,11 @@
 import { createRouter } from "@tanstack/react-router";
 
 import {
+  projectConnectorRoute,
+  projectEnrolConnectorRoute,
   projectEnvironmentsRoute,
+} from "./routes/environments.tsx";
+import {
   projectLiveRoute,
   projectOverviewRoute,
   projectReviewsRoute,
@@ -38,6 +42,8 @@ const routeTree = rootRoute.addChildren([
     projectLiveRoute,
     projectReviewsRoute,
     projectEnvironmentsRoute,
+    projectEnrolConnectorRoute,
+    projectConnectorRoute,
     projectSettingsRoute,
   ]),
 ]);

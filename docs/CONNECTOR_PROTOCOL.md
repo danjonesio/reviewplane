@@ -37,6 +37,45 @@ Default paths:
 /var/log/reviewplane-connector/ or journald
 ```
 
+The systemd unit and a complete example configuration are shipped in the source
+tree at `services/connector/packaging/systemd/reviewplane-connector.service` and
+`services/connector/packaging/config.example.yaml`, and `DEPLOYMENT.md` §13
+installs them from there. The example is not a menu: the connector's own test
+suite parses it, so a setting that drifted from the parser fails the build, and
+an operator can copy it whole rather than assembling one from this document.
+
+Three properties of the unit are requirements rather than preferences.
+
+It opens **no listening socket**. Every connection the connector makes is
+outbound (§5), which is what makes "no public inbound port is required on the
+development VM" observable with `ss -ltnp` rather than merely intended. No
+socket unit accompanies it, and adding one would be an architecture change
+requiring an ADR.
+
+It does **not** use `DynamicUser=`. The connector reads the developer's
+checkouts to report branch and head commit (§9), which needs a stable account
+in two ways a per-boot UID cannot supply: the checkouts must grant it read
+access, and Git refuses to operate on a repository owned by another account
+unless `safe.directory` names it, which is configuration written against a
+specific user. The unit therefore runs as a named service account, and the
+operator grants that account read access explicitly — through
+`SupplementaryGroups=`, or by running the connector as the developer, which on a
+single-developer machine is the honest arrangement.
+
+It sets `ProtectHome=read-only` rather than `ProtectHome=yes`. Workspace
+checkouts commonly live under `/home`, and hiding it would make every workspace
+report as "not a Git checkout" and silently disable the whole of §9. Read-only
+still means an observation cannot write to somebody's repository, which the
+connector also enforces from its own side (§9).
+
+Exit code 3 is a refusal an operator must act on — an invalid enrolment token, a
+revoked identity, an unsupported protocol version or a required upgrade — and
+the unit excludes it from `Restart=`, because restarting would retry a credential
+the control plane has already refused (§18).
+
+Signed release artefacts and multi-platform builds are deferred: the binary is
+built from source (`services/connector`) at Stage 1.
+
 ## 4. Identity and enrolment
 
 ### 4.1 Enrolment token
@@ -49,7 +88,12 @@ Created by an administrator with:
 - Maximum uses, default one
 - Optional environment labels
 
-Stage 0 status: the connector is built and run from source (`services/connector`). systemd unit packaging, signed release artefacts and multi-platform builds are deferred.
+The token is minted through `API.md` §9, which is also where the one-time
+`reviewplane-connector enrol` command an operator runs is assembled. The token
+value appears in that one response and nowhere else: the control plane stores
+only its digest and cannot reproduce it, and it is never written to a log or to
+an event payload — `connector.enrolled` records the token's **identifier**
+(`EVENTS.md` §7).
 
 ### 4.2 Key generation
 
@@ -152,7 +196,11 @@ Stage 0 terminates the connector channels on a dedicated mutually authenticated 
 
 ### 5.3 Refusal signalling
 
-Version 1 defines no error message type. A control plane refuses a connector by closing the WebSocket with code 1008 and a reason equal to a §21 error class. A connector MUST treat `ENROLMENT_TOKEN_INVALID`, `IDENTITY_REVOKED`, `PROTOCOL_UNSUPPORTED` and `UPGRADE_REQUIRED` as terminal: it reports the class and stops, and MUST NOT retry with the refused credential (§18). Any other close is a transport event, and the reconnect behaviour of §17 applies.
+Version 1 defines no error message type. A control plane refuses a connector by closing the WebSocket with code 1008 and a reason equal to a §21 error class. A connector MUST treat `ENROLMENT_TOKEN_INVALID`, `IDENTITY_REVOKED`, `PROTOCOL_UNSUPPORTED`, `PROJECT_NOT_AUTHORISED` and `UPGRADE_REQUIRED` as terminal: it reports the class and stops, and MUST NOT retry with the refused credential or configuration (§18). Any other close is a transport event, and the reconnect behaviour of §17 applies.
+
+`PROJECT_NOT_AUTHORISED` is terminal for the same reason the other four are: a connector configured to report or serve a project it may not touch is a misconfiguration only an operator can fix, so retrying with the same configuration cannot succeed and would loop until somebody noticed. It stops with the class named instead, which is what `UX_FLOWS.md` §18 means by an actionable cause.
+
+This governs a **close reason** and nothing else. A `route.publish.ack` carrying `PROJECT_NOT_AUTHORISED` in its payload (§11) refuses one publication, not the channel, and the connector MUST keep serving everything else it was authorised for.
 
 A frame that is oversized, malformed or schema-invalid is refused with the close code that matches its reason — 1009 for a bound violation, 1008 for an unknown version or type, 1007 otherwise — and ends the connection rather than being skipped.
 
@@ -180,8 +228,13 @@ Version 1 defines these message types, each bound to one channel:
 | `route.publish.ack` | `routes` | connector to control plane |
 | `connector.reconnect.request` | `control` | connector to control plane |
 | `connector.reconnect.response` | `control` | control plane to connector |
+| `workspace.observed` | `events` | connector to control plane |
 
-The data-stream header of §12 travels on the `data` channel and is not carried in a control envelope. The `events` and `upgrade` channels are reserved at version 1: no message type is defined for them yet. The reconnect exchange of §17 travels on `control` rather than on `upgrade`, because it reconciles state and only reports a version classification as part of doing so.
+The data-stream header of §12 travels on the `data` channel and is not carried in a control envelope. The `upgrade` channel is reserved at version 1: no message type is defined for it. The reconnect exchange of §17 travels on `control` rather than on `upgrade`, because it reconciles state and only reports a version classification as part of doing so.
+
+The `events` channel carries one message type, `workspace.observed` (§9, ADR-0022). It is an observation about the development environment rather than a command or an acknowledgement, which is why it is not on `control`, and it is context rather than liveness, which is why it is not folded into the heartbeat. The agent-session observations this channel is also named for are not defined at version 1; they arrive as a further message type rather than by widening this one.
+
+A logical channel is a property of the message type rather than of a separate connection. Stage 1 carries `control`, `heartbeat`, `routes` and `events` over the one mutually authenticated WebSocket of §5.2; only `data` is a second connection, because it terminates at the tunnel gateway rather than at the control plane.
 
 Version 1 defines no message by which the control plane withdraws a single route from a connector that is still connected. Revocation reaches the tunnel through the gateway (§18, `ARCHITECTURE.md` §7.3) and reaches the connector's own route table at the next reconnection (§17). A `route.revoke` message would remove that gap and is a protocol change requiring an ADR.
 
@@ -203,7 +256,7 @@ Messages must have bounded size. Large payloads are not transferred through the 
 
 `message_id`, `connector_id` and `correlation_id` are opaque identifiers (`DOMAIN_MODEL.md` §3). Their conventional prefixes are documentation: implementations MUST bound length and character class only, and MUST NOT require a prefix.
 
-`connector_id` MUST be absent on `connector.registration.request` and `connector.registration.response`, and MUST be present on every other message type. `correlation_id` is optional and identifies the message or command being answered.
+`connector_id` MUST be absent on `connector.registration.request` and `connector.registration.response`, and MUST be present on every other message type, `workspace.observed` included: an observation about a development machine that named no connector could not be attributed to the environment it describes. The control plane additionally refuses a frame whose `connector_id` is not the identity the TLS handshake authenticated, so the envelope's attribution cannot disagree with the certificate that carried it. `correlation_id` is optional and identifies the message or command being answered.
 
 ### Bounds
 
@@ -220,6 +273,7 @@ Version 1 bounds, all enforced by the schema:
 | `route.publish.ack` payload | 1 024 bytes |
 | `connector.reconnect.request` payload | 32 768 bytes |
 | `connector.reconnect.response` payload | 57 344 bytes |
+| `workspace.observed` payload | 2 048 bytes |
 
 Every string, array and numeric field additionally carries its own explicit bound in the schema. The frame bound MUST be applied to the raw bytes before deserialisation; the payload bound is measured on the canonical encoding.
 
@@ -274,26 +328,91 @@ The thresholds are the control plane's, not the connector's: `DEGRADED` and `DIS
 
 The connector also sends a WebSocket ping alongside each heartbeat and bounds its own read wait, so that a control plane with nothing to say still proves the channel is alive.
 
-## 9. Workspace discovery
+### Flood limiting
 
-Discovery modes:
+A heartbeat costs the control plane two database writes, and a connector is the one peer that can send them as fast as a socket allows. The control plane therefore applies a floor: a heartbeat arriving less than a third of the configured interval after the last admitted one is counted and dropped, and a connector that exceeds 32 dropped heartbeats on one channel is refused with `PROTOCOL_UNSUPPORTED` and the channel ends. Without it a faulty or hostile connector turns its own heartbeat loop into load on the control plane's database, which is a denial of service dressed as liveness. §22 requires bounded allocations of a protocol implementation, and a bound on what one message may allocate is not a bound on how often it may be sent.
+
+The floor is derived from the configured interval rather than fixed, so an operator who shortens the interval does not also have to remember to widen the limit.
+
+Dropping rather than refusing on the first offence is deliberate. A connector that reconnects immediately after a network blip legitimately sends a heartbeat close behind its last one, and ending its channel for that would turn a recovered outage into a longer one. A dropped heartbeat is not an error the connector is told about: it is simply not counted as liveness, and the connector's next one on the interval is.
+
+## 9. Workspace discovery and Git context
+
+The decision behind this section is ADR-0022.
+
+### Discovery modes
 
 1. Explicit configured paths
 2. Agent-session supplied working directory
 3. Optional bounded root scanning
 
-Default should be explicit paths or agent-supplied context. Broad filesystem scanning is disabled.
+Default is explicit paths or agent-supplied context. **Broad filesystem scanning is disabled**, and this build performs none: the only paths a connector ever looks at are the ones an operator wrote in the `workspaces` block of §20, and there is no directory walk anywhere in the connector. Mode 3 is unimplemented and `privacy.discover_workspaces: true` is refused at startup rather than accepted and ignored, so an operator cannot believe scanning is on when nothing scans.
 
-Reported data:
+A workspace entry missing an `id` or a `project` is skipped with a warning naming which entry it was. A publication names both (§11), and an observation the control plane could not attribute to a project is one it must refuse.
 
-- Normalised repository remote identity
-- Branch
-- HEAD commit
-- Dirty status
-- Changed file paths where policy permits
-- Workspace display label
+### What is reported
 
-Source file contents are not reported by default.
+| Field | Meaning |
+|---|---|
+| `workspace_id` | The identifier a publication names (§11), chosen by the connector |
+| `project_id` | The project the connector believes the checkout belongs to — a claim, re-checked before anything is stored |
+| `path_hash` | `sha256:<hex>` digest of the checkout's absolute path |
+| `display_label` | The checkout directory's own name |
+| `repository_identity` | Canonical provider-agnostic identity of the checkout's remote, when it has one that could be normalised |
+| `branch` | Checked-out branch; a detached HEAD is reported as the literal `HEAD` |
+| `head_commit` | HEAD commit, lowercase hexadecimal |
+| `dirty` | Whether the working tree carries uncommitted changes |
+| `observed_at` | When the connector observed this state |
+
+The control plane records its own instant beside `observed_at`, because a development machine's clock is not authoritative.
+
+An absent value is reported as absent rather than guessed at. A checkout with no remote the connector could normalise carries no `repository_identity`; a repository with no commit on `HEAD` yet, a directory that is not a checkout, and a machine with no `git` executable each yield no observation at all rather than an observation with invented fields.
+
+### What is never reported
+
+- **Source file contents.** Not by default and not by configuration: the version 1 `workspace_observation` payload has no member capable of carrying them.
+- **A changed-path list.** `dirty` is a boolean derived from whether `git` printed anything, not from what it printed. `privacy.report_changed_paths: true` is refused at startup, because accepting it would tell an operator their policy had been applied when nothing about what is sent had changed. Carrying paths would be a protocol change requiring an ADR, not a configuration option.
+- **The full filesystem path.** The digest identifies the same checkout across observations without disclosing the directory layout; `display_label` is bounded and refuses `/`, `\` and control characters, so a path cannot be smuggled through the field that exists precisely so that one is not stored.
+- **Process detail.** §8 keeps it out of the heartbeat and nothing here reintroduces it.
+
+These are properties of the schema rather than of the code that fills it in, which is what makes them stable: `packages/protocol/schemas/connector/v1.schema.json` sets `additionalProperties: false` on the payload, and both languages' validators are generated from it.
+
+### How it is reported
+
+Each observation is one `workspace.observed` message on the `events` channel (§6), bounded at 2 048 bytes. One observation is one message: the schema binds one payload to one envelope and version 1 defines no batch form.
+
+Observations are sent at three moments:
+
+- **on connect** — the whole set, once per established channel, after §17 reconciliation has completed. It follows the reconciliation rather than interleaving with it, because a connector describing workspaces to a control plane that has not yet said which routes it authorises would be answering a question nobody asked;
+- **on change** — only the workspaces whose branch, head commit or dirty state moved since they were last reported. A path hash and a display label cannot change without the configuration changing, and `observed_at` changes every interval by construction, so neither triggers a report. A connector on a machine nobody is working on is silent;
+- **on reconnect** — the full set again, because a control plane that restarted has no memory of the last one. A workspace suppressed as unchanged would otherwise stay invisible until it happened to change.
+
+The re-observation interval is `git_context.interval`, default 30 seconds (`CONFIGURATION.md` §5.2).
+
+A workspace that stops yielding context — the directory was removed, or is no longer a checkout — is forgotten rather than reported stale. The connector says nothing about it instead of continuing to assert a branch on its behalf.
+
+### How the observation is bounded on the development machine
+
+Observing runs `git`, on somebody's working machine, against directories the connector did not choose. Four rules apply and are enforced by the connector rather than trusted to a caller:
+
+- **No shell.** Every invocation is a fixed argument vector, so nothing in a repository's name, path or configuration can become a command. The working directory is set rather than passed as an argument, so a configured path never appears in an argument vector at all.
+- **Bounded output and bounded time.** Each invocation captures a few kilobytes and carries its own deadline, so an enormous repository cannot grow the connector's heap and a checkout on a stalled network mount delays one observation rather than the connector.
+- **No prompt.** The invocation environment disables terminal prompts and askpass helpers, so no observation can block waiting for a credential on a service that has no terminal. The subcommands used read local state only — the enclosing work tree, `HEAD`, the porcelain status and the origin remote's configured URL — so an observation contacts no remote.
+- **No write to somebody's repository.** Optional locks and automatic garbage collection are disabled, and `core.fsmonitor` is overridden, so a repository's own configuration cannot name a program for `git` to run on the connector's behalf.
+
+### The claim is not an authorisation
+
+`project_id` is what the connector believes. The control plane re-derives whether this identity may act for that project — the identifier, the organisation the client certificate resolved to and the project the identity was enrolled for are one predicate — and refuses a project outside that scope with `PROJECT_NOT_AUTHORISED`, closing the channel per §5.3. The refusal is terminal.
+
+The connector also chooses `workspace_id`, because it is the value a publication names. An identifier already held elsewhere is refused with the same class, so claiming another project's workspace and naming a project outside the enrolled scope are one outcome rather than two.
+
+An environment may hold at most 32 workspaces in one project. Without a bound, an environment that chooses its own identifiers could fill the table with identifiers nothing will ever use.
+
+### What the control plane records
+
+A first observation creates the workspace record and writes `workspace.observed`. A change to branch, head commit or dirty state writes `workspace.head_changed` carrying **both** sides. An observation that moved nothing refreshes `last_observed_at` and writes no event: `EVENTS.md` §7 requires a high-frequency signal to be sampled rather than evented, and a connector reports on an interval whether or not anything happened.
+
+Nothing here computes staleness. `DOMAIN_MODEL.md` §24 compares a review's captured context against a current workspace, and this section supplies only the current side; a freshness claim this layer cannot support would be worse than no claim at all.
 
 ## 10. Development-service detection
 
@@ -542,6 +661,12 @@ Responsibilities:
 
 It must not grant the agent connector-administrator privileges.
 
+Stage 1 implements the first responsibility and refuses the rest. `reviewplane-connector mcp` resolves the workspace and project for the agent's working directory and prints what it resolved — connector identity, workspace, project and checkout — before refusing, so that an operator can tell "the bridge does not exist yet" from "the bridge cannot see my project", which are two quite different problems. The short-lived agent-session credential exchange and the MCP proxying are RVP-49, and until they land the command refuses rather than pretending.
+
+The resolution matches configured paths only. Nothing is discovered: a directory inside no configured workspace is reported as such rather than registered on the spot, because a publication names a workspace the operator authorised (§11). Where workspaces nest, the longest matching path wins, so an agent in a nested checkout resolves to the nearer one. A workspace may also be named explicitly with `--workspace`.
+
+The connector advertises `local-mcp-bridge` in its capabilities because the command surface exists. A capability describes what a build implements; this one describes the command, not a credential path.
+
 ## 15. Agent-session association
 
 Association methods, in priority order:
@@ -580,7 +705,13 @@ On reconnect, the connector sends `connector.reconnect.request`, whose payload c
 - `known_agent_sessions`
 - `workspace_head_state`
 
-Stage 0 sends `known_agent_sessions` and `workspace_head_state` as empty arrays, because agent-session re-establishment and workspace discovery (§9) are Stage 1. They are sent empty rather than omitted, so that the message shape does not change when those capabilities arrive; a payload omitting one is refused by the schema.
+`workspace_head_state` carries the connector's real observed state: one entry per configured workspace it has been able to observe, each naming the workspace, its branch, its head commit and its dirty state. Those scalars are the same schema definitions `workspace_observation` uses (§9), so the claim and the observation cannot drift apart.
+
+The claim is answered from the **last** observation rather than by observing afresh. It is the first frame on an established channel and nothing may delay it: a workspace on a stalled network mount would otherwise hold up reconciliation, during which the connector serves no route at all. What the control plane receives is therefore genuinely observed state that may be one interval old, followed within milliseconds by the fresh full report of §9. The control plane's answer wins in every disagreement in any case, so a claim is never authority.
+
+The claim is bounded at eight workspaces while the observation stream is not. A connector serving more claims the first eight in configuration order rather than an arbitrary subset, so two consecutive reconnects from an unchanged connector claim the same eight; a claim that varied between attempts would look like a connector whose workspaces kept appearing and disappearing. Every workspace is still observed and still reported.
+
+`known_agent_sessions` is still sent as an empty array, because agent-session re-establishment is not implemented. It is sent empty rather than omitted, so that the message shape does not change when that capability arrives; a payload omitting it is refused by the schema.
 
 The claim is a claim, never an authorisation. The payload carries no credential: the identity is the mutually authenticated client certificate the channel already presented (§5.2).
 
@@ -630,10 +761,32 @@ Revoking a connector:
 - Invalidates its identity
 - Closes control and data channels
 - Revokes active routes
-- Marks associated sessions disconnected
+- Marks associated browser sessions `DEGRADED`
 - Produces audit events
 
 Re-enrolment creates a new connector identity.
+
+### What "marks associated sessions" means
+
+A browser session that lost its connector is marked `DEGRADED`. `DOMAIN_MODEL.md` §12 defines no `DISCONNECTED` browser-session status and requires that a connector outage move a session to `DEGRADED` and never to `TERMINATED` or `FAILED`: the session and its metadata are retained and remain diagnosable, so a human can still read what happened in it.
+
+Revocation is where that rule bites hardest, because nothing returns such a session to `READY`. An outage is repaired by reconciliation continuing the route the session was allocated against (§17); a revoked route is not continued, and a re-enrolled environment is a **new** identity with new routes rather than the same one returning. The session therefore stays `DEGRADED` and diagnosable rather than being resurrected or destroyed.
+
+### Ordering
+
+The four effects are ordered, and the order is a requirement rather than an implementation detail:
+
+1. active routes are revoked and their in-flight streams reset, and the affected browser sessions are marked `DEGRADED`;
+2. the connector record is marked `REVOKED`;
+3. the live control channel is closed with code 1008 and the reason `IDENTITY_REVOKED`.
+
+The record flips **before** the close. The pre-upgrade guard on the control channel reads that record, so a connector that reconnected in the gap between closing its socket and marking its row would be admitted again; closing afterwards makes the refusal immediate rather than merely eventual. Routes and sessions are ended before the record flips, so that the counts the audit event reports are counts of work that actually happened, and a failure part-way leaves the connector usable rather than revoked with its routes still carried — which is the direction that is safe to be wrong in.
+
+### What the audit record carries
+
+The `connector.revoked` event and the API response of `API.md` §9 both report `routes_revoked`, `sessions_disconnected` and `channels_closed`. Revocation is several things at once and an auditor needs to see that all of them happened; a revocation that closed a channel and left a route carried would be a revocation in name. `channels_closed` is zero when the connector held no live channel, which is an ordinary outcome rather than a failure.
+
+Revoking an already-revoked connector is not an error. It reports `already_revoked` and changes nothing, so a retried request cannot produce a second set of counts for work that happened once.
 
 ## 19. Upgrades
 
@@ -684,12 +837,20 @@ environment:
   labels: [proxmox, development]
 
 workspaces:
-  # id is the workspace identifier a publication names. Workspace discovery is
-  # Stage 1 (section 9), so until it lands the identifier is configured, and a
-  # publication naming an unknown workspace is refused with WORKSPACE_NOT_FOUND.
+  # These are the only paths the connector ever looks at (section 9). id is the
+  # workspace identifier a publication names, and a publication naming an
+  # unknown workspace is refused with WORKSPACE_NOT_FOUND; project is what an
+  # observation is attributed to. An entry missing either is skipped with a
+  # warning, because a publication names both.
   - id: wsp_refresh_surplus
     path: /home/dan/projects/refresh-surplus
     project: refresh-surplus
+
+git_context:
+  # How often the connector re-reads the branch, head commit and dirty state of
+  # the checkouts above (section 9). Only a change is reported, so a machine
+  # nobody is working on is silent. Between 5s and 1h; default 30s.
+  interval: 30s
 
 publication:
   allowed_hosts:
@@ -706,7 +867,9 @@ publication:
     - refresh-surplus
 
 privacy:
-  report_changed_paths: true
+  # All three must be false in this build, and each is refused with a message
+  # naming what is missing rather than a blanket "unsupported".
+  report_changed_paths: false
   report_process_details: false
   discover_workspaces: false
 
@@ -719,7 +882,17 @@ Configuration MUST be validated at startup and every failure MUST name the setti
 
 The connector accepts a deliberately small YAML subset — comments, block mappings, block and flow sequences, and plain or quoted scalars — and refuses anything outside it, including tabs for indentation, anchors, aliases, tags, multi-line scalars, flow mappings and multiple documents. That keeps the statically linked binary of §3 free of a YAML dependency and keeps the parser bounded.
 
-Two settings are refused rather than accepted at Stage 0, because no configuration of this build can honour them: `privacy.report_process_details: true`, since §8 permits only `load` and `memory_available_bytes` in a heartbeat, and `privacy.discover_workspaces: true`, since workspace discovery (§9) is not implemented.
+The same example is maintained as a file, `services/connector/packaging/config.example.yaml`, which the connector's own test suite parses, so that a setting which drifted from the parser fails the build. An operator installs from that file (`DEPLOYMENT.md` §13); the block above documents the same settings.
+
+All three `privacy` settings are refused rather than accepted when set to `true`, because no configuration of this build can honour them. Each refusal names precisely what is missing, because "not supported" would leave an operator unable to tell a missing feature from a rejected one:
+
+| Setting | Why `true` is refused |
+|---|---|
+| `privacy.report_process_details` | §8 permits only `load` and `memory_available_bytes` in a heartbeat's resource summary, and the schema refuses any other property |
+| `privacy.discover_workspaces` | The `workspaces` block is observed either way; what this setting turns on is discovery mode 3 of §9 — bounded scanning of a configured root for checkouts nobody listed — which is not implemented |
+| `privacy.report_changed_paths` | The version 1 `workspace_observation` payload reports `dirty` as a boolean and has no member that can carry a changed-path list (§9). Accepting it would tell an operator their policy had been applied when nothing about what is sent had changed |
+
+`git_context.interval` is validated at load and must be between 5 seconds and 1 hour. Below the minimum the connector would run `git` more or less continuously on somebody's development machine; above the maximum an operator has effectively turned §9 off and should say so by removing the `workspaces` block instead.
 
 The `publication` block is enforced. An omitted `allowed_hosts` or `allowed_ports` means the Stage 0 default of `SECURITY.md` §9 — loopback only, on the development-server ports above — never "everything"; a configuration file that omits a setting MUST NOT be the widest one. A host name is refused at load rather than resolved at publication, because resolving one is a rebinding surface: the name that passed the check need not be the address the connector later opens.
 
@@ -745,6 +918,8 @@ Stable connector error classes. This list is the complete wire vocabulary; addin
 These classes describe authorisation, identity and lifecycle outcomes. A frame that is oversized, malformed or schema-invalid is refused with a local reason and no wire error class, except for an unknown `protocol_version` or `type`, which report `PROTOCOL_UNSUPPORTED` (§7 "Rejection").
 
 On the wire a class is carried by a WebSocket close reason (§5.3), not by a message: version 1 defines no error message type, and adding one would be a protocol change. `CONTROL_PLANE_UNAVAILABLE` is the connector's own classification of a control plane it cannot reach, and is reported locally rather than received.
+
+Five of these classes are terminal **as a close reason** — `ENROLMENT_TOKEN_INVALID`, `IDENTITY_REVOKED`, `PROTOCOL_UNSUPPORTED`, `PROJECT_NOT_AUTHORISED` and `UPGRADE_REQUIRED` — and a connector that receives one stops rather than reconnecting (§5.3). Terminality attaches to the close, not to the class in every context: `PROJECT_NOT_AUTHORISED` and `WORKSPACE_NOT_FOUND` also appear in a `route.publish.ack` payload, where each refuses one publication and leaves the channel and every other route untouched (§11).
 
 ## 22. Security requirements
 

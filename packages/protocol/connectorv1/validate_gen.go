@@ -13,13 +13,16 @@ var pattern4 = regexp.MustCompile("^[A-Za-z0-9:._-]+$")
 var pattern5 = regexp.MustCompile("^[A-Za-z0-9._~+/=-]+$")
 var pattern6 = regexp.MustCompile("^[A-Za-z0-9+/]+={0,2}$")
 var pattern7 = regexp.MustCompile("^[a-z0-9][a-z0-9._-]*$")
-var pattern8 = regexp.MustCompile("^[a-z][a-z0-9-]*$")
-var pattern9 = regexp.MustCompile("^[^\\x00-\\x1f\\x7f]+$")
-var pattern10 = regexp.MustCompile("^[a-z0-9]+$")
-var pattern11 = regexp.MustCompile("^[a-z0-9_]+$")
-var pattern12 = regexp.MustCompile("^[A-Za-z0-9.:_-]+$")
-var pattern13 = regexp.MustCompile("^[A-Za-z0-9.:_\\[\\]-]+:[0-9]{1,5}$")
-var pattern14 = regexp.MustCompile("^[0-9a-f]+$")
+var pattern8 = regexp.MustCompile("^[^\\x00-\\x1f\\x7f]+$")
+var pattern9 = regexp.MustCompile("^[0-9a-f]+$")
+var pattern10 = regexp.MustCompile("^sha256:[0-9a-f]{64}$")
+var pattern11 = regexp.MustCompile("^[^\\x00-\\x1f\\x7f/\\\\]+$")
+var pattern12 = regexp.MustCompile("^[a-z0-9][a-z0-9.-]*(:[0-9]{1,5})?(/[A-Za-z0-9._~-]+)+$")
+var pattern13 = regexp.MustCompile("^[a-z][a-z0-9-]*$")
+var pattern14 = regexp.MustCompile("^[a-z0-9]+$")
+var pattern15 = regexp.MustCompile("^[a-z0-9_]+$")
+var pattern16 = regexp.MustCompile("^[A-Za-z0-9.:_-]+$")
+var pattern17 = regexp.MustCompile("^[A-Za-z0-9.:_\\[\\]-]+:[0-9]{1,5}$")
 
 // validateIdentifier checks opaque durable identifier (docs/DOMAIN_MODEL.md section
 // 3). Consumers MUST treat the value as opaque: the schema bounds only its length and
@@ -84,12 +87,49 @@ func validateEnvironmentLabel(value any, path string, out *[]SchemaViolation) {
 	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern7})
 }
 
+// validateGitBranch checks checked-out branch name. A detached HEAD is reported as the
+// literal HEAD rather than as an invented branch.
+func validateGitBranch(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 255, pattern: pattern8})
+}
+
+// validateGitCommit checks hEAD commit identifier, lowercase hexadecimal.
+func validateGitCommit(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 7, maxLength: 64, pattern: pattern9})
+}
+
+// validatePathHash checks stable sha256:<hex> digest of the workspace's absolute path
+// on the development machine (docs/DOMAIN_MODEL.md section 9). The digest is reported
+// instead of the path so that the control plane can recognise the same checkout across
+// observations without storing somebody else's directory layout.
+func validatePathHash(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 71, maxLength: 71, pattern: pattern10})
+}
+
+// validateWorkspaceDisplayLabel checks human-readable label for the workspace, which
+// is the checkout directory's own name and never its full path
+// (docs/CONNECTOR_PROTOCOL.md section 9). It is bounded and refuses control characters
+// and path separators, so a full path cannot be smuggled through it.
+func validateWorkspaceDisplayLabel(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 128, pattern: pattern11})
+}
+
+// validateRepositoryIdentity checks provider-agnostic canonical repository identity
+// such as github.com/example/refresh-surplus (docs/DOMAIN_MODEL.md section 6). It is
+// derived from the checkout's remote by the shared normaliser in packages/protocol, so
+// the connector, the control plane and the web application cannot disagree about what
+// one repository is. A userinfo component is dropped by that normaliser and never
+// reaches this field.
+func validateRepositoryIdentity(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 3, maxLength: 255, pattern: pattern12})
+}
+
 // validateConnectorCapability checks capability advertised by the connector build.
 // Known version 1 values are listed in x-protocol.known_capabilities; unknown values
 // are accepted so that a newer connector is classified by docs/CONNECTOR_PROTOCOL.md
 // section 19 rather than rejected outright.
 func validateConnectorCapability(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern8})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern13})
 }
 
 // validateDestinationProtocol checks application protocol spoken to the local
@@ -113,7 +153,7 @@ func validateStreamMode(value any, path string, out *[]SchemaViolation) {
 // validateMessageType checks version 1 message type. Unknown types are rejected, never
 // ignored. This enumeration MUST equal the keys of x-protocol.messages.
 func validateMessageType(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{values: []string{"connector.registration.request", "connector.registration.response", "heartbeat", "route.publish", "route.publish.ack", "connector.reconnect.request", "connector.reconnect.response"}})
+	checkString(value, path, out, stringOpts{values: []string{"connector.registration.request", "connector.registration.response", "heartbeat", "route.publish", "route.publish.ack", "connector.reconnect.request", "connector.reconnect.response", "workspace.observed"}})
 }
 
 // validateErrorClass checks stable connector error class (docs/CONNECTOR_PROTOCOL.md
@@ -201,26 +241,26 @@ func validateEnvelope(value any, path string, out *[]SchemaViolation) {
 	if matchesCondition(source["type"], []string{"connector.registration.request", "connector.registration.response"}) {
 		forbidProperty(source, path, "connector_id", "the registration exchange precedes connector identity assignment", out)
 	}
-	if matchesCondition(source["type"], []string{"heartbeat", "route.publish", "route.publish.ack", "connector.reconnect.request", "connector.reconnect.response"}) {
+	if matchesCondition(source["type"], []string{"heartbeat", "route.publish", "route.publish.ack", "connector.reconnect.request", "connector.reconnect.response", "workspace.observed"}) {
 		requireProperty(source, path, "connector_id", "every post-enrolment message is attributed to a connector identity", out)
 	}
 }
 
 // validateEnvironmentDescriptorName checks operator-visible environment name.
 func validateEnvironmentDescriptorName(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 128, pattern: pattern9})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 128, pattern: pattern8})
 }
 
 // validateEnvironmentDescriptorPlatform checks operating system. Known version 1
 // values are in x-protocol.known_platforms.
 func validateEnvironmentDescriptorPlatform(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 32, pattern: pattern10})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 32, pattern: pattern14})
 }
 
 // validateEnvironmentDescriptorArchitecture checks cPU architecture. Known version 1
 // values are in x-protocol.known_architectures.
 func validateEnvironmentDescriptorArchitecture(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 32, pattern: pattern11})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 32, pattern: pattern15})
 }
 
 // validateEnvironmentDescriptorLabels checks optional operator-assigned labels.
@@ -425,7 +465,7 @@ func validateHeartbeat(value any, path string, out *[]SchemaViolation) {
 // validateRoutePublishLocalHost checks local destination host. The connector still
 // applies its own allow-list; schema acceptance is not authorisation.
 func validateRoutePublishLocalHost(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 255, pattern: pattern12})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 255, pattern: pattern16})
 }
 
 // validateRoutePublishLocalPort checks local destination port.
@@ -485,7 +525,7 @@ func validateRoutePublishAckStatus(value any, path string, out *[]SchemaViolatio
 // validateRoutePublishAckObservedDestination checks destination the connector actually
 // opened, as host:port.
 func validateRoutePublishAckObservedDestination(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 3, maxLength: 262, pattern: pattern13})
+	checkString(value, path, out, stringOpts{minLength: 3, maxLength: 262, pattern: pattern17})
 }
 
 // validateRoutePublishAck checks a RoutePublishAck value.
@@ -550,7 +590,7 @@ func validateDataStreamHeader(value any, path string, out *[]SchemaViolation) {
 // authoritative record is closed rather than continued, because docs/ARCHITECTURE.md
 // section 14 forbids silently redirecting traffic to a different environment.
 func validateReconnectRouteObservedDestination(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 3, maxLength: 262, pattern: pattern13})
+	checkString(value, path, out, stringOpts{minLength: 3, maxLength: 262, pattern: pattern17})
 }
 
 // validateReconnectRoute checks a ReconnectRoute value.
@@ -596,16 +636,6 @@ func validateReconnectStream(value any, path string, out *[]SchemaViolation) {
 	}
 }
 
-// validateWorkspaceHeadBranch checks checked-out branch.
-func validateWorkspaceHeadBranch(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 255, pattern: pattern9})
-}
-
-// validateWorkspaceHeadHeadCommit checks hEAD commit identifier.
-func validateWorkspaceHeadHeadCommit(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 7, maxLength: 64, pattern: pattern14})
-}
-
 // validateWorkspaceHeadDirty checks whether the working tree has uncommitted changes.
 func validateWorkspaceHeadDirty(value any, path string, out *[]SchemaViolation) {
 	checkBoolean(value, path, out)
@@ -621,13 +651,54 @@ func validateWorkspaceHead(value any, path string, out *[]SchemaViolation) {
 		validateIdentifier(field, path+".workspace_id", out)
 	}
 	if field, present := source["branch"]; present {
-		validateWorkspaceHeadBranch(field, path+".branch", out)
+		validateGitBranch(field, path+".branch", out)
 	}
 	if field, present := source["head_commit"]; present {
-		validateWorkspaceHeadHeadCommit(field, path+".head_commit", out)
+		validateGitCommit(field, path+".head_commit", out)
 	}
 	if field, present := source["dirty"]; present {
 		validateWorkspaceHeadDirty(field, path+".dirty", out)
+	}
+}
+
+// validateWorkspaceObservationDirty checks whether the working tree has uncommitted
+// changes. Which files changed is deliberately not reportable at this version.
+func validateWorkspaceObservationDirty(value any, path string, out *[]SchemaViolation) {
+	checkBoolean(value, path, out)
+}
+
+// validateWorkspaceObservation checks a WorkspaceObservation value.
+func validateWorkspaceObservation(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"workspace_id", "project_id", "path_hash", "display_label", "repository_identity", "branch", "head_commit", "dirty", "observed_at"}, []string{"workspace_id", "project_id", "path_hash", "display_label", "branch", "head_commit", "dirty", "observed_at"})
+	if !ok {
+		return
+	}
+	if field, present := source["workspace_id"]; present {
+		validateIdentifier(field, path+".workspace_id", out)
+	}
+	if field, present := source["project_id"]; present {
+		validateIdentifier(field, path+".project_id", out)
+	}
+	if field, present := source["path_hash"]; present {
+		validatePathHash(field, path+".path_hash", out)
+	}
+	if field, present := source["display_label"]; present {
+		validateWorkspaceDisplayLabel(field, path+".display_label", out)
+	}
+	if field, present := source["repository_identity"]; present {
+		validateRepositoryIdentity(field, path+".repository_identity", out)
+	}
+	if field, present := source["branch"]; present {
+		validateGitBranch(field, path+".branch", out)
+	}
+	if field, present := source["head_commit"]; present {
+		validateGitCommit(field, path+".head_commit", out)
+	}
+	if field, present := source["dirty"]; present {
+		validateWorkspaceObservationDirty(field, path+".dirty", out)
+	}
+	if field, present := source["observed_at"]; present {
+		validateTimestamp(field, path+".observed_at", out)
 	}
 }
 
