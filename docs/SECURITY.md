@@ -411,17 +411,34 @@ The tunnel gateway must reject:
 - Requests carrying another project's capability
 - Header-based route confusion
 
-The control plane closes the same surface one step earlier, at publication. The
-destination policy runs before any row exists, so a link-local or metadata
-target never becomes a route to be refused later. Every caller-facing read of a
-published service carries the identifier, the caller's organisation and the
-session's project scope in **one** predicate, so a route outside the caller's
-scope is absent rather than found-and-refused: `API.md` §5 requires a foreign
-identifier and an unknown one to be indistinguishable, and `DELETE
+The control plane closes the same surface one step earlier, at publication,
+and what it checks there is exactly this:
+
+- **The destination**, against the policy above, before any row exists — so a
+  link-local or metadata target never becomes a route to be refused later.
+- **Every identifier the request supplies**, inside the caller's organisation
+  and project: the connector, the workspace and **each** browser session the
+  route would authorise. Resolving only the project was not enough. A caller
+  could name another organisation's connector and exhaust its per-connector
+  route limit with rows the victim could not see, and a caller could name
+  another organisation's browser session — after which minting bound a real
+  signed capability to it, because minting checked only against the same
+  caller-supplied list. A session allow-list is a request for authorisation and
+  never a grant of it.
+- **The lifetime**, against the configured maximum, refused rather than clipped.
+
+Reads are scoped the same way, in **one** predicate carrying the identifier, the
+caller's organisation and the session's project scope, so a route outside the
+caller's scope is absent rather than found-and-refused: `API.md` §5 requires a
+foreign identifier and an unknown one to be indistinguishable, and `DELETE
 /api/v1/published-services/:serviceId` names a route and no project, which
-leaves the principal as the only place its scope can come from. Every
-state-changing route on that surface applies the strict CSRF guard before the
-body is decoded, because a cookie session can reach it.
+leaves the principal as the only place its scope can come from.
+
+Every state-changing route on that surface applies the strict CSRF guard in an
+`onRequest` hook, which runs before the body is parsed, because a cookie session
+can reach it. The phase is the control and not a detail: the guard was a
+`preHandler` and this paragraph claimed it ran before decode, which Fastify's
+order (`onRequest` → parsing → `preHandler`) made false.
 
 The agent surface is narrowed by construction rather than by checking. The
 published-service tools of `MCP_SPEC.md` §7.2 have no member for a connector, a

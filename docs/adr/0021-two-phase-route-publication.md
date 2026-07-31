@@ -89,11 +89,16 @@ placeholder.
 - An agent's publication is not instantaneous. It costs at most one sweep
   interval on top of what the connector takes, and the connector's own startup
   grace is ten seconds (§11), so the sweep is not what dominates the wait.
-- A route requested while nothing can complete it does not hang: the sweep
-  reaches it, the connector exchange fails with `CONNECTOR_OFFLINE`, and the
-  record becomes `failed` carrying that class. §11's "neither leaves a published
-  service in `requested` for ever" holds for the MCP path as well as the HTTP
-  one.
+- A route requested while nothing can complete it does not hang: the completion
+  sweep reaches it, the connector exchange fails with `CONNECTOR_OFFLINE`, and
+  the record becomes `failed` carrying that class. §11's "neither leaves a
+  published service in `requested` for ever" holds for the MCP path as well as
+  the HTTP one — and it holds even if no completion sweep runs at all, because
+  the **expiry** sweep ends a route that reached its expiry in `requested` just
+  as it ends a live one. That second path matters: without it, "nothing stays in
+  `requested`" was a promise kept by a one-second timer rather than by the
+  record's own lifetime, and a route nothing completed held a slot against the
+  per-connector limit indefinitely.
 - A deployment running several `api` replicas runs several sweeps. That is safe
   rather than merely tolerable, because the status guard is in the `UPDATE`.
 - The `mcp` service reaches the tunnel gateway's control listener. That listener

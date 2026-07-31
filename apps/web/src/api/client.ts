@@ -15,6 +15,7 @@ import type {
   Connector,
   ConnectorStatus,
   Environment,
+  PublishedService as PublishedServiceEntity,
   Workspace,
 } from "@reviewplane/protocol/platform";
 import type {
@@ -370,16 +371,22 @@ export interface EnrolmentToken {
  * worker to a port on the development machine (`docs/DOMAIN_MODEL.md` section
  * 10, `docs/API.md` section 10).
  *
- * Declared here for the same reason `EnrolmentToken` is: the platform schema
- * does not cover this record yet. It belongs in `packages/protocol` once it
- * does, and until then this is the one declaration rather than one per surface.
+ * The closed vocabularies come from `packages/protocol` rather than being
+ * spelled again here. An earlier version of this file declared all of them
+ * locally with a comment saying the platform schema did not cover the record —
+ * true when it was written, and false by the end of the same change. Widening
+ * `protocol` and `failure_class` to `string` is not a small loss: they are the
+ * two fields the publication surface renders by name, and a code outside the
+ * vocabulary would have compiled.
  *
- * `failure_class` is a `docs/CONNECTOR_PROTOCOL.md` section 21 class rather
- * than a message, and `observed_destination` is what the connector actually
- * reached — both are null on a route where they do not apply, so a reader is
- * never shown a destination that was never observed.
+ * The **shape** is still declared here, and deliberately. The generated
+ * `PublishedService` entity is the durable record; this is what `docs/API.md`
+ * section 10 returns, which adds `internal_origin` and renders an absent member
+ * as `null` rather than omitting it. Importing the entity and pretending the
+ * response matched it would be a type that lies about which members can be
+ * read without a check.
  */
-export type PublishedServiceStatus = "requested" | "ready" | "failed" | "expired" | "revoked";
+export type PublishedServiceStatus = PublishedServiceEntity["status"];
 
 export interface PublishedService {
   readonly id: string;
@@ -388,14 +395,14 @@ export interface PublishedService {
   readonly workspace_id: string;
   readonly local_host: string;
   readonly local_port: number;
-  readonly protocol: string;
+  readonly protocol: PublishedServiceEntity["protocol"];
   readonly public_alias: string;
   readonly internal_origin: string;
   readonly scope: string;
   readonly allowed_browser_session_ids: readonly string[];
   readonly expires_at: string;
   readonly status: PublishedServiceStatus;
-  readonly failure_class?: Absent<string>;
+  readonly failure_class?: Absent<NonNullable<PublishedServiceEntity["failure_class"]>>;
   readonly observed_destination?: Absent<string>;
 }
 

@@ -243,6 +243,26 @@ export class PublishedServiceService {
    * destination policy of `docs/SECURITY.md` §9 and the per-connector route
    * limit — and it touches nothing outside PostgreSQL. A refused destination
    * therefore never reaches a row, an event, the connector or the gateway.
+   *
+   * **Every identifier in the request is resolved inside the caller's
+   * organisation and project.** The project was resolved in the caller's scope
+   * before this was called, and for a while that was the only thing that was:
+   * `connector_id`, `workspace_id` and `allowed_browser_session_ids` came
+   * straight from a request body and were written to the row unexamined. Two
+   * things followed. A caller in one organisation could name another
+   * organisation's connector and fill it to its route limit, with the rows
+   * invisible to the victim because the listing is project scoped. And a caller
+   * could name another organisation's *browser session*, after which `mint`
+   * would issue a real signed capability for it — because the only check `mint`
+   * made was against this same caller-supplied list, which made
+   * "session-scoped" a property the caller asserted rather than one the control
+   * plane enforced. The gateway and the connector both re-check the session
+   * against that list too, so all three layers agreed with the attacker.
+   *
+   * `apps/mcp-server/src/development-services.ts` never had either defect,
+   * because the agent surface has no member for a connector or a session and
+   * resolves both from the session's project. This is the same rule, applied
+   * where the identifiers can be supplied.
    */
   async request(
     input: CreatePublishedServiceInput,
@@ -296,7 +316,56 @@ export class PublishedServiceService {
     const expiresAt = new Date(now.getTime() + input.ttlSeconds * 1000);
 
     return await inTransaction(this.#pool, async (client) => {
-      const carried = await repository.countReadyForConnector(client, input.connectorId);
+      // Resolved, not trusted. Each of the three is scoped to the organisation
+      // and the project the caller was already authorised for, and each answers
+      // identically whether the identifier belongs to somebody else or to
+      // nobody (`docs/API.md` §5).
+      const connector = await repository.findPublishableConnector(client, {
+        connectorId: input.connectorId,
+        organisationId: input.organisationId,
+        projectId: input.projectId,
+      });
+      if (connector === null) {
+        throw new ApiError("RESOURCE_NOT_FOUND", "No such connector in this project.", {
+          field: "connector_id",
+        });
+      }
+      const workspace = await repository.findWorkspaceInProject(client, {
+        workspaceId: input.workspaceId,
+        organisationId: input.organisationId,
+        projectId: input.projectId,
+      });
+      if (workspace === null) {
+        // The class the connector protocol gives this condition (§21), so one
+        // failure has one code whether it is caught here or at the far end.
+        throw new ApiError("WORKSPACE_NOT_FOUND", "No such workspace in this project.", {
+          field: "workspace_id",
+        });
+      }
+      const reachable = new Set(
+        await repository.findBrowserSessionsInProject(client, {
+          browserSessionIds: input.allowedBrowserSessionIds,
+          organisationId: input.organisationId,
+          projectId: input.projectId,
+        }),
+      );
+      // Every one of them, not at least one. A route authorising four sessions
+      // of which one belongs elsewhere is a route that mints a capability for
+      // that one.
+      const unreachable = input.allowedBrowserSessionIds.filter((id) => !reachable.has(id));
+      if (unreachable.length > 0) {
+        throw new ApiError(
+          "RESOURCE_NOT_FOUND",
+          "A browser session named here does not belong to this project.",
+          { field: "allowed_browser_session_ids" },
+        );
+      }
+
+      const carried = await repository.countReadyForConnector(
+        client,
+        input.connectorId,
+        input.organisationId,
+      );
       if (carried >= this.#config.maxRoutesPerConnector) {
         throw new ApiError("ROUTE_LIMIT_EXCEEDED",
           "This connector already carries the maximum number of routes.",
@@ -630,8 +699,12 @@ export class PublishedServiceService {
           actor: { type: "system" },
           correlation: { published_service_id: service.id, connector_id: ended.connector_id },
           payload: {
+            // The status the record was actually in. The sweep now reaches a
+            // route that expired while still `requested` as well as a live one,
+            // and recording a status it was never in would be a fact an auditor
+            // cannot see through (`docs/EVENTS.md` §7).
             published_service_id: service.id,
-            previous_status: "ready",
+            previous_status: service.status,
             new_status: "expired",
             expires_at: ended.expires_at.toISOString(),
           },
@@ -682,6 +755,29 @@ export class PublishedServiceService {
       // The route names the sessions it authorises. Minting for another one
       // would produce a capability the gateway must then refuse, which is a
       // rejection the control plane should have made itself.
+      throw new ApiError("AUTHORISATION_DENIED",
+        "That browser session is not authorised for this published service.",
+      );
+    }
+    // And the session must actually belong to the route's project. The check
+    // above compares against the list stored on the record, which `request` now
+    // validates — but this is the last gate before a signed credential exists,
+    // and it should not depend on a row written by an earlier release having
+    // been validated by the rules of this one. A record published before that
+    // validation existed is refused here rather than honoured.
+    const sessionInProject = await this.#pool.connect().then(async (client) => {
+      try {
+        const found = await repository.findBrowserSessionsInProject(client, {
+          browserSessionIds: [browserSessionId],
+          organisationId: service.organisation_id,
+          projectId: service.project_id,
+        });
+        return found.length === 1;
+      } finally {
+        client.release();
+      }
+    });
+    if (!sessionInProject) {
       throw new ApiError("AUTHORISATION_DENIED",
         "That browser session is not authorised for this published service.",
       );

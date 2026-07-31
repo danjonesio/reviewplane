@@ -220,6 +220,20 @@ export function renderError(error: unknown, request: ErrorRequest, reply: ErrorR
       );
     return;
   }
+  // A client error the framework raised before any handler ran — a body that is
+  // not valid JSON is the one that occurs in practice, and Fastify reports it
+  // with `statusCode: 400`. It used to fall through to the branch below and be
+  // answered `500 INTERNAL_ERROR`, which tells an operator to look at the
+  // server for a request the client malformed, and writes a stack trace for
+  // something that is not a fault. Nothing from the framework's message reaches
+  // the caller: it quotes the input, and the input is what the refusal is about.
+  const frameworkStatus = (error as { statusCode?: unknown }).statusCode;
+  if (typeof frameworkStatus === "number" && frameworkStatus >= 400 && frameworkStatus < 500) {
+    void reply
+      .code(frameworkStatus)
+      .send(apiError("VALIDATION_FAILED", "The request could not be read.", request.id));
+    return;
+  }
   request.log.error({ err: error, request_id: request.id }, "unhandled failure");
   void reply
     .code(500)

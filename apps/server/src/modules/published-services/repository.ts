@@ -247,7 +247,17 @@ export async function findPending(
   return result.rows;
 }
 
-/** Routes that are ready but whose expiry has passed. */
+/**
+ * Routes that are still live but whose expiry has passed.
+ *
+ * `requested` is included as well as `ready`. A route that was asked for and
+ * never completed — the connector never answered, or the process that would
+ * have finished it went away — holds a slot against the per-connector limit for
+ * as long as it sits there, and `docs/DOMAIN_MODEL.md` §10 requires that
+ * nothing leaves a route in `requested` indefinitely. Selecting only `ready`
+ * made that promise depend on a one-second sweep having run, which is not the
+ * same thing as the expiry being enforced.
+ */
 export async function findDueForExpiry(
   client: PoolClient,
   now: Date,
@@ -256,7 +266,7 @@ export async function findDueForExpiry(
   const result = await client.query<PublishedService>(
     `SELECT ${COLUMNS}
        FROM published_services
-      WHERE status = 'ready' AND expires_at <= $1
+      WHERE status IN ('requested', 'ready') AND expires_at <= $1
       ORDER BY expires_at
       LIMIT $2`,
     [now.toISOString(), limit],
@@ -377,17 +387,112 @@ export async function setSessionStatus(
 }
 
 /** Counts routes a connector currently carries, for the concurrent limit. */
+/**
+ * How many routes a connector is already carrying, inside one organisation.
+ *
+ * The organisation term is not decoration. This count is the per-connector
+ * limit of `docs/CONNECTOR_PROTOCOL.md` §11, and without it a caller in one
+ * organisation could fill another organisation's connector to its limit by
+ * naming that connector's identifier: the rows would be invisible to the victim
+ * (the listing is project scoped) and would refuse its own publications. A
+ * connector belongs to exactly one organisation, so adding the term costs
+ * nothing and removes the shared counter.
+ */
 export async function countReadyForConnector(
   client: PoolClient,
   connectorId: string,
+  organisationId: string,
 ): Promise<number> {
   const result = await client.query<{ count: string }>(
     `SELECT count(*)::text AS count
        FROM published_services
-      WHERE connector_id = $1 AND status IN ('requested', 'ready')`,
-    [connectorId],
+      WHERE connector_id = $1
+        AND organisation_id = $2
+        AND status IN ('requested', 'ready')`,
+    [connectorId, organisationId],
   );
   return Number(result.rows[0]?.count ?? "0");
+}
+
+/**
+ * Resolves the connector a route may be published through.
+ *
+ * This exists because `connector_id` arrives in a request body. `resolveProject`
+ * scopes the *project* to the caller and scoped nothing else, so a caller could
+ * name any connector in the deployment — which is how one organisation could
+ * exhaust another's route limit with rows the victim could not see.
+ *
+ * **The organisation is always required. The project is required only when the
+ * connector has one.** `docs/CONNECTOR_PROTOCOL.md` §4.1 lets an enrolment
+ * token be organisation scoped, and a connector enrolled that way serves any
+ * project in its organisation — neither it nor its environment names one.
+ * Requiring a project match outright would have refused every such connector,
+ * which is a working deployment shape rather than an attack. A connector that
+ * *is* bound to a project, directly or through its environment, may be used for
+ * that project and no other.
+ */
+export async function findPublishableConnector(
+  client: PoolClient,
+  input: {
+    readonly connectorId: string;
+    readonly organisationId: string;
+    readonly projectId: string;
+  },
+): Promise<{ readonly id: string; readonly status: string } | null> {
+  const result = await client.query<{ id: string; status: string }>(
+    `SELECT connectors.id, connectors.status
+       FROM connectors
+       JOIN environments ON environments.id = connectors.environment_id
+      WHERE connectors.id = $1
+        AND connectors.organisation_id = $2
+        AND (
+          $3 IN (connectors.project_id, environments.project_id)
+          OR (connectors.project_id IS NULL AND environments.project_id IS NULL)
+        )`,
+    [input.connectorId, input.organisationId, input.projectId],
+  );
+  return result.rows[0] ?? null;
+}
+
+/** Resolves a workspace inside one organisation and project. */
+export async function findWorkspaceInProject(
+  client: PoolClient,
+  input: {
+    readonly workspaceId: string;
+    readonly organisationId: string;
+    readonly projectId: string;
+  },
+): Promise<{ readonly id: string } | null> {
+  const result = await client.query<{ id: string }>(
+    `SELECT id FROM workspaces
+      WHERE id = $1 AND organisation_id = $2 AND project_id = $3`,
+    [input.workspaceId, input.organisationId, input.projectId],
+  );
+  return result.rows[0] ?? null;
+}
+
+/**
+ * Which of the named browser sessions belong to this organisation and project.
+ *
+ * The caller compares what it asked for against what comes back. Returning the
+ * found set rather than a boolean is what lets the refusal name the first
+ * identifier that was not reachable without a second query, and what makes
+ * "every one of them" the condition rather than "at least one".
+ */
+export async function findBrowserSessionsInProject(
+  client: PoolClient,
+  input: {
+    readonly browserSessionIds: readonly string[];
+    readonly organisationId: string;
+    readonly projectId: string;
+  },
+): Promise<string[]> {
+  const result = await client.query<{ id: string }>(
+    `SELECT id FROM browser_sessions
+      WHERE id = ANY($1) AND organisation_id = $2 AND project_id = $3`,
+    [[...input.browserSessionIds], input.organisationId, input.projectId],
+  );
+  return result.rows.map((row) => row.id);
 }
 
 export interface RouteCapabilityRecord {

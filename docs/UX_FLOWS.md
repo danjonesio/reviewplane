@@ -584,7 +584,11 @@ indistinguishable from a still page.
 Three of them belong to the publication surface of §6, and each has a stable
 code behind it rather than a guess. **No connector connected** is
 `CONNECTOR_OFFLINE`, and it is also what an agent's `development_service_publish`
-receives. **Dev service not listening** is `PORT_NOT_LISTENING`: the connector
+receives. It means a connector this deployment has is unreachable; a request
+naming a connector, workspace or browser session that does not exist in the
+project answers `RESOURCE_NOT_FOUND` instead, and the surface MUST NOT present
+that as an outage — nothing is down, the request named something that is not
+there. **Dev service not listening** is `PORT_NOT_LISTENING`: the connector
 probed the destination within its bounded startup grace and nothing was there,
 so the reader is told to start the development server and retry rather than to
 suspect the tunnel. **Tunnel unavailable** is `CONTROL_PLANE_UNAVAILABLE` or a

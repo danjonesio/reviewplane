@@ -78,13 +78,23 @@ export interface AuthorisationOptions {
 /**
  * Installs the resolution hook.
  *
- * It runs on `preHandler` rather than `onRequest` so that route parameters are
- * already parsed: "resolve the project too" is only meaningful once the router
- * has decided which project the path named.
+ * It runs on `onRequest`, which Fastify invokes **after routing and before the
+ * body is parsed**. That ordering is a control rather than a preference. A
+ * guard that runs at `preHandler` runs after parsing, so a route claiming to
+ * refuse a forged write "before the body is decoded" would have decoded it
+ * already — and a malformed body would be answered by the parser rather than by
+ * the guard, which is how an unauthenticated caller could get a different
+ * response by sending broken JSON.
+ *
+ * Nothing here needs a route parameter. `resolveActor` reads the
+ * `Authorization` header and the session cookie and nothing else; an earlier
+ * comment said this hook ran late so that "resolve the project too" would work,
+ * but no project is resolved here — `resolveProject` is called by the handlers
+ * that need one, with the identifier the router gave them.
  */
 export function registerAuthorisation(app: FastifyInstance, options: AuthorisationOptions): void {
   app.decorateRequest("reviewplaneActor", undefined);
-  app.addHook("preHandler", async (request) => {
+  app.addHook("onRequest", async (request) => {
     if (!request.url.startsWith("/api/")) return;
     request.reviewplaneActor = await resolveActor(request, options);
   });

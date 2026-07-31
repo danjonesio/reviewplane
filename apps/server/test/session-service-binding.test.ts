@@ -71,14 +71,21 @@ async function reserveSession(projectId: string, organisationId: string): Promis
   return record["id"] as string;
 }
 
-async function publish(projectId: string, sessionIds: readonly string[]) {
+async function publish(
+  projectId: string,
+  sessionIds: readonly string[],
+  environment: { connectorId: string; workspaceId: string },
+) {
   return harness.built.app.inject({
     method: "POST",
     url: `/api/v1/projects/${projectId}/published-services`,
     headers: authorised,
     payload: {
-      connector_id: "con_fixture",
-      workspace_id: "wsp_fixture",
+      // Real records in this project. Publication resolves the connector and
+      // the workspace inside the caller's organisation and project, so a
+      // synthetic identifier is refused rather than written to the row.
+      connector_id: environment.connectorId,
+      workspace_id: environment.workspaceId,
       local_host: "127.0.0.1",
       local_port: 4321,
       protocol: "http",
@@ -89,7 +96,8 @@ async function publish(projectId: string, sessionIds: readonly string[]) {
 }
 
 test("a reserved session contacts no worker until it is allocated", async () => {
-  const { projectId, organisationId } = await seedProjectAndWorker(harness);
+  const seeded = await seedProjectAndWorker(harness);
+  const { projectId, organisationId } = seeded;
   const before = harness.workerRequests.length;
   await reserveSession(projectId, organisationId);
   assert.equal(
@@ -100,10 +108,11 @@ test("a reserved session contacts no worker until it is allocated", async () => 
 });
 
 test("publish then allocate binds the route origin and a verifiable capability", async () => {
-  const { projectId, organisationId } = await seedProjectAndWorker(harness);
+  const seeded = await seedProjectAndWorker(harness);
+  const { projectId, organisationId } = seeded;
   const sessionId = await reserveSession(projectId, organisationId);
 
-  const published = await publish(projectId, [sessionId]);
+  const published = await publish(projectId, [sessionId], seeded);
   assert.equal(published.statusCode, 201, published.body);
   const service = (published.json() as { data: Record<string, string> }).data;
 
@@ -138,9 +147,10 @@ test("publish then allocate binds the route origin and a verifiable capability",
 });
 
 test("the capability never appears in a log line or an event payload", async () => {
-  const { projectId, organisationId } = await seedProjectAndWorker(harness);
+  const seeded = await seedProjectAndWorker(harness);
+  const { projectId, organisationId } = seeded;
   const sessionId = await reserveSession(projectId, organisationId);
-  const published = await publish(projectId, [sessionId]);
+  const published = await publish(projectId, [sessionId], seeded);
   const service = (published.json() as { data: Record<string, string> }).data;
   await harness.built.app.inject({
     method: "POST",
@@ -177,11 +187,12 @@ test("the capability never appears in a log line or an event payload", async () 
 });
 
 test("a session the route does not name is refused before anything is minted", async () => {
-  const { projectId, organisationId } = await seedProjectAndWorker(harness);
+  const seeded = await seedProjectAndWorker(harness);
+  const { projectId, organisationId } = seeded;
   const named = await reserveSession(projectId, organisationId);
   const unnamed = await reserveSession(projectId, organisationId);
 
-  const published = await publish(projectId, [named]);
+  const published = await publish(projectId, [named], seeded);
   const service = (published.json() as { data: Record<string, string> }).data;
 
   const refused = await harness.built.app.inject({
@@ -201,16 +212,20 @@ test("a session the route does not name is refused before anything is minted", a
 });
 
 test("a route from another project is absent, exactly as one that does not exist", async () => {
-  const { projectId, organisationId } = await seedProjectAndWorker(harness);
+  const seeded = await seedProjectAndWorker(harness);
+  const { projectId, organisationId } = seeded;
   const sessionId = await reserveSession(projectId, organisationId);
 
-  // A route in a project this session does not belong to. It names the session,
-  // so nothing but the project scope can refuse it.
-  await postgres.pool.query(
-    "INSERT INTO projects (id, organisation_id, name, slug) VALUES ($1, $2, $3, $4)",
-    ["prj_elsewhere", organisationId, "Elsewhere", "elsewhere"],
-  );
-  const published = await publish("prj_elsewhere", [sessionId]);
+  // A second, complete project: its own connector, workspace and browser
+  // session. The route has to be a *legitimate* route somewhere else, because a
+  // route naming this session from another project can no longer be created at
+  // all — publication resolves every named identifier inside the project it is
+  // published in, so that attempt is refused before a row exists. What is left
+  // to test here is the binder: a session reaching a route that is real, and
+  // belongs to somebody else.
+  const elsewhere = await seedProjectAndWorker(harness);
+  const elsewhereSession = await reserveSession(elsewhere.projectId, elsewhere.organisationId);
+  const published = await publish(elsewhere.projectId, [elsewhereSession], elsewhere);
   assert.equal(published.statusCode, 201, published.body);
   const service = (published.json() as { data: Record<string, string> }).data;
 
@@ -254,7 +269,8 @@ test("a route from another project is absent, exactly as one that does not exist
 });
 
 test("only a reserved session may be allocated", async () => {
-  const { projectId, organisationId } = await seedProjectAndWorker(harness);
+  const seeded = await seedProjectAndWorker(harness);
+  const { projectId, organisationId } = seeded;
   const sessionId = await reserveSession(projectId, organisationId);
   const first = await harness.built.app.inject({
     method: "POST",
@@ -278,7 +294,8 @@ test("only a reserved session may be allocated", async () => {
 });
 
 test("a session allocated without a route reaches no origin at all", async () => {
-  const { projectId, organisationId } = await seedProjectAndWorker(harness);
+  const seeded = await seedProjectAndWorker(harness);
+  const { projectId, organisationId } = seeded;
   const sessionId = await reserveSession(projectId, organisationId);
   const allocated = await harness.built.app.inject({
     method: "POST",

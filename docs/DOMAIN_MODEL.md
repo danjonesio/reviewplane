@@ -330,7 +330,7 @@ A temporary route from an authorised browser worker to a local development servi
 - A connector disconnect makes a route unavailable, not revoked: the record survives, and a route still within its lifetime resumes under the same identifier when the connector reconnects and the control plane re-authorises it (`CONNECTOR_PROTOCOL.md` §17)
 - A route the control plane will not continue on reconnect is closed there, so a reconnect can never extend an authorisation that had lapsed
 - A route is reachable only inside the organisation and project scope of the principal reading it; a route outside that scope is reported as absent, never as forbidden (`API.md` §5)
-- `requested` is a durable state and not an implementation detail of one request: the process that writes it and the process that completes it may differ, and nothing may leave a route in it indefinitely (`CONNECTOR_PROTOCOL.md` §11, ADR-0021)
+- `requested` is a durable state and not an implementation detail of one request: the process that writes it and the process that completes it may differ, and nothing may leave a route in it indefinitely (`CONNECTOR_PROTOCOL.md` §11, ADR-0021). The expiry sweep is what makes that unconditional — it ends a route that reached its expiry in `requested` exactly as it ends one that reached it `ready`, so the guarantee does not depend on a completion sweep having run
 
 ## 11. Agent session
 

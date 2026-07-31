@@ -8,6 +8,7 @@
  */
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { after, before, describe, test } from "node:test";
 
 import { verifyCapability } from "@reviewplane/protocol";
@@ -65,6 +66,13 @@ const ORGANISATION_ID = "org_publication_home";
 /** A second organisation, so that "another organisation" is a real place. */
 const OTHER_ORGANISATION_ID = "org_publication_foreign";
 const OTHER_PROJECT_ID = "prj_foreign_01";
+
+/** The rows a project must own before a route can name them. */
+interface ProjectFixtures {
+  readonly connectorId: string;
+  readonly workspaceId: string;
+  readonly sessionId: string;
+}
 const SIGNING_KEY = new Uint8Array(32).fill(0x11);
 const KEY_ID = "stage0-a";
 
@@ -130,6 +138,9 @@ describe("published-service endpoints", () => {
   let service: PublishedServiceService;
   /** A real cookie session in ORGANISATION_ID, for the CSRF and scope tests. */
   let session: SessionCookies;
+  let home: ProjectFixtures;
+  let foreign: ProjectFixtures;
+  const fixtures = new Map<string, ProjectFixtures>();
   let gateway: RecordingGateway;
   let now = new Date("2026-07-30T12:00:00.000Z");
 
@@ -139,6 +150,18 @@ describe("published-service endpoints", () => {
     await migrate(pool);
     await seedOrganisation(ORGANISATION_ID, "publication-home", PROJECTS);
     await seedOrganisation(OTHER_ORGANISATION_ID, "publication-foreign", [OTHER_PROJECT_ID]);
+    // Every project gets its own connector, workspace and browser session,
+    // because publication now resolves all three inside the caller's
+    // organisation and project rather than writing whatever the body named.
+    for (const [index, projectId] of PROJECTS.entries()) {
+      fixtures.set(
+        projectId,
+        await seedProjectFixtures(ORGANISATION_ID, projectId, `home${String(index)}`),
+      );
+    }
+    home = fixtures.get("prj_test_01") as ProjectFixtures;
+    foreign = await seedProjectFixtures(OTHER_ORGANISATION_ID, OTHER_PROJECT_ID, "foreign");
+    fixtures.set(OTHER_PROJECT_ID, foreign);
     gateway = new RecordingGateway();
     built = await buildApp({
       config: testConfig(postgres.url),
@@ -174,6 +197,65 @@ describe("published-service endpoints", () => {
     await postgres.stop();
   });
 
+  /**
+   * A connector, a workspace and a browser session an organisation owns.
+   *
+   * The cross-organisation tests need real rows to point at: an identifier that
+   * matches nothing is refused by any implementation, and it is the *foreign*
+   * identifier that has to be refused identically.
+   */
+  async function seedProjectFixtures(
+    organisationId: string,
+    projectId: string,
+    suffix: string,
+  ): Promise<ProjectFixtures> {
+    const environmentId = `env_${suffix}`;
+    const connectorId = `con_${suffix}`;
+    const workspaceId = `wsp_${suffix}`;
+    const sessionId = `brs_${suffix}`;
+    await pool.query(
+      `INSERT INTO environments (id, organisation_id, project_id, name, platform, architecture)
+       VALUES ($1, $2, $3, $4, 'linux', 'amd64')`,
+      [environmentId, organisationId, projectId, `env-${suffix}`],
+    );
+    await pool.query(
+      `INSERT INTO connectors (
+         id, organisation_id, environment_id, project_id, certificate_fingerprint,
+         certificate_serial, certificate_not_after, public_key, version, status)
+       VALUES ($1, $2, $3, $4, $5, '01', now() + interval '30 days', 'key', '0.1.0', 'ACTIVE')`,
+      [connectorId, organisationId, environmentId, projectId, `sha256:${suffix}`],
+    );
+    await pool.query(
+      `INSERT INTO workspaces (
+         id, organisation_id, project_id, environment_id, root_path, branch, head_commit,
+         path_hash, display_path, source)
+       VALUES ($1, $2, $3, $4, $5, 'main', 'abcdef1', $6, $7, 'connector_report')`,
+      [
+        workspaceId,
+        organisationId,
+        projectId,
+        environmentId,
+        `/srv/${suffix}`,
+        // The column requires a real digest shape; the value only has to be
+        // stable and distinct per fixture.
+        `sha256:${createHash("sha256").update(suffix).digest("hex")}`,
+        suffix,
+      ],
+    );
+    await pool.query(
+      `INSERT INTO browser_sessions (
+         id, organisation_id, project_id, status, viewport, limits, retention_policy)
+       VALUES ($1, $2, $3, 'REQUESTED', $4, '{}'::jsonb, 'verification_evidence')`,
+      [
+        sessionId,
+        organisationId,
+        projectId,
+        JSON.stringify({ width: 1440, height: 900, device_scale_factor: 1 }),
+      ],
+    );
+    return { connectorId, workspaceId, sessionId };
+  }
+
   async function seedOrganisation(
     organisationId: string,
     slug: string,
@@ -206,15 +288,25 @@ describe("published-service endpoints", () => {
     });
   }
 
-  function createBody(overrides: Record<string, unknown> = {}) {
+  /**
+   * A publication body naming the project's own connector, workspace and
+   * browser session.
+   *
+   * It used to name `con_test_01`, `wsp_test_01` and `brs_test_01`, which
+   * existed in no table at all — and the endpoint accepted them, which is the
+   * defect this file now covers. A body whose identifiers are real is the only
+   * kind that can exercise the happy path.
+   */
+  function createBody(projectId = "prj_test_01", overrides: Record<string, unknown> = {}) {
+    const own = fixtures.get(projectId);
     return {
-      connector_id: "con_test_01",
-      workspace_id: "wsp_test_01",
+      connector_id: own?.connectorId ?? "con_unseeded",
+      workspace_id: own?.workspaceId ?? "wsp_unseeded",
       local_host: "127.0.0.1",
       local_port: 5173,
       protocol: "http",
       ttl_seconds: 3600,
-      allowed_browser_session_ids: ["brs_test_01"],
+      allowed_browser_session_ids: [own?.sessionId ?? "brs_unseeded"],
       ...overrides,
     };
   }
@@ -223,10 +315,15 @@ describe("published-service endpoints", () => {
     const response = await request(
       "POST",
       `/api/v1/projects/${projectId}/published-services`,
-      createBody(overrides),
+      createBody(projectId, overrides),
     );
     assert.equal(response.statusCode, 201, response.body);
     return JSON.parse(response.body).data as Record<string, string>;
+  }
+
+  /** The browser session the project's routes authorise. */
+  function sessionOf(projectId: string): string {
+    return (fixtures.get(projectId) as ProjectFixtures).sessionId;
   }
 
   async function eventTypes(publishedServiceId: string): Promise<string[]> {
@@ -270,7 +367,7 @@ describe("published-service endpoints", () => {
     assert.ok(registered !== undefined);
     assert.equal(registered.route_id, created["id"]);
     assert.equal(registered.public_alias, created["public_alias"]);
-    assert.deepEqual(registered.allowed_browser_session_ids, ["brs_test_01"]);
+    assert.deepEqual(registered.allowed_browser_session_ids, [sessionOf("prj_test_01")]);
 
     assert.deepEqual(await eventTypes(String(created["id"])), [
       "published_service.requested",
@@ -297,7 +394,7 @@ describe("published-service endpoints", () => {
       const response = await request(
         "POST",
         "/api/v1/projects/prj_test_01/published-services",
-        createBody({ local_host: host, local_port: port }),
+        createBody("prj_test_01", { local_host: host, local_port: port }),
       );
       assert.equal(response.statusCode, 422, `${host} was accepted`);
       const body = JSON.parse(response.body);
@@ -309,7 +406,7 @@ describe("published-service endpoints", () => {
     const response = await request(
       "POST",
       "/api/v1/projects/prj_test_01/published-services",
-      createBody({ allowed_browser_session_ids: [] }),
+      createBody("prj_test_01", { allowed_browser_session_ids: [] }),
     );
     assert.equal(response.statusCode, 422);
     assert.equal(JSON.parse(response.body).error.code, "VALIDATION_FAILED");
@@ -319,7 +416,7 @@ describe("published-service endpoints", () => {
     const response = await request(
       "POST",
       "/api/v1/projects/prj_test_01/published-services",
-      createBody({ ttl_seconds: 9 * 60 * 60 }),
+      createBody("prj_test_01", { ttl_seconds: 9 * 60 * 60 }),
     );
     assert.equal(response.statusCode, 422);
     assert.equal(JSON.parse(response.body).error.code, "ROUTE_EXPIRED");
@@ -332,7 +429,7 @@ describe("published-service endpoints", () => {
       const response = await request(
         "POST",
         "/api/v1/projects/prj_gateway_refusal/published-services",
-        createBody(),
+        createBody("prj_gateway_refusal"),
       );
       assert.equal(response.statusCode, 422);
       assert.equal(JSON.parse(response.body).error.code, "DESTINATION_NOT_ALLOWED");
@@ -352,11 +449,12 @@ describe("published-service endpoints", () => {
   });
 
   test("a capability is minted, bound to the route, project and session", async () => {
-    const created = await createService("prj_mint_01");
+    const project = "prj_mint_01";
+    const created = await createService(project);
     const response = await request(
       "POST",
       `/api/v1/published-services/${String(created["id"])}/capabilities`,
-      { browser_session_id: "brs_test_01" },
+      { browser_session_id: sessionOf(project) },
     );
     assert.equal(response.statusCode, 201, response.body);
     const minted = JSON.parse(response.body).data as Record<string, string>;
@@ -368,8 +466,8 @@ describe("published-service endpoints", () => {
       Math.floor(now.getTime() / 1000),
     );
     assert.equal(claims.routeId, created["id"]);
-    assert.equal(claims.projectId, "prj_mint_01");
-    assert.equal(claims.browserSessionId, "brs_test_01");
+    assert.equal(claims.projectId, project);
+    assert.equal(claims.browserSessionId, sessionOf(project));
     assert.equal(claims.capabilityId, minted["capability_id"]);
     assert.equal(minted["internal_origin"], created["internal_origin"]);
 
@@ -389,7 +487,8 @@ describe("published-service endpoints", () => {
   });
 
   test("a capability cannot be minted for a session the route does not authorise", async () => {
-    const created = await createService("prj_mint_02");
+    const project = "prj_mint_02";
+    const created = await createService(project);
     const response = await request(
       "POST",
       `/api/v1/published-services/${String(created["id"])}/capabilities`,
@@ -400,11 +499,12 @@ describe("published-service endpoints", () => {
   });
 
   test("a capability never outlives its route", async () => {
-    const created = await createService("prj_mint_03", { ttl_seconds: 60 });
+    const project = "prj_mint_03";
+    const created = await createService(project, { ttl_seconds: 60 });
     const response = await request(
       "POST",
       `/api/v1/published-services/${String(created["id"])}/capabilities`,
-      { browser_session_id: "brs_test_01", ttl_seconds: 300 },
+      { browser_session_id: sessionOf(project), ttl_seconds: 300 },
     );
     assert.equal(response.statusCode, 201, response.body);
     const minted = JSON.parse(response.body).data as Record<string, string>;
@@ -412,11 +512,12 @@ describe("published-service endpoints", () => {
   });
 
   test("revocation ends the route, withdraws its capabilities and is audited", async () => {
-    const created = await createService("prj_revoke_01");
+    const project = "prj_revoke_01";
+    const created = await createService(project);
     const mintResponse = await request(
       "POST",
       `/api/v1/published-services/${String(created["id"])}/capabilities`,
-      { browser_session_id: "brs_test_01" },
+      { browser_session_id: sessionOf(project) },
     );
     const minted = JSON.parse(mintResponse.body).data as Record<string, string>;
 
@@ -480,19 +581,19 @@ describe("published-service endpoints", () => {
 
   test("the concurrent route limit per connector is enforced", async () => {
     const project = "prj_limit_01";
-    const connector = "con_limit_01";
+    const connector = (fixtures.get(project) as ProjectFixtures).connectorId;
     for (let index = 0; index < 10; index += 1) {
       const response = await request(
         "POST",
         `/api/v1/projects/${project}/published-services`,
-        createBody({ connector_id: connector }),
+        createBody(project, { connector_id: connector }),
       );
       assert.equal(response.statusCode, 201, `route ${String(index)}: ${response.body}`);
     }
     const eleventh = await request(
       "POST",
       `/api/v1/projects/${project}/published-services`,
-      createBody({ connector_id: connector }),
+      createBody(project, { connector_id: connector }),
     );
     assert.equal(eleventh.statusCode, 429, eleventh.body);
     assert.equal(JSON.parse(eleventh.body).error.code, "ROUTE_LIMIT_EXCEEDED");
@@ -506,7 +607,7 @@ describe("published-service endpoints", () => {
       ["POST", "/api/v1/published-services/svc_anything/capabilities"],
     ] as const) {
       for (const token of [null, "wrong", BOOTSTRAP_TOKEN.slice(0, 8)]) {
-        const response = await request(method, url, createBody(), token);
+        const response = await request(method, url, createBody("prj_test_01"), token);
         assert.equal(response.statusCode, 401, `${method} ${url} with ${String(token)}`);
         assert.equal(JSON.parse(response.body).error.code, "AUTHENTICATION_REQUIRED");
       }
@@ -522,11 +623,12 @@ describe("published-service endpoints", () => {
   test("no event payload carries a capability value", async () => {
     // `docs/EVENTS.md` section 8 excludes raw secrets, and a capability is a
     // bearer credential.
-    const created = await createService("prj_audit_01");
+    const project = "prj_audit_01";
+    const created = await createService(project);
     const mintResponse = await request(
       "POST",
       `/api/v1/published-services/${String(created["id"])}/capabilities`,
-      { browser_session_id: "brs_test_01" },
+      { browser_session_id: sessionOf(project) },
     );
     const minted = JSON.parse(mintResponse.body).data as Record<string, string>;
     const events = await pool.query<{ payload: unknown }>(
@@ -545,8 +647,19 @@ describe("published-service endpoints", () => {
   // organisation boundary.
   // ---------------------------------------------------------------------
 
-  /** A body no validator would accept, so that a body-first refusal is visible. */
-  const UNPARSEABLE_BODY = { connector_id: 42, local_port: "not a port" };
+  /**
+   * A body that is not JSON at all.
+   *
+   * This constant used to be `{ connector_id: 42, local_port: "not a port" }`,
+   * which is valid JSON that fails validation — so the test proved refusal
+   * before *validation*, which was true, while the comment beside it and two
+   * normative documents claimed refusal before *decode*, which was not.
+   * Fastify's order is `onRequest` → `preParsing` → parsing → `preValidation`
+   * → validation → `preHandler`, and the guard was a `preHandler`. Truncated
+   * JSON is what tells the two apart: only a guard that runs before the parser
+   * can answer it, and a `preHandler` guard never sees it at all.
+   */
+  const UNPARSEABLE_BODY = '{"connector_id": ';
 
   test("a cookie session must present its CSRF token, and is refused before the body is read", async () => {
     for (const [method, url] of [
@@ -557,17 +670,31 @@ describe("published-service endpoints", () => {
       const response = await app.inject({
         method,
         url,
-        headers: session.readHeaders,
+        headers: { ...session.readHeaders, "content-type": "application/json" },
         payload: UNPARSEABLE_BODY,
       });
+      // The body could not be parsed, so a refusal that named it would be a
+      // refusal that had read it. This one names the missing CSRF token.
       assert.equal(response.statusCode, 403, `${method} ${url}: ${response.body}`);
       const body = JSON.parse(response.body);
       assert.equal(body.error.code, "AUTHORISATION_DENIED");
-      // The guard ran before the body was decoded. A VALIDATION_FAILED here
-      // would mean the request was parsed first, which is work an attacker
-      // asked for and got.
       assert.equal(body.error.details.reason, "csrf_token_invalid");
     }
+  });
+
+  test("a malformed body from an authorised caller is a client error, not a server one", async () => {
+    // The other half of the same defect: a body the parser rejects used to
+    // reach the error hook as an unhandled failure and be answered
+    // `500 INTERNAL_ERROR`, which points an operator at the server for a
+    // request the client malformed.
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/projects/prj_test_01/published-services",
+      headers: { ...session.writeHeaders, "content-type": "application/json" },
+      payload: UNPARSEABLE_BODY,
+    });
+    assert.equal(response.statusCode, 400, response.body);
+    assert.equal(JSON.parse(response.body).error.code, "VALIDATION_FAILED");
   });
 
   test("a cookie session carrying its CSRF token may publish and revoke", async () => {
@@ -575,7 +702,7 @@ describe("published-service endpoints", () => {
       method: "POST",
       url: "/api/v1/projects/prj_test_01/published-services",
       headers: session.writeHeaders,
-      payload: createBody(),
+      payload: createBody("prj_test_01"),
     });
     assert.equal(created.statusCode, 201, created.body);
     const record = JSON.parse(created.body).data as Record<string, string>;
@@ -597,7 +724,7 @@ describe("published-service endpoints", () => {
   test("a route in another organisation answers byte-identically to one that does not exist", async () => {
     // The foreign route is real: created through the bootstrap operator, which
     // belongs to no organisation and may therefore reach both.
-    const foreign = await createService(OTHER_PROJECT_ID);
+    const foreignRoute = await createService(OTHER_PROJECT_ID);
 
     for (const [method, url] of [
       ["DELETE", (id: string) => `/api/v1/published-services/${id}`],
@@ -605,15 +732,15 @@ describe("published-service endpoints", () => {
     ] as const) {
       const onForeign = await app.inject({
         method,
-        url: url(String(foreign["id"])),
+        url: url(String(foreignRoute["id"])),
         headers: session.writeHeaders,
-        payload: { browser_session_id: "brs_test_01" },
+        payload: { browser_session_id: sessionOf(OTHER_PROJECT_ID) },
       });
       const onUnknown = await app.inject({
         method,
         url: url("svc_does_not_exist_at_all"),
         headers: session.writeHeaders,
-        payload: { browser_session_id: "brs_test_01" },
+        payload: { browser_session_id: sessionOf(OTHER_PROJECT_ID) },
       });
       assert.equal(onForeign.statusCode, 404, onForeign.body);
       assert.equal(onUnknown.statusCode, 404, onUnknown.body);
@@ -624,7 +751,7 @@ describe("published-service endpoints", () => {
     // revocation that happened to report an error.
     const after = await pool.query<{ status: string }>(
       "SELECT status FROM published_services WHERE id = $1",
-      [foreign["id"]],
+      [foreignRoute["id"]],
     );
     assert.equal(after.rows[0]?.status, "ready");
   });
@@ -635,13 +762,13 @@ describe("published-service endpoints", () => {
         method,
         url: `/api/v1/projects/${OTHER_PROJECT_ID}/published-services`,
         headers: method === "GET" ? session.readHeaders : session.writeHeaders,
-        payload: createBody(),
+        payload: createBody("prj_test_01"),
       });
       const onUnknown = await app.inject({
         method,
         url: "/api/v1/projects/prj_does_not_exist_at_all/published-services",
         headers: method === "GET" ? session.readHeaders : session.writeHeaders,
-        payload: createBody(),
+        payload: createBody("prj_test_01"),
       });
       assert.equal(onForeign.statusCode, 404, onForeign.body);
       assert.deepEqual(normalise(onForeign.body), normalise(onUnknown.body));
@@ -661,7 +788,7 @@ describe("published-service endpoints", () => {
       ["DELETE", "/api/v1/published-services/svc_anything"],
       ["POST", "/api/v1/published-services/svc_anything/capabilities"],
     ] as const) {
-      const response = await request(method, url, createBody(), "rpa_agent_credential_value");
+      const response = await request(method, url, createBody("prj_test_01"), "rpa_agent_credential_value");
       assert.equal(response.statusCode, 403, `${method} ${url}: ${response.body}`);
       assert.equal(JSON.parse(response.body).error.code, "AUTHORISATION_DENIED");
     }
@@ -679,13 +806,13 @@ describe("published-service endpoints", () => {
       {
         projectId: "prj_test_01",
         organisationId: ORGANISATION_ID,
-        connectorId: "con_sweep_01",
-        workspaceId: "wsp_test_01",
+        connectorId: home.connectorId,
+        workspaceId: home.workspaceId,
         localHost: "127.0.0.1",
         localPort: 5173,
         protocol: "http",
         ttlSeconds: 600,
-        allowedBrowserSessionIds: ["brs_test_01"],
+        allowedBrowserSessionIds: [home.sessionId],
       },
       { type: "agent_session", id: "ags_sweep" },
       "req_sweep",
@@ -725,13 +852,13 @@ describe("published-service endpoints", () => {
       {
         projectId: "prj_test_01",
         organisationId: ORGANISATION_ID,
-        connectorId: "con_sweep_02",
-        workspaceId: "wsp_test_01",
+        connectorId: home.connectorId,
+        workspaceId: home.workspaceId,
         localHost: "127.0.0.1",
         localPort: 5173,
         protocol: "http",
         ttlSeconds: 600,
-        allowedBrowserSessionIds: ["brs_test_01"],
+        allowedBrowserSessionIds: [home.sessionId],
       },
       { type: "system" },
       "req_sweep_2",
@@ -748,6 +875,212 @@ describe("published-service endpoints", () => {
     );
     assert.equal(row.rows[0]?.status, "failed");
     assert.equal(row.rows[0]?.failure_class, "INTERNAL_ERROR");
+  });
+
+
+  // ---------------------------------------------------------------------
+  // Every identifier in the body is resolved inside the caller's scope. The
+  // project was the only one that ever was; these are the other three.
+  // ---------------------------------------------------------------------
+
+  test("another organisation's connector cannot be named, and its route limit is untouched", async () => {
+    // The reported denial of service: ten publications naming the victim's
+    // connector filled its limit, the rows were invisible to the victim because
+    // the listing is project scoped, and the victim's own publication was then
+    // refused ROUTE_LIMIT_EXCEEDED.
+    const attempts = [];
+    for (let index = 0; index < 12; index += 1) {
+      attempts.push(
+        await app.inject({
+          method: "POST",
+          url: "/api/v1/projects/prj_test_01/published-services",
+          headers: session.writeHeaders,
+          payload: createBody("prj_test_01", {
+            connector_id: foreign.connectorId,
+            workspace_id: home.workspaceId,
+            allowed_browser_session_ids: [home.sessionId],
+          }),
+        }),
+      );
+    }
+    for (const attempt of attempts) {
+      assert.equal(attempt.statusCode, 404, attempt.body);
+      assert.equal(JSON.parse(attempt.body).error.code, "RESOURCE_NOT_FOUND");
+    }
+
+    // A connector that exists nowhere answers identically, so the refusal
+    // cannot be used to discover which connectors exist.
+    const unknown = await app.inject({
+      method: "POST",
+      url: "/api/v1/projects/prj_test_01/published-services",
+      headers: session.writeHeaders,
+      payload: createBody("prj_test_01", {
+        connector_id: "con_does_not_exist_at_all",
+        workspace_id: home.workspaceId,
+        allowed_browser_session_ids: [home.sessionId],
+      }),
+    });
+    assert.deepEqual(normalise(attempts[0]!.body), normalise(unknown.body));
+
+    // The victim's state is unchanged: nothing the attacker's project asked for
+    // holds a slot on the victim's connector. The victim's own routes, published
+    // earlier in this file, are left out of the count deliberately — they are
+    // the rows that are supposed to be there.
+    const held = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM published_services
+        WHERE connector_id = $1 AND project_id <> $2`,
+      [foreign.connectorId, OTHER_PROJECT_ID],
+    );
+    assert.equal(held.rows[0]?.count, "0");
+
+    const victim = await request(
+      "POST",
+      `/api/v1/projects/${OTHER_PROJECT_ID}/published-services`,
+      createBody(OTHER_PROJECT_ID, {
+        connector_id: foreign.connectorId,
+        workspace_id: foreign.workspaceId,
+        allowed_browser_session_ids: [foreign.sessionId],
+      }),
+    );
+    assert.equal(victim.statusCode, 201, victim.body);
+  });
+
+  test("another organisation's browser session cannot be authorised, so no capability can bind it", async () => {
+    // The reported capability forgery: publishing with the victim's session
+    // identifier in the allow-list, then minting against that same list, which
+    // was the only check made. The gateway and the connector both re-check
+    // against the record's list, so all three layers agreed with the attacker.
+    const published = await app.inject({
+      method: "POST",
+      url: "/api/v1/projects/prj_test_01/published-services",
+      headers: session.writeHeaders,
+      payload: createBody("prj_test_01", {
+        connector_id: home.connectorId,
+        workspace_id: home.workspaceId,
+        allowed_browser_session_ids: [foreign.sessionId],
+      }),
+    });
+    assert.equal(published.statusCode, 404, published.body);
+    assert.equal(JSON.parse(published.body).error.code, "RESOURCE_NOT_FOUND");
+
+    const unknown = await app.inject({
+      method: "POST",
+      url: "/api/v1/projects/prj_test_01/published-services",
+      headers: session.writeHeaders,
+      payload: createBody("prj_test_01", {
+        connector_id: home.connectorId,
+        workspace_id: home.workspaceId,
+        allowed_browser_session_ids: ["brs_does_not_exist_at_all"],
+      }),
+    });
+    assert.deepEqual(normalise(published.body), normalise(unknown.body));
+
+    // One reachable session and one foreign one is still refused: the rule is
+    // every session, not at least one.
+    const mixed = await app.inject({
+      method: "POST",
+      url: "/api/v1/projects/prj_test_01/published-services",
+      headers: session.writeHeaders,
+      payload: createBody("prj_test_01", {
+        connector_id: home.connectorId,
+        workspace_id: home.workspaceId,
+        allowed_browser_session_ids: [home.sessionId, foreign.sessionId],
+      }),
+    });
+    assert.equal(mixed.statusCode, 404, mixed.body);
+
+    // No route outside the victim's own project authorises the victim's
+    // session, and no capability anywhere binds that session to one.
+    const rows = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM published_services
+        WHERE $1 = ANY(allowed_browser_session_ids) AND project_id <> $2`,
+      [foreign.sessionId, OTHER_PROJECT_ID],
+    );
+    assert.equal(rows.rows[0]?.count, "0");
+    const capabilities = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM route_capabilities
+        WHERE browser_session_id = $1 AND project_id <> $2`,
+      [foreign.sessionId, OTHER_PROJECT_ID],
+    );
+    assert.equal(capabilities.rows[0]?.count, "0");
+  });
+
+  test("another organisation's workspace cannot be named", async () => {
+    const foreignWorkspace = await app.inject({
+      method: "POST",
+      url: "/api/v1/projects/prj_test_01/published-services",
+      headers: session.writeHeaders,
+      payload: createBody("prj_test_01", {
+        connector_id: home.connectorId,
+        workspace_id: foreign.workspaceId,
+        allowed_browser_session_ids: [home.sessionId],
+      }),
+    });
+    const unknownWorkspace = await app.inject({
+      method: "POST",
+      url: "/api/v1/projects/prj_test_01/published-services",
+      headers: session.writeHeaders,
+      payload: createBody("prj_test_01", {
+        connector_id: home.connectorId,
+        workspace_id: "wsp_does_not_exist_at_all",
+        allowed_browser_session_ids: [home.sessionId],
+      }),
+    });
+    assert.equal(foreignWorkspace.statusCode, 404, foreignWorkspace.body);
+    assert.equal(JSON.parse(foreignWorkspace.body).error.code, "WORKSPACE_NOT_FOUND");
+    assert.deepEqual(normalise(foreignWorkspace.body), normalise(unknownWorkspace.body));
+  });
+
+  test("a route that expired while still requested is expired by the sweep", async () => {
+    // It was selected by status = 'ready' only, so a publication nothing
+    // completed sat in `requested` past its expiry and kept holding a slot
+    // against the per-connector limit — which made
+    // `docs/DOMAIN_MODEL.md` §10's "nothing may leave a route in it
+    // indefinitely" true only while a one-second sweep happened to be running.
+    const requested = await service.request(
+      {
+        projectId: "prj_test_01",
+        organisationId: ORGANISATION_ID,
+        connectorId: home.connectorId,
+        workspaceId: home.workspaceId,
+        localHost: "127.0.0.1",
+        localPort: 5173,
+        protocol: "http",
+        ttlSeconds: 60,
+        allowedBrowserSessionIds: [home.sessionId],
+      },
+      { type: "system" },
+      "req_stuck",
+    );
+    assert.equal(requested.status, "requested");
+
+    const before = now;
+    now = new Date(before.getTime() + 5 * 60_000);
+    try {
+      const expired = await service.expireDue();
+      assert.ok(
+        expired.some((entry) => entry.id === requested.id && entry.status === "expired"),
+        `the sweep left the route in requested: ${JSON.stringify(expired)}`,
+      );
+    } finally {
+      now = before;
+    }
+    // The audit record names the status the record was actually in.
+    const events = await pool.query<{ payload: { previous_status: string } }>(
+      `SELECT payload FROM events WHERE type = 'published_service.expired'
+         AND payload->>'published_service_id' = $1`,
+      [requested.id],
+    );
+    assert.equal(events.rows[0]?.payload.previous_status, "requested");
+
+    // And the slot it held is released: it no longer counts towards the
+    // per-connector limit, which is what leaving it in `requested` cost.
+    const carried = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM published_services
+        WHERE id = $1 AND status IN ('requested', 'ready')`,
+      [requested.id],
+    );
+    assert.equal(carried.rows[0]?.count, "0");
   });
 
   test("the event sequence is monotonic within a project", async () => {

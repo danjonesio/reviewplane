@@ -225,8 +225,20 @@ Running today: `apps/server/test/published-services.test.ts`, against a real
 database, covering the endpoints of `docs/API.md` section 10 and — the part
 that matters most — who may reach them. A cookie session must present its CSRF
 token, and the refusal happens **before the body is decoded**, which the test
-proves by sending a body no validator would accept and asserting the CSRF
-refusal rather than a validation one. A route in another organisation answers
+proves by sending a body that is **not JSON at all** and asserting the CSRF
+refusal. The distinction is the point: a body that is valid JSON and fails
+validation proves refusal before *validation*, which a `preHandler` guard also
+achieves, and the test asserted exactly that while the documents claimed the
+stronger property. Only a guard that runs before the parser can answer truncated
+JSON.
+
+Two more assertions belong to the same surface. A caller naming another
+organisation's connector is refused identically to one naming no connector, and
+the victim's route limit is untouched and its own publication still succeeds; a
+caller naming another organisation's browser session is refused identically to
+one naming no session, a mixed list of one reachable and one foreign session is
+refused too, and no capability anywhere binds the foreign session. Both compare
+whole normalised bodies rather than status codes. A route in another organisation answers
 `DELETE` and capability minting **byte-identically** to a route that does not
 exist, and the foreign route is still `ready` afterwards; a project in another
 organisation answers the listing and the creation the same way, and writes no

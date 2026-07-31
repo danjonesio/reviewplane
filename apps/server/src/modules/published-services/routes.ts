@@ -28,9 +28,14 @@
  * forged cross-origin write becomes possible: the browser attaches the cookie
  * to a request another origin caused, and a bearer token is not attached that
  * way. Every state-changing route here therefore applies the strict
- * `requireCsrfToken`, in a `preHandler` so that it runs **before the body is
- * decoded** — a refusal that happened after parsing would still have spent the
- * work an attacker asked for. Publication is exactly the shape that must not be
+ * `requireCsrfToken`, in an **`onRequest`** hook, which Fastify runs after
+ * routing and before the body is parsed. `preHandler` is the wrong phase for
+ * this and the comment that used to sit here claimed otherwise: Fastify's
+ * order is `onRequest` → `preParsing` → parsing → `preValidation` →
+ * validation → `preHandler`, so a `preHandler` guard refuses only after the
+ * body it was supposed to refuse has already been read. `onRequest` also means
+ * a forged request with a malformed body is answered by this guard rather than
+ * by the JSON parser. Publication is exactly the shape that must not be
  * forgeable: it opens a tunnel from a central browser into a development
  * machine, and minting mints a bearer credential for it.
  *
@@ -51,7 +56,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import type { Pool } from "../../db/pool.ts";
-import { ApiError, apiData, apiError } from "../../errors.ts";
+import { ApiError, apiData } from "../../errors.ts";
 import {
   requireCsrfToken,
   requireOrganisationAdministrator,
@@ -146,9 +151,9 @@ export function registerPublishedServiceRoutes(
   /**
    * The guard every state-changing route on this surface uses.
    *
-   * It runs as a `preHandler`, which Fastify invokes after routing and before
-   * the handler, and it refuses on the credential alone: nothing in the body is
-   * read to decide it.
+   * It is an `onRequest` hook, so Fastify has routed the request and has not
+   * yet read its body. It refuses on the credential alone: nothing in the body
+   * is read to decide it, and nothing in the body has been parsed when it does.
    */
   const administratorWrite = async (request: FastifyRequest, _reply: FastifyReply): Promise<void> => {
     const principal = requireOrganisationAdministrator(request);
@@ -163,7 +168,7 @@ export function registerPublishedServiceRoutes(
 
   app.get<{ Params: { projectId: string }; Querystring: { limit?: string } }>(
     "/api/v1/projects/:projectId/published-services",
-    { preHandler: administratorRead },
+    { onRequest: administratorRead },
     async (request, reply) => {
       const principal = requireOrganisationAdministrator(request);
       // Resolving the project first means an unreachable project is absent
@@ -178,7 +183,7 @@ export function registerPublishedServiceRoutes(
 
   app.post<{ Params: { projectId: string }; Body: CreateBody }>(
     "/api/v1/projects/:projectId/published-services",
-    { preHandler: administratorWrite },
+    { onRequest: administratorWrite },
     async (request, reply) => {
       const principal = requireOrganisationAdministrator(request);
       const project = await resolveProject(pool, principal, request.params.projectId);
@@ -207,7 +212,7 @@ export function registerPublishedServiceRoutes(
 
   app.delete<{ Params: { serviceId: string } }>(
     "/api/v1/published-services/:serviceId",
-    { preHandler: administratorWrite },
+    { onRequest: administratorWrite },
     async (request, reply) => {
       const principal = requireOrganisationAdministrator(request);
       const revoked = await service.revoke(
@@ -222,7 +227,7 @@ export function registerPublishedServiceRoutes(
 
   app.post<{ Params: { serviceId: string }; Body: MintBody }>(
     "/api/v1/published-services/:serviceId/capabilities",
-    { preHandler: administratorWrite },
+    { onRequest: administratorWrite },
     async (request, reply) => {
       const principal = requireOrganisationAdministrator(request);
       const body = request.body ?? {};
@@ -239,21 +244,8 @@ export function registerPublishedServiceRoutes(
   );
 }
 
-/**
- * Renders a failure.
- *
- * One hook renders every error so that no handler can answer with a stack
- * trace or an unstructured message, and so that an unexpected failure becomes
- * `INTERNAL_ERROR` rather than leaking what went wrong
- * (`docs/SECURITY.md` §18).
- */
-export function renderError(error: unknown, request: FastifyRequest, reply: FastifyReply): void {
-  if (error instanceof ApiError) {
-    void reply.code(error.status).send(apiError(error.code, error.message, request.id, error.details));
-    return;
-  }
-  request.log.error({ err: error, request_id: request.id }, "unhandled failure");
-  void reply
-    .code(500)
-    .send(apiError("INTERNAL_ERROR", "The request could not be completed.", request.id));
-}
+// A second `renderError` stood here. It was never installed: `src/app.ts`
+// registers the one in `src/errors.ts`, so this copy was dead code that read
+// like the live error handler — which is how a fix applied to it could appear
+// to change nothing at all. There is one error handler, and it is in
+// `src/errors.ts`.
