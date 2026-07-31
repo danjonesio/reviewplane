@@ -138,8 +138,14 @@ backup of a single-host installation is a database dump plus this directory,
 and nothing in it depends on a name a user chose. A `probe/` directory appears
 transiently while `reviewplane status` checks that the volume is writable; the
 probe removes what it wrote. The control-plane server is the only process that
-mounts it read-write. The browser worker does not mount it at all: workers
-upload through the control-plane artefact API and hold no storage credentials.
+mounts it read-write; the MCP server mounts it read-only, because it serves
+evidence and never writes it. A deployment that splits the `jobs` role into its
+own container must mount it read-write there too: thumbnail generation writes a
+new artefact. The bundled Compose deployment runs `api` and `jobs` in one
+container, so the question does not arise there.
+
+The browser worker does not mount it at all: workers upload through the
+control-plane artefact API and hold no storage credentials (ADR-0012).
 
 Browser profiles use ephemeral container storage unless project policy enables reusable authentication state.
 
