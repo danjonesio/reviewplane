@@ -125,12 +125,14 @@ reachable peer is its database, with a unique name per run.
 Steps 1 to 4 need the connector, and steps 13 to 15 need human acceptance and
 review export; both arrive in Stage 1.
 
-These three harnesses build images and run Chromium, so they run nightly and on
-demand in `.github/workflows/container-harnesses.yml` rather than on every pull
-request; a pull request that needs their evidence carries the `ci:harnesses`
-label. The root gates of `docs/DEVELOPMENT.md` section 5 run on every pull
-request in `.github/workflows/ci.yml`. Neither workflow gates a release yet: see
-section 16.
+These three harnesses build images and run Chromium, so they run in
+`.github/workflows/container-harnesses.yml` rather than in the root gate
+workflow. That workflow runs nightly, on demand, and on every pull request whose
+change is not documentation-only; the `ci:harnesses` label forces it to run on a
+pull request the filter exempted. Section 16 records the trigger rules and why
+they are shaped this way. The root gates of `docs/DEVELOPMENT.md` section 5 run
+on every pull request in `.github/workflows/ci.yml`. Neither workflow gates a
+release yet: see section 16.
 
 ## 4. Domain tests
 
@@ -613,12 +615,50 @@ A release cannot ship when:
 - Critical dependency vulnerability lacks documented mitigation
 - Protocol compatibility tests fail
 
-No release pipeline enforces this list yet. `.github/workflows/ci.yml` runs the
-root gates of `docs/DEVELOPMENT.md` section 5 on every pull request, which
-covers the protocol compatibility check, and
-`.github/workflows/container-harnesses.yml` runs the end-to-end, browser and
-installation harnesses nightly. `pnpm test:install` owns two of the conditions
-above: it runs `docs/DEPLOYMENT.md` section 8 verbatim from a clean checkout to a
+No release pipeline enforces this list yet, and the list is not a description of
+what gates a change. The two workflows that exist are change gates, and they run
+as follows.
+
+### 16.1 What runs on a change today
+
+| Suites | Workflow and rolled-up check | When it runs |
+|---|---|---|
+| `pnpm lint`, `pnpm typecheck`, `pnpm build`, `pnpm protocol:check`, `pnpm test`, and `go vet ./...`, `go test ./...` and `go test -race ./...` in each Go module | `.github/workflows/ci.yml`, reported as `CI gates` | Every pull request, every push to `main`, and on demand |
+| `pnpm test:browser`, `pnpm test:ui`, `pnpm test:integration`, `pnpm test:e2e`, `pnpm test:edge`, `pnpm test:install` | `.github/workflows/container-harnesses.yml`, reported as `Harness gates` | Every pull request whose change is not documentation-only; nightly against `main`; on demand; and on any pull request carrying the `ci:harnesses` label |
+
+The root gates cover the protocol compatibility condition above. The automated
+parts of the primary end-to-end scenario — steps 1 to 6 as `pnpm test:e2e` and
+steps 9 to 12 as `pnpm test:integration` — now run on the change that could break
+them rather than reporting the next morning.
+
+A pull request is **documentation-only** when every file it changes is a Markdown
+document or lives under `docs/`. Every other change runs every harness: a schema,
+an application source or test tree, a Go service, the Compose stack, a
+Dockerfile, a lockfile or a workflow file. The exemption MUST stay expressed that
+way round. An allowlist of code paths omits whichever directory is added after it
+was written, and omitting a path means not running — which is the failure this
+rule exists to prevent. RVP-73 records the instance: a request-schema change
+merged without the harnesses and left `pnpm test:integration` failing on `main`
+until an unrelated pull request happened to carry the label.
+
+The filter is evaluated in a job inside the workflow, and MUST NOT be moved into
+an `on.pull_request.paths` condition. A workflow that `paths` filters out does
+not run, so it reports nothing, and an absent check cannot be told apart from a
+check nobody added. Deciding inside the workflow means `Harness gates` reports on
+every pull request: green when every harness passed, green when the change was
+documentation-only — recording in the run summary which files led to that — and
+red when a harness the change required did not run or did not succeed.
+
+The `ci:harnesses` label remains a manual override. It forces the harnesses onto
+a pull request the filter exempted; it is no longer how they are obtained.
+
+`CI gates` and `Harness gates` are the two status checks to require on `main`
+(AGENTS.md, "Change delivery"). The `protect main` ruleset does not list them
+yet, so today they report rather than block, and a maintainer who merges past a
+red one is doing so knowingly.
+
+`pnpm test:install` owns two of the conditions above: it runs
+`docs/DEPLOYMENT.md` section 8 verbatim from a clean checkout to a
 rendered login page, which is the Stage 1 exit criterion "fresh installation from
 release artefacts in one documented flow", and it asserts that the browser worker
 is not running with unsupported insecure defaults — non-root, sandbox enabled as
