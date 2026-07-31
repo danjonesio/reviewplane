@@ -531,6 +531,24 @@ excluded from the dump. `bash test/fixtures/stage0/verify.sh` restores it into a
 disposable PostgreSQL and checks it against its manifest; the fixture's own
 README states what it contains and how it was captured.
 
+`apps/server/test/upgrade-stage0.test.ts` runs the six steps above against that
+fixture, in order, on every `pnpm test`:
+
+| Step | What it does |
+|---|---|
+| Restore prior-version fixture | `psql --file database.sql` into an empty disposable PostgreSQL, and the fixture's artefact store onto a directory. Every per-table row count in the manifest is checked |
+| Start new version | A pool from this build. The schema is asserted to be *behind* it, and the preflight of §12 of `docs/OPERATIONS.md` is run: `source_version` passes naming `0054`, and `backup_freshness` fails because nothing has been backed up. A backup is then taken — with the new build against the old schema, which is how upgrading from Stage 0 works — and the preflight passes |
+| Apply migration | `migrate` applies exactly the pending set, `0055` to the head |
+| Verify reviews and artefacts | `bugs-on-homepage` and its identifier, both findings with their statuses and severities, every annotation still normalised to 0–1, the agent's verification and its `after` artefact, and the bytes of all three screenshots digested against what the rows record. The review is also built into the portable document of `docs/REVIEW_FORMAT.md`, which is the same code the export and the UI read |
+| Verify connector compatibility | `classifyUpgrade` against a Stage 0 connector version, in both directions: inside the shipped policy it is `compatible`; under a tightened minimum it is `upgrade_required`. The preflight's own check reads the same function |
+| Verify rollback limitations | Every migration the upgrade applied is asserted to declare `not_supported` with a reason, and the pre-upgrade archive is asserted to still be readable — because it is the only way back |
+
+The upgraded installation is then backed up and restored into a third database,
+with a new hostname, and its review, annotations and artefact bytes are checked
+again. "The data survived the migration" and "the data can be got back out
+again" are two different guarantees, and only the second is ever tested
+deliberately.
+
 ## 14. Backup and restore tests
 
 - Full backup and restore
@@ -539,6 +557,31 @@ README states what it contains and how it was captured.
 - Corrupt archive detection
 - Restore to new hostname
 - Integrity hash verification
+
+`apps/server/test/backup.test.ts` and `apps/server/test/backup-security.test.ts`
+own these, against a real PostgreSQL and a real archive on disk. The cases that
+matter are the refusals, so each is asserted as a refusal rather than as the
+absence of a success:
+
+| Required case | Assertion |
+|---|---|
+| Full backup and restore | An installation with a review, an annotated finding and a stored screenshot is archived and restored into an empty database; every table's row count matches the manifest, the annotation geometry is unchanged, and the evidence bytes are byte-for-byte identical |
+| Database-only plus external storage | A `database` archive from an `s3` installation restores, reports the referenced artefacts as absent, and names the external store the manifest records rather than reporting corruption |
+| Missing key failure | `connector_tls_material` is searched for in the archive's bytes: absent by default, present only under `--include-key-material`, and the warning and the audit event are asserted on both paths |
+| Corrupt archive detection | An archive rebuilt with one member's bytes altered, one member added that the manifest does not declare, and one truncated by 64 bytes. Each is refused, and the truncated one is refused **before** the target gains a schema |
+| Restore to new hostname | `--hostname` revokes the sign-in sessions issued for the previous host, reports the settings to change, and records `hostname_changed` in the audit event |
+| Integrity hash verification | Every member is checked against the manifest's digest and size in a pass that writes nothing; a size or digest disagreement is an `ArchiveIntegrityError` |
+
+The fault-injection rows of §11 are covered in the same file: an interrupted
+write leaves neither the destination nor the `.partial` file behind; a load that
+would leave a dangling reference aborts and leaves no row; a migration lock held
+by another process is reported rather than waited on; and an artefact referenced
+by metadata but absent from the store is reported by both the backup and the
+restore instead of being passed over.
+
+The negative security tests are separate on purpose: restore is reachable
+through no route the control plane registers, and the assertion enumerates
+Fastify's own route table rather than guessing paths.
 
 ## 15. UI and accessibility tests
 
@@ -613,7 +656,14 @@ A release cannot ship when:
 - Critical dependency vulnerability lacks documented mitigation
 - Protocol compatibility tests fail
 
-No release pipeline enforces this list yet. `.github/workflows/ci.yml` runs the
+No release pipeline enforces this list yet, but one of the conditions now has an
+owner that runs on every pull request: **"migration or restore test fails"** is
+`apps/server/test/upgrade-stage0.test.ts` and `apps/server/test/backup.test.ts`,
+both inside `pnpm test`. A migration that breaks the committed Stage 0 fixture,
+and a restore that stops reproducing what it was given, fail the build rather
+than the release.
+
+`.github/workflows/ci.yml` runs the
 root gates of `docs/DEVELOPMENT.md` section 5 on every pull request, which
 covers the protocol compatibility check, and
 `.github/workflows/container-harnesses.yml` runs the end-to-end, browser and

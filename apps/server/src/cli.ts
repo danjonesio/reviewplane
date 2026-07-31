@@ -9,40 +9,59 @@
  * cannot be applied by a build of the schema that does not match the code.
  *
  * ```text
- * reviewplane migrate           apply every pending migration
- * reviewplane migrate --status  report the schema version and what is pending
- * reviewplane serve             the api role: HTTP API, connector listener
- * reviewplane jobs              the jobs role: durable background work
- * reviewplane install-token     mint the one-time administrator bootstrap token
- * reviewplane status [--json]   the deployment's health, capacity and storage
- * reviewplane export-review     write one review as a portable document
- * reviewplane version           the build this image carries
+ * reviewplane migrate             apply every pending migration
+ * reviewplane migrate --status    report the schema version and what is pending
+ * reviewplane migrate --preflight run the upgrade preflight and change nothing
+ * reviewplane serve               the api role: HTTP API, connector listener
+ * reviewplane jobs                the jobs role: durable background work
+ * reviewplane install-token       mint the one-time administrator bootstrap token
+ * reviewplane status [--json]     the deployment's health, capacity and storage
+ * reviewplane backup --output F   write one archive of this installation
+ * reviewplane restore --input F   restore an archive into an empty installation
+ * reviewplane export-review       write one review as a portable document
+ * reviewplane version             the build this image carries
  * ```
  *
+ * `backup` and `restore` are here, in the operator command line inside the
+ * image, and deliberately nowhere else. Restore is a privileged local
+ * operation: it truncates and repopulates every table, and an HTTP route that
+ * could do that would be an authorisation bug waiting to be found
+ * (`docs/SECURITY.md` section 20). `apps/server/test/backup-security.test.ts`
+ * asserts the API offers no such route.
+ *
  * Exit codes are the operator interface: 0 success, 1 failure, 2 a
- * configuration error the process cannot start with, and 3 for
- * `migrate --status` when migrations are pending — so a deployment script can
- * branch on "needs migrating" without parsing output.
+ * configuration error the process cannot start with, 3 for `migrate --status`
+ * when migrations are pending — so a deployment script can branch on "needs
+ * migrating" without parsing output — and 4 for a command that ran correctly
+ * and found a bad answer: a degraded `status`, a failed `migrate --preflight`,
+ * or a `restore` that completed with evidence missing.
  */
 
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
-import { resolve as resolvePath } from "node:path";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import Fastify from "fastify";
 
+import type { BackupMode } from "@reviewplane/protocol/platform";
+
 import { buildApp } from "./app.ts";
 import { ConfigurationError, loadServerConfig } from "./config.ts";
-import { migrate, migrationState } from "./db/migrate.ts";
+import { migrate, migrationReport, migrationState } from "./db/migrate.ts";
 import { createPool, type Pool } from "./db/pool.ts";
 import { readBuildInfo, registerHealthRoutes } from "./health.ts";
 import { JobRunner } from "./jobs/runner.ts";
 import {
+  DEFAULT_ARTEFACT_PATH,
   loadArtefactStoreConfig,
   loadRetentionWindows,
 } from "./modules/artefacts/config.ts";
+import { spoolToFile } from "./modules/backup/archive.ts";
+import { createBackup } from "./modules/backup/backup.ts";
+import { renderPreflight, runPreflight } from "./modules/backup/preflight.ts";
+import { restoreBackup } from "./modules/backup/restore.ts";
 import { artefactJobHandlers } from "./modules/artefacts/jobs.ts";
 import { ArtefactService } from "./modules/artefacts/service.ts";
 import { createArtefactStore } from "./modules/artefacts/store/index.ts";
@@ -65,9 +84,21 @@ export const EXIT_MIGRATIONS_PENDING = 3;
  */
 export const EXIT_STATUS_DEGRADED = 4;
 
+/**
+ * Exit code for a command that ran correctly and found a bad answer.
+ *
+ * It is the same value as {@link EXIT_STATUS_DEGRADED} and means the same
+ * thing: a failed upgrade preflight and a restore that finished with evidence
+ * missing are both "the command succeeded and the answer is bad", which a
+ * monitoring script has to be able to tell from "the command failed".
+ */
+export const EXIT_CHECK_FAILED = EXIT_STATUS_DEGRADED;
+
 const USAGE = `reviewplane <command>
 
-  migrate [--status]   apply pending database migrations, or report them
+  migrate [--status] [--preflight] [--json]
+                       apply pending database migrations, report them, or run
+                       the upgrade preflight of docs/OPERATIONS.md section 12
   serve                run the api role
   jobs [--once]        run the jobs role, serving /health/live, /health/ready
                        and /version on REVIEWPLANE_JOBS_HEALTH_PORT (8081)
@@ -79,6 +110,15 @@ const USAGE = `reviewplane <command>
                        storage use and certificate expiry
   connector list       report the enrolled connectors, their environments and
                        their connection health
+  backup --output FILE|- [--mode full|database] [--include-key-material] [--json]
+                       write one archive of this installation: the database and,
+                       under the filesystem driver, the artefact objects.
+                       - writes it to standard output. Key material is excluded
+                       unless --include-key-material
+  restore --input FILE|- [--dry-run] [--hostname HOST] [--json]
+                       restore an archive into an empty installation; - reads it
+                       from standard input. --dry-run verifies the archive and
+                       reports the plan without writing anything
   export-review --project <id|slug> --review <slug|id> [--out FILE]
                        write one review as the portable document of
                        docs/REVIEW_FORMAT.md, to FILE or to standard output
@@ -91,14 +131,51 @@ function write(line: string): void {
   process.stdout.write(`${line}\n`);
 }
 
-async function runMigrate(pool: Pool, statusOnly: boolean): Promise<number> {
-  if (statusOnly) {
-    const state = await migrationState(pool);
-    write(`schema version: ${state.schemaVersion ?? "(none applied)"}`);
-    write(`applied:        ${String(state.applied.length)}`);
-    write(`pending:        ${String(state.pending.length)}`);
-    for (const file of state.pending) write(`  pending  ${file}`);
-    return state.pending.length === 0 ? 0 : EXIT_MIGRATIONS_PENDING;
+async function runMigrate(pool: Pool, argv: readonly string[]): Promise<number> {
+  const json = argv.includes("--json");
+
+  // The preflight of `docs/OPERATIONS.md` section 12, which is step 5 of the
+  // upgrade sequence in `docs/DEPLOYMENT.md` section 15. It reads and reports;
+  // it applies nothing, so an operator can run it as often as they like.
+  if (argv.includes("--preflight")) {
+    const report = await runPreflight({
+      pool,
+      artefactPath: artefactPathSetting(),
+      ...(process.env["REVIEWPLANE_CONNECTOR_MINIMUM_VERSION"] === undefined
+        ? {}
+        : { minimumConnectorVersion: process.env["REVIEWPLANE_CONNECTOR_MINIMUM_VERSION"] }),
+      ...(process.env["REVIEWPLANE_CONNECTOR_RECOMMENDED_VERSION"] === undefined
+        ? {}
+        : { recommendedConnectorVersion: process.env["REVIEWPLANE_CONNECTOR_RECOMMENDED_VERSION"] }),
+    });
+    write(json ? JSON.stringify(report, null, 2) : renderPreflight(report));
+    return report.ok ? 0 : EXIT_CHECK_FAILED;
+  }
+
+  if (argv.includes("--status")) {
+    const report = await migrationReport(pool);
+    if (json) {
+      write(JSON.stringify(report, null, 2));
+      return report.pending.length === 0 ? 0 : EXIT_MIGRATIONS_PENDING;
+    }
+    write(`schema version: ${report.schema_version ?? "(none applied)"}`);
+    write(`applied:        ${String(report.applied.length)}`);
+    write(`pending:        ${String(report.pending.length)}`);
+    for (const record of report.pending) {
+      write(`  pending  ${record.filename}  downgrade ${record.downgrade}`);
+    }
+    // `docs/DEPLOYMENT.md` section 15: a migration must state whether downgrade
+    // is supported, and the moment an operator needs to know is before they
+    // apply it — because the answer decides whether the pre-upgrade backup is
+    // the only way back.
+    const irreversible = report.pending.filter((record) => record.downgrade === "not_supported");
+    if (irreversible.length > 0) {
+      write("");
+      write(
+        `${String(irreversible.length)} of ${String(report.pending.length)} pending migration(s) declare no downgrade; keep the pre-upgrade backup until the new version is validated.`,
+      );
+    }
+    return report.pending.length === 0 ? 0 : EXIT_MIGRATIONS_PENDING;
   }
 
   const before = await migrationState(pool);
@@ -411,6 +488,211 @@ async function runExportReview(pool: Pool, argv: readonly string[]): Promise<num
   return 0;
 }
 
+/**
+ * The artefact-store root this installation is configured with.
+ *
+ * Read here rather than through `loadServerConfig` for the reason `migrate`
+ * gives: an operator taking a backup has no gateway, no worker credential and
+ * no capability key, and requiring them would make a backup impossible in the
+ * outage a backup is for.
+ */
+function artefactPathSetting(): string {
+  return process.env["REVIEWPLANE_ARTEFACT_PATH"] ?? DEFAULT_ARTEFACT_PATH;
+}
+
+function artefactDriverSetting(): "filesystem" | "s3" {
+  const raw = process.env["REVIEWPLANE_ARTEFACT_DRIVER"] ?? "filesystem";
+  if (raw !== "filesystem" && raw !== "s3") {
+    throw new ConfigurationError("REVIEWPLANE_ARTEFACT_DRIVER must be filesystem or s3.");
+  }
+  return raw;
+}
+
+/**
+ * `reviewplane backup` (`docs/DEPLOYMENT.md` section 16).
+ *
+ * The default mode is `full` under the `filesystem` driver, because ADR-0012
+ * makes a complete single-host backup exactly one database plus one directory
+ * and a default that carried only half of it would be a default that loses
+ * evidence. An installation running the `s3` driver has no artefact volume to
+ * read, so it takes `--mode database` and protects the bucket separately.
+ */
+async function runBackup(pool: Pool, argv: readonly string[]): Promise<number> {
+  const output = readOption(argv, "--output");
+  if (output === undefined) {
+    process.stderr.write("backup requires --output FILE\n");
+    return 1;
+  }
+  const requested = readOption(argv, "--mode");
+  if (requested !== undefined && requested !== "full" && requested !== "database") {
+    process.stderr.write("--mode must be full or database\n");
+    return 1;
+  }
+  const driver = artefactDriverSetting();
+  const mode: BackupMode = requested ?? (driver === "filesystem" ? "full" : "database");
+  const json = argv.includes("--json");
+
+  // `-` streams the archive to standard output. It is the form that works in a
+  // container: `deploy/compose/reviewplane` runs this through
+  // `docker compose exec -T`, so the bytes arrive in the operator's own shell
+  // redirection on the host rather than in a volume they then have to copy the
+  // file out of (`docs/DEPLOYMENT.md` section 16).
+  const streaming = output === "-";
+  if (streaming && json) {
+    process.stderr.write("--output - and --json both write to standard output; choose one\n");
+    return 1;
+  }
+
+  const result = await createBackup({
+    pool,
+    output: streaming ? { stream: process.stdout } : resolvePath(output),
+    mode,
+    includeKeyMaterial: argv.includes("--include-key-material"),
+    artefactPath: artefactPathSetting(),
+    artefactDriver: driver,
+    // The warning and the progress lines go to standard error so that `--json`
+    // is a document on standard output and nothing else.
+    log: (line) => {
+      process.stderr.write(`${line}\n`);
+    },
+  });
+
+  if (json) {
+    write(
+      JSON.stringify(
+        {
+          archive: result.archive,
+          bytes: result.bytes,
+          sha256: result.sha256,
+          manifest: result.manifest,
+        },
+        null,
+        2,
+      ),
+    );
+  } else if (streaming) {
+    // Standard output carries the archive, so the report goes to standard
+    // error. An operator running `> file.tar.zst` still sees it.
+    process.stderr.write(
+      [
+        `wrote ${String(result.bytes)} byte(s) to standard output`,
+        `mode            ${result.manifest.mode}`,
+        `schema version  ${result.manifest.schema_version}`,
+        `artefacts       ${String(result.manifest.artefact_objects)} object(s)`,
+        `key material    ${result.manifest.key_material.included ? "INCLUDED" : "excluded"}`,
+        `sha256          ${result.sha256}`,
+        "",
+      ].join("\n"),
+    );
+  } else {
+    write(`wrote ${result.archive ?? "(stream)"}`);
+    write(`mode            ${result.manifest.mode}`);
+    write(`schema version  ${result.manifest.schema_version}`);
+    write(
+      `rows            ${String(result.manifest.tables.reduce((total, table) => total + table.rows, 0))} in ${String(result.manifest.tables.length)} table(s)`,
+    );
+    write(
+      `artefacts       ${String(result.manifest.artefact_objects)} object(s), ${String(result.manifest.artefact_bytes)} byte(s)`,
+    );
+    write(`key material    ${result.manifest.key_material.included ? "INCLUDED" : "excluded"}`);
+    write(`size            ${String(result.bytes)} byte(s)`);
+    write(`sha256          ${result.sha256}`);
+  }
+
+  if (result.missingArtefacts.length > 0) {
+    process.stderr.write(
+      `${String(result.missingArtefacts.length)} artefact(s) referenced by metadata were not in the store and are recorded in the manifest as missing\n`,
+    );
+    return EXIT_CHECK_FAILED;
+  }
+  return 0;
+}
+
+/**
+ * `reviewplane restore` (`docs/DEPLOYMENT.md` section 17).
+ *
+ * It refuses more than it accepts, on purpose. The archive is verified against
+ * its manifest before anything is written, the target must be an empty
+ * installation, and a restore that finishes with an artefact its metadata
+ * references missing exits 4 rather than 0 — a restored review that cannot show
+ * its evidence is not a successful restore.
+ */
+async function runRestore(pool: Pool, argv: readonly string[]): Promise<number> {
+  const input = readOption(argv, "--input");
+  if (input === undefined) {
+    process.stderr.write("restore requires --input FILE\n");
+    return 1;
+  }
+  const hostname = readOption(argv, "--hostname");
+  const json = argv.includes("--json");
+  const lines: string[] = [];
+
+  // `-` reads the archive from standard input, which is how an archive that
+  // lives on the host reaches a command running in a container. It is spooled
+  // to a file first, because a restore reads its archive twice on purpose —
+  // once to prove it, once to apply it — and standard input can only be read
+  // once. The spool goes beside the artefact store because that is the writable
+  // volume this container has and the one already sized for the evidence the
+  // archive carries.
+  const spoolDirectory = join(artefactPathSetting(), ".restore");
+  const spool = input === "-" ? join(spoolDirectory, `incoming-${String(process.pid)}.tar.zst`) : null;
+  if (spool !== null) {
+    await mkdir(spoolDirectory, { recursive: true });
+    const bytes = await spoolToFile(process.stdin, spool);
+    process.stderr.write(`read ${String(bytes)} byte(s) from standard input\n`);
+  }
+
+  try {
+  const result = await restoreBackup({
+    pool,
+    archive: spool ?? resolvePath(input),
+    artefactPath: artefactPathSetting(),
+    dryRun: argv.includes("--dry-run"),
+    ...(hostname === undefined ? {} : { hostname }),
+    log: (line) => {
+      lines.push(line);
+      if (!json) write(line);
+    },
+  });
+
+  if (json) {
+    write(
+      JSON.stringify(
+        {
+          applied: result.applied,
+          manifest: result.plan.manifest,
+          rows: result.plan.rows,
+          artefact_objects: result.plan.artefactObjects,
+          migrations_to_apply: result.plan.migrationsToApply,
+          migrations_pending_after: result.plan.migrationsPendingAfter,
+          blockers: result.plan.blockers,
+          missing_artefacts: result.missingArtefacts,
+          connectors_needing_re_enrolment: result.connectorsNeedingReEnrolment,
+          invalidated: result.invalidated,
+          notes: lines,
+        },
+        null,
+        2,
+      ),
+    );
+  }
+
+  if (!result.applied) {
+    // A dry run that found a blocker has answered its question correctly and
+    // the answer is bad, which is what 4 means.
+    return result.plan.blockers.length === 0 ? 0 : EXIT_CHECK_FAILED;
+  }
+  return result.missingArtefacts.length > 0 && result.plan.manifest.mode === "full"
+    ? EXIT_CHECK_FAILED
+    : 0;
+  } finally {
+    // The spool is a copy of the archive: it holds every review, every
+    // annotation and every screenshot the installation has. It does not stay
+    // on the volume once the restore has read it, whether or not it succeeded.
+    if (spool !== null) await rm(spool, { force: true });
+  }
+}
+
 /** Reads `--name value` from an argument list. */
 function readOption(argv: readonly string[], name: string): string | undefined {
   const index = argv.indexOf(name);
@@ -582,7 +864,11 @@ export async function main(argv: readonly string[]): Promise<number> {
   try {
     switch (command) {
       case "migrate":
-        return await runMigrate(pool, rest.includes("--status"));
+        return await runMigrate(pool, rest);
+      case "backup":
+        return await runBackup(pool, rest);
+      case "restore":
+        return await runRestore(pool, rest);
       case "serve":
         return await runServe(pool);
       case "jobs":

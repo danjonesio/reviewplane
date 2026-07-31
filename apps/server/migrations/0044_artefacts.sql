@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Artefact metadata (docs/DOMAIN_MODEL.md section 20, docs/API.md section 15,
 -- ADR-0012).
 --

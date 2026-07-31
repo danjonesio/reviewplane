@@ -21,6 +21,14 @@ import type {
   ApiMeta,
   AuthenticationLoginFailedPayload,
   AuthenticationLoginSucceededPayload,
+  BackupEntry,
+  BackupKeyMaterial,
+  BackupManifest,
+  BackupProduct,
+  BackupSource,
+  BackupTable,
+  CompatibilityCheck,
+  CompatibilityReport,
   Connector,
   ConnectorConnectedPayload,
   ConnectorDegradedPayload,
@@ -35,6 +43,8 @@ import type {
   JobEnqueuedPayload,
   JobFailedPayload,
   JobSucceededPayload,
+  MigrationRecord,
+  MigrationState,
   Organisation,
   OrganisationCreatedPayload,
   Project,
@@ -603,6 +613,135 @@ export function encodeJobFailedPayload(value: JobFailedPayload): string {
   if (value.next_attempt_at !== undefined) {
     fields.push(`"next_attempt_at":${jsonString(value.next_attempt_at)}`);
   }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a BackupProduct.
+ */
+export function encodeBackupProduct(value: BackupProduct): string {
+  const fields: string[] = [];
+  fields.push(`"version":${jsonString(value.version)}`);
+  fields.push(`"revision":${jsonString(value.revision)}`);
+  fields.push(`"built_at":${jsonString(value.built_at)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a BackupSource.
+ */
+export function encodeBackupSource(value: BackupSource): string {
+  const fields: string[] = [];
+  if (value.hostname !== undefined) {
+    fields.push(`"hostname":${jsonString(value.hostname)}`);
+  }
+  fields.push(`"artefact_driver":${jsonString(value.artefact_driver)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a BackupTable.
+ */
+export function encodeBackupTable(value: BackupTable): string {
+  const fields: string[] = [];
+  fields.push(`"name":${jsonString(value.name)}`);
+  fields.push(`"rows":${jsonInteger(value.rows)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a BackupEntry.
+ */
+export function encodeBackupEntry(value: BackupEntry): string {
+  const fields: string[] = [];
+  fields.push(`"path":${jsonString(value.path)}`);
+  fields.push(`"bytes":${jsonInteger(value.bytes)}`);
+  fields.push(`"sha256":${jsonString(value.sha256)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a BackupKeyMaterial.
+ */
+export function encodeBackupKeyMaterial(value: BackupKeyMaterial): string {
+  const fields: string[] = [];
+  fields.push(`"included":${jsonBoolean(value.included)}`);
+  fields.push(`"excluded_tables":${`[${value.excluded_tables.map((item) => jsonString(item)).join(",")}]`}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a BackupManifest.
+ */
+export function encodeBackupManifest(value: BackupManifest): string {
+  const fields: string[] = [];
+  fields.push(`"manifest_version":${jsonInteger(value.manifest_version)}`);
+  fields.push(`"created_at":${jsonString(value.created_at)}`);
+  fields.push(`"mode":${jsonString(value.mode)}`);
+  fields.push(`"product":${encodeBackupProduct(value.product)}`);
+  fields.push(`"schema_version":${jsonString(value.schema_version)}`);
+  fields.push(`"source":${encodeBackupSource(value.source)}`);
+  fields.push(`"tables":${`[${value.tables.map((item) => encodeBackupTable(item)).join(",")}]`}`);
+  fields.push(`"artefact_objects":${jsonInteger(value.artefact_objects)}`);
+  fields.push(`"artefact_bytes":${jsonInteger(value.artefact_bytes)}`);
+  if (value.artefacts_missing !== undefined) {
+    fields.push(`"artefacts_missing":${`[${value.artefacts_missing.map((item) => jsonString(item)).join(",")}]`}`);
+  }
+  fields.push(`"key_material":${encodeBackupKeyMaterial(value.key_material)}`);
+  fields.push(`"key_references":${`[${value.key_references.map((item) => jsonString(item)).join(",")}]`}`);
+  if (value.configuration_included !== undefined) {
+    fields.push(`"configuration_included":${jsonBoolean(value.configuration_included)}`);
+  }
+  fields.push(`"checksum_algorithm":${jsonString(value.checksum_algorithm)}`);
+  fields.push(`"entries":${`[${value.entries.map((item) => encodeBackupEntry(item)).join(",")}]`}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a MigrationRecord.
+ */
+export function encodeMigrationRecord(value: MigrationRecord): string {
+  const fields: string[] = [];
+  fields.push(`"filename":${jsonString(value.filename)}`);
+  fields.push(`"downgrade":${jsonString(value.downgrade)}`);
+  if (value.note !== undefined) {
+    fields.push(`"note":${jsonString(value.note)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a MigrationState.
+ */
+export function encodeMigrationState(value: MigrationState): string {
+  const fields: string[] = [];
+  if (value.schema_version !== undefined) {
+    fields.push(`"schema_version":${jsonString(value.schema_version)}`);
+  }
+  fields.push(`"applied":${`[${value.applied.map((item) => encodeMigrationRecord(item)).join(",")}]`}`);
+  fields.push(`"pending":${`[${value.pending.map((item) => encodeMigrationRecord(item)).join(",")}]`}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a CompatibilityCheck.
+ */
+export function encodeCompatibilityCheck(value: CompatibilityCheck): string {
+  const fields: string[] = [];
+  fields.push(`"name":${jsonString(value.name)}`);
+  fields.push(`"status":${jsonString(value.status)}`);
+  fields.push(`"detail":${jsonString(value.detail)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a CompatibilityReport.
+ */
+export function encodeCompatibilityReport(value: CompatibilityReport): string {
+  const fields: string[] = [];
+  fields.push(`"ok":${jsonBoolean(value.ok)}`);
+  fields.push(`"checked_at":${jsonString(value.checked_at)}`);
+  fields.push(`"checks":${`[${value.checks.map((item) => encodeCompatibilityCheck(item)).join(",")}]`}`);
   return `{${fields.join(",")}}`;
 }
 

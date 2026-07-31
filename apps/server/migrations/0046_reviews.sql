@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Reviews: the durable system of record (docs/DOMAIN_MODEL.md section 14,
 -- ADR-0004).
 --

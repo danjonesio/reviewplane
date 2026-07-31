@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- A workspace record is owned by the environment that reported it (RVP-20).
 --
 -- Migration 0080 made `(project_id, path_hash)` unique, which was wrong in both

@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Findings: one actionable unit inside a review (docs/DOMAIN_MODEL.md
 -- section 15) with the captured context of docs/UX_FLOWS.md section 9.
 --

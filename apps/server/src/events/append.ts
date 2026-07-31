@@ -67,6 +67,12 @@ export interface AppendEventInput {
   readonly correlation?: EventCorrelation;
   readonly payload?: Record<string, unknown>;
   readonly occurredAt?: Date;
+  /**
+   * Whether to enqueue the delivery obligation. Defaults to true, and is only
+   * ever false for an event written against a schema that predates
+   * `event_outbox` — see the call site of the insert below.
+   */
+  readonly enqueueOutbox?: boolean;
 }
 
 export interface AppendedEvent {
@@ -188,11 +194,22 @@ export async function appendEvent(client: PoolClient, input: AppendEventInput): 
   );
 
   // The obligation to fan out, committed with the event it describes.
-  await client.query(
-    `insert into event_outbox (event_id, stream_key, sequence) values ($1, $2, $3)
-     on conflict (event_id) do nothing`,
-    [id, streamKey, sequence],
-  );
+  //
+  // `enqueueOutbox` is false in exactly one place: a backup taken against a
+  // schema older than `0056`, which is the schema that introduced the outbox.
+  // Upgrading from Stage 0 begins with a backup of a Stage 0 database, and the
+  // audit record `docs/SECURITY.md` §16 requires of that backup must be
+  // writable — while an obligation to deliver it through machinery the schema
+  // does not have would be an obligation nothing could discharge. Every other
+  // caller enqueues, and none of them may pass false to skip delivery of an
+  // event a subscriber is entitled to.
+  if (input.enqueueOutbox !== false) {
+    await client.query(
+      `insert into event_outbox (event_id, stream_key, sequence) values ($1, $2, $3)
+       on conflict (event_id) do nothing`,
+      [id, streamKey, sequence],
+    );
+  }
 
   return { id, sequence, type: input.type, streamKey };
 }

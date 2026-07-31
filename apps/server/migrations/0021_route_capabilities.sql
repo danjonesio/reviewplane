@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Session-scoped route capabilities.
 --
 -- The capability itself is a signed token the gateway verifies without a

@@ -27,6 +27,10 @@ configure                       first-run configuration: checks Docker, creates
                                 writes the pinned version, prints the setup URL
 reviewplane                     the operator command line, run in the api
                                 container: status, install-token, migrate
+                                (including --preflight), backup and restore.
+                                backup and restore stream, so
+                                `./reviewplane backup --output - > archive.tar.zst`
+                                lands the archive on this host
 gateway/Dockerfile              builds the web application and the Caddy image
 gateway/Caddyfile               TLS, routing, WebSocket upgrades, static assets
 browser-worker-seccomp.json     seccomp profile for the browser worker
@@ -42,10 +46,14 @@ Still planned:
 
 ```text
 compose.override.example.yaml
-backup
-restore
 upgrade
 ```
+
+Backup and restore are not files here. They ship inside the server image as
+`reviewplane backup` and `reviewplane restore`, so that the code reading an
+archive is always the code that wrote the schema it describes
+(`docs/DEPLOYMENT.md` §16 and §17); `./reviewplane` is the two lines of Docker
+plumbing that run them against this installation.
 
 ## Services
 

@@ -15,10 +15,23 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import type {
+  MigrationDowngrade,
+  MigrationRecord,
+  MigrationState as MigrationReport,
+} from "@reviewplane/protocol/platform";
+
 import type { Pool } from "./pool.ts";
 
-/** Lock key for the migration advisory lock. Any stable value works. */
-const MIGRATION_LOCK_KEY = 0x52564d47; // "RVMG"
+/**
+ * Lock key for the migration advisory lock. Any stable value works.
+ *
+ * Exported because the upgrade preflight of `docs/OPERATIONS.md` §12 has to
+ * test the availability of *this* lock. A second copy of the number in the
+ * preflight would be a preflight that reported a free lock while the runner
+ * waited on a held one.
+ */
+export const MIGRATION_LOCK_KEY = 0x52564d47; // "RVMG"
 
 /**
  * File names must be `NNNN_lower_snake_case.sql` so that lexical order is the
@@ -101,8 +114,135 @@ export async function migrationState(
   };
 }
 
-export async function migrate(pool: Pool, directory = MIGRATIONS_DIRECTORY): Promise<MigrationResult> {
+/**
+ * The declaration `docs/DEPLOYMENT.md` §15 requires of every migration:
+ * "Database migrations must state whether downgrade is supported."
+ *
+ * It is a comment line in the migration itself —
+ * `-- downgrade: not supported (reason)` — rather than a table somewhere else,
+ * because the statement has to travel with the statements it describes. A
+ * registry in another file is a registry that goes stale on the first branch
+ * that forgets it.
+ *
+ * A file that declares nothing is reported as `not_supported`, which is the
+ * repository default (`docs/DEVELOPMENT.md` §7) and the safe reading: nothing
+ * in Stage 1 implements automated downgrade, so the only rollback is restoring
+ * the backup taken before the upgrade. `apps/server/test/migrate.test.ts`
+ * requires every committed migration to declare it explicitly, so the default
+ * is a safety net rather than a way to skip the statement.
+ */
+export interface MigrationDeclaration {
+  readonly filename: string;
+  readonly downgrade: MigrationDowngrade;
+  readonly note: string | undefined;
+  /** Whether the file itself said so, rather than the default being applied. */
+  readonly declared: boolean;
+}
+
+const DOWNGRADE_LINE = /^--[ \t]*downgrade:[ \t]*(supported|not supported)[ \t]*(.*)$/imu;
+
+/** Parses one migration's downgrade declaration from its source. */
+export function parseDowngradeDeclaration(filename: string, sql: string): MigrationDeclaration {
+  const match = DOWNGRADE_LINE.exec(sql);
+  if (match === null) {
+    return {
+      filename,
+      downgrade: "not_supported",
+      note: "the migration declares nothing; the repository default is forward-only",
+      declared: false,
+    };
+  }
+  const note = (match[2] ?? "").trim().replace(/^\((.*)\)$/su, "$1").trim();
+  return {
+    filename,
+    downgrade: match[1]?.toLowerCase() === "supported" ? "supported" : "not_supported",
+    note: note === "" ? undefined : note,
+    declared: true,
+  };
+}
+
+/** Every migration's declaration, keyed by file name, in apply order. */
+export async function migrationDeclarations(
+  directory = MIGRATIONS_DIRECTORY,
+): Promise<MigrationDeclaration[]> {
   const files = await listMigrations(directory);
+  const declarations: MigrationDeclaration[] = [];
+  for (const file of files) {
+    declarations.push(
+      parseDowngradeDeclaration(file, await readFile(join(directory, file), "utf8")),
+    );
+  }
+  return declarations;
+}
+
+/**
+ * The migration state in the shape `packages/protocol` defines
+ * (`MigrationState`), which is what `reviewplane migrate --status --json`
+ * prints and what the upgrade preflight reads.
+ *
+ * It carries the downgrade declaration of every migration, applied and pending,
+ * so an operator planning an upgrade can see before running it that the
+ * migrations about to be applied cannot be undone.
+ */
+export async function migrationReport(
+  pool: Pool,
+  directory = MIGRATIONS_DIRECTORY,
+): Promise<MigrationReport> {
+  const state = await migrationState(pool, directory);
+  const declarations = new Map(
+    (await migrationDeclarations(directory)).map((entry) => [entry.filename, entry]),
+  );
+  const record = (filename: string): MigrationRecord => {
+    const declaration = declarations.get(filename);
+    return {
+      filename,
+      downgrade: declaration?.downgrade ?? "not_supported",
+      ...(declaration?.note === undefined ? {} : { note: declaration.note }),
+    };
+  };
+  return {
+    ...(state.schemaVersion === null ? {} : { schema_version: state.schemaVersion }),
+    applied: state.applied.map(record),
+    pending: state.pending.map(record),
+  };
+}
+
+export interface MigrateOptions {
+  /**
+   * Stop after this migration instead of applying every pending one.
+   *
+   * A restore uses it: an archive records the schema version its rows were
+   * written against, and the restore brings an empty installation to exactly
+   * that version before loading them. Running past it first would load rows
+   * into a schema a later migration had already reshaped, which is the upgrade
+   * happening in the wrong order.
+   */
+  readonly through?: string;
+  /**
+   * Refuse to wait for the migration lock, and report it instead.
+   *
+   * The upgrade preflight of `docs/OPERATIONS.md` §12 has to answer "is the
+   * migration lock available" without becoming the process that holds it.
+   */
+  readonly noWait?: boolean;
+}
+
+/** Thrown when `noWait` was asked for and another process holds the lock. */
+export class MigrationLockUnavailableError extends Error {}
+
+export async function migrate(
+  pool: Pool,
+  directory = MIGRATIONS_DIRECTORY,
+  options: MigrateOptions = {},
+): Promise<MigrationResult> {
+  const all = await listMigrations(directory);
+  const through = options.through;
+  if (through !== undefined && !all.includes(through)) {
+    throw new Error(
+      `this build has no migration ${through}, so it cannot bring a database to that schema version`,
+    );
+  }
+  const files = through === undefined ? all : all.slice(0, all.indexOf(through) + 1);
   const client = await pool.connect();
   const applied: string[] = [];
   const alreadyApplied: string[] = [];
@@ -113,7 +253,19 @@ export async function migrate(pool: Pool, directory = MIGRATIONS_DIRECTORY): Pro
          applied_at  timestamptz not null default now()
        )`,
     );
-    await client.query("select pg_advisory_lock($1)", [MIGRATION_LOCK_KEY]);
+    if (options.noWait === true) {
+      const taken = await client.query<{ locked: boolean }>(
+        "select pg_try_advisory_lock($1) as locked",
+        [MIGRATION_LOCK_KEY],
+      );
+      if (taken.rows[0]?.locked !== true) {
+        throw new MigrationLockUnavailableError(
+          "another process holds the migration lock; no concurrent migration was started",
+        );
+      }
+    } else {
+      await client.query("select pg_advisory_lock($1)", [MIGRATION_LOCK_KEY]);
+    }
     try {
       const existing = await client.query<{ filename: string }>("select filename from schema_migrations");
       const done = new Set(existing.rows.map((row) => row.filename));

@@ -168,7 +168,22 @@ position. `reviewplane migrate` applies them and reports the schema version
 pending without changing anything. The upgrade path is tested rather than
 assumed: `apps/server/test/platform-foundation.test.ts` migrates a database to
 the previous stage's head, seeds it as that stage would have, and then applies
-the newer migrations on top.
+the newer migrations on top, and `apps/server/test/upgrade-stage0.test.ts` does
+the same against the committed Stage 0 installation (`docs/TESTING.md` §13).
+
+Every migration MUST state whether it can be undone, on its own comment line:
+
+```sql
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
+```
+
+`docs/DEPLOYMENT.md` §15 requires the statement, `reviewplane migrate --status`
+prints it for every pending migration, and
+`apps/server/test/migrate.test.ts` fails when a committed migration does not
+carry one. A file with no declaration is *read* as `not supported`, which is the
+default above; the test exists so that the default is a safety net rather than a
+way to skip the statement. Nothing in Stage 1 implements automated downgrade, so
+`not supported` means the way back is the pre-upgrade backup.
 
 ## 8. API development
 

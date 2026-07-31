@@ -411,6 +411,41 @@ watching is exactly the one an operator later needs a record of.
 to be inferred, so a retry and a dead-lettered job are distinguishable from the
 audit trail alone.
 
+### Backup and restore
+
+- `backup.created`
+- `backup.restored`
+
+`docs/SECURITY.md` section 16 requires audit coverage of export and backup
+operations, and these are it. Both are written to the organisation's stream by
+`reviewplane backup` and `reviewplane restore`, whose actor is `system`: the
+operator command line runs inside the container with no request and no session,
+so attributing it to a human identity would be an invention.
+
+`backup.created` names what the archive carried — `mode`, `schema_version`,
+`product_version`, `tables`, `rows`, `artefact_objects`, `artefact_bytes`,
+`artefacts_missing`, `archive_sha256` and `key_material_included`. It does
+**not** carry the
+archive's path: an operator's destination is not something the audit trail
+needs, and a path is the field of this operation most likely to name a mount, a
+host or a share.
+
+`backup.restored` names the archive it came from — `mode`, `schema_version`,
+`backup_created_at`, the rows and objects loaded, how many referenced artefacts
+were missing afterwards, and `hostname_changed`. It is written after the load
+commits, so its presence means a restore finished rather than started.
+
+`backup.created` is the record `reviewplane status` and
+`reviewplane migrate --preflight` read to answer whether an installation is
+backed up (`docs/OPERATIONS.md` sections 3 and 12). That is the reason it is an
+event rather than a row somewhere: the audit trail is the evidence, and a second
+copy of it would be a second thing to keep true.
+
+A backup taken against a schema older than `0056` — which is what upgrading from
+Stage 0 begins with — writes the event without enqueuing an outbox row, because
+that schema has no outbox to enqueue into and no subscriber to deliver to. It is
+the only case in which an event is written without a delivery obligation.
+
 ## 8. Payload rules
 
 The review-domain events — every `review.*`, `finding.*`, `artefact.*` and

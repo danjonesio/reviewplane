@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Browser sessions and control leases
 -- (docs/DOMAIN_MODEL.md sections 12 and 13, ADR-0007).
 

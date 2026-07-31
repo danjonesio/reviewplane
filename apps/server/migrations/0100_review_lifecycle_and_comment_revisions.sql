@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- The rest of the review aggregate (docs/DOMAIN_MODEL.md sections 14, 15, 18
 -- and 24, RVP-37).
 --

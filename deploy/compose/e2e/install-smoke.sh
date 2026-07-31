@@ -543,7 +543,8 @@ import json, sys
 report = json.load(open(sys.argv[1]))
 expected = [
     "status", "version", "database", "artefact_store", "connectors",
-    "browser_capacity", "sessions", "queue", "storage", "certificate", "warnings",
+    "browser_capacity", "sessions", "queue", "storage", "backup", "certificate",
+    "warnings",
 ]
 missing = [key for key in expected if key not in report]
 if missing:

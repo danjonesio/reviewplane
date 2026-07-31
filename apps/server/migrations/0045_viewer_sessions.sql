@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Human viewer sessions (docs/API.md section 4, docs/SECURITY.md section 6.1,
 -- ADR-0016).
 --

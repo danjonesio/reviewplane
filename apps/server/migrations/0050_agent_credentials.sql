@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Agent credentials (docs/SECURITY.md section 6.3, docs/ARCHITECTURE.md
 -- section 11).
 --

@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Idempotency keys for state-changing MCP tools (docs/MCP_SPEC.md section 10).
 --
 -- The primary key is the scope the specification states: actor, tool and

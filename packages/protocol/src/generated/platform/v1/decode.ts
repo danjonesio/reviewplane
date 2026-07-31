@@ -16,6 +16,19 @@ import type {
   ApiMeta,
   AuthenticationLoginFailedPayload,
   AuthenticationLoginSucceededPayload,
+  BackupArtefactDriver,
+  BackupEntry,
+  BackupKeyMaterial,
+  BackupManifest,
+  BackupManifestChecksumAlgorithm,
+  BackupMode,
+  BackupProduct,
+  BackupSource,
+  BackupTable,
+  CompatibilityCheck,
+  CompatibilityCheckName,
+  CompatibilityReport,
+  CompatibilityStatus,
   Connector,
   ConnectorConnectedPayload,
   ConnectorConnectedTrigger,
@@ -42,6 +55,9 @@ import type {
   LoginFailureReason,
   LoginMethod,
   MessageType,
+  MigrationDowngrade,
+  MigrationRecord,
+  MigrationState,
   Organisation,
   OrganisationCreatedPayload,
   OrganisationStatus,
@@ -555,6 +571,135 @@ export function decodeJobFailedPayload(value: unknown): JobFailedPayload {
     reason: source["reason"] as JobFailureReason,
     retrying: source["retrying"] as boolean,
     ...(source["next_attempt_at"] === undefined ? {} : { next_attempt_at: source["next_attempt_at"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated BackupProduct.
+ */
+export function decodeBackupProduct(value: unknown): BackupProduct {
+  const source = value as Record<string, unknown>;
+  return {
+    version: source["version"] as string,
+    revision: source["revision"] as string,
+    built_at: source["built_at"] as string,
+  };
+}
+
+/**
+ * Decodes a validated BackupSource.
+ */
+export function decodeBackupSource(value: unknown): BackupSource {
+  const source = value as Record<string, unknown>;
+  return {
+    ...(source["hostname"] === undefined ? {} : { hostname: source["hostname"] as string }),
+    artefact_driver: source["artefact_driver"] as BackupArtefactDriver,
+  };
+}
+
+/**
+ * Decodes a validated BackupTable.
+ */
+export function decodeBackupTable(value: unknown): BackupTable {
+  const source = value as Record<string, unknown>;
+  return {
+    name: source["name"] as string,
+    rows: source["rows"] as number,
+  };
+}
+
+/**
+ * Decodes a validated BackupEntry.
+ */
+export function decodeBackupEntry(value: unknown): BackupEntry {
+  const source = value as Record<string, unknown>;
+  return {
+    path: source["path"] as string,
+    bytes: source["bytes"] as number,
+    sha256: source["sha256"] as string,
+  };
+}
+
+/**
+ * Decodes a validated BackupKeyMaterial.
+ */
+export function decodeBackupKeyMaterial(value: unknown): BackupKeyMaterial {
+  const source = value as Record<string, unknown>;
+  return {
+    included: source["included"] as boolean,
+    excluded_tables: (source["excluded_tables"] as unknown[]).map((item) => item as string),
+  };
+}
+
+/**
+ * Decodes a validated BackupManifest.
+ */
+export function decodeBackupManifest(value: unknown): BackupManifest {
+  const source = value as Record<string, unknown>;
+  return {
+    manifest_version: source["manifest_version"] as number,
+    created_at: source["created_at"] as string,
+    mode: source["mode"] as BackupMode,
+    product: decodeBackupProduct(source["product"]),
+    schema_version: source["schema_version"] as string,
+    source: decodeBackupSource(source["source"]),
+    tables: (source["tables"] as unknown[]).map((item) => decodeBackupTable(item)),
+    artefact_objects: source["artefact_objects"] as number,
+    artefact_bytes: source["artefact_bytes"] as number,
+    ...(source["artefacts_missing"] === undefined ? {} : { artefacts_missing: (source["artefacts_missing"] as unknown[]).map((item) => item as string) }),
+    key_material: decodeBackupKeyMaterial(source["key_material"]),
+    key_references: (source["key_references"] as unknown[]).map((item) => item as string),
+    ...(source["configuration_included"] === undefined ? {} : { configuration_included: source["configuration_included"] as boolean }),
+    checksum_algorithm: source["checksum_algorithm"] as BackupManifestChecksumAlgorithm,
+    entries: (source["entries"] as unknown[]).map((item) => decodeBackupEntry(item)),
+  };
+}
+
+/**
+ * Decodes a validated MigrationRecord.
+ */
+export function decodeMigrationRecord(value: unknown): MigrationRecord {
+  const source = value as Record<string, unknown>;
+  return {
+    filename: source["filename"] as string,
+    downgrade: source["downgrade"] as MigrationDowngrade,
+    ...(source["note"] === undefined ? {} : { note: source["note"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated MigrationState.
+ */
+export function decodeMigrationState(value: unknown): MigrationState {
+  const source = value as Record<string, unknown>;
+  return {
+    ...(source["schema_version"] === undefined ? {} : { schema_version: source["schema_version"] as string }),
+    applied: (source["applied"] as unknown[]).map((item) => decodeMigrationRecord(item)),
+    pending: (source["pending"] as unknown[]).map((item) => decodeMigrationRecord(item)),
+  };
+}
+
+/**
+ * Decodes a validated CompatibilityCheck.
+ */
+export function decodeCompatibilityCheck(value: unknown): CompatibilityCheck {
+  const source = value as Record<string, unknown>;
+  return {
+    name: source["name"] as CompatibilityCheckName,
+    status: source["status"] as CompatibilityStatus,
+    detail: source["detail"] as string,
+  };
+}
+
+/**
+ * Decodes a validated CompatibilityReport.
+ */
+export function decodeCompatibilityReport(value: unknown): CompatibilityReport {
+  const source = value as Record<string, unknown>;
+  return {
+    ok: source["ok"] as boolean,
+    checked_at: source["checked_at"] as string,
+    checks: (source["checks"] as unknown[]).map((item) => decodeCompatibilityCheck(item)),
   };
 }
 

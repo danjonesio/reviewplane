@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Workspace Git context reported by a connector (RVP-20).
 --
 -- docs/DOMAIN_MODEL.md section 9 lists a workspace's fields as `path_hash`,

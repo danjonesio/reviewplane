@@ -12,7 +12,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 
-import { MIGRATIONS_DIRECTORY, listMigrations, migrate } from "../src/db/migrate.ts";
+import {
+  MIGRATION_LOCK_KEY,
+  MIGRATIONS_DIRECTORY,
+  MigrationLockUnavailableError,
+  listMigrations,
+  migrate,
+  migrationDeclarations,
+  migrationReport,
+  migrationState,
+  parseDowngradeDeclaration,
+} from "../src/db/migrate.ts";
 import { createPool } from "../src/db/pool.ts";
 import type { Pool } from "../src/db/pool.ts";
 import { startPostgres } from "./support/postgres.ts";
@@ -125,5 +135,111 @@ describe("the migration runner", () => {
     const results = await Promise.all([migrate(pool), migrate(pool), migrate(pool)]);
     const appliedTwice = results.flatMap((result) => result.applied);
     assert.deepEqual(appliedTwice, [], "a migration was applied by a concurrent start");
+  });
+
+  /**
+   * `docs/DEPLOYMENT.md` section 15: "Database migrations must state whether
+   * downgrade is supported."
+   *
+   * The requirement is on every migration, so it is asserted over every
+   * migration rather than over the runner's ability to read one. A new file
+   * that omits the line fails here, which is the only thing that keeps the
+   * statement from rotting: the runner's default reading is
+   * `not_supported`, and a default is not a statement.
+   */
+  test("every committed migration states whether downgrade is supported", async () => {
+    const declarations = await migrationDeclarations();
+    assert.ok(declarations.length > 0, "no migration was found");
+    const silent = declarations.filter((entry) => !entry.declared).map((entry) => entry.filename);
+    assert.deepEqual(
+      silent,
+      [],
+      `these migrations declare no downgrade support; add a "-- downgrade: not supported (reason)" line`,
+    );
+    for (const entry of declarations) {
+      assert.ok(
+        entry.downgrade === "supported" || entry.downgrade === "not_supported",
+        `${entry.filename} declares ${entry.downgrade}`,
+      );
+    }
+  });
+
+  test("a migration that declares nothing is read as not supported", () => {
+    const silent = parseDowngradeDeclaration("0001_x.sql", "-- a comment\nSELECT 1;");
+    assert.equal(silent.downgrade, "not_supported");
+    assert.equal(silent.declared, false);
+
+    const stated = parseDowngradeDeclaration(
+      "0002_x.sql",
+      "-- downgrade: supported (drops the column it added)\nSELECT 1;",
+    );
+    assert.equal(stated.downgrade, "supported");
+    assert.equal(stated.declared, true);
+    assert.equal(stated.note, "drops the column it added");
+  });
+
+  test("the migration report carries the downgrade declaration of every file", async () => {
+    await migrate(pool);
+    const report = await migrationReport(pool);
+    assert.equal(report.pending.length, 0);
+    assert.ok(report.applied.length > 0);
+    assert.equal(report.schema_version, report.applied[report.applied.length - 1]?.filename);
+    for (const record of report.applied) {
+      assert.ok(record.downgrade === "supported" || record.downgrade === "not_supported");
+    }
+  });
+
+  /**
+   * A restore brings an empty installation to the archive's schema version and
+   * no further, because loading rows into a schema a later migration has
+   * already reshaped is the upgrade happening in the wrong order.
+   */
+  test("migrate --through stops at the migration it names", async () => {
+    const isolated = await startPostgres();
+    const isolatedPool = createPool(isolated.url);
+    try {
+      const files = await listMigrations();
+      const target = files[2] as string;
+      const result = await migrate(isolatedPool, MIGRATIONS_DIRECTORY, { through: target });
+      assert.deepEqual(result.applied, files.slice(0, 3));
+
+      const state = await migrationState(isolatedPool);
+      assert.equal(state.schemaVersion, target);
+      assert.equal(state.pending.length, files.length - 3);
+
+      await assert.rejects(
+        migrate(isolatedPool, MIGRATIONS_DIRECTORY, { through: "9999_not_a_migration.sql" }),
+        /has no migration/u,
+      );
+    } finally {
+      await isolatedPool.end();
+      await isolated.stop();
+    }
+  });
+
+  /**
+   * The migration-lock preflight of `docs/OPERATIONS.md` section 12: a second
+   * migration must be told why it cannot start rather than waiting silently.
+   */
+  test("a migration lock held by another process is reported, not waited on", async () => {
+    const isolated = await startPostgres();
+    const isolatedPool = createPool(isolated.url);
+    const holder = createPool(isolated.url);
+    const client = await holder.connect();
+    try {
+      await client.query("select pg_advisory_lock($1)", [MIGRATION_LOCK_KEY]);
+      await assert.rejects(
+        migrate(isolatedPool, MIGRATIONS_DIRECTORY, { noWait: true }),
+        MigrationLockUnavailableError,
+      );
+      // Nothing was applied while the lock was held.
+      const state = await migrationState(isolatedPool);
+      assert.equal(state.applied.length, 0);
+    } finally {
+      client.release();
+      await holder.end();
+      await isolatedPool.end();
+      await isolated.stop();
+    }
   });
 });

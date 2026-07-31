@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Browser-worker identity and project assignment
 -- (docs/ARCHITECTURE.md section 11, docs/SECURITY.md section 6.4).
 --
