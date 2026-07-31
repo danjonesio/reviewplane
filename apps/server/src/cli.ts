@@ -323,11 +323,17 @@ async function runExportReview(pool: Pool, argv: readonly string[]): Promise<num
     return 1;
   }
 
-  const config = loadServerConfig();
+  // The whole server configuration is deliberately not loaded. This command
+  // reads rows and writes a file; it has no gateway, no worker and no
+  // capability key, exactly as `migrate` does not. The artefact store is
+  // constructed because `ReviewService` takes one, and it is never touched: the
+  // metadata-only document carries digests and no bytes.
   const artefacts = new ArtefactService(
     pool,
-    new FilesystemArtefactStore(config.artefactPath),
-    config.artefactMaxBytes,
+    new FilesystemArtefactStore(
+      process.env["REVIEWPLANE_ARTEFACT_PATH"] ?? "/var/lib/reviewplane/artefacts",
+    ),
+    1,
   );
   const document = await new ReviewService(pool, artefacts).buildExportDocument(
     scope,

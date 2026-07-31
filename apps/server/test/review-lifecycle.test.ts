@@ -14,9 +14,14 @@
  */
 
 import assert from "node:assert/strict";
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
 
 import { decodeReviewEvent } from "@reviewplane/protocol/review";
+
+import { main } from "../src/cli.ts";
 
 import {
   BOOTSTRAP_TOKEN,
@@ -1174,6 +1179,71 @@ test("an export whose job fails leaves no artefact and no ready export", async (
     "SELECT count(*) AS count FROM artefacts WHERE kind = 'review_export'",
   );
   assert.equal(Number(artefacts.rows[0]?.count), 0);
+});
+
+test("reviewplane export-review writes the same document the job builds", async () => {
+  const fixture = await seedFixture();
+  const review = await createReview(fixture);
+  await createFinding(fixture, review.id);
+
+  const projectSlug = await postgres.pool.query<{ slug: string }>(
+    "SELECT slug FROM projects WHERE id = $1",
+    [fixture.projectId],
+  );
+  const out = join(await mkdtemp(join(tmpdir(), "reviewplane-export-")), "bugs.review.json");
+  const previous = process.env["REVIEWPLANE_DATABASE_URL"];
+  process.env["REVIEWPLANE_DATABASE_URL"] = postgres.url;
+  try {
+    // The whole server configuration is deliberately not required: an operator
+    // exporting a review has no gateway, no worker and no capability key.
+    const code = await main([
+      "export-review",
+      "--project",
+      String(projectSlug.rows[0]?.slug),
+      "--review",
+      "bugs-on-homepage",
+      "--out",
+      out,
+    ]);
+    assert.equal(code, 0);
+  } finally {
+    if (previous === undefined) delete process.env["REVIEWPLANE_DATABASE_URL"];
+    else process.env["REVIEWPLANE_DATABASE_URL"] = previous;
+  }
+
+  const written = JSON.parse(await readFile(out, "utf8")) as {
+    format: string;
+    privacy_mode: string;
+    review: { slug: string };
+    findings: unknown[];
+  };
+  assert.equal(written.format, "reviewplane-review");
+  assert.equal(written.privacy_mode, "metadata_only");
+  assert.equal(written.review.slug, "bugs-on-homepage");
+  assert.equal(written.findings.length, 1);
+
+  // A review the caller's project does not hold is not found rather than
+  // exported from somewhere else.
+  process.env["REVIEWPLANE_DATABASE_URL"] = postgres.url;
+  try {
+    assert.equal(
+      await main(["export-review", "--project", "no-such-project", "--review", "bugs-on-homepage"]),
+      1,
+    );
+    assert.equal(
+      await main([
+        "export-review",
+        "--project",
+        String(projectSlug.rows[0]?.slug),
+        "--review",
+        "no-such-review",
+      ]),
+      1,
+    );
+  } finally {
+    if (previous === undefined) delete process.env["REVIEWPLANE_DATABASE_URL"];
+    else process.env["REVIEWPLANE_DATABASE_URL"] = previous;
+  }
 });
 
 // ------------------------------------------------------------------ contract
