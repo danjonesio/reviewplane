@@ -448,6 +448,48 @@ test("deleting removes the bytes, audits the deletion and leaves the identifier 
   assert.equal(events.rows[0]?.payload["reason"], "superseded by a recapture");
 });
 
+test("a verified artefact's bytes cannot be rewritten", async () => {
+  // ADR-0006: original evidence is immutable, and annotations are stored apart
+  // from it rather than drawn into it. Immutability is a property of the API
+  // surface — there is no route that replaces the bytes of an available
+  // artefact — so it is asserted here rather than inferred from the absence of
+  // one.
+  const { projectId } = await seedProjectAndWorker(harness);
+  const original = encodePng(64, 48, [15, 23, 42]);
+  const { artefactId } = await upload(projectId, original);
+
+  const replacement = encodePng(64, 48, [255, 0, 0]);
+  const rewritten = await harness.built.app.inject({
+    method: "POST",
+    url: `/api/v1/artefacts/${artefactId}/content`,
+    headers: { ...WORKER, "content-type": "image/png" },
+    payload: replacement,
+  });
+  assert.equal(rewritten.statusCode, 409, rewritten.body);
+  assert.equal(
+    (rewritten.json() as { error: { code: string } }).error.code,
+    "IDEMPOTENCY_CONFLICT",
+  );
+
+  // Completing again with the original values is a no-op rather than a second
+  // verification, and the bytes served are still the ones first stored.
+  const completedAgain = await harness.built.app.inject({
+    method: "POST",
+    url: `/api/v1/artefacts/${artefactId}/complete`,
+    headers: WORKER,
+    payload: { sha256: digest(original) },
+  });
+  assert.equal(completedAgain.statusCode, 200);
+
+  const granted = await mintGrant(artefactId);
+  const content = await harness.built.app.inject({
+    method: "GET",
+    url: (granted.json() as { data: { url: string } }).data.url,
+    headers: ADMIN,
+  });
+  assert.equal(digest(content.rawPayload), digest(original));
+});
+
 test("a machine credential may write or read evidence and may not delete it", async () => {
   const { projectId } = await seedProjectAndWorker(harness);
   const { artefactId } = await upload(projectId, encodePng(16, 16));
