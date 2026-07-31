@@ -208,6 +208,18 @@ test("a hash mismatch leaves the artefact failed and unreadable", async () => {
     headers: ADMIN,
   });
   assert.equal((state.json() as { data: { state: string } }).data.state, "failed");
+
+  // No completion event was written, and the failure was. A consumer of the
+  // event stream must never see this artefact announced as evidence: the
+  // stream is what other services act on, so "unavailable in the database but
+  // announced on the stream" would be the worst of the two.
+  const events = await postgres.pool.query<{ type: string }>(
+    "SELECT type FROM events WHERE correlation->>'artefact_id' = $1 ORDER BY sequence",
+    [artefactId],
+  );
+  const types = events.rows.map((row) => row.type);
+  assert.deepEqual(types, ["artefact.upload_started", "artefact.upload_failed"]);
+  assert.ok(!types.includes("screenshot.captured"), "a failed artefact announced a capture");
 });
 
 test("path traversal in filename metadata is refused", async () => {
