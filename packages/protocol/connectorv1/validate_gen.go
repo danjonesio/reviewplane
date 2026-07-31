@@ -739,8 +739,9 @@ func validateReconnectRequestActiveStreams(value any, path string, out *[]Schema
 }
 
 // validateReconnectRequestKnownAgentSessions checks agent sessions the connector has
-// observed locally, conventionally prefixed ags_. Stage 0 sends an empty array;
-// agent-session re-establishment is Stage 1.
+// observed locally, conventionally prefixed ags_. This build sends an empty array:
+// agent-session re-establishment is not implemented, and the field is sent empty
+// rather than omitted so that its arrival does not change the message shape.
 func validateReconnectRequestKnownAgentSessions(value any, path string, out *[]SchemaViolation) {
 	items, ok := checkArray(value, path, out, 0, 32, true)
 	if !ok {
@@ -752,8 +753,9 @@ func validateReconnectRequestKnownAgentSessions(value any, path string, out *[]S
 }
 
 // validateReconnectRequestWorkspaceHeadState checks head state of the workspaces this
-// connector serves. Stage 0 sends an empty array; workspace discovery is Stage 1
-// (section 9).
+// connector serves (section 9). A connector configured with none sends an empty array;
+// it is never omitted, so a control plane reading the claim can tell 'this connector
+// serves no workspace' from 'this connector did not say'.
 func validateReconnectRequestWorkspaceHeadState(value any, path string, out *[]SchemaViolation) {
 	items, ok := checkArray(value, path, out, 0, 8, false)
 	if !ok {

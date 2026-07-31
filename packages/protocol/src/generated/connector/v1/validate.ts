@@ -834,8 +834,10 @@ export function validateReconnectRequestActiveStreams(value: unknown, path: stri
 }
 
 /**
- * Agent sessions the connector has observed locally, conventionally prefixed ags_. Stage 0
- * sends an empty array; agent-session re-establishment is Stage 1.
+ * Agent sessions the connector has observed locally, conventionally prefixed ags_. This
+ * build sends an empty array: agent-session re-establishment is not implemented, and the
+ * field is sent empty rather than omitted so that its arrival does not change the message
+ * shape.
  */
 export function validateReconnectRequestKnownAgentSessions(value: unknown, path: string, out: SchemaViolation[]): void {
   if (!checkArray(value, path, out, { minItems: 0, maxItems: 32, uniqueItems: true })) return;
@@ -845,8 +847,9 @@ export function validateReconnectRequestKnownAgentSessions(value: unknown, path:
 }
 
 /**
- * Head state of the workspaces this connector serves. Stage 0 sends an empty array;
- * workspace discovery is Stage 1 (section 9).
+ * Head state of the workspaces this connector serves (section 9). A connector configured
+ * with none sends an empty array; it is never omitted, so a control plane reading the
+ * claim can tell 'this connector serves no workspace' from 'this connector did not say'.
  */
 export function validateReconnectRequestWorkspaceHeadState(value: unknown, path: string, out: SchemaViolation[]): void {
   if (!checkArray(value, path, out, { minItems: 0, maxItems: 8, uniqueItems: false })) return;
@@ -857,10 +860,11 @@ export function validateReconnectRequestWorkspaceHeadState(value: unknown, path:
 
 /**
  * What the connector believes it holds, sent on every control-channel establishment
- * (docs/CONNECTOR_PROTOCOL.md section 17). All six fields are always present; Stage 0
- * sends empty collections for known_agent_sessions and workspace_head_state, which are
- * Stage 1 capabilities. The payload carries no credential: the identity is the mutually
- * authenticated client certificate the channel already presented.
+ * (docs/CONNECTOR_PROTOCOL.md section 17). All six fields are always present, and a
+ * collection with nothing in it is sent empty rather than omitted, so the message shape
+ * does not change with what a connector happens to be serving. The payload carries no
+ * credential: the identity is the mutually authenticated client certificate the channel
+ * already presented.
  */
 export function validateReconnectRequest(value: unknown, path: string, out: SchemaViolation[]): void {
   const source = checkObject(value, path, out, ["connector_version", "capabilities", "active_routes", "active_streams", "known_agent_sessions", "workspace_head_state"], ["connector_version", "capabilities", "active_routes", "active_streams", "known_agent_sessions", "workspace_head_state"]);

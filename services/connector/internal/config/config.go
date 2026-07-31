@@ -126,12 +126,16 @@ type Logging struct {
 
 // Workspace is one entry of the workspaces block.
 //
-// Workspace discovery is Stage 1 (docs/CONNECTOR_PROTOCOL.md section 9), so the
-// identifier the control plane names in a publication cannot be discovered yet.
-// It is configured instead: a publication whose workspace_id is not one of
-// these is refused with WORKSPACE_NOT_FOUND, which is the section 11 check the
-// connector owes independently of the control plane. Discovery replaces the
-// source of this list; it does not remove the check.
+// These are the only paths this connector ever looks at. It observes their Git
+// context (docs/CONNECTOR_PROTOCOL.md section 9) and refuses a publication whose
+// workspace_id is not one of them with WORKSPACE_NOT_FOUND, which is the section
+// 11 check the connector owes independently of the control plane.
+//
+// The identifier is configured rather than discovered because it is the value a
+// publication names, so the connector has to already hold it to recognise one.
+// Bounded root scanning for checkouts nobody listed is discovery mode 3 of
+// section 9 and is not implemented; if it lands it replaces the source of this
+// list without removing either the check or the identifier.
 type Workspace struct {
 	ID      string
 	Path    string

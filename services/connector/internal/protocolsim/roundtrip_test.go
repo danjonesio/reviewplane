@@ -120,10 +120,18 @@ func TestReconnectPayloadCarriesAllSixFields(t *testing.T) {
 		t.Error("active_streams is absent, not empty")
 	}
 	if request.KnownAgentSessions == nil || len(request.KnownAgentSessions) != 0 {
-		t.Errorf("known_agent_sessions is %v; Stage 0 sends it present and empty", request.KnownAgentSessions)
+		t.Errorf("known_agent_sessions is %v; it is sent present and empty until agent-session re-establishment lands",
+			request.KnownAgentSessions)
 	}
+	// The claim is present and empty here because this harness configures no
+	// workspace, not because the field is unimplemented: a connector that serves
+	// workspaces reports their head state (section 9), and
+	// TestReconnectClaimCarriesRealWorkspaceHeadState covers that. What this asserts
+	// is the shape — present rather than omitted — which the schema requires
+	// either way.
 	if request.WorkspaceHeadState == nil || len(request.WorkspaceHeadState) != 0 {
-		t.Errorf("workspace_head_state is %v; Stage 0 sends it present and empty", request.WorkspaceHeadState)
+		t.Errorf("workspace_head_state is %v; a connector serving no workspace sends it present and empty",
+			request.WorkspaceHeadState)
 	}
 
 	// It must also be a frame the schema accepts, encoded by the real encoder.
