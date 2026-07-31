@@ -170,10 +170,13 @@ export function loadWorkerConfig(environment: Environment = process.env): Worker
     }
   }
 
+  // The Compose service name of the `api` role (`docs/DEPLOYMENT.md` §3). The
+  // default exists so a worker started with no configuration in that stack
+  // finds the control plane; every deployment sets it explicitly.
   const controlPlaneUrl = optionalString(
     environment,
     "REVIEWPLANE_CONTROL_PLANE_URL",
-    "http://server:8080",
+    "http://api:8080",
   );
   if (!/^https?:\/\/[!-~]+$/u.test(controlPlaneUrl)) {
     throw new ConfigurationError(

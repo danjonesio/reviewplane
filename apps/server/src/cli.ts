@@ -14,7 +14,7 @@
  * reviewplane serve             the api role: HTTP API, connector listener
  * reviewplane jobs              the jobs role: durable background work
  * reviewplane install-token     mint the one-time administrator bootstrap token
- * reviewplane status            build, schema and artefact-store health and use
+ * reviewplane status [--json]   the deployment's health, capacity and storage
  * reviewplane export-review     write one review as a portable document
  * reviewplane version           the build this image carries
  * ```
@@ -26,7 +26,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,10 +49,21 @@ import { createArtefactStore } from "./modules/artefacts/store/index.ts";
 import { InstallTokenStore } from "./modules/identity/install-tokens.ts";
 import { OrganisationStore } from "./modules/identity/organisations.ts";
 import { UserStore } from "./modules/identity/users.ts";
+import { gatherStatus, renderStatus } from "./modules/operations/status.ts";
 import { ReviewService } from "./modules/reviews/service.ts";
 
 /** Exit code for `migrate --status` when the schema is behind the code. */
 export const EXIT_MIGRATIONS_PENDING = 3;
+
+/**
+ * Exit code for `status` when a check the deployment cannot work without has
+ * failed: the database, the schema or the artefact store.
+ *
+ * It is deliberately not `1`. `1` is "the command itself failed"; this is "the
+ * command succeeded and the answer is bad", and a monitoring script has to be
+ * able to tell those apart.
+ */
+export const EXIT_STATUS_DEGRADED = 4;
 
 const USAGE = `reviewplane <command>
 
@@ -63,9 +74,9 @@ const USAGE = `reviewplane <command>
   install-token [--ttl-seconds N]
                        mint the one-time administrator bootstrap token and print
                        it once; it is single-use and expires (default 24 hours)
-  status [--json]      report the build, the schema and the artefact store,
-                       including storage use; exits 1 when the store is
-                       unreachable or migrations are pending
+  status [--json]      report version, database and schema, artefact store,
+                       connectors, browser capacity, sessions, queue depth,
+                       storage use and certificate expiry
   export-review --project <id|slug> --review <slug|id> [--out FILE]
                        write one review as the portable document of
                        docs/REVIEW_FORMAT.md, to FILE or to standard output
@@ -115,7 +126,7 @@ async function runServe(pool: Pool): Promise<number> {
   // is worse than not starting; `/health/ready` reports the same condition for
   // a deployment that migrates separately.
   const migration = await migrate(pool);
-  const built = await buildApp({ config, pool, runJobs: true });
+  const built = await buildApp({ config, pool, runJobs: serveRunsJobs() });
   built.app.log.info(
     { applied: migration.applied.length, already_applied: migration.alreadyApplied.length },
     "migrations complete",
@@ -156,65 +167,7 @@ function artefactService(pool: Pool): ArtefactService {
   });
 }
 
-/**
- * `reviewplane status` (`docs/OPERATIONS.md` §3).
- *
- * It reports the build, the schema and the artefact store. The remaining
- * figures §3 lists — connectors, worker capacity, sessions, queue depth,
- * certificate expiry — arrive with the stages that own them; this command
- * prints what it can actually measure rather than inventing a zero for what it
- * cannot, because a status line that is confidently wrong is worse than one
- * that is absent.
- */
-async function runStatus(pool: Pool, json: boolean): Promise<number> {
-  const build = readBuildInfo();
-  const schema = await migrationState(pool);
-  // The schema is read first and the artefact figures only when it is current.
-  // Against a database nobody has migrated, the `artefacts` table does not
-  // exist, and a raw "relation does not exist" is the opposite of what this
-  // command is for: the operator needs to be told to run `reviewplane migrate`.
-  const store = schema.pending.length === 0 ? await artefactService(pool).storeStatus() : null;
 
-  if (json) {
-    write(
-      JSON.stringify({
-        version: build.version,
-        revision: build.revision,
-        schema_version: schema.schemaVersion,
-        pending_migrations: schema.pending.length,
-        artefact_store: store,
-      }),
-    );
-    return store !== null && store.available ? 0 : 1;
-  }
-
-  write(`version:          ${build.version}`);
-  write(`schema version:   ${schema.schemaVersion ?? "(none applied)"}`);
-  write(`pending:          ${String(schema.pending.length)}`);
-  if (store === null) {
-    write("artefact store:   not read; run reviewplane migrate first");
-    return 1;
-  }
-  write(`artefact driver:  ${store.driver}`);
-  write(`artefact store:   ${store.available ? "available" : `unavailable — ${store.detail ?? ""}`}`);
-  write(`artefacts:        ${String(store.artefact_count)}`);
-  write(`storage use:      ${formatBytes(store.stored_bytes)}`);
-  write(`awaiting upload:  ${formatBytes(store.pending_bytes)}`);
-  return store.available ? 0 : 1;
-}
-
-/** Bytes an operator can read at a glance, with the exact figure beside it. */
-function formatBytes(bytes: number): string {
-  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  const rounded = unit === 0 ? String(bytes) : value.toFixed(1);
-  return `${rounded} ${units[unit] ?? "B"} (${String(bytes)} bytes)`;
-}
 
 async function runJobs(pool: Pool, once: boolean): Promise<number> {
   const runner = new JobRunner({
@@ -364,6 +317,26 @@ async function runInstallToken(pool: Pool, argv: readonly string[], force: boole
 }
 
 /**
+ * `reviewplane status` (`docs/OPERATIONS.md` section 3).
+ *
+ * It runs from the application image, so it reports the deployment the image is
+ * part of rather than whatever an operator's shell can reach: the database it
+ * is configured with, the artefact volume it has mounted, and the TLS listener
+ * it can see over the internal network. `deploy/compose/reviewplane` is the
+ * wrapper that runs it in the `api` container.
+ */
+async function runStatus(pool: Pool, json: boolean): Promise<number> {
+  const report = await gatherStatus({
+    pool,
+    artefactPath: process.env["REVIEWPLANE_ARTEFACT_PATH"] ?? "/var/lib/reviewplane/artefacts",
+    tlsEndpoint: process.env["REVIEWPLANE_STATUS_TLS_ENDPOINT"],
+    tlsServerName: process.env["REVIEWPLANE_GATEWAY_DOMAIN"],
+  });
+  write(json ? JSON.stringify(report, null, 2) : renderStatus(report));
+  return report.status === "ok" ? 0 : EXIT_STATUS_DEGRADED;
+}
+
+/**
  * `reviewplane export-review` (`docs/API.md` section 12,
  * `docs/REVIEW_FORMAT.md`).
  *
@@ -453,6 +426,27 @@ function readTtlSeconds(argv: readonly string[]): number | undefined {
     throw new ConfigurationError("--ttl-seconds must be a positive whole number of seconds.");
   }
   return value;
+}
+
+/**
+ * Whether `reviewplane serve` runs the jobs role beside the API.
+ *
+ * `docs/ARCHITECTURE.md` section 4.2 gives one codebase two ways to run
+ * background work: beside the API in a single-container deployment, or alone in
+ * a container of its own. Both runners are safe together — a claim is
+ * `SELECT ... FOR UPDATE SKIP LOCKED`, so two of them never take the same row —
+ * but "safe" is not the point. A deployment that runs a `jobs` container and
+ * also runs the role inside `api` has a `jobs` container whose readiness and
+ * logs describe only some of the work being done, which is precisely the
+ * question `docs/OPERATIONS.md` section 2 says readiness exists to answer.
+ *
+ * The default is on, because the default is one container.
+ */
+function serveRunsJobs(): boolean {
+  const raw = process.env["REVIEWPLANE_SERVE_RUNS_JOBS"];
+  if (raw === undefined || raw === "") return true;
+  if (raw === "true" || raw === "false") return raw === "true";
+  throw new ConfigurationError("REVIEWPLANE_SERVE_RUNS_JOBS must be true or false.");
 }
 
 /** Listen address for the jobs role's health endpoints. */
@@ -566,11 +560,32 @@ async function runCli(): Promise<void> {
   }
 }
 
-// Run only when invoked as the process entry point, so that the test suite can
-// import `main` and exercise the commands without the module exiting for it.
-if (
-  process.argv[1] !== undefined &&
-  resolvePath(process.argv[1]) === fileURLToPath(import.meta.url)
-) {
+/**
+ * Whether this module was invoked as the process entry point.
+ *
+ * The comparison is between **real** paths, and that is the whole point. The
+ * image installs the operator command line as a symlink —
+ * `/usr/local/bin/reviewplane -> /app/dist/cli.js` — so `process.argv[1]` is
+ * the link and `import.meta.url` is its target, because Node resolves symlinks
+ * when it loads a module. Comparing them without resolving therefore found them
+ * unequal, ran nothing, and exited 0: `reviewplane migrate` in a deployed
+ * container printed no output and applied no migration, and `reviewplane serve`
+ * started no server, both silently. `docker compose up` reported it as a
+ * container that keeps restarting with exit code 0.
+ *
+ * Resolving is also what keeps the test suite able to import `main` without the
+ * module running for it, which is why the guard exists at all.
+ */
+function invokedAsEntryPoint(): boolean {
+  const entry = process.argv[1];
+  if (entry === undefined) return false;
+  try {
+    return realpathSync(resolvePath(entry)) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
+
+if (invokedAsEntryPoint()) {
   await runCli();
 }

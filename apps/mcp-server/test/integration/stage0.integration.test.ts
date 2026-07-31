@@ -409,7 +409,10 @@ test("steps 9 to 12: an MCP client retrieves bugs-on-homepage and submits after 
           title: "Hero heading overlaps the navigation below 900px",
           description: "The collapse breakpoint is 768px but the navigation still wraps at 880px.",
           severity: "high",
-          source: "human",
+          // No `source`: it is derived from the authenticated actor and a body
+          // that supplies one is refused as an unknown property before any
+          // handler runs (`docs/API.md` §13, RVP-37). This fixture forged it
+          // until that rule existed.
           url: `${humanSession.service_origin}/`,
           viewport: { width: 390, height: 844, device_scale_factor: 2 },
           scroll_position: { x: 0, y: 0 },
