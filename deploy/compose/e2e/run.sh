@@ -357,7 +357,20 @@ SESSION_STATUS="$(field "${SESSION_RESPONSE}" 'data["status"]')"
 [[ "${SESSION_STATUS}" == "REQUESTED" ]] || fail "a reserved session should be REQUESTED, got ${SESSION_STATUS}"
 info "reserved browser session ${SESSION_ID} (REQUESTED)"
 
-PUBLISH_BODY="$(printf '{"connector_id":"%s","workspace_id":"wsp_fixture","local_host":"127.0.0.1","local_port":4321,"protocol":"http","ttl_seconds":3600,"allowed_browser_session_ids":["%s"]}' "${CONNECTOR_ID}" "${SESSION_ID}")"
+# The workspace a route names has to be a record in this project: publication
+# resolves it inside the caller's organisation and project before anything is
+# sent to the connector. The connector's own configuration pins
+# `project: prj_fixture`, and this scenario creates a project with a generated
+# identifier, so its observation lands nowhere — registering the checkout
+# through the API is what `docs/API.md` §4.3 offers an operator for exactly this
+# case, and it is a real row in the real project rather than a name nothing
+# holds.
+WORKSPACE_BODY="$(printf '{"root_path":"/opt/reviewplane/dev-fixture","branch":"main","head_commit":"%s"}' "0000000000000000000000000000000000000001")"
+WORKSPACE_RESPONSE="$(api PUT "/api/v1/projects/${PROJECT_ID}/workspaces" "${WORKSPACE_BODY}")"
+WORKSPACE_ID="$(field "${WORKSPACE_RESPONSE}" 'data["id"]')" || fail "could not register the fixture workspace"
+info "registered workspace ${WORKSPACE_ID}"
+
+PUBLISH_BODY="$(printf '{"connector_id":"%s","workspace_id":"%s","local_host":"127.0.0.1","local_port":4321,"protocol":"http","ttl_seconds":3600,"allowed_browser_session_ids":["%s"]}' "${CONNECTOR_ID}" "${WORKSPACE_ID}" "${SESSION_ID}")"
 PUBLISH_RESPONSE="$(api POST "/api/v1/projects/${PROJECT_ID}/published-services" "${PUBLISH_BODY}")"
 SERVICE_ID="$(field "${PUBLISH_RESPONSE}" 'data["id"]')" || fail "publication failed"
 SERVICE_STATUS="$(field "${PUBLISH_RESPONSE}" 'data["status"]')"
@@ -779,7 +792,7 @@ VITE_SESSION_RESPONSE="$(api POST "/api/v1/projects/${PROJECT_ID}/browser-sessio
 VITE_SESSION_ID="$(field "${VITE_SESSION_RESPONSE}" 'data["id"]')" \
   || fail "could not reserve a browser session for the Vite fixture"
 
-VITE_PUBLISH_BODY="$(printf '{"connector_id":"%s","workspace_id":"wsp_fixture","local_host":"127.0.0.1","local_port":5173,"protocol":"http","ttl_seconds":3600,"allowed_browser_session_ids":["%s"]}' "${CONNECTOR_ID}" "${VITE_SESSION_ID}")"
+VITE_PUBLISH_BODY="$(printf '{"connector_id":"%s","workspace_id":"%s","local_host":"127.0.0.1","local_port":5173,"protocol":"http","ttl_seconds":3600,"allowed_browser_session_ids":["%s"]}' "${CONNECTOR_ID}" "${WORKSPACE_ID}" "${VITE_SESSION_ID}")"
 VITE_PUBLISH_RESPONSE="$(api POST "/api/v1/projects/${PROJECT_ID}/published-services" "${VITE_PUBLISH_BODY}")"
 VITE_SERVICE_ID="$(field "${VITE_PUBLISH_RESPONSE}" 'data["id"]')" || fail "publishing the Vite server failed"
 VITE_OBSERVED="$(field "${VITE_PUBLISH_RESPONSE}" 'data["observed_destination"]')"

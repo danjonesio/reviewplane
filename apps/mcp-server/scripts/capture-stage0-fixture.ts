@@ -114,6 +114,14 @@ let fixture: FixtureApp;
 let fixtureTls: LoopbackTls;
 let controlOrigin: string;
 let mcpOrigin: string;
+/**
+ * The environment records a published route names.
+ *
+ * Publication resolves the connector, the workspace and every named browser
+ * session inside the caller's organisation and project, so a route cannot name
+ * a `con_fixture` that exists in no table.
+ */
+let routeEnvironment: { connectorId: string; workspaceId: string };
 let sessionRoot: string;
 
 /** Data the manifest records about what the loop produced. */
@@ -289,8 +297,8 @@ async function openSession(
     url: `/api/v1/projects/${projectId}/published-services`,
     headers: ADMIN,
     payload: {
-      connector_id: "con_fixture",
-      workspace_id: "wsp_fixture",
+      connector_id: routeEnvironment.connectorId,
+      workspace_id: routeEnvironment.workspaceId,
       local_host: "127.0.0.1",
       local_port: FIXTURE_PORT,
       protocol: "http",
@@ -405,6 +413,9 @@ async function captureLoop(artefactRoot: string): Promise<Summary> {
   });
   await startBrowserWorker();
 
+  // Publication resolves the connector, the workspace and every named browser
+  // session inside the caller's organisation and project, so the capture has to
+  // hold real records rather than the names it used to send.
   const workspaceId = (
     (
       await app.inject({
@@ -420,6 +431,24 @@ async function captureLoop(artefactRoot: string): Promise<Summary> {
       })
     ).json() as { data: { id: string } }
   ).data.id;
+
+  const environmentId = "env_fixture";
+  await pool.query(
+    `INSERT INTO environments (id, organisation_id, project_id, name, platform, architecture)
+     VALUES ($1, $2, $3, 'fixture', 'linux', 'amd64')
+     ON CONFLICT DO NOTHING`,
+    [environmentId, organisationId, projectId],
+  );
+  await pool.query(
+    `INSERT INTO connectors (
+       id, organisation_id, environment_id, project_id, certificate_fingerprint,
+       certificate_serial, certificate_not_after, public_key, version, status)
+     VALUES ('con_fixture', $1, $2, $3, 'sha256:fixture', '01',
+             now() + interval '30 days', 'key', '0.1.0', 'ACTIVE')
+     ON CONFLICT DO NOTHING`,
+    [organisationId, environmentId, projectId],
+  );
+  routeEnvironment = { connectorId: "con_fixture", workspaceId };
 
   // Two human sessions, one per required viewport, so the fixture carries a
   // finding captured at each and a migration cannot be written against one
