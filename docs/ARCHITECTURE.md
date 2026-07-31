@@ -272,6 +272,12 @@ Stores:
 
 Artefact keys are content-addressed and must not expose user-entered names. Where the `s3` driver issues presigned URLs, they must be short-lived and scoped; the `filesystem` driver serves artefacts through the server with equivalent short-lived, scoped access tokens.
 
+Content addressing has one consequence worth stating: **two artefacts with identical bytes are one stored object**. A before and an after screenshot of an unchanged region share a key, so deleting one must not remove the object while the other still references it. The delete path asks that question inside the transaction that marks the metadata row deleted, and removes the object only afterwards; a crash between the two leaves an unreferenced object, which is wasted disk, rather than a live artefact whose bytes have gone.
+
+Both drivers are exercised by one conformance suite (`apps/server/test/artefact-driver-conformance.test.ts`), which ADR-0012 requires. The `s3` run signs against an in-process S3-compatible endpoint that recomputes the signature over every request, so it tests the driver's own canonicalisation and encoding rather than agreeing with whatever it is sent; testing against an external service is a later stage (`docs/DEPLOYMENT.md` §12).
+
+Under both drivers Stage 1 **proxies the upload**. ADR-0012 permits a presigned upload URL under `s3` and this build does not issue one, because the server is where content-type validation happens and a presigned upload would place unvalidated bytes in the bucket before anything examined them. Retrieval does use a presigned URL under `s3`, which is what ADR-0019 decided; the grant row is written and audited either way.
+
 Those tokens are the access grants of ADR-0019: a caller mints one for a single artefact and reads it at `/api/v1/artefact-content/:grantId`, and the grant is bound to the subject that minted it, so the identifier in the URL is not a credential on its own. No route serves an artefact from its identifier under either driver.
 
 For an image artefact the store also records the **content rectangle** — the intrinsic pixel extent the server measured from the verified bytes. Annotation geometry is normalised against it (`docs/DOMAIN_MODEL.md` section 16), so it belongs with the artefact rather than being recomputed by every renderer.
@@ -753,6 +759,30 @@ The reconnect is bounded and jittered (`DEVELOPMENT.md` §10). The attempt count
 - Keep finding verification incomplete
 - Retry with content hash and idempotency key
 - Never record an artefact as available before integrity verification
+
+Two failures are distinguished, because they call for opposite responses. Bytes
+that do not match what the intent declared are the uploader's fault: the
+artefact becomes `failed`, `artefact.upload_failed` is recorded, and retrying
+the same intent would be wrong because it describes something the uploader did
+not send. A store that cannot accept a write or answer a read is not the
+uploader's fault: the artefact keeps the state it had, the refusal is
+`ARTEFACT_STORE_UNAVAILABLE` carrying `details.reason =
+"artefact_store_unavailable"`, and the same intent and idempotency key remain
+retryable. Marking a store outage `failed` would turn a transient fault into
+lost evidence, and answering it with `ARTEFACT_UPLOAD_INCOMPLETE` would send an
+operator to examine an upload that had in fact completed. Neither outcome makes
+anything available, and the database constraint
+`artefacts_available_is_verified` means a bug in this code cannot either.
+
+Neither refusal names the store. A filesystem error carries an absolute server
+path and an S3 error carries the bucket endpoint and a fragment of the service's
+own XML; `docs/SECURITY.md` §18 keeps both out of a response, and the control
+plane logs them against the request identifier instead.
+
+The idempotency key is the `Idempotency-Key` header on the upload intent. A
+worker that crashed after uploading and before completing resumes the artefact
+it already created rather than starting a second one; a worker that crashed
+before uploading retries the whole flow and gets the first intent back.
 
 ### Database unavailable
 

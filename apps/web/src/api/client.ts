@@ -17,9 +17,26 @@ import type {
   Environment,
   Workspace,
 } from "@reviewplane/protocol/platform";
-import type { Annotation, Finding, Review } from "@reviewplane/protocol/review";
+import type {
+  Annotation,
+  Finding,
+  Review,
+  VerificationReference,
+} from "@reviewplane/protocol/review";
 
-export type { Annotation, Connector, ConnectorStatus, Environment, Finding, Review, Workspace };
+export type {
+  Annotation,
+  Connector,
+  ConnectorStatus,
+  Environment,
+  Finding,
+  Review,
+  VerificationReference,
+  Workspace,
+};
+
+/** The verification shape the review workspace reads. */
+export type Verification = VerificationReference;
 
 export interface ApiErrorBody {
   readonly error?: { readonly code?: string; readonly message?: string };
@@ -219,16 +236,39 @@ export interface Artefact {
   readonly content_rectangle: ArtefactContentRectangle | null;
   readonly redaction_state: string;
   readonly retention_class: string;
+  /**
+   * When retention becomes due. Stage 1 records it and deletes nothing, so the
+   * viewer says "due" and never "deleted" (`docs/UX_FLOWS.md` section 17).
+   */
+  readonly expires_at: string | null;
+  /**
+   * How the bytes are served. `attachment` is active markup, which is never
+   * rendered under this origin (`docs/SECURITY.md` section 13).
+   */
+  readonly disposition: "inline" | "attachment";
+  /**
+   * The key that would decrypt these bytes, or null. Null is the honest
+   * statement that they are not application-encrypted.
+   */
+  readonly encryption_key_reference: string | null;
+  readonly thumbnail_state: string;
+  readonly thumbnail_artefact_id: string | null;
+  readonly source_artefact_id: string | null;
   readonly available_at: string | null;
 }
 
 export interface ArtefactGrant {
   readonly grant_id: string;
   readonly artefact_id: string;
-  /** Same-origin path that serves the bytes while the grant is live. */
+  /**
+   * Where the bytes are while the grant is live. A same-origin path under the
+   * `filesystem` driver; a short-lived presigned URL under `s3` (ADR-0019). The
+   * caller does not need to know which.
+   */
   readonly url: string;
   readonly expires_at: string;
   readonly expires_in_seconds: number;
+  readonly disposition: "inline" | "attachment";
 }
 
 /**
@@ -471,6 +511,18 @@ export const api = {
 
   async artefact(artefactId: string): Promise<Artefact> {
     return request<Artefact>(`/api/v1/artefacts/${encodeURIComponent(artefactId)}`);
+  },
+
+  /**
+   * The latest verification for a finding, or null.
+   *
+   * The viewer needs the after screenshot it names for the before-and-after
+   * comparison of `docs/UX_FLOWS.md` section 17.
+   */
+  async findingVerification(findingId: string): Promise<Verification | null> {
+    return request<Verification | null>(
+      `/api/v1/findings/${encodeURIComponent(findingId)}/verification`,
+    );
   },
 
   /**

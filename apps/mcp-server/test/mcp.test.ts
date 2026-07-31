@@ -11,6 +11,8 @@ import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 
 import { MESSAGE_TYPE_VALUES, decodeMcpToolResponse } from "@reviewplane/protocol/mcp";
+import { validateArtefactResource } from "@reviewplane/protocol/review";
+import type { SchemaViolation } from "@reviewplane/protocol/review";
 import { startMigratedDatabase, truncateAll, type MigratedDatabase } from "@reviewplane/server/testing";
 
 import {
@@ -663,9 +665,23 @@ test("a screenshot resource serves bytes, and a client without image support get
     });
     const contents = read.contents[0] as { mimeType: string; text?: string; blob?: string };
     assert.equal(contents.blob, undefined, "no image bytes for a client that cannot read them");
-    const described = JSON.parse(contents.text as string) as { sha256: string; content_path: string };
+    const described = JSON.parse(contents.text as string) as {
+      sha256: string;
+      content_path: string;
+      degraded?: { reason: string; detail: string };
+    };
     assert.equal(typeof described.sha256, "string");
     assert.match(described.content_path, /^\/api\/v1\/artefact-content\//u);
+    // A degraded read is a success with a named reason, not a failure
+    // (`docs/UX_FLOWS.md` section 18 "Agent lacks image-resource capability").
+    assert.equal(described.degraded?.reason, "image_resources_unsupported");
+    assert.ok(
+      (described.degraded?.detail ?? "").length > 20,
+      "the degradation says what the caller got instead",
+    );
+    // And it is the `artefact_resource` shape of `packages/protocol`, so a
+    // field added to the response without the schema fails here.
+    assertArtefactResource(described);
 
     // The workflow still completes: the finding tool answers with links and a
     // warning rather than failing.
@@ -991,3 +1007,23 @@ test("the event sequence records the whole agent interaction", async () => {
     await agent.close();
   }
 });
+
+/**
+ * Validates an artefact resource against the generated validator.
+ *
+ * `docs/MCP_SPEC.md` section 8 says both resources return the
+ * `artefact_resource` shape of `packages/protocol`, and the schema sets
+ * `additionalProperties: false` and admits no nulls. Asserting it against the
+ * generator's own validator is what keeps that sentence true: a member added to
+ * the response without the schema, or a null where the schema wants an absent
+ * value, fails here rather than reaching a client.
+ */
+function assertArtefactResource(value: unknown): void {
+  const violations: SchemaViolation[] = [];
+  validateArtefactResource(value, "artefact_resource", violations);
+  assert.deepEqual(
+    violations,
+    [],
+    `the resource does not satisfy artefact_resource: ${JSON.stringify(violations)}`,
+  );
+}

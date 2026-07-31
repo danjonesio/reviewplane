@@ -88,6 +88,20 @@
       "note": "Reading evidence is an audited access (docs/SECURITY.md section 16). The grant names one artefact, one subject and an expiry two minutes out (ADR-0019)."
     },
     {
+      "name": "artefact-deleted",
+      "kind": "review_event",
+      "file": "valid/artefact-deleted.json",
+      "message_type": "artefact.deleted",
+      "note": "Deletion with bytes_removed false: keys are content-addressed (ADR-0012), so two artefacts with identical bytes are one stored object, and removing it would take evidence another artefact still references."
+    },
+    {
+      "name": "artefact-thumbnail-generated",
+      "kind": "review_event",
+      "file": "valid/artefact-thumbnail-generated.json",
+      "message_type": "artefact.thumbnail_generated",
+      "note": "The durable thumbnail job's outcome. The thumbnail is a separate artefact with its own digest; the original is never rewritten (ADR-0006)."
+    },
+    {
       "name": "screenshot-captured",
       "kind": "review_event",
       "file": "valid/screenshot-captured.json",
@@ -251,6 +265,13 @@
       "file": "invalid/annotation-unknown-type.json",
       "expect_reason": "schema_violation",
       "note": "freehand is named in docs/DOMAIN_MODEL.md section 16 and is deliberately not implemented in Stage 0. It is refused rather than stored as geometry no renderer understands."
+    },
+    {
+      "name": "artefact-upload-started-as-svg",
+      "kind": "review_event",
+      "file": "invalid/artefact-upload-started-as-svg.json",
+      "expect_reason": "schema_violation",
+      "note": "image/svg+xml is not a storable media type. An SVG is a document that executes, and docs/SECURITY.md section 13 forbids rendering active markup under the control-plane origin; refusing it at the schema means no such artefact exists to be held back later."
     }
   ]
 }

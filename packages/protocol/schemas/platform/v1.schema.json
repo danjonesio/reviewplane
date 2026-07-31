@@ -202,6 +202,7 @@
       "APPROVAL_REQUIRED",
       "EVIDENCE_REQUIRED",
       "ARTEFACT_UPLOAD_INCOMPLETE",
+      "ARTEFACT_STORE_UNAVAILABLE",
       "UNSUPPORTED_CAPABILITY",
       "RATE_LIMITED",
       "INTERNAL_ERROR"
@@ -459,6 +460,7 @@
         "APPROVAL_REQUIRED",
         "EVIDENCE_REQUIRED",
         "ARTEFACT_UPLOAD_INCOMPLETE",
+        "ARTEFACT_STORE_UNAVAILABLE",
         "UNSUPPORTED_CAPABILITY",
         "RATE_LIMITED",
         "INTERNAL_ERROR"
@@ -476,6 +478,7 @@
         "event_outbox_dispatch",
         "idempotency_key_expiry",
         "published_service_expiry",
+        "artefact_thumbnail",
         "review_export"
       ]
     },

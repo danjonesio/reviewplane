@@ -256,6 +256,70 @@ describe("reviewplane migrate and readiness", () => {
     }
   });
 
+  test("the status command reports the schema and the artefact store", async () => {
+    // `docs/OPERATIONS.md` section 3. It runs with the artefact module's own
+    // configuration and nothing else: this test sets no gateway, no worker
+    // credential and no capability key, which is exactly the position an
+    // operator running `reviewplane status` in a jobs container is in.
+    const fresh = await startPostgres();
+    const { mkdtemp, rm, writeFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const root = await mkdtemp(join(tmpdir(), "reviewplane-status-"));
+    const lines: string[] = [];
+    const write = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string | Uint8Array): boolean => {
+      lines.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      process.env["REVIEWPLANE_DATABASE_URL"] = fresh.url;
+      process.env["REVIEWPLANE_ARTEFACT_PATH"] = root;
+
+      // Migrations pending: the command says so and exits non-zero, so an
+      // installation script can branch on it. It must not reach for the
+      // `artefacts` table, which does not exist yet — a raw "relation does not
+      // exist" is the opposite of what a status command is for.
+      assert.equal(await cli(["status"]), 1);
+      assert.match(lines.join(""), /run reviewplane migrate first/u);
+      lines.length = 0;
+      await cli(["migrate"]);
+      lines.length = 0;
+
+      assert.equal(await cli(["status"]), 0);
+      const report = lines.join("");
+      assert.match(report, /artefact driver: +filesystem/u);
+      assert.match(report, /artefact store: +available/u);
+      assert.match(report, /storage use: +0 B \(0 bytes\)/u);
+      assert.match(report, /pending: +0/u);
+
+      lines.length = 0;
+      assert.equal(await cli(["status", "--json"]), 0);
+      const json = JSON.parse(lines.join("").trim()) as {
+        artefact_store: { driver: string; available: boolean; stored_bytes: number };
+        pending_migrations: number;
+      };
+      assert.equal(json.artefact_store.driver, "filesystem");
+      assert.equal(json.artefact_store.available, true);
+      assert.equal(json.artefact_store.stored_bytes, 0);
+      assert.equal(json.pending_migrations, 0);
+
+      // A store that cannot be written to is reported as unavailable and exits
+      // non-zero. A directory check would pass here; the probe is a round trip.
+      await rm(root, { recursive: true, force: true });
+      await writeFile(root, "not a directory");
+      lines.length = 0;
+      assert.equal(await cli(["status"]), 1);
+      assert.match(lines.join(""), /artefact store: +unavailable/u);
+    } finally {
+      process.stdout.write = write;
+      delete process.env["REVIEWPLANE_DATABASE_URL"];
+      delete process.env["REVIEWPLANE_ARTEFACT_PATH"];
+      await rm(root, { recursive: true, force: true }).catch(() => undefined);
+      await fresh.stop();
+    }
+  });
+
   test("the jobs role serves the three endpoints and reports not-ready before migrating", async () => {
     // `docs/OPERATIONS.md` section 2 requires every service to expose them, and
     // a background role that exposed nothing would give an operator no way to

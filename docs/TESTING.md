@@ -412,6 +412,51 @@ Verify persisted artefacts and logs are redacted according to policy.
 - Hash mismatch
 - Path traversal in filename metadata
 - Active content served from isolated origin or attachment
+- Cross-project artefact access returns not-found
+- Expired access token refused
+- Agent without image-resource capability receives a degraded response
+
+`apps/server/test/artefact-security.test.ts` and
+`apps/server/test/artefact-store-stage-1.test.ts` cover these against a real
+database. Two of them are worth stating precisely, because a weaker assertion
+would pass while the property was broken.
+
+**Cross-project access is compared byte for byte** against the refusal an
+identifier that never existed produces. `RESOURCE_NOT_FOUND` for both is not
+enough on its own: a different message, or a different `details` object, is
+still an oracle telling a caller that the identifier exists. The same comparison
+is applied to `GET /api/v1/artefact-content/:grantId`, where an unknown grant,
+an expired one, an unauthenticated caller and a live grant presented by the
+wrong subject must all produce one status and one body.
+
+**A refusal must carry no deployment data.** The store-unavailable cases assert
+that the response contains neither the server's artefact root nor the raw driver
+error, because `docs/SECURITY.md` §18 keeps both in the log rather than in a
+body an agent session or a browser worker can read.
+
+**Active content is asserted at both ends.** The server's response must carry
+`Content-Disposition: attachment` with `nosniff`, a sandboxing policy and
+`X-Frame-Options: DENY`; the browser suite asserts over the rendered DOM that
+the viewer's panel for such an artefact contains no `img`, `iframe`, `object`
+or `embed`, so a later change that reintroduces one fails.
+
+### Artefact storage drivers
+
+ADR-0012 requires the driver interface to be conformance-tested against both
+drivers, and `apps/server/test/artefact-driver-conformance.test.ts` runs one
+list of cases against `filesystem` and against `s3`: content addressing,
+idempotent rewrite, traversal refusal, verification, deletion, the availability
+probe and usage.
+
+The `s3` run signs against an in-process S3-compatible endpoint that recomputes
+the AWS Signature Version 4 over every request and refuses one that does not
+match, so it exercises the driver's own canonicalisation, percent-encoding,
+signed-header list and payload digest rather than agreeing with whatever it is
+sent. It is **not** a claim that the driver works against any particular vendor:
+multipart upload, versioning and lifecycle rules are not implemented, and
+testing against an external service is a later stage (`docs/DEPLOYMENT.md` §12).
+Setting `REVIEWPLANE_TEST_S3_ENDPOINT`, `_BUCKET`, `_ACCESS_KEY` and
+`_SECRET_KEY` points the same suite at a real endpoint unchanged.
 
 ## 11. Fault-injection matrix
 
@@ -425,9 +470,12 @@ Verify persisted artefacts and logs are redacted according to policy.
 | Repeated flapping reconnects | No duplicate routes, no leaked streams |
 | Timeout awaiting the reconnect desired state | Connector serves no route rather than serving an unreconciled one |
 | Worker crash after screenshot upload | Uploaded evidence remains, session marked failed |
+| Worker crash after upload, before completion | Artefact stays `uploaded`, no grant is minted, a replacement completes it |
+| Upload intent retried with the same idempotency key | One artefact; a different body is `IDEMPOTENCY_CONFLICT` |
 | API restart during live view | Client reconnects and refreshes state |
 | Database unavailable | State changes denied; no unaudited continuation |
-| Artefact store unavailable | Verification remains incomplete |
+| Artefact store unavailable | Verification remains incomplete; refusal names the store; state unchanged and retryable |
+| Filesystem artefact volume full or read-only | Driver reports it; nothing recorded available; upload retryable |
 | Human takeover during agent click | Ordered lease transition, no concurrent input |
 | Duplicate verification request | One verification record through idempotency |
 | Retention deletion partial failure | Retry, metadata not falsely tombstoned |

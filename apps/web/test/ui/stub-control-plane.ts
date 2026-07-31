@@ -73,7 +73,24 @@ export interface StubOptions {
    * has to notice it rather than be told.
    */
   readonly connectorAppearsAfterMs?: number;
+  /**
+   * The after screenshot of the verification submission, which is what the
+   * before-and-after comparison compares against. A different picture from
+   * `screenshot`, so a slider that moves visibly changes what is shown.
+   */
+  readonly afterScreenshot?: Uint8Array;
 }
+
+/**
+ * The bytes of the DOM snapshot fixture: a document with a script in it, so the
+ * case is the real one rather than inert markup dressed up as it.
+ */
+const DOM_SNAPSHOT = new Uint8Array(
+  Buffer.from(
+    '<!doctype html><html><body><script>document.title="executed"</script><p>captured</p></body></html>',
+    "utf8",
+  ),
+);
 
 export interface StubControlPlane {
   readonly origin: string;
@@ -204,6 +221,20 @@ export const ENROLMENT_TOKEN = "rpe_ui-suite-enrolment-token";
 
 export const MEASURED_ARTEFACT = "art_ui_suite_measured";
 export const UNMEASURED_ARTEFACT = "art_ui_suite_unmeasured";
+/**
+ * The after screenshot of a verification submission, which is what the
+ * before-and-after comparison of `docs/UX_FLOWS.md` section 17 compares
+ * against. It is a second capture of the same page with the marked region
+ * repainted, so a slider that moves changes what the picture shows.
+ */
+export const AFTER_ARTEFACT = "art_ui_suite_after";
+/**
+ * A DOM snapshot: evidence the server serves as an attachment because it is
+ * markup a browser would execute (`docs/SECURITY.md` section 13). The viewer
+ * must offer it as a download and must not put it in an element that renders
+ * it, and this fixture is what proves it does not.
+ */
+export const ACTIVE_ARTEFACT = "art_ui_suite_dom_snapshot";
 
 const FINDINGS = [
   {
@@ -249,7 +280,46 @@ const FINDINGS = [
     created_at: "2026-07-30T10:13:02.110Z",
     updated_at: "2026-07-30T10:13:02.110Z",
   },
+  {
+    id: "fin_ui_suite_active",
+    organisation_id: REVIEW.organisation_id,
+    project_id: REVIEW.project_id,
+    review_id: REVIEW.id,
+    title: "Basket markup is malformed",
+    description: "The evidence for this finding is a DOM snapshot, not a picture.",
+    severity: "low",
+    status: "OPEN",
+    source: "human",
+    version: 1,
+    created_by: { type: "human_user", id: "vwr_ui", display: "bootstrap administrator" },
+    url: "https://route-ui-suite.internal.invalid/basket",
+    viewport: CAPTURE_VIEWPORT,
+    scroll_position: { x: 0, y: 0 },
+    captured_commit: REVIEW.captured_commit,
+    screenshot_artefact_id: ACTIVE_ARTEFACT,
+    annotation_count: 0,
+    created_at: "2026-07-30T10:13:20.110Z",
+    updated_at: "2026-07-30T10:13:20.110Z",
+  },
 ];
+
+/**
+ * The verification a finding rests on. Only the first finding has one, so the
+ * suite sees both the comparison and the honest empty state beside it.
+ */
+const VERIFICATIONS: Readonly<Record<string, Record<string, unknown> | null>> = {
+  "fin_ui_suite_hero": {
+    verification_id: "ver_ui_suite",
+    finding_id: "fin_ui_suite_hero",
+    status: "submitted",
+    submitted_by: { type: "agent_session", id: "ags_ui_suite", display: "claude-code" },
+    submitted_at: "2026-07-30T11:02:00.000Z",
+    summary: "Reflowed the hero so the basket button stays visible at 390x844.",
+    before_artefact_id: MEASURED_ARTEFACT,
+    after_artefact_id: AFTER_ARTEFACT,
+    artefact_ids: [MEASURED_ARTEFACT, AFTER_ARTEFACT],
+  },
+};
 
 const ANNOTATIONS: Readonly<Record<string, readonly Record<string, unknown>[]>> = {
   "fin_ui_suite_hero": [
@@ -853,6 +923,11 @@ export async function startStubControlPlane(options: StubOptions): Promise<StubC
       sendJson(response, 200, { data: ANNOTATIONS[annotationsMatch[1] as string] ?? [] });
       return;
     }
+    const verificationMatch = /^\/api\/v1\/findings\/([^/]+)\/verification$/u.exec(path);
+    if (verificationMatch !== null) {
+      sendJson(response, 200, { data: VERIFICATIONS[verificationMatch[1] as string] ?? null });
+      return;
+    }
 
     // ---------------------------------------------------------- artefacts
     const artefactMatch = /^\/api\/v1\/artefacts\/([^/]+)$/u.exec(path);
@@ -861,18 +936,20 @@ export async function startStubControlPlane(options: StubOptions): Promise<StubC
       // One artefact the server measured and one it did not. The second is
       // what proves the viewer degrades to the original plus the annotation
       // list instead of guessing a reference frame.
+      const active = id === ACTIVE_ARTEFACT;
+      const bytes = active ? DOM_SNAPSHOT : (id === AFTER_ARTEFACT ? options.afterScreenshot : options.screenshot);
       sendJson(response, 200, {
         data: {
           id,
           project_id: PROJECT.id,
-          kind: "screenshot",
+          kind: active ? "dom_snapshot" : "screenshot",
           state: "available",
-          content_type: "image/png",
-          size_bytes: options.screenshot?.byteLength ?? 0,
+          content_type: active ? "text/html" : "image/png",
+          size_bytes: bytes?.byteLength ?? 0,
           sha256: "9f2c4c9d1b6a7e35d0d8c4a1f6b30e7c2a5d9e84b1c60f37a2d8e5b4c9f01a63",
           storage_key: "sha256/9f/2c4c9d1b6a7e35d0d8c4a1f6b30e7c2a5d9e84b1c60f37a2d8e5b4c9f01a63",
           content_rectangle:
-            id === UNMEASURED_ARTEFACT
+            id === UNMEASURED_ARTEFACT || active
               ? null
               : {
                   width_px: CAPTURE_VIEWPORT.width * CAPTURE_VIEWPORT.device_scale_factor,
@@ -880,6 +957,14 @@ export async function startStubControlPlane(options: StubOptions): Promise<StubC
                 },
           redaction_state: "not_applied",
           retention_class: "verification_evidence",
+          expires_at: "2027-07-30T10:12:20.000Z",
+          // Derived from the media type by the server, never chosen by a
+          // caller: active markup is an attachment (`docs/SECURITY.md` §13).
+          disposition: active ? "attachment" : "inline",
+          encryption_key_reference: null,
+          thumbnail_state: active ? "not_requested" : "generated",
+          thumbnail_artefact_id: active ? null : "art_ui_suite_thumbnail",
+          source_artefact_id: null,
           available_at: "2026-07-30T10:12:20.000Z",
         },
       });
@@ -897,6 +982,7 @@ export async function startStubControlPlane(options: StubOptions): Promise<StubC
           url: `/api/v1/artefact-content/${grantId}`,
           expires_at: new Date(Date.now() + 120_000).toISOString(),
           expires_in_seconds: 120,
+          disposition: grantMatch[1] === ACTIVE_ARTEFACT ? "attachment" : "inline",
         },
       });
       return;
@@ -904,7 +990,12 @@ export async function startStubControlPlane(options: StubOptions): Promise<StubC
     const contentMatch = /^\/api\/v1\/artefact-content\/([^/]+)$/u.exec(path);
     if (contentMatch !== null) {
       const artefactId = grants.get(contentMatch[1] as string);
-      const bytes = options.screenshot;
+      const active = artefactId === ACTIVE_ARTEFACT;
+      const bytes = active
+        ? DOM_SNAPSHOT
+        : artefactId === AFTER_ARTEFACT
+          ? (options.afterScreenshot ?? options.screenshot)
+          : options.screenshot;
       if (artefactId === undefined || bytes === undefined) {
         sendJson(response, 401, {
           error: { code: "AUTHENTICATION_REQUIRED", message: "No such grant." },
@@ -912,11 +1003,19 @@ export async function startStubControlPlane(options: StubOptions): Promise<StubC
         return;
       }
       response.writeHead(200, {
-        "content-type": "image/png",
+        // The same headers the control plane sends, so the suite is looking at
+        // what a browser would actually receive: active markup as an
+        // attachment, never inline (`docs/SECURITY.md` section 13).
+        "content-type": active ? "text/html" : "image/png",
+        "content-disposition": active
+          ? `attachment; filename="${artefactId}.html"`
+          : `inline; filename="${artefactId}.png"`,
         "content-length": String(bytes.byteLength),
         "cache-control": "private, no-store",
         "x-content-type-options": "nosniff",
         "content-security-policy": "default-src 'none'; sandbox",
+        "cross-origin-resource-policy": "same-origin",
+        "x-frame-options": "DENY",
         "referrer-policy": "no-referrer",
       });
       response.end(Buffer.from(bytes));

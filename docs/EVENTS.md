@@ -273,6 +273,8 @@ and `AGENTS.md` requires that to leave an audit record.
 - `artefact.upload_completed`
 - `artefact.upload_failed`
 - `artefact.access_granted`
+- `artefact.deleted`
+- `artefact.thumbnail_generated`
 - `artefact.redacted`
 - `artefact.expired`
 - `trace.finalised`
@@ -281,6 +283,22 @@ and `AGENTS.md` requires that to leave an audit record.
 bytes and until when (ADR-0019). Reading evidence is an access to the most
 sensitive data the product holds, and section 16 of `docs/SECURITY.md` requires
 it to leave a record.
+
+`artefact.deleted` records a removal. Its `bytes_removed` member says whether
+the stored object was actually removed, which is not the same question as
+whether the artefact was deleted: keys are content-addressed (ADR-0012), so two
+artefacts holding identical bytes are one stored object and the object survives
+until the last of them is gone. The metadata row is retained with `deleted_at`
+set, so the identifier in this event still resolves.
+
+`artefact.thumbnail_generated` records the outcome of the durable thumbnail job
+for **every** result, including the ones that produced no thumbnail.
+`docs/UX_FLOWS.md` section 18 requires a surface to be able to say which of
+not-yet, not-possible and failed applies, and an event written only on success
+would leave the other two indistinguishable.
+
+`artefact.redacted` and `artefact.expired` are not yet produced: no redaction
+and no expiry job run.
 
 ### Review
 

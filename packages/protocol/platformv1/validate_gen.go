@@ -68,7 +68,7 @@ func validateMessageType(value any, path string, out *[]SchemaViolation) {
 // Adding a code is additive within a protocol version, and clients MUST tolerate a
 // code they do not recognise.
 func validateErrorClass(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{values: []string{"AUTHENTICATION_REQUIRED", "AUTHORISATION_DENIED", "PROJECT_CONTEXT_AMBIGUOUS", "PROJECT_CONTEXT_MISMATCH", "RESOURCE_NOT_FOUND", "RESOURCE_STALE", "VERSION_CONFLICT", "IDEMPOTENCY_CONFLICT", "VALIDATION_FAILED", "CONNECTOR_OFFLINE", "PUBLISHED_SERVICE_UNAVAILABLE", "BROWSER_CAPACITY_EXHAUSTED", "BROWSER_SESSION_NOT_ACTIVE", "BROWSER_COMMAND_TIMEOUT", "CONTROL_NOT_OWNED", "CONTROL_EPOCH_STALE", "POLICY_DENIED", "APPROVAL_REQUIRED", "EVIDENCE_REQUIRED", "ARTEFACT_UPLOAD_INCOMPLETE", "UNSUPPORTED_CAPABILITY", "RATE_LIMITED", "INTERNAL_ERROR"}})
+	checkString(value, path, out, stringOpts{values: []string{"AUTHENTICATION_REQUIRED", "AUTHORISATION_DENIED", "PROJECT_CONTEXT_AMBIGUOUS", "PROJECT_CONTEXT_MISMATCH", "RESOURCE_NOT_FOUND", "RESOURCE_STALE", "VERSION_CONFLICT", "IDEMPOTENCY_CONFLICT", "VALIDATION_FAILED", "CONNECTOR_OFFLINE", "PUBLISHED_SERVICE_UNAVAILABLE", "BROWSER_CAPACITY_EXHAUSTED", "BROWSER_SESSION_NOT_ACTIVE", "BROWSER_COMMAND_TIMEOUT", "CONTROL_NOT_OWNED", "CONTROL_EPOCH_STALE", "POLICY_DENIED", "APPROVAL_REQUIRED", "EVIDENCE_REQUIRED", "ARTEFACT_UPLOAD_INCOMPLETE", "ARTEFACT_STORE_UNAVAILABLE", "UNSUPPORTED_CAPABILITY", "RATE_LIMITED", "INTERNAL_ERROR"}})
 }
 
 // validateActorType checks kind of principal an event is attributed to (docs/EVENTS.md
@@ -81,7 +81,7 @@ func validateActorType(value any, path string, out *[]SchemaViolation) {
 // (docs/ARCHITECTURE.md section 4.8). It is an enumeration because an operator reading
 // a failed job needs a name with a fixed meaning, not free text a caller chose.
 func validateJobKind(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{values: []string{"event_outbox_dispatch", "idempotency_key_expiry", "published_service_expiry", "review_export"}})
+	checkString(value, path, out, stringOpts{values: []string{"event_outbox_dispatch", "idempotency_key_expiry", "published_service_expiry", "artefact_thumbnail", "review_export"}})
 }
 
 // validateJobFailureReason checks why a job attempt failed. Stable, so a dead-lettered

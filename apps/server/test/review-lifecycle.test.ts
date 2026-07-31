@@ -1419,11 +1419,13 @@ test("a review export produces one durable artefact with its hash", async () => 
     `EVIDENCE review export: ${String(complete.artefact_id)} sha256=${String(complete.sha256)} bytes=${String(complete.size_bytes)}\n`,
   );
 
-  const artefact = await harness.built.artefacts.readContent(String(complete.artefact_id));
-  assert.equal(artefact.record.kind, "review_export");
-  assert.equal(artefact.record.state, "available");
-  assert.equal(artefact.record.sha256, complete.sha256);
-  const document = JSON.parse(artefact.bytes.toString("utf8")) as {
+  const record = await harness.built.artefacts.getInternal(String(complete.artefact_id));
+  assert.ok(record !== null);
+  assert.equal(record.kind, "review_export");
+  assert.equal(record.state, "available");
+  assert.equal(record.sha256, complete.sha256);
+  const bytes = await harness.built.artefacts.readContent(record);
+  const document = JSON.parse(bytes.toString("utf8")) as {
     format: string;
     version: number;
     review: { slug: string };

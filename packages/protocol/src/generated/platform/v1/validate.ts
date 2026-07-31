@@ -86,7 +86,7 @@ export function validateMessageType(value: unknown, path: string, out: SchemaVio
  * protocol version, and clients MUST tolerate a code they do not recognise.
  */
 export function validateErrorClass(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["AUTHENTICATION_REQUIRED","AUTHORISATION_DENIED","PROJECT_CONTEXT_AMBIGUOUS","PROJECT_CONTEXT_MISMATCH","RESOURCE_NOT_FOUND","RESOURCE_STALE","VERSION_CONFLICT","IDEMPOTENCY_CONFLICT","VALIDATION_FAILED","CONNECTOR_OFFLINE","PUBLISHED_SERVICE_UNAVAILABLE","BROWSER_CAPACITY_EXHAUSTED","BROWSER_SESSION_NOT_ACTIVE","BROWSER_COMMAND_TIMEOUT","CONTROL_NOT_OWNED","CONTROL_EPOCH_STALE","POLICY_DENIED","APPROVAL_REQUIRED","EVIDENCE_REQUIRED","ARTEFACT_UPLOAD_INCOMPLETE","UNSUPPORTED_CAPABILITY","RATE_LIMITED","INTERNAL_ERROR"] });
+  checkString(value, path, out, { values: ["AUTHENTICATION_REQUIRED","AUTHORISATION_DENIED","PROJECT_CONTEXT_AMBIGUOUS","PROJECT_CONTEXT_MISMATCH","RESOURCE_NOT_FOUND","RESOURCE_STALE","VERSION_CONFLICT","IDEMPOTENCY_CONFLICT","VALIDATION_FAILED","CONNECTOR_OFFLINE","PUBLISHED_SERVICE_UNAVAILABLE","BROWSER_CAPACITY_EXHAUSTED","BROWSER_SESSION_NOT_ACTIVE","BROWSER_COMMAND_TIMEOUT","CONTROL_NOT_OWNED","CONTROL_EPOCH_STALE","POLICY_DENIED","APPROVAL_REQUIRED","EVIDENCE_REQUIRED","ARTEFACT_UPLOAD_INCOMPLETE","ARTEFACT_STORE_UNAVAILABLE","UNSUPPORTED_CAPABILITY","RATE_LIMITED","INTERNAL_ERROR"] });
 }
 
 /**
@@ -103,7 +103,7 @@ export function validateActorType(value: unknown, path: string, out: SchemaViola
  * meaning, not free text a caller chose.
  */
 export function validateJobKind(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["event_outbox_dispatch","idempotency_key_expiry","published_service_expiry","review_export"] });
+  checkString(value, path, out, { values: ["event_outbox_dispatch","idempotency_key_expiry","published_service_expiry","artefact_thumbnail","review_export"] });
 }
 
 /**
