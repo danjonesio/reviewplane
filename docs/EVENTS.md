@@ -183,11 +183,21 @@ from a network that went away, and carries the silence bound only for the
 latter, because a closed channel is observed rather than inferred.
 
 `connector.revoked` reports what the revocation reached: `routes_revoked`,
-`sessions_disconnected` and `channels_closed`. Revocation is several things at
-once (`docs/CONNECTOR_PROTOCOL.md` section 18) and an auditor needs to see that
-all of them happened; `sessions_disconnected` counts browser sessions moved to
-`DEGRADED`, and each of those also writes its own `browser_session.degraded`
-with the reason `connector_revoked`.
+`sessions_disconnected`, `channels_closed` and `agent_credentials_revoked`.
+Revocation is several things at once (`docs/CONNECTOR_PROTOCOL.md` section 18)
+and an auditor needs to see that all of them happened; `sessions_disconnected`
+counts browser sessions moved to `DEGRADED`, and each of those also writes its
+own `browser_session.degraded` with the reason `connector_revoked`.
+
+`agent_credentials_revoked` counts the short-lived agent credentials the
+connector had minted for the local MCP bridge (ADR-0023) that were still live.
+They are counted here rather than only in their own events because refusing the
+exchange to a revoked identity closes the next credential and not the ones
+already issued, so "the identity is invalid" and "nothing it issued still works"
+are two different facts and only the second one is this count. Each revoked
+credential also writes its own `session.revoked`, per project it reached, with
+the reason `connector_revoked` — the same event type an administrative
+revocation of an agent credential writes, distinguished by that reason.
 
 `workspace.observed` records that a checkout became known — by a connector
 reporting a configured path, or by an operator or agent session registering one,

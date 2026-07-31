@@ -40,6 +40,7 @@ import {
   scopeParameter,
 } from "../identity/authorisation.ts";
 import type { ViewerPrincipal } from "../live/viewer-sessions.ts";
+import type { AgentCredentialStore } from "../agents/credentials.ts";
 import type { TlsMaterial } from "./certificate-authority.ts";
 import { ENROLMENT_PATH, type ConnectorModuleConfig } from "./config.ts";
 import { hashEnrolmentToken, newEnrolmentToken, newEnrolmentTokenId } from "./identifiers.ts";
@@ -114,6 +115,8 @@ export interface ConnectorRoutesContext {
   readonly config: ConnectorModuleConfig;
   readonly authority: TlsMaterial;
   readonly channels: ControlChannelRegistry;
+  /** The store revocation closes the identity's own credentials through. */
+  readonly credentials: AgentCredentialStore;
   /** Supplied after composition, like the reconciler, for the same reason. */
   revocationEffects(): RevocationEffects | undefined;
 }
@@ -372,6 +375,7 @@ export function registerConnectorRoutes(app: FastifyInstance, context: Connector
           pool: context.pool,
           channels: context.channels,
           effects: context.revocationEffects(),
+          credentials: context.credentials,
           log: request.log,
         },
         {
@@ -393,6 +397,7 @@ export function registerConnectorRoutes(app: FastifyInstance, context: Connector
           routes_revoked: outcome.routesRevoked,
           sessions_disconnected: outcome.sessionsDisconnected,
           channels_closed: outcome.channelsClosed,
+          agent_credentials_revoked: outcome.agentCredentialsRevoked,
           already_revoked: !outcome.changed,
         },
         meta: { request_id: request.id },

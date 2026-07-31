@@ -583,6 +583,8 @@ export function decodeReviewGetInput(value: unknown): ReviewGetInput {
     ...(source["include"] === undefined ? {} : { include: (source["include"] as unknown[]).map((item) => item as ReviewInclude) }),
     ...(source["findings_limit"] === undefined ? {} : { findings_limit: source["findings_limit"] as number }),
     ...(source["findings_cursor"] === undefined ? {} : { findings_cursor: source["findings_cursor"] as string }),
+    ...(source["comments_limit"] === undefined ? {} : { comments_limit: source["comments_limit"] as number }),
+    ...(source["comments_cursor"] === undefined ? {} : { comments_cursor: source["comments_cursor"] as string }),
   };
 }
 
@@ -632,6 +634,8 @@ export function decodeFindingGetInput(value: unknown): FindingGetInput {
   return {
     finding_id: source["finding_id"] as string,
     ...(source["include"] === undefined ? {} : { include: (source["include"] as unknown[]).map((item) => item as FindingInclude) }),
+    ...(source["comments_limit"] === undefined ? {} : { comments_limit: source["comments_limit"] as number }),
+    ...(source["comments_cursor"] === undefined ? {} : { comments_cursor: source["comments_cursor"] as string }),
   };
 }
 
@@ -762,6 +766,7 @@ export function decodeReviewGetResult(value: unknown): ReviewGetResult {
     ...(source["findings_next_cursor"] === undefined ? {} : { findings_next_cursor: source["findings_next_cursor"] as string }),
     ...(source["artefact_links"] === undefined ? {} : { artefact_links: (source["artefact_links"] as unknown[]).map((item) => decodeArtefactLink(item)) }),
     ...(source["comments"] === undefined ? {} : { comments: (source["comments"] as unknown[]).map((item) => decodeCommentView(item)) }),
+    ...(source["comments_next_cursor"] === undefined ? {} : { comments_next_cursor: source["comments_next_cursor"] as string }),
     ...(source["staleness"] === undefined ? {} : { staleness: decodeReviewStaleness(source["staleness"]) }),
   };
 }
@@ -840,6 +845,7 @@ export function decodeFindingGetResult(value: unknown): FindingGetResult {
     finding: decodeFindingView(source["finding"]),
     ...(source["annotations"] === undefined ? {} : { annotations: (source["annotations"] as unknown[]).map((item) => decodeAnnotationView(item)) }),
     ...(source["comments"] === undefined ? {} : { comments: (source["comments"] as unknown[]).map((item) => decodeCommentView(item)) }),
+    ...(source["comments_next_cursor"] === undefined ? {} : { comments_next_cursor: source["comments_next_cursor"] as string }),
     ...(source["artefact_links"] === undefined ? {} : { artefact_links: (source["artefact_links"] as unknown[]).map((item) => decodeArtefactLink(item)) }),
     ...(source["latest_verification"] === undefined ? {} : { latest_verification: decodeVerificationView(source["latest_verification"]) }),
   };

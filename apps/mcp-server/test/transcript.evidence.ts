@@ -99,37 +99,29 @@ try {
   heading("a denied ACCEPTED transition");
   // The agent-facing enumeration does not contain a final disposition, so the
   // request is refused by the advertised contract before any domain code runs
-  // (ADR-0020). Asking for RESOLVED through the same argument is refused the
-  // same way.
+  // (ADR-0020). The refusal is AUTHORISATION_DENIED rather than a schema
+  // complaint, and the attempt is audited even though the domain never saw it.
   await call("finding_update_status", {
     finding_id: finding?.id ?? seeded.findingId,
     expected_version: claimedVersion + 1,
     status: "ACCEPTED",
     idempotency_key: "transcript-accept-1",
   });
+  await call("review_update_status", {
+    review_id: seeded.reviewId,
+    expected_version: 3,
+    status: "ACCEPTED",
+    idempotency_key: "transcript-accept-2",
+  });
 
   heading("the audit record for a denied transition");
-  // The domain layer refuses the same act for an agent_session actor whatever
-  // the protocol layer let through, and writes the denial outside the
-  // transaction that rolled back. This drives it through the domain directly,
-  // because the MCP layer cannot express the request at all.
-  await harness.control.reviews
-    .updateFinding(
-      { organisationId: seeded.organisationId, projectId: seeded.projectId },
-      finding?.id ?? seeded.findingId,
-      { expectedVersion: claimedVersion + 1, status: "RESOLVED" },
-      { type: "agent_session", id: agentSessionId, display: "claude-code" },
-    )
-    .catch((error: unknown) => {
-      show("domain refusal", { message: (error as Error).message });
-    });
   const denied = await postgres.pool.query(
     `SELECT type, actor_type, actor_id, payload FROM events
-      WHERE project_id = $1 AND type = 'finding.status_change_denied'
+      WHERE project_id = $1 AND type IN ('finding.status_change_denied', 'review.status_change_denied')
       ORDER BY sequence`,
     [seeded.projectId],
   );
-  show("finding.status_change_denied", denied.rows);
+  show("status_change_denied", denied.rows);
 
   heading("the whole event sequence");
   const events = await postgres.pool.query<{ type: string; actor_type: string }>(

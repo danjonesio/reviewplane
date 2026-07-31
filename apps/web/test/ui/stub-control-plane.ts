@@ -929,6 +929,7 @@ export async function startStubControlPlane(options: StubOptions): Promise<StubC
           routes_revoked: 2,
           sessions_disconnected: 1,
           channels_closed: 1,
+          agent_credentials_revoked: 1,
         },
       });
       return;

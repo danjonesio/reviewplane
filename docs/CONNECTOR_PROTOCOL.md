@@ -675,7 +675,9 @@ It must not grant the agent connector-administrator privileges.
 
 **Resolve local workspace and project.** The resolution matches configured paths only. Nothing is discovered: a directory inside no configured workspace is reported as such rather than registered on the spot, because a publication names a workspace the operator authorised (§11). Where workspaces nest, the longest matching path wins, so an agent in a nested checkout resolves to the nearer one. A workspace may also be named explicitly with `--workspace`. `--describe` prints what was resolved — connector identity, workspace, project and checkout — and exits without proxying, which is the form an operator runs by hand.
 
-**Request short-lived agent-session credentials.** The connector presents its device identity to `POST /connector/v1/agent-credentials` on the control plane's mutually authenticated listener and names the workspace by its path hash. The control plane resolves that workspace inside the connector's own environment and issues a credential bound to **that workspace's project and no other**, living one hour and carrying the workflow capabilities of `docs/MCP_SPEC.md` §14.1 (ADR-0023). A workspace belonging to another environment answers exactly as an unknown one does.
+**Request short-lived agent-session credentials.** The connector presents its device identity to `POST /connector/v1/agent-credentials` on the control plane's mutually authenticated listener and names the workspace by its path hash. The control plane resolves that workspace inside the connector's own environment **and** inside the project the identity was enrolled for, and issues a credential bound to **that workspace's project and no other**, living one hour and carrying the workflow capabilities of `docs/MCP_SPEC.md` §14.1 (ADR-0023). A workspace belonging to another environment, and one carrying a project outside the enrolment, both answer exactly as an unknown one does. An organisation-scoped enrolment names no project, and the second term is inert for it — the same rule §9 applies to a reported workspace.
+
+A credential the exchange issued lives its hour unless something ends it, and revoking the connector identity is what does: §18 revokes every live credential the identity minted.
 
 **Proxy MCP traffic to the control plane.** The command reads newline-delimited JSON-RPC from stdin, forwards each message to `/mcp/v1` with the credential in an `Authorization` header, and writes each response back to stdout. The MCP session identifier the endpoint mints is captured and echoed, so the exchange is one session. **stdout carries JSON-RPC and nothing else**: everything an operator reads goes to stderr, because a diagnostic on stdout would corrupt the stream the client is parsing. A control plane that becomes unreachable mid-session is reported to the agent as a JSON-RPC error naming neither a host nor a credential, rather than by the pipe closing under it.
 
@@ -788,9 +790,34 @@ Revoking a connector:
 - Closes control and data channels
 - Revokes active routes
 - Marks associated browser sessions `DEGRADED`
+- Revokes the agent credentials that identity minted (§14)
 - Produces audit events
 
 Re-enrolment creates a new connector identity.
+
+### Why the minted credentials are part of it
+
+A connector mints short-lived agent credentials for the local MCP bridge
+(§14, ADR-0023), and refusing the exchange to a revoked identity closes only the
+**next** one. A credential already handed out is a bearer token in another
+process, and it carries `review:write` and `finding:write` for the rest of its
+hour whatever happened to the identity that obtained it.
+
+Revocation MUST therefore revoke every live credential the identity minted.
+ADR-0023 accepts that a compromised connector can mint credentials for its own
+projects "for as long as its identity is valid" on the explicit ground that
+revoking the identity is what ends that; a revocation that left them live would
+make the accepted risk larger than the one that was accepted.
+
+Each revoked credential produces its own `session.revoked` audit event, per
+project it reached, with the reason `connector_revoked` — the same event an
+administrative revocation writes, so that an auditor asking what a project's
+agent credentials did reads one event type whichever path ended them
+(`SECURITY.md` §16).
+
+A credential that has already expired is left as it is. It resolves to nothing
+already, so revoking it would record a permission change that had in fact ended
+by itself.
 
 ### What "marks associated sessions" means
 
@@ -800,17 +827,22 @@ Revocation is where that rule bites hardest, because nothing returns such a sess
 
 ### Ordering
 
-The four effects are ordered, and the order is a requirement rather than an implementation detail:
+The five effects are ordered, and the order is a requirement rather than an implementation detail:
 
 1. active routes are revoked and their in-flight streams reset, and the affected browser sessions are marked `DEGRADED`;
-2. the connector record is marked `REVOKED`;
-3. the live control channel is closed with code 1008 and the reason `IDENTITY_REVOKED`.
+2. the live agent credentials the identity minted are revoked;
+3. the connector record is marked `REVOKED`;
+4. the live control channel is closed with code 1008 and the reason `IDENTITY_REVOKED`.
 
-The record flips **before** the close. The pre-upgrade guard on the control channel reads that record, so a connector that reconnected in the gap between closing its socket and marking its row would be admitted again; closing afterwards makes the refusal immediate rather than merely eventual. Routes and sessions are ended before the record flips, so that the counts the audit event reports are counts of work that actually happened, and a failure part-way leaves the connector usable rather than revoked with its routes still carried — which is the direction that is safe to be wrong in.
+The record flips **before** the close. The pre-upgrade guard on the control channel reads that record, so a connector that reconnected in the gap between closing its socket and marking its row would be admitted again; closing afterwards makes the refusal immediate rather than merely eventual. Routes, sessions and credentials are ended before the record flips, so that the counts the audit event reports are counts of work that actually happened, and a failure part-way leaves the connector usable rather than revoked with its routes still carried — which is the direction that is safe to be wrong in.
+
+What the flip adds for the credentials is that the set cannot grow back: the exchange of §14 resolves the connector record on every request, so once it says `REVOKED` no further credential can be minted for that identity.
 
 ### What the audit record carries
 
-The `connector.revoked` event and the API response of `API.md` §9 both report `routes_revoked`, `sessions_disconnected` and `channels_closed`. Revocation is several things at once and an auditor needs to see that all of them happened; a revocation that closed a channel and left a route carried would be a revocation in name. `channels_closed` is zero when the connector held no live channel, which is an ordinary outcome rather than a failure.
+The `connector.revoked` event and the API response of `API.md` §9 both report `routes_revoked`, `sessions_disconnected`, `channels_closed` and `agent_credentials_revoked`. Revocation is several things at once and an auditor needs to see that all of them happened; a revocation that closed a channel and left a route carried, or left a minted credential live, would be a revocation in name. `channels_closed` is zero when the connector held no live channel and `agent_credentials_revoked` is zero when it had minted none, both of which are ordinary outcomes rather than failures.
+
+The counts say how much each effect reached; they do not identify what it reached. The individual records are the per-effect events — `published_service.revoked` for each route, `browser_session.degraded` for each session and `session.revoked` for each credential — which is where an auditor goes for the identifiers.
 
 Revoking an already-revoked connector is not an error. It reports `already_revoked` and changes nothing, so a retried request cannot produce a second set of counts for work that happened once.
 

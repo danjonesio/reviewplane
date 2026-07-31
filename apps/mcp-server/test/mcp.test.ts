@@ -13,7 +13,11 @@ import { after, before, beforeEach, test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
-import { MESSAGE_TYPE_VALUES, decodeMcpToolResponse } from "@reviewplane/protocol/mcp";
+import {
+  MESSAGE_TYPE_VALUES,
+  McpResponseEncodeError,
+  decodeMcpToolResponse,
+} from "@reviewplane/protocol/mcp";
 import { validateArtefactResource } from "@reviewplane/protocol/review";
 import type { SchemaViolation } from "@reviewplane/protocol/review";
 import { startMigratedDatabase, truncateAll, type MigratedDatabase } from "@reviewplane/server/testing";
@@ -31,6 +35,7 @@ import {
   type McpHarness,
 } from "./helpers/harness.ts";
 import { buildMcpApp } from "../src/app.ts";
+import { refusalFrom } from "../src/envelope.ts";
 import {
   assignReviewToAgent,
   issueAgentCredential,
@@ -871,6 +876,210 @@ test("a review with many findings paginates", async () => {
   }
 });
 
+/**
+ * The three thresholds an adversarial review measured, each of which used to
+ * make the tool fail outright and stay failed.
+ *
+ * `docs/MCP_SPEC.md` §13 requires pagination and per-tool size limits. Before
+ * `BoundedPayload`, the limit was enforced only by the encoder throwing, so
+ * ordinary content — findings with full-length text, or comments of the length
+ * the human API permits — locked an agent out of the review it had been
+ * assigned. Worse, the refusal was `INTERNAL_ERROR`, which this server marks
+ * retryable, so a conforming agent retried for ever.
+ *
+ * Each case asserts the same three things: the call succeeds, the page is
+ * shorter than what was asked for, and a cursor reaches the rest.
+ */
+const LONG_TEXT = "x".repeat(3900);
+
+async function addFindings(agent: Connected, count: number, long: boolean): Promise<void> {
+  for (let index = 0; index < count; index += 1) {
+    const artefactId = await uploadScreenshot(
+      harness,
+      agent.seeded.projectId,
+      agent.seeded.browserSessionId,
+      Buffer.from(AFTER_SCREENSHOT.subarray(0)),
+    );
+    await harness.control.app.inject({
+      method: "POST",
+      url: `/api/v1/reviews/${agent.seeded.reviewId}/findings`,
+      headers: ADMIN,
+      payload: {
+        title: `Finding ${String(index)}`,
+        ...(long ? { description: LONG_TEXT, acceptance_criteria: LONG_TEXT } : {}),
+        severity: "low",
+        url: `https://route-id.internal.invalid/?n=${String(index)}`,
+        viewport: { width: 390, height: 844, device_scale_factor: 2 },
+        scroll_position: { x: 0, y: 0 },
+        captured_commit: CAPTURED_COMMIT,
+        screenshot_artefact_id: artefactId,
+      },
+    });
+  }
+}
+
+async function addReviewComments(agent: Connected, count: number): Promise<void> {
+  for (let index = 0; index < count; index += 1) {
+    const response = await harness.control.app.inject({
+      method: "POST",
+      url: `/api/v1/reviews/${agent.seeded.reviewId}/comments`,
+      headers: ADMIN,
+      payload: { body: `${String(index)} ${LONG_TEXT}` },
+    });
+    assert.equal(response.statusCode, 201, response.body);
+  }
+}
+
+test("review_get degrades to a bounded page rather than failing on 13 long findings", async () => {
+  const agent = await connected();
+  try {
+    // The measured threshold: with default arguments the response used to
+    // exceed review_get's 65536-byte bound at thirteen findings.
+    await addFindings(agent, 16, true);
+    const { envelope } = await call(agent.client, "review_get", { review: "bugs-on-homepage" });
+    assert.equal(envelope["ok"], true, JSON.stringify(envelope).slice(0, 400));
+    const findings = dataOf(envelope)["findings"] as unknown[];
+    assert.ok(findings.length > 0, "the page carries something");
+    assert.ok(findings.length < 17, "and less than everything");
+    const warnings = (envelope["warnings"] ?? []) as { code: string }[];
+    assert.ok(warnings.some((warning) => warning.code === "findings_truncated"));
+
+    // The cursor names the finding after the last one that fitted, so nothing
+    // between the pages is skipped.
+    const cursor = dataOf(envelope)["findings_next_cursor"] as string;
+    assert.equal(typeof cursor, "string");
+    const next = await call(agent.client, "review_get", {
+      review: "bugs-on-homepage",
+      findings_cursor: cursor,
+    });
+    assert.equal(next.envelope["ok"], true);
+    const firstIds = (findings as { id: string }[]).map((finding) => finding.id);
+    const nextIds = ((dataOf(next.envelope)["findings"] ?? []) as { id: string }[]).map(
+      (finding) => finding.id,
+    );
+    assert.equal(
+      firstIds.filter((id) => nextIds.includes(id)).length,
+      0,
+      "the second page does not repeat the first",
+    );
+  } finally {
+    await agent.close();
+  }
+});
+
+test("review_get degrades to a bounded page rather than failing on 16 long comments", async () => {
+  const agent = await connected();
+  try {
+    // Created through the ordinary human API, which permits 4000 characters.
+    // Sixteen of these was the measured threshold at which review_get threw.
+    await addReviewComments(agent, 16);
+    const sixteen = await call(agent.client, "review_get", {
+      review: "bugs-on-homepage",
+      include: ["comments"],
+    });
+    assert.equal(sixteen.envelope["ok"], true, JSON.stringify(sixteen.envelope).slice(0, 400));
+    // It succeeds whole now, because a comment body is truncated to the view's
+    // limit like every other free text. The bound is reached later rather than
+    // never, so the paging path is exercised below with a larger page.
+    assert.equal((dataOf(sixteen.envelope)["comments"] as unknown[]).length, 16);
+    const warned = (sixteen.envelope["warnings"] ?? []) as { code: string }[];
+    assert.ok(warned.some((warning) => warning.code === "text_truncated"));
+
+    await addReviewComments(agent, 34);
+    const { envelope } = await call(agent.client, "review_get", {
+      review: "bugs-on-homepage",
+      include: ["comments"],
+      comments_limit: 50,
+    });
+    assert.equal(envelope["ok"], true, JSON.stringify(envelope).slice(0, 400));
+    const comments = dataOf(envelope)["comments"] as { id: string }[];
+    assert.ok(comments.length > 0 && comments.length < 50, `page of ${String(comments.length)}`);
+    const cursor = dataOf(envelope)["comments_next_cursor"] as string;
+    assert.equal(typeof cursor, "string", "a shortened page names where the next one starts");
+
+    const next = await call(agent.client, "review_get", {
+      review: "bugs-on-homepage",
+      include: ["comments"],
+      comments_limit: 50,
+      comments_cursor: cursor,
+    });
+    assert.equal(next.envelope["ok"], true);
+    const nextIds = ((dataOf(next.envelope)["comments"] ?? []) as { id: string }[]).map(
+      (comment) => comment.id,
+    );
+    assert.equal(
+      comments.map((comment) => comment.id).filter((id) => nextIds.includes(id)).length,
+      0,
+      "the boundary comment appears in exactly one page",
+    );
+  } finally {
+    await agent.close();
+  }
+});
+
+test("finding_get degrades to a bounded page rather than failing on 8 long comments", async () => {
+  const agent = await connected();
+  try {
+    for (let index = 0; index < 12; index += 1) {
+      const response = await harness.control.app.inject({
+        method: "POST",
+        url: `/api/v1/findings/${agent.seeded.findingId}/comments`,
+        headers: ADMIN,
+        payload: { body: `${String(index)} ${LONG_TEXT}` },
+      });
+      assert.equal(response.statusCode, 201, response.body);
+    }
+    const { envelope } = await call(agent.client, "finding_get", {
+      finding_id: agent.seeded.findingId,
+      include: ["comments", "artefact_links"],
+    });
+    assert.equal(envelope["ok"], true, JSON.stringify(envelope).slice(0, 400));
+    const data = dataOf(envelope);
+    // The finding itself and its evidence survive: they are what an agent needs
+    // in order to act, and a long comment thread must not displace them.
+    assert.ok(data["finding"] !== undefined);
+    assert.ok(data["artefact_links"] !== undefined);
+    const comments = (data["comments"] ?? []) as { id: string }[];
+    assert.ok(comments.length < 12, `page of ${String(comments.length)}`);
+    assert.equal(typeof data["comments_next_cursor"], "string");
+  } finally {
+    await agent.close();
+  }
+});
+
+test("a comment an agent wrote itself cannot lock it out of its own review", async () => {
+  // The self-inflicted form of the same defect: sixteen review_add_comment
+  // calls used to make review_get unusable for ever.
+  const agent = await connected();
+  try {
+    for (let index = 0; index < 16; index += 1) {
+      const written = await call(agent.client, "review_add_comment", {
+        review_id: agent.seeded.reviewId,
+        body: `${String(index)} ${LONG_TEXT}`,
+        idempotency_key: `self-comment-${String(index).padStart(4, "0")}`,
+      });
+      assert.equal(written.envelope["ok"], true);
+    }
+    const { envelope } = await call(agent.client, "review_get", {
+      review: "bugs-on-homepage",
+      include: ["findings", "comments", "artefact_links", "staleness"],
+    });
+    assert.equal(envelope["ok"], true, JSON.stringify(envelope).slice(0, 400));
+    assert.ok((dataOf(envelope)["review"] as { id: string }).id === agent.seeded.reviewId);
+  } finally {
+    await agent.close();
+  }
+});
+
+test("a response that does not fit is never reported as retryable", async () => {
+  // Belt and braces on the failure mode that made this severe: whatever the
+  // cause, a size refusal must not invite a retry loop.
+  const refusal = refusalFrom("review_get", "req_unit", new McpResponseEncodeError("too big"));
+  assert.equal(refusal.value.ok, false);
+  assert.equal(refusal.value.error.retryable, false);
+  assert.notEqual(refusal.value.error.code, "INTERNAL_ERROR");
+});
+
 // ---------------------------------------------------------------- claiming
 
 test("the agent claims the review and a finding with optimistic versions", async () => {
@@ -1119,19 +1328,27 @@ test("no agent path exists to accepted or resolved for a human-authored finding"
       assert.ok(!statuses.includes(forbidden), `${forbidden} is advertised as reachable`);
     }
 
-    // And asking anyway is refused, because the domain layer beneath does not
-    // rely on the schema having been enforced.
-    const refused = await call(agent.client, "finding_update_status", {
-      finding_id: agent.seeded.findingId,
-      expected_version: 1,
-      status: "RESOLVED",
-      idempotency_key: "accept-attempt-0001",
-    });
-    assert.equal(refused.envelope["ok"], false);
-    assert.equal(errorOf(refused.envelope).code, "UNSUPPORTED_CAPABILITY");
-    process.stdout.write(
-      `denied agent acceptance: ${JSON.stringify(errorOf(refused.envelope))}\n`,
-    );
+    // And asking anyway is refused, with the code docs/MCP_SPEC.md section 7.7
+    // promises for exactly this case. UNSUPPORTED_CAPABILITY would tell an
+    // agent its client is out of date rather than that it asked for something
+    // only a human may decide.
+    for (const forbidden of ["RESOLVED", "WONT_FIX", "DUPLICATE", "ACCEPTED"]) {
+      const refused = await call(agent.client, "finding_update_status", {
+        finding_id: agent.seeded.findingId,
+        expected_version: 1,
+        status: forbidden,
+        idempotency_key: `accept-attempt-${forbidden.toLowerCase()}`,
+      });
+      assert.equal(refused.envelope["ok"], false);
+      assert.equal(
+        errorOf(refused.envelope).code,
+        "AUTHORISATION_DENIED",
+        `${forbidden}: ${JSON.stringify(errorOf(refused.envelope))}`,
+      );
+      process.stdout.write(
+        `denied agent acceptance: ${JSON.stringify(errorOf(refused.envelope))}\n`,
+      );
+    }
 
     const review = await call(agent.client, "review_update_status", {
       review_id: agent.seeded.reviewId,
@@ -1140,7 +1357,74 @@ test("no agent path exists to accepted or resolved for a human-authored finding"
       idempotency_key: "accept-review-0001",
     });
     assert.equal(review.envelope["ok"], false);
-    assert.equal(errorOf(review.envelope).code, "UNSUPPORTED_CAPABILITY");
+    assert.equal(errorOf(review.envelope).code, "AUTHORISATION_DENIED");
+
+    // The Stage 1 exit criterion is not "an agent cannot accept a human's
+    // finding" but "an agent cannot accept a human's finding AND the attempt is
+    // audited" (docs/DOMAIN_MODEL.md section 15). The schema refuses these
+    // before any domain code runs, so the domain cannot write the record and
+    // the layer that saw the attempt does.
+    const findingDenials = await postgres.pool.query<{ payload: Record<string, unknown>; actor_type: string }>(
+      `SELECT payload, actor_type FROM events
+        WHERE project_id = $1 AND type = 'finding.status_change_denied'
+        ORDER BY sequence`,
+      [agent.seeded.projectId],
+    );
+    assert.equal(findingDenials.rowCount, 4, "one record per attempt");
+    assert.deepEqual(
+      findingDenials.rows.map((row) => row.payload["requested"]),
+      ["RESOLVED", "WONT_FIX", "DUPLICATE", "ACCEPTED"],
+    );
+    for (const row of findingDenials.rows) {
+      assert.equal(row.actor_type, "agent_session", "the attempt is attributed to the agent");
+      assert.equal(row.payload["code"], "AUTHORISATION_DENIED");
+      // The status the row actually held, read rather than taken from the
+      // caller, and the authorship the authority rule turns on.
+      assert.equal(row.payload["from"], "OPEN");
+      assert.equal(row.payload["source"], "human");
+    }
+    process.stdout.write(
+      `finding.status_change_denied: ${JSON.stringify(findingDenials.rows[0]?.payload)}\n`,
+    );
+
+    const reviewDenials = await postgres.pool.query<{ payload: Record<string, unknown> }>(
+      `SELECT payload FROM events
+        WHERE project_id = $1 AND type = 'review.status_change_denied'`,
+      [agent.seeded.projectId],
+    );
+    assert.equal(reviewDenials.rowCount, 1);
+    assert.equal(reviewDenials.rows[0]?.payload["requested"], "ACCEPTED");
+
+    // The refusal changed nothing.
+    const after = await postgres.pool.query<{ status: string; version: string }>(
+      "SELECT status, version FROM findings WHERE id = $1",
+      [agent.seeded.findingId],
+    );
+    assert.equal(after.rows[0]?.status, "OPEN");
+    assert.equal(Number(after.rows[0]?.version), 1);
+  } finally {
+    await agent.close();
+  }
+});
+
+test("an attempted acceptance against another project's finding records nothing", async () => {
+  // The audit is written from the refusal path, so it has to carry the same
+  // scoping every other read does: an agent must not be able to append to
+  // another project's audit trail by guessing identifiers.
+  const other = await seedProject(harness, { reviewSlug: "not-yours" });
+  const agent = await connected();
+  try {
+    const refused = await call(agent.client, "finding_update_status", {
+      finding_id: other.findingId,
+      expected_version: 1,
+      status: "RESOLVED",
+      idempotency_key: "foreign-accept-0001",
+    });
+    assert.equal(refused.envelope["ok"], false);
+    const denials = await postgres.pool.query(
+      "SELECT id FROM events WHERE type = 'finding.status_change_denied'",
+    );
+    assert.equal(denials.rowCount, 0, "no record in either project");
   } finally {
     await agent.close();
   }

@@ -148,6 +148,8 @@ export {
   ACTIVE_REVIEW_STATUSES,
   AGENT_REVIEW_STATUSES,
   AGENT_TRANSITION_LABELS,
+  CLOSING_REVIEW_STATUSES,
+  isHumanReservedStatus,
   agentTransitionsFrom,
   assertActorMayMoveFinding,
   assertActorMayMoveReview,

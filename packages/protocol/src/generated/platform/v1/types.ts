@@ -1857,8 +1857,8 @@ export interface ConnectorDisconnectedPayload {
 
 /**
  * Payload of connector.revoked. It records what revocation reached, because
- * docs/CONNECTOR_PROTOCOL.md section 18 makes revocation five things at once and an
- * auditor needs to see that all five happened.
+ * docs/CONNECTOR_PROTOCOL.md section 18 makes revocation six things at once and an auditor
+ * needs to see that all six happened.
  */
 export interface ConnectorRevokedPayload {
   /**
@@ -1881,6 +1881,13 @@ export interface ConnectorRevokedPayload {
    * How many live connector channels were closed. Zero when the connector held none.
    */
   readonly channels_closed?: number;
+  /**
+   * How many live agent credentials the connector had minted were revoked with it
+   * (ADR-0023). Refusing the exchange closes only the next one, so this count is what
+   * closed the ones already issued. Each also writes its own session.revoked with the
+   * reason connector_revoked.
+   */
+  readonly agent_credentials_revoked?: number;
 }
 
 /**

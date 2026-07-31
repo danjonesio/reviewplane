@@ -307,7 +307,7 @@ published come from the suite rather than from a separate benchmark.
 - Resource authorisation
 - Bounded snapshots
 - Trust labels on page content
-- Agent forbidden transitions
+- Agent forbidden transitions, refused **and audited**
 - Idempotency conflict
 - Capability degradation for clients without image support
 - Inbox acknowledgement semantics
@@ -328,6 +328,18 @@ administrative API; a human session cookie is refused as agent authentication; a
 credential that expires mid-session refuses the next call rather than executing
 part of it; a transport session identifier is not a credential; and no tool
 response carries a credential.
+
+Two properties are asserted with the thresholds an adversarial review measured
+rather than with a convenient fixture, because the convenient fixture is what
+hid them. The bounded-response cases build a review with sixteen findings
+carrying full-length text, twenty review comments of 3900 characters, and twelve
+comments on one finding — the shapes at which `review_get` and `finding_get`
+used to throw — and assert a shorter page, a cursor that reaches the rest with
+no overlap, and that the finding and its evidence survive a long comment thread.
+The authority cases assert one `finding.status_change_denied` per attempted
+final disposition with the agent session as actor, one
+`review.status_change_denied` for an attempted acceptance, and **no** record at
+all when the attempt names another project's finding.
 
 Inbox semantics are asserted at both ends. `apps/mcp-server/test/mcp.test.ts`
 covers the agent's: an assignment delivers one item and a repeated assignment
@@ -505,6 +517,7 @@ Setting `REVIEWPLANE_TEST_S3_ENDPOINT`, `_BUCKET`, `_ACCESS_KEY` and
 | Connector restart during a bridge session | The bridge ends with it and the next one requests a fresh credential; no token was stored to replay |
 | Duplicate `agent_inbox_acknowledge` under one key | One acknowledgement and one event |
 | Two agent sessions claiming one finding | One claim and one `VERSION_CONFLICT` |
+| A review or finding whose ordinary content exceeds a tool's response bound | A shorter page and a cursor that reaches the rest, never a thrown error and never a retryable refusal |
 | Retention deletion partial failure | Retry, metadata not falsely tombstoned |
 | Development service closes a WebSocket | Closure reaches the browser with the service's close code and reason |
 | Connector disconnect during an open WebSocket | Connection closed, route answers `CONNECTOR_OFFLINE` |

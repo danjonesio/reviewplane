@@ -2010,6 +2010,14 @@
         "findings_cursor": {
           "$ref": "#/$defs/cursor",
           "description": "Cursor from a previous page."
+        },
+        "comments_limit": {
+          "$ref": "#/$defs/page_limit",
+          "description": "Maximum comments on the review itself in this page. Defaults to 20."
+        },
+        "comments_cursor": {
+          "$ref": "#/$defs/cursor",
+          "description": "Cursor from a previous page of comments."
         }
       }
     },
@@ -2105,6 +2113,14 @@
             "$ref": "#/$defs/finding_include",
             "description": "One section."
           }
+        },
+        "comments_limit": {
+          "$ref": "#/$defs/page_limit",
+          "description": "Maximum comments in this page. Defaults to 20."
+        },
+        "comments_cursor": {
+          "$ref": "#/$defs/cursor",
+          "description": "Cursor from a previous page of comments."
         }
       }
     },
@@ -2434,13 +2450,17 @@
         },
         "comments": {
           "type": "array",
-          "description": "One bounded page of comments on the review itself, oldest first. Comments on a finding are read through finding_get.",
+          "description": "One bounded page of comments on the review itself, oldest first. Comments on a finding are read through finding_get. The page may be shorter than comments_limit asked for: members are added while they fit the response bound of section 13, and comments_next_cursor then names where the next page starts.",
           "minItems": 1,
           "maxItems": 20,
           "items": {
             "$ref": "#/$defs/comment_view",
             "description": "One comment."
           }
+        },
+        "comments_next_cursor": {
+          "$ref": "#/$defs/cursor",
+          "description": "Cursor for the next page of comments, present only when more remain."
         },
         "staleness": {
           "$ref": "#/$defs/review_staleness",
@@ -2587,13 +2607,17 @@
         },
         "comments": {
           "type": "array",
-          "description": "Comments on the finding, oldest first.",
+          "description": "Comments on the finding, oldest first. The page may be shorter than comments_limit asked for: members are added while they fit the response bound of section 13, and comments_next_cursor then names where the next page starts.",
           "minItems": 1,
           "maxItems": 20,
           "items": {
             "$ref": "#/$defs/comment_view",
             "description": "One comment."
           }
+        },
+        "comments_next_cursor": {
+          "$ref": "#/$defs/cursor",
+          "description": "Cursor for the next page of comments, present only when more remain."
         },
         "artefact_links": {
           "type": "array",

@@ -381,7 +381,13 @@ function revocationSentence(outcome: ConnectorRevocation): string {
   const channels = `${String(outcome.channels_closed)} ${
     outcome.channels_closed === 1 ? "channel" : "channels"
   }`;
-  return `Connector ${outcome.id} is revoked. ${routes} revoked, ${sessions} disconnected, ${channels} closed. Re-enrolling the machine creates a new identity.`;
+  // The credentials are named because they are the effect an operator cannot
+  // see anywhere else on this screen: a route and a session have their own rows,
+  // and a credential the connector minted for a local agent has none.
+  const credentials = `${String(outcome.agent_credentials_revoked)} agent ${
+    outcome.agent_credentials_revoked === 1 ? "credential" : "credentials"
+  }`;
+  return `Connector ${outcome.id} is revoked. ${routes} revoked, ${sessions} disconnected, ${channels} closed, ${credentials} revoked. Re-enrolling the machine creates a new identity.`;
 }
 
 function ProjectEnvironments(): ReactElement {

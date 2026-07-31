@@ -56,6 +56,18 @@ export interface InboxItemRecord {
   readonly finding_id: string | null;
   readonly priority: string | null;
   readonly finding_count: number | null;
+  /**
+   * Who authored the finding a `finding_reopened` item is about.
+   *
+   * It is recorded because the item's title is that finding's title, and a
+   * finding an agent authored carries text a page supplied. Today no tool
+   * creates one, so every value is `human` — but a response that labelled the
+   * title trusted would stop being true the moment
+   * `finding_create_from_observation` lands, and the label would be wrong in
+   * the direction ADR-0010 exists to prevent. Recording the authorship makes
+   * the label a consequence of the data rather than of the stage.
+   */
+  readonly finding_source: string | null;
   readonly assigned_by: { type: string; id?: string; display?: string } | null;
   readonly created_at: string;
   readonly acknowledged_at: string | null;
@@ -80,6 +92,7 @@ export interface CreateInboxItemInput {
   readonly reviewSlug?: string | null;
   readonly priority?: string | null;
   readonly findingCount?: number | null;
+  readonly findingSource?: string | null;
 }
 
 export interface InboxPage {
@@ -119,6 +132,7 @@ function toRecord(row: Row): InboxItemRecord {
   const slug = payload["review_slug"];
   const priority = payload["priority"];
   const count = payload["finding_count"];
+  const findingSource = payload["finding_source"];
   return {
     id: row.id,
     organisation_id: row.organisation_id,
@@ -133,6 +147,7 @@ function toRecord(row: Row): InboxItemRecord {
     finding_id: row.finding_id,
     priority: typeof priority === "string" ? priority : null,
     finding_count: typeof count === "number" ? count : null,
+    finding_source: typeof findingSource === "string" ? findingSource : null,
     assigned_by:
       row.created_by_actor_type === null
         ? null
@@ -199,6 +214,9 @@ export class InboxStore {
       ...(input.findingCount === undefined || input.findingCount === null
         ? {}
         : { finding_count: input.findingCount }),
+      ...(input.findingSource === undefined || input.findingSource === null
+        ? {}
+        : { finding_source: input.findingSource }),
     };
     const inserted = await client.query<Row>(
       `INSERT INTO inbox_items
@@ -312,8 +330,9 @@ export class InboxStore {
           AND status = ANY($3)
           AND ($4::text IS NULL OR recipient_type = $4)
           AND ($5::text IS NULL OR recipient_id = $5 OR recipient_id IS NULL)
-          AND ($6::timestamptz IS NULL OR (created_at, id) > ($6::timestamptz, $7::text))
-        ORDER BY created_at ASC, id ASC
+          AND ($6::timestamptz IS NULL
+               OR (date_trunc('milliseconds', created_at), id) > ($6::timestamptz, $7::text))
+        ORDER BY date_trunc('milliseconds', created_at) ASC, id ASC
         LIMIT $8`,
       [
         scope.organisationId,

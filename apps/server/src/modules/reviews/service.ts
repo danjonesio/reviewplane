@@ -593,12 +593,13 @@ export class ReviewService {
       `SELECT r.*, (SELECT count(*) FROM findings f WHERE f.review_id = r.id) AS finding_count
          FROM reviews r
         WHERE r.organisation_id = $1 AND r.project_id = $2
-          AND ($3::timestamptz IS NULL OR (r.created_at, r.id) < ($3::timestamptz, $4::text))
+          AND ($3::timestamptz IS NULL
+               OR (date_trunc('milliseconds', r.created_at), r.id) < ($3::timestamptz, $4::text))
           AND ($6::text[] IS NULL OR r.status = ANY($6))
           AND ($7::text IS NULL OR r.assigned_agent_session_id = $7)
           AND ($8::text IS NULL OR r.slug LIKE $8 || '%')
           AND ($9::timestamptz IS NULL OR r.updated_at >= $9::timestamptz)
-        ORDER BY r.created_at DESC, r.id DESC
+        ORDER BY date_trunc('milliseconds', r.created_at) DESC, r.id DESC
         LIMIT $5`,
       [
         scope.organisationId,
@@ -1470,6 +1471,9 @@ export class ReviewService {
               findingId,
               reviewSlug: holder.slug,
               priority: holder.priority,
+              // The title above is this finding's title, so who authored the
+              // finding decides how a response carrying it may be labelled.
+              findingSource: finding.source,
             },
             actor,
           );
@@ -1673,8 +1677,9 @@ export class ReviewService {
                      WHERE a.finding_id = f.id AND a.deleted_at IS NULL) AS annotation_count
          FROM findings f
         WHERE f.review_id = $1 AND f.organisation_id = $2 AND f.project_id = $3
-          AND ($4::timestamptz IS NULL OR (f.created_at, f.id) > ($4::timestamptz, $5::text))
-        ORDER BY f.created_at, f.id
+          AND ($4::timestamptz IS NULL
+               OR (date_trunc('milliseconds', f.created_at), f.id) > ($4::timestamptz, $5::text))
+        ORDER BY date_trunc('milliseconds', f.created_at), f.id
         LIMIT $6`,
       [
         reviewId,
@@ -1811,6 +1816,61 @@ export class ReviewService {
       [findingId, scope.organisationId, scope.projectId, Math.min(Math.max(limit, 1), 20)],
     );
     return rows.rows.map((row) => toComment(row as Record<string, unknown>));
+  }
+
+  /**
+   * One keyset page of the current comments on a review or a finding, oldest
+   * first (`docs/API.md` section 6, `docs/MCP_SPEC.md` section 13).
+   *
+   * `listComments` and `listCommentsFor` both cap a page and neither offers a
+   * way to reach the next one, which is a bound rather than pagination: an
+   * agent handed the first twenty comments of a long discussion had no way to
+   * read the twenty-first. The cursor is `(created_at, id)` for the reason the
+   * review listing gives — it is stable under insertion, and a comment added
+   * while somebody is paging appears at the end rather than shifting the page
+   * boundaries.
+   *
+   * Superseded revisions are excluded, so the page is the current text. The
+   * history is still readable through `listCommentsFor` with
+   * `revisions: "all"`, which is where a reader judging a changed instruction
+   * goes.
+   */
+  async listCommentsPage(
+    scope: Scope,
+    target: { readonly reviewId: string; readonly findingId?: string },
+    page: { readonly limit?: number; readonly cursor?: { createdAt: string; id: string } } = {},
+  ): Promise<{ comments: readonly Comment[]; nextCursor: { createdAt: string; id: string } | null }> {
+    const limit = Math.min(Math.max(page.limit ?? 20, 1), 50);
+    const rows = await this.#pool.query(
+      `SELECT * FROM comments
+        WHERE organisation_id = $1 AND project_id = $2 AND review_id = $3
+          AND ($4::text IS NULL OR finding_id = $4)
+          AND ($4::text IS NOT NULL OR finding_id IS NULL)
+          AND superseded_at IS NULL
+          AND ($5::timestamptz IS NULL
+               OR (date_trunc('milliseconds', created_at), id) > ($5::timestamptz, $6::text))
+        ORDER BY date_trunc('milliseconds', created_at), id
+        LIMIT $7`,
+      [
+        scope.organisationId,
+        scope.projectId,
+        target.reviewId,
+        target.findingId ?? null,
+        page.cursor?.createdAt ?? null,
+        page.cursor?.id ?? null,
+        limit + 1,
+      ],
+    );
+    const all = rows.rows.map((row) => toComment(row as Record<string, unknown>));
+    const comments = all.slice(0, limit);
+    const last = comments[comments.length - 1];
+    return {
+      comments,
+      nextCursor:
+        all.length > limit && last !== undefined
+          ? { createdAt: last.created_at, id: last.id }
+          : null,
+    };
   }
 
   /**
@@ -2468,6 +2528,98 @@ export class ReviewService {
         },
         "the audit record for a refused transition could not be written",
       );
+    }
+  }
+
+  /**
+   * Records a transition a caller asked for and was refused **before this
+   * service was reached at all**.
+   *
+   * `docs/DOMAIN_MODEL.md` section 15 requires **every** refused transition to
+   * be audited, and states why in terms this method exists to satisfy: "an
+   * attempt with no record is indistinguishable from one that never happened,
+   * and the Stage 1 exit criterion is that the attempt leaves a trail".
+   *
+   * `#recordDenial` covers the refusals this service raises. It cannot cover
+   * the one that matters most. The agent-facing tool schemas do not contain
+   * `RESOLVED`, `WONT_FIX`, `DUPLICATE` or `ACCEPTED` at all (ADR-0020), so an
+   * agent asking for one is refused by the generated validator before any
+   * domain code runs — which meant the single attempt an auditor would go
+   * looking for, *did an agent try to accept a human's finding*, was precisely
+   * the one that left no trace. The structural denial is the stronger control
+   * and stays; what it cannot do is write the record, so the layer that saw the
+   * attempt hands it here.
+   *
+   * The current status is read rather than supplied, so `from` is what the row
+   * actually holds and not what a caller claimed. The read carries the scope,
+   * so an attempt against a record the caller cannot see records nothing: it
+   * is not an attempt on that record, and writing one would let a caller append
+   * to another project's audit trail by guessing identifiers.
+   *
+   * A failure to write is logged and never raised. The refusal has already
+   * happened and stands; losing its record is an operational fact rather than a
+   * reason to answer the caller differently.
+   */
+  async recordTransitionDenied(
+    scope: Scope,
+    input: {
+      readonly kind: "review" | "finding";
+      readonly id: string;
+      readonly requested: string;
+      readonly code: string;
+      readonly reason: string;
+    },
+    actor: EventActor,
+  ): Promise<boolean> {
+    try {
+      const current =
+        input.kind === "review"
+          ? await this.getReview(scope, input.id).catch(() => null)
+          : await this.getFinding(scope, input.id).catch(() => null);
+      if (current === null) return false;
+      const isReview = input.kind === "review";
+      await inTransaction(this.#pool, async (client) => {
+        await appendEvent(client, {
+          type: isReview ? "review.status_change_denied" : "finding.status_change_denied",
+          organisationId: scope.organisationId,
+          projectId: scope.projectId,
+          actor,
+          correlation: isReview
+            ? { review_id: input.id }
+            : { review_id: (current as Finding).review_id, finding_id: input.id },
+          payload: {
+            ...(isReview
+              ? { review_id: input.id }
+              : { finding_id: input.id, review_id: (current as Finding).review_id }),
+            from: current.status,
+            requested: input.requested,
+            ...(isReview ? {} : { source: (current as Finding).source }),
+            code: input.code,
+            // The refusal's own message, never the request.
+            reason: input.reason.slice(0, 500),
+          },
+        });
+      });
+      return true;
+    } catch (failure) {
+      this.#logger?.error(
+        {
+          event_type:
+            input.kind === "review"
+              ? "review.status_change_denied"
+              : "finding.status_change_denied",
+          organisation_id: scope.organisationId,
+          project_id: scope.projectId,
+          actor_type: actor.type,
+          actor_id: actor.id ?? null,
+          record_id: input.id,
+          requested: input.requested,
+          refusal_code: input.code,
+          err: failure instanceof Error ? failure.message : String(failure),
+        },
+        "the audit record for a refused transition could not be written",
+      );
+      return false;
     }
   }
 

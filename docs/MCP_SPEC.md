@@ -586,6 +586,15 @@ Findings are one bounded page, oldest first, so an agent works them in the order
 a human recorded them. `findings_next_cursor` is present only when more remain,
 with a `findings_truncated` warning beside it.
 
+A page may be **shorter than `findings_limit` asked for**. Members are added
+while they fit the section 13 response bound, and the cursor is minted from the
+last member that fitted, so a review whose findings carry long text pages more
+often rather than failing. `comments` behaves the same way and has its own
+`comments_limit`, `comments_cursor` and `comments_next_cursor`; `artefact_links`
+are returned only for the findings this response actually carries, because a
+link to evidence for a finding the response omitted is context an agent cannot
+place.
+
 The `include` vocabulary is `findings`, `comments`, `artefact_links` and
 `staleness`. `comments` returns one bounded page of the comments on the review
 itself; a finding's comments are read through `finding_get`. A `comment_view`
@@ -643,6 +652,12 @@ agent that retrieved the review.
 
 Returns one finding, its evidence, annotation and latest verification.
 
+Comments are a bounded page with `comments_limit`, `comments_cursor` and
+`comments_next_cursor`, on the section 13 rule. The finding itself, its evidence
+link and its latest verification are assembled **before** the collections: they
+are what an agent needs in order to act on the finding at all, and a long
+comment thread must not be able to displace them.
+
 ### `finding_claim`
 
 Claims one finding with optimistic concurrency.
@@ -676,11 +691,34 @@ layer, which refuses the same transitions for an `agent_session` actor whatever
 the protocol layer let through, and records `finding.status_change_denied` when
 it does.
 
-A final disposition an agent somehow requests — `RESOLVED`, `WONT_FIX` or
-`DUPLICATE` — is refused with `AUTHORISATION_DENIED`, whoever authored the
-finding. Any other transition outside the list is refused with `POLICY_DENIED`
-and `details.allowed_transitions`, so a refusal says what is possible from here
-rather than only what is not.
+A final disposition an agent requests — `RESOLVED`, `WONT_FIX` or `DUPLICATE`,
+and `ACCEPTED` on `review_update_status` — is refused with
+`AUTHORISATION_DENIED`, whoever authored the finding, **and the attempt is
+audited** as `finding.status_change_denied` or `review.status_change_denied`
+with the agent session as actor. Any other transition outside the list is
+refused with `POLICY_DENIED` and `details.allowed_transitions`, so a refusal
+says what is possible from here rather than only what is not.
+
+Both halves of that sentence are load-bearing and neither is free, because these
+are exactly the requests the tool schema cannot express. The generated validator
+refuses them before any domain code runs, so the domain layer never sees them
+and cannot write the record it writes for every refusal it does raise. That left
+the single attempt an auditor goes looking for — *did an agent try to accept a
+human's finding?* — as the one attempt nothing recorded, and answered it with
+`UNSUPPORTED_CAPABILITY`, which tells an agent its client is out of date rather
+than that it asked for something only a human may decide.
+
+So this layer recognises a request naming a human-reserved status on its own
+refusal path: it writes the denial event and answers `AUTHORISATION_DENIED`. The
+structural denial is unchanged and is still the stronger control — the value
+remains absent from the enumeration, and nothing reaches the domain — but the
+attempt now leaves the trail `docs/DOMAIN_MODEL.md` section 15 requires. The
+reserved set is read from the same protocol vocabulary the domain reads
+(ADR-0024) rather than restated here.
+
+The audit carries the caller's project scope like every other read, so an
+attempt against a record the session cannot see records nothing: an agent must
+not be able to append to another project's audit trail by guessing identifiers.
 
 `BLOCKED` requires a `reason`, and `FIXED_UNVERIFIED` requires a
 `resolution_note`: a completion claim without evidence is refused with
@@ -1007,6 +1045,33 @@ Tools must avoid returning unbounded page text, logs or histories.
 - Apply per-tool size limits
 - Exclude binary content unless explicitly requested
 - Redact sensitive values
+
+**A size limit is an assembly rule, not only a check.** A response is built one
+member at a time and measured as it grows; a collection stops at the last
+element that fits, and the cursor is minted from that element rather than from
+the end of the page the database returned, so nothing between two pages is
+skipped. The response carries `findings_truncated` or `results_truncated`
+naming what was shortened.
+
+This is stated because the weaker reading caused a real defect. Enforcing the
+bound only in the encoder made an oversized response a **thrown error**, and
+the tools it hit — `review_get` at thirteen findings with full-length text or
+sixteen review comments of the length the human API permits, `finding_get` at
+eight — then failed for that review permanently. An agent could also do it to
+itself with sixteen `review_add_comment` calls and be locked out of the work it
+had been assigned. A limit that turns ordinary content into a permanent failure
+is not "use pagination"; it is an outage with a byte count attached.
+
+A response that nevertheless exceeds its tool's limit is refused with
+`UNSUPPORTED_CAPABILITY` and **`retryable: false`**, telling the caller to ask
+for a smaller page. It is deliberately not `INTERNAL_ERROR`, which this
+interface marks retryable: repeating the call assembles the same oversized
+response for ever, so inviting a retry turns one refusal into a loop.
+
+Free text is bounded on the way out as well. Every text member a view carries is
+truncated to its view's limit with a `text_truncated` warning, including comment
+bodies — the human API permits 4000 characters and the agent-facing view does
+not promise to carry all of them.
 
 ## 14. Versioning
 
