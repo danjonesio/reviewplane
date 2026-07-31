@@ -162,7 +162,11 @@ function artefactService(pool: Pool): ArtefactService {
 async function runStatus(pool: Pool, json: boolean): Promise<number> {
   const build = readBuildInfo();
   const schema = await migrationState(pool);
-  const store = await artefactService(pool).storeStatus();
+  // The schema is read first and the artefact figures only when it is current.
+  // Against a database nobody has migrated, the `artefacts` table does not
+  // exist, and a raw "relation does not exist" is the opposite of what this
+  // command is for: the operator needs to be told to run `reviewplane migrate`.
+  const store = schema.pending.length === 0 ? await artefactService(pool).storeStatus() : null;
 
   if (json) {
     write(
@@ -174,18 +178,22 @@ async function runStatus(pool: Pool, json: boolean): Promise<number> {
         artefact_store: store,
       }),
     );
-    return store.available && schema.pending.length === 0 ? 0 : 1;
+    return store !== null && store.available ? 0 : 1;
   }
 
   write(`version:          ${build.version}`);
   write(`schema version:   ${schema.schemaVersion ?? "(none applied)"}`);
   write(`pending:          ${String(schema.pending.length)}`);
+  if (store === null) {
+    write("artefact store:   not read; run reviewplane migrate first");
+    return 1;
+  }
   write(`artefact driver:  ${store.driver}`);
   write(`artefact store:   ${store.available ? "available" : `unavailable — ${store.detail ?? ""}`}`);
   write(`artefacts:        ${String(store.artefact_count)}`);
   write(`storage use:      ${formatBytes(store.stored_bytes)}`);
   write(`awaiting upload:  ${formatBytes(store.pending_bytes)}`);
-  return store.available && schema.pending.length === 0 ? 0 : 1;
+  return store.available ? 0 : 1;
 }
 
 /** Bytes an operator can read at a glance, with the exact figure beside it. */

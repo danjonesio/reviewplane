@@ -93,6 +93,11 @@ pending migrations, the artefact driver, artefact-store availability and
 storage use. `--json` prints the same values for automation. It exits `1` when
 the store is unreachable or migrations are pending.
 
+The schema is read before the artefact figures, and the figures are not read at
+all while migrations are pending: against a database nobody has migrated the
+artefact table does not exist, and the operator needs to be told to run
+`reviewplane migrate` rather than shown a raw error from PostgreSQL.
+
 Artefact-store availability is a real round trip — a write, a read back and a
 removal, in a directory outside the content-addressed tree — rather than a check
 that a directory exists, because a read-only volume would pass the second and
