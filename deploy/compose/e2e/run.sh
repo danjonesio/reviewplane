@@ -60,7 +60,6 @@ KEEP_UP="${REVIEWPLANE_E2E_KEEP_UP:-0}"
 
 PROJECT_ID="prj_fixture"
 PROJECT_SLUG="fixture"
-ORGANISATION_SLUG="fixture-org"
 
 step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 info() { printf '   %s\n' "$*"; }
@@ -284,17 +283,55 @@ if [[ -n "${PUBLISHED}" ]]; then
 fi
 info "no container publishes a host port"
 
-ORG_RESPONSE="$(api POST /api/v1/organisations "{\"name\":\"Fixture\",\"slug\":\"${ORGANISATION_SLUG}\"}")"
-ORGANISATION_ID="$(field "${ORG_RESPONSE}" 'data["id"]')" || fail "could not create the organisation"
-PRJ_RESPONSE="$(api POST "/api/v1/organisations/${ORGANISATION_ID}/projects" "{\"name\":\"Fixture\",\"slug\":\"${PROJECT_SLUG}\"}")"
-CREATED_PROJECT="$(field "${PRJ_RESPONSE}" 'data["id"]')" || fail "could not create the project"
-info "organisation ${ORGANISATION_ID}, project ${CREATED_PROJECT}"
-PROJECT_ID="${CREATED_PROJECT}"
-
+# The enrolment token comes first, and the project is created in the
+# organisation it names.
+#
+# Enrolment refuses a token minted for any organisation but the one this
+# deployment is configured with (`CONNECTOR_PROTOCOL.md` §4.1 as Stage 0
+# implements it, `apps/server/src/modules/connectors/enrolment.ts`), so a
+# scenario that created its own organisation and then enrolled a connector into
+# it could never have had both in the same place. That did not matter while
+# publication wrote whatever `connector_id` it was given; it does now, because
+# the control plane resolves the connector inside the caller's organisation, and
+# a connector in one organisation publishing into another's project is exactly
+# the cross-organisation shape that is refused.
+#
 # No environment_labels: a token that requires them is refused unless the
 # enrolling environment declares the same set, and the fixture describes itself
 # through its configuration file rather than through flags in an entry point.
 TOKEN_RESPONSE="$(api POST /api/v1/connectors/enrolment-tokens "{\"max_uses\":1,\"expires_in_seconds\":600}")"
+ORGANISATION_ID="$(field "${TOKEN_RESPONSE}" 'data["organisation_id"]')" || fail "the enrolment token named no organisation"
+
+# The project and the workspace are created with the identifiers
+# `connector-config.yaml` declares, and that is the point of doing it here
+# rather than through the API, which generates them.
+#
+# The fixture connector is configured with `project: prj_fixture` and
+# `workspaces: [{id: wsp_fixture}]`. While publication wrote whatever it was
+# given, nothing noticed that the scenario's generated identifiers matched
+# neither: the connector's workspace observations were refused for a project it
+# was not configured for, and a route named a `wsp_fixture` that existed in no
+# table. Making the deployment agree with its own fixture is what lets the
+# connector accept the publication — it validates the workspace association
+# independently (`docs/CONNECTOR_PROTOCOL.md` §11) — and it is also what makes
+# the connector's Git observations land where the project can see them.
+"${COMPOSE[@]}" exec -T postgres psql -U reviewplane -d reviewplane -q -c \
+  "insert into projects (id, organisation_id, name, slug)
+   values ('${PROJECT_ID}', '${ORGANISATION_ID}', 'Fixture', '${PROJECT_SLUG}')
+   on conflict (id) do nothing" >/dev/null \
+  || fail "could not create the project"
+"${COMPOSE[@]}" exec -T postgres psql -U reviewplane -d reviewplane -q -c \
+  "insert into workspaces (
+     id, organisation_id, project_id, root_path, branch, head_commit, path_hash,
+     display_path, source)
+   values ('wsp_fixture', '${ORGANISATION_ID}', '${PROJECT_ID}',
+           '/opt/reviewplane/dev-fixture', 'main',
+           '0000000000000000000000000000000000000001',
+           'sha256:$(printf '0%.0s' {1..64})', 'dev-fixture', 'connector_report')
+   on conflict (id) do nothing" >/dev/null \
+  || fail "could not register the fixture workspace"
+WORKSPACE_ID="wsp_fixture"
+info "organisation ${ORGANISATION_ID}, project ${PROJECT_ID}, workspace ${WORKSPACE_ID}"
 ENROLMENT_TOKEN="$(field "${TOKEN_RESPONSE}" 'data["enrolment_token"]')" || fail "could not issue an enrolment token"
 printf '%s' "${ENROLMENT_TOKEN}" > "${COMPOSE_DIR}/secrets/enrolment_token"
 # 0644 for the reason generate-secrets.sh records: a plain-Compose file secret
@@ -356,20 +393,6 @@ SESSION_ID="$(field "${SESSION_RESPONSE}" 'data["id"]')" || fail "could not rese
 SESSION_STATUS="$(field "${SESSION_RESPONSE}" 'data["status"]')"
 [[ "${SESSION_STATUS}" == "REQUESTED" ]] || fail "a reserved session should be REQUESTED, got ${SESSION_STATUS}"
 info "reserved browser session ${SESSION_ID} (REQUESTED)"
-
-# The workspace a route names has to be a record in this project: publication
-# resolves it inside the caller's organisation and project before anything is
-# sent to the connector. The connector's own configuration pins
-# `project: prj_fixture`, and this scenario creates a project with a generated
-# identifier, so its observation lands nowhere — registering the checkout
-# through the API is what `docs/API.md` §4.3 offers an operator for exactly this
-# case, and it is a real row in the real project rather than a name nothing
-# holds.
-WORKSPACE_BODY="$(printf '{"root_path":"/opt/reviewplane/dev-fixture","branch":"main","head_commit":"%s"}' "0000000000000000000000000000000000000001")"
-WORKSPACE_RESPONSE="$(api PUT "/api/v1/projects/${PROJECT_ID}/workspaces" "${WORKSPACE_BODY}")"
-WORKSPACE_ID="$(field "${WORKSPACE_RESPONSE}" 'data["id"]')" || fail "could not register the fixture workspace"
-info "registered workspace ${WORKSPACE_ID}"
-
 PUBLISH_BODY="$(printf '{"connector_id":"%s","workspace_id":"%s","local_host":"127.0.0.1","local_port":4321,"protocol":"http","ttl_seconds":3600,"allowed_browser_session_ids":["%s"]}' "${CONNECTOR_ID}" "${WORKSPACE_ID}" "${SESSION_ID}")"
 PUBLISH_RESPONSE="$(api POST "/api/v1/projects/${PROJECT_ID}/published-services" "${PUBLISH_BODY}")"
 SERVICE_ID="$(field "${PUBLISH_RESPONSE}" 'data["id"]')" || fail "publication failed"
