@@ -19,12 +19,21 @@ const PATTERN_3 = new RegExp("^[^\\x00-\\x1f]+$", "u");
 const PATTERN_4 = new RegExp("^[^\\s@\\x00-\\x1f]+@[^\\s@\\x00-\\x1f]+$", "u");
 const PATTERN_5 = new RegExp("^[A-Za-z0-9][A-Za-z0-9._/-]*$", "u");
 const PATTERN_6 = new RegExp("^[a-z0-9][a-z0-9.-]*(:[0-9]{1,5})?(/[A-Za-z0-9._~-]+)+$", "u");
-const PATTERN_7 = new RegExp("^[^\\s\\x00-\\x1f]+$", "u");
-const PATTERN_8 = new RegExp("^[a-z][a-z0-9_]*$", "u");
-const PATTERN_9 = new RegExp("^[^\\x00]+$", "u");
-const PATTERN_10 = new RegExp("^[A-Za-z0-9_.-]+$", "u");
-const PATTERN_11 = new RegExp("^[a-z][a-z0-9_.]*$", "u");
-const PATTERN_12 = new RegExp("^[a-z][a-z0-9_.\\[\\]]*$", "u");
+const PATTERN_7 = new RegExp("^[a-z0-9][a-z0-9._-]*$", "u");
+const PATTERN_8 = new RegExp("^[a-z0-9]+$", "u");
+const PATTERN_9 = new RegExp("^[a-z0-9_]+$", "u");
+const PATTERN_10 = new RegExp("^[a-z][a-z0-9-]*$", "u");
+const PATTERN_11 = new RegExp("^[0-9A-Za-z][0-9A-Za-z.+-]*$", "u");
+const PATTERN_12 = new RegExp("^[A-Za-z0-9:._-]+$", "u");
+const PATTERN_13 = new RegExp("^sha256:[0-9a-f]{64}$", "u");
+const PATTERN_14 = new RegExp("^[^\\x00-\\x1f\\x7f/\\\\]+$", "u");
+const PATTERN_15 = new RegExp("^[0-9a-f]+$", "u");
+const PATTERN_16 = new RegExp("^[^\\s\\x00-\\x1f]+$", "u");
+const PATTERN_17 = new RegExp("^[a-z][a-z0-9_]*$", "u");
+const PATTERN_18 = new RegExp("^[^\\x00]+$", "u");
+const PATTERN_19 = new RegExp("^[A-Za-z0-9_.-]+$", "u");
+const PATTERN_20 = new RegExp("^[a-z][a-z0-9_.]*$", "u");
+const PATTERN_21 = new RegExp("^[a-z][a-z0-9_.\\[\\]]*$", "u");
 
 /**
  * Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the
@@ -68,7 +77,7 @@ export function validateCursor(value: unknown, path: string, out: SchemaViolatio
  * that source.
  */
 export function validateMessageType(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["organisation.created","project.created","project.updated","project.repository_changed","project.archived","user.invited","user.credentials_set","authentication.login_succeeded","authentication.login_failed","session.revoked","job.enqueued","job.succeeded","job.failed"] });
+  checkString(value, path, out, { values: ["organisation.created","project.created","project.updated","project.repository_changed","project.archived","user.invited","user.credentials_set","authentication.login_succeeded","authentication.login_failed","session.revoked","connector.enrolled","connector.connected","connector.degraded","connector.disconnected","connector.revoked","workspace.observed","workspace.head_changed","job.enqueued","job.succeeded","job.failed"] });
 }
 
 /**
@@ -163,6 +172,163 @@ export function validateGitRefName(value: unknown, path: string, out: SchemaViol
 }
 
 /**
+ * The canonical member of a repository identity on its own, for the records that store the
+ * normalised form without the clone URLs beside it (docs/DOMAIN_MODEL.md section 9). Its
+ * shape is repository_identity.canonical, and the shared normaliser in packages/protocol
+ * produces both, so a workspace and a project cannot disagree about what one repository
+ * is.
+ */
+export function validateRepositoryCanonical(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 3, maxLength: 255, pattern: PATTERN_6 });
+}
+
+/**
+ * Environment lifecycle status (docs/DOMAIN_MODEL.md section 7). Stage 1 defines one
+ * value: retiring an environment arrives with environment lifecycle management, and an
+ * enumeration promising a value nothing can reach would misdescribe the product.
+ */
+export function validateEnvironmentStatus(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["ACTIVE"] });
+}
+
+/**
+ * Environment trust level (docs/DOMAIN_MODEL.md section 7). Stage 1 has a single default
+ * value; a trust level that changes what an environment may do is a policy change rather
+ * than a field change, and arrives with the permission model.
+ */
+export function validateEnvironmentTrustLevel(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["standard"] });
+}
+
+/**
+ * Operator-assigned environment label. Its shape is the connector protocol's
+ * environment_label, because an enrolment token pins the labels a registering environment
+ * must declare (docs/CONNECTOR_PROTOCOL.md section 4.1).
+ */
+export function validateEnvironmentLabel(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_7 });
+}
+
+/**
+ * Operating system an environment runs, as the connector reported it.
+ */
+export function validatePlatformName(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 32, pattern: PATTERN_8 });
+}
+
+/**
+ * CPU architecture an environment runs, as the connector reported it.
+ */
+export function validateArchitectureName(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 32, pattern: PATTERN_9 });
+}
+
+/**
+ * Connector lifecycle status (docs/DOMAIN_MODEL.md section 8). DEGRADED and DISCONNECTED
+ * are conclusions the control plane draws from heartbeat silence and are never
+ * self-reported; REVOKED is terminal, and a connector in it is refused before a channel is
+ * established.
+ */
+export function validateConnectorStatus(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["PENDING_ENROLMENT","ACTIVE","DEGRADED","DISCONNECTED","REVOKED"] });
+}
+
+/**
+ * Capability a connector build advertises, such as http-tunnel, websocket-tunnel,
+ * git-context or local-mcp-bridge. Unknown values are accepted so that a newer connector
+ * is classified by docs/CONNECTOR_PROTOCOL.md section 19 rather than rejected outright.
+ */
+export function validateConnectorCapability(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_10 });
+}
+
+/**
+ * Connector release version, for example 0.1.0. Its shape is the connector protocol's
+ * semantic_version.
+ */
+export function validateConnectorVersion(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 32, pattern: PATTERN_11 });
+}
+
+/**
+ * sha256:<hex> digest of the DER form of an issued connector certificate (ADR-0014). It is
+ * unique across connectors and is how a verified peer certificate is resolved to a
+ * connector record.
+ */
+export function validateCertificateFingerprint(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 8, maxLength: 128, pattern: PATTERN_12 });
+}
+
+/**
+ * What returned a connector to ACTIVE. A closed vocabulary, so an audit record needs no
+ * free text (docs/SECURITY.md section 18).
+ */
+export function validateConnectorConnectedTrigger(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["channel_opened","heartbeat"] });
+}
+
+/**
+ * What made a connector DEGRADED. It has one cause: the control plane concluding delay
+ * from missed heartbeats.
+ */
+export function validateConnectorDegradedTrigger(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["heartbeat_delay"] });
+}
+
+/**
+ * What made a connector DISCONNECTED: its channel closed, or its silence exceeded the
+ * disconnect threshold.
+ */
+export function validateConnectorDisconnectedTrigger(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["channel_closed","heartbeat_timeout"] });
+}
+
+/**
+ * A lower bound, in seconds, on how long a connector had been silent when a conclusion was
+ * drawn about it.
+ */
+export function validateSilenceSeconds(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 0, maximum: 86400 });
+}
+
+/**
+ * Stable sha256:<hex> digest of a workspace's absolute path on the development machine.
+ * The control plane stores the digest rather than the path, because a display label and a
+ * stable local hash are sufficient to recognise the same checkout again
+ * (docs/DOMAIN_MODEL.md section 9).
+ */
+export function validatePathHash(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 71, maxLength: 71, pattern: PATTERN_13 });
+}
+
+/**
+ * Human-readable workspace label, which is the checkout directory's own name and never its
+ * full path. Path separators and control characters are refused, so a full path cannot be
+ * smuggled through it.
+ */
+export function validateWorkspaceDisplayLabel(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 128, pattern: PATTERN_14 });
+}
+
+/**
+ * A commit identifier, lowercase hexadecimal. Bounded so that an abbreviated and a full
+ * identifier are both accepted and nothing else is.
+ */
+export function validateGitCommit(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 7, maxLength: 64, pattern: PATTERN_15 });
+}
+
+/**
+ * How a workspace came to be known (docs/CONNECTOR_PROTOCOL.md section 9).
+ * connector_report is a connector observing a configured path; administrative_registration
+ * is an operator or an agent session registering one directly. Broad filesystem scanning
+ * is disabled by default and has no value here, because this build performs none.
+ */
+export function validateWorkspaceObservationSource(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["connector_report","administrative_registration"] });
+}
+
+/**
  * How a human authenticated. bootstrap_token is the ADR-0016 exchange, install_token is
  * the one-time administrator bootstrap, and password is a local account.
  */
@@ -194,7 +360,7 @@ export function validateRepositoryIdentityCanonical(value: unknown, path: string
 }
 
 export function validateRepositoryIdentityCloneUrlsItem(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 3, maxLength: 512, pattern: PATTERN_7 });
+  checkString(value, path, out, { minLength: 3, maxLength: 512, pattern: PATTERN_16 });
 }
 
 /**
@@ -451,6 +617,184 @@ export function validateHumanSession(value: unknown, path: string, out: SchemaVi
   }
   if (source["expires_at"] !== undefined) {
     validateTimestamp(source["expires_at"], `${path}.expires_at`, out);
+  }
+}
+
+/**
+ * Operator-assigned labels. An enrolment token may pin the labels a registering
+ * environment must declare.
+ */
+export function validateEnvironmentLabels(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 16, uniqueItems: true })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateEnvironmentLabel(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * A registered development location such as a VM or workstation (docs/DOMAIN_MODEL.md
+ * section 7). An environment may host several workspaces, but every published service and
+ * session association is explicitly project scoped, so project_id is a default rather than
+ * the whole of the authorisation.
+ */
+export function validateEnvironment(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["id", "organisation_id", "project_id", "name", "platform", "architecture", "labels", "trust_level", "status", "last_seen_at", "created_at"], ["id", "organisation_id", "name", "platform", "architecture", "labels", "trust_level", "status", "created_at"]);
+  if (source === null) return;
+  if (source["id"] !== undefined) {
+    validateIdentifier(source["id"], `${path}.id`, out);
+  }
+  if (source["organisation_id"] !== undefined) {
+    validateIdentifier(source["organisation_id"], `${path}.organisation_id`, out);
+  }
+  if (source["project_id"] !== undefined) {
+    validateIdentifier(source["project_id"], `${path}.project_id`, out);
+  }
+  if (source["name"] !== undefined) {
+    validateDisplayName(source["name"], `${path}.name`, out);
+  }
+  if (source["platform"] !== undefined) {
+    validatePlatformName(source["platform"], `${path}.platform`, out);
+  }
+  if (source["architecture"] !== undefined) {
+    validateArchitectureName(source["architecture"], `${path}.architecture`, out);
+  }
+  if (source["labels"] !== undefined) {
+    validateEnvironmentLabels(source["labels"], `${path}.labels`, out);
+  }
+  if (source["trust_level"] !== undefined) {
+    validateEnvironmentTrustLevel(source["trust_level"], `${path}.trust_level`, out);
+  }
+  if (source["status"] !== undefined) {
+    validateEnvironmentStatus(source["status"], `${path}.status`, out);
+  }
+  if (source["last_seen_at"] !== undefined) {
+    validateTimestamp(source["last_seen_at"], `${path}.last_seen_at`, out);
+  }
+  if (source["created_at"] !== undefined) {
+    validateTimestamp(source["created_at"], `${path}.created_at`, out);
+  }
+}
+
+/**
+ * Capabilities the connector build advertises.
+ */
+export function validateConnectorCapabilities(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 32, uniqueItems: true })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateConnectorCapability(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * A connector installation and its cryptographic identity (docs/DOMAIN_MODEL.md section
+ * 8). The device private key is generated on the development machine and never leaves it,
+ * so this record has no member capable of carrying one: it holds the certificate
+ * fingerprint the control plane resolves a verified peer certificate by, and nothing
+ * secret.
+ */
+export function validateConnector(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["id", "organisation_id", "environment_id", "project_id", "certificate_fingerprint", "certificate_not_after", "version", "capabilities", "status", "connected_at", "last_heartbeat_at", "revoked_at", "created_at"], ["id", "organisation_id", "environment_id", "certificate_fingerprint", "certificate_not_after", "version", "capabilities", "status", "created_at"]);
+  if (source === null) return;
+  if (source["id"] !== undefined) {
+    validateIdentifier(source["id"], `${path}.id`, out);
+  }
+  if (source["organisation_id"] !== undefined) {
+    validateIdentifier(source["organisation_id"], `${path}.organisation_id`, out);
+  }
+  if (source["environment_id"] !== undefined) {
+    validateIdentifier(source["environment_id"], `${path}.environment_id`, out);
+  }
+  if (source["project_id"] !== undefined) {
+    validateIdentifier(source["project_id"], `${path}.project_id`, out);
+  }
+  if (source["certificate_fingerprint"] !== undefined) {
+    validateCertificateFingerprint(source["certificate_fingerprint"], `${path}.certificate_fingerprint`, out);
+  }
+  if (source["certificate_not_after"] !== undefined) {
+    validateTimestamp(source["certificate_not_after"], `${path}.certificate_not_after`, out);
+  }
+  if (source["version"] !== undefined) {
+    validateConnectorVersion(source["version"], `${path}.version`, out);
+  }
+  if (source["capabilities"] !== undefined) {
+    validateConnectorCapabilities(source["capabilities"], `${path}.capabilities`, out);
+  }
+  if (source["status"] !== undefined) {
+    validateConnectorStatus(source["status"], `${path}.status`, out);
+  }
+  if (source["connected_at"] !== undefined) {
+    validateTimestamp(source["connected_at"], `${path}.connected_at`, out);
+  }
+  if (source["last_heartbeat_at"] !== undefined) {
+    validateTimestamp(source["last_heartbeat_at"], `${path}.last_heartbeat_at`, out);
+  }
+  if (source["revoked_at"] !== undefined) {
+    validateTimestamp(source["revoked_at"], `${path}.revoked_at`, out);
+  }
+  if (source["created_at"] !== undefined) {
+    validateTimestamp(source["created_at"], `${path}.created_at`, out);
+  }
+}
+
+/**
+ * Whether the working tree has uncommitted changes. Which files changed is deliberately
+ * not recorded.
+ */
+export function validateWorkspaceDirty(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * A repository checkout a connector reports or an operator registers (docs/DOMAIN_MODEL.md
+ * section 9). It holds a stable path hash and a display label rather than the checkout's
+ * full path, and it has no member capable of carrying source file contents or a
+ * changed-path list: what is reportable about somebody else's machine is bounded by this
+ * schema rather than by the code that fills it in.
+ */
+export function validateWorkspace(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["id", "organisation_id", "project_id", "environment_id", "connector_id", "path_hash", "display_path", "repository_identity", "branch", "head_commit", "dirty", "source", "last_observed_at", "created_at"], ["id", "organisation_id", "project_id", "path_hash", "display_path", "branch", "head_commit", "dirty", "source", "created_at"]);
+  if (source === null) return;
+  if (source["id"] !== undefined) {
+    validateIdentifier(source["id"], `${path}.id`, out);
+  }
+  if (source["organisation_id"] !== undefined) {
+    validateIdentifier(source["organisation_id"], `${path}.organisation_id`, out);
+  }
+  if (source["project_id"] !== undefined) {
+    validateIdentifier(source["project_id"], `${path}.project_id`, out);
+  }
+  if (source["environment_id"] !== undefined) {
+    validateIdentifier(source["environment_id"], `${path}.environment_id`, out);
+  }
+  if (source["connector_id"] !== undefined) {
+    validateIdentifier(source["connector_id"], `${path}.connector_id`, out);
+  }
+  if (source["path_hash"] !== undefined) {
+    validatePathHash(source["path_hash"], `${path}.path_hash`, out);
+  }
+  if (source["display_path"] !== undefined) {
+    validateWorkspaceDisplayLabel(source["display_path"], `${path}.display_path`, out);
+  }
+  if (source["repository_identity"] !== undefined) {
+    validateRepositoryCanonical(source["repository_identity"], `${path}.repository_identity`, out);
+  }
+  if (source["branch"] !== undefined) {
+    validateGitRefName(source["branch"], `${path}.branch`, out);
+  }
+  if (source["head_commit"] !== undefined) {
+    validateGitCommit(source["head_commit"], `${path}.head_commit`, out);
+  }
+  if (source["dirty"] !== undefined) {
+    validateWorkspaceDirty(source["dirty"], `${path}.dirty`, out);
+  }
+  if (source["source"] !== undefined) {
+    validateWorkspaceObservationSource(source["source"], `${path}.source`, out);
+  }
+  if (source["last_observed_at"] !== undefined) {
+    validateTimestamp(source["last_observed_at"], `${path}.last_observed_at`, out);
+  }
+  if (source["created_at"] !== undefined) {
+    validateTimestamp(source["created_at"], `${path}.created_at`, out);
   }
 }
 
@@ -783,7 +1127,7 @@ export function validateSessionRevokedPayload(value: unknown, path: string, out:
 }
 
 export function validateProjectUpdatedPayloadChangedFieldsItem(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_8 });
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_17 });
 }
 
 /**
@@ -820,6 +1164,258 @@ export function validateProjectArchivedPayload(value: unknown, path: string, out
   }
   if (source["new_status"] !== undefined) {
     validateProjectStatus(source["new_status"], `${path}.new_status`, out);
+  }
+}
+
+/**
+ * Capabilities the connector build advertised.
+ */
+export function validateConnectorEnrolledPayloadCapabilities(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 32, uniqueItems: true })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateConnectorCapability(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Payload of connector.enrolled. It records the identity that was issued and the
+ * environment it was issued to, and it never carries the enrolment token that was
+ * redeemed: an event is append-only, so a credential written into one cannot be taken out
+ * again (docs/EVENTS.md section 8).
+ */
+export function validateConnectorEnrolledPayload(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["environment_id", "environment_name", "platform", "architecture", "connector_version", "capabilities", "certificate_fingerprint", "identity_expires_at", "enrolment_token_id", "new_status"], ["environment_id", "environment_name", "platform", "architecture", "connector_version", "capabilities", "certificate_fingerprint", "identity_expires_at", "new_status"]);
+  if (source === null) return;
+  if (source["environment_id"] !== undefined) {
+    validateIdentifier(source["environment_id"], `${path}.environment_id`, out);
+  }
+  if (source["environment_name"] !== undefined) {
+    validateDisplayName(source["environment_name"], `${path}.environment_name`, out);
+  }
+  if (source["platform"] !== undefined) {
+    validatePlatformName(source["platform"], `${path}.platform`, out);
+  }
+  if (source["architecture"] !== undefined) {
+    validateArchitectureName(source["architecture"], `${path}.architecture`, out);
+  }
+  if (source["connector_version"] !== undefined) {
+    validateConnectorVersion(source["connector_version"], `${path}.connector_version`, out);
+  }
+  if (source["capabilities"] !== undefined) {
+    validateConnectorEnrolledPayloadCapabilities(source["capabilities"], `${path}.capabilities`, out);
+  }
+  if (source["certificate_fingerprint"] !== undefined) {
+    validateCertificateFingerprint(source["certificate_fingerprint"], `${path}.certificate_fingerprint`, out);
+  }
+  if (source["identity_expires_at"] !== undefined) {
+    validateTimestamp(source["identity_expires_at"], `${path}.identity_expires_at`, out);
+  }
+  if (source["enrolment_token_id"] !== undefined) {
+    validateIdentifier(source["enrolment_token_id"], `${path}.enrolment_token_id`, out);
+  }
+  if (source["new_status"] !== undefined) {
+    validateConnectorStatus(source["new_status"], `${path}.new_status`, out);
+  }
+}
+
+/**
+ * Payload of connector.connected. Both sides of the transition are named, so the audit
+ * trail states what moved rather than only where it landed, and the trigger is a closed
+ * vocabulary so no free text is needed.
+ */
+export function validateConnectorConnectedPayload(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["previous_status", "new_status", "trigger"], ["previous_status", "new_status", "trigger"]);
+  if (source === null) return;
+  if (source["previous_status"] !== undefined) {
+    validateConnectorStatus(source["previous_status"], `${path}.previous_status`, out);
+  }
+  if (source["new_status"] !== undefined) {
+    validateConnectorStatus(source["new_status"], `${path}.new_status`, out);
+  }
+  if (source["trigger"] !== undefined) {
+    validateConnectorConnectedTrigger(source["trigger"], `${path}.trigger`, out);
+  }
+}
+
+/**
+ * Payload of connector.degraded. Degradation is a conclusion drawn from silence, so the
+ * payload states how long the silence had lasted rather than what the connector said about
+ * itself.
+ */
+export function validateConnectorDegradedPayload(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["previous_status", "new_status", "trigger", "silent_for_seconds_at_least"], ["previous_status", "new_status", "trigger", "silent_for_seconds_at_least"]);
+  if (source === null) return;
+  if (source["previous_status"] !== undefined) {
+    validateConnectorStatus(source["previous_status"], `${path}.previous_status`, out);
+  }
+  if (source["new_status"] !== undefined) {
+    validateConnectorStatus(source["new_status"], `${path}.new_status`, out);
+  }
+  if (source["trigger"] !== undefined) {
+    validateConnectorDegradedTrigger(source["trigger"], `${path}.trigger`, out);
+  }
+  if (source["silent_for_seconds_at_least"] !== undefined) {
+    validateSilenceSeconds(source["silent_for_seconds_at_least"], `${path}.silent_for_seconds_at_least`, out);
+  }
+}
+
+/**
+ * Payload of connector.disconnected. A closed channel and an exhausted heartbeat budget
+ * are different observations and are distinguished by trigger, so an operator can tell a
+ * clean stop from a network that went away.
+ */
+export function validateConnectorDisconnectedPayload(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["previous_status", "new_status", "trigger", "silent_for_seconds_at_least"], ["previous_status", "new_status", "trigger"]);
+  if (source === null) return;
+  if (source["previous_status"] !== undefined) {
+    validateConnectorStatus(source["previous_status"], `${path}.previous_status`, out);
+  }
+  if (source["new_status"] !== undefined) {
+    validateConnectorStatus(source["new_status"], `${path}.new_status`, out);
+  }
+  if (source["trigger"] !== undefined) {
+    validateConnectorDisconnectedTrigger(source["trigger"], `${path}.trigger`, out);
+  }
+  if (source["silent_for_seconds_at_least"] !== undefined) {
+    validateSilenceSeconds(source["silent_for_seconds_at_least"], `${path}.silent_for_seconds_at_least`, out);
+  }
+}
+
+/**
+ * How many published services the revocation closed.
+ */
+export function validateConnectorRevokedPayloadRoutesRevoked(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 0, maximum: 1024 });
+}
+
+/**
+ * How many browser sessions were marked disconnected by it.
+ */
+export function validateConnectorRevokedPayloadSessionsDisconnected(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 0, maximum: 1024 });
+}
+
+/**
+ * How many live connector channels were closed. Zero when the connector held none.
+ */
+export function validateConnectorRevokedPayloadChannelsClosed(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 0, maximum: 1024 });
+}
+
+/**
+ * Payload of connector.revoked. It records what revocation reached, because
+ * docs/CONNECTOR_PROTOCOL.md section 18 makes revocation five things at once and an
+ * auditor needs to see that all five happened.
+ */
+export function validateConnectorRevokedPayload(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["previous_status", "new_status", "routes_revoked", "sessions_disconnected", "channels_closed"], ["previous_status", "new_status", "routes_revoked", "sessions_disconnected"]);
+  if (source === null) return;
+  if (source["previous_status"] !== undefined) {
+    validateConnectorStatus(source["previous_status"], `${path}.previous_status`, out);
+  }
+  if (source["new_status"] !== undefined) {
+    validateConnectorStatus(source["new_status"], `${path}.new_status`, out);
+  }
+  if (source["routes_revoked"] !== undefined) {
+    validateConnectorRevokedPayloadRoutesRevoked(source["routes_revoked"], `${path}.routes_revoked`, out);
+  }
+  if (source["sessions_disconnected"] !== undefined) {
+    validateConnectorRevokedPayloadSessionsDisconnected(source["sessions_disconnected"], `${path}.sessions_disconnected`, out);
+  }
+  if (source["channels_closed"] !== undefined) {
+    validateConnectorRevokedPayloadChannelsClosed(source["channels_closed"], `${path}.channels_closed`, out);
+  }
+}
+
+/**
+ * Whether the working tree had uncommitted changes.
+ */
+export function validateWorkspaceObservedPayloadDirty(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * Payload of workspace.observed. It carries exactly what docs/CONNECTOR_PROTOCOL.md
+ * section 9 permits a connector to report about a checkout, and has no member capable of
+ * carrying file contents, a changed-path list or a full filesystem path.
+ */
+export function validateWorkspaceObservedPayload(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["workspace_id", "environment_id", "path_hash", "display_path", "repository_identity", "branch", "head_commit", "dirty", "source"], ["workspace_id", "path_hash", "display_path", "branch", "head_commit", "dirty", "source"]);
+  if (source === null) return;
+  if (source["workspace_id"] !== undefined) {
+    validateIdentifier(source["workspace_id"], `${path}.workspace_id`, out);
+  }
+  if (source["environment_id"] !== undefined) {
+    validateIdentifier(source["environment_id"], `${path}.environment_id`, out);
+  }
+  if (source["path_hash"] !== undefined) {
+    validatePathHash(source["path_hash"], `${path}.path_hash`, out);
+  }
+  if (source["display_path"] !== undefined) {
+    validateWorkspaceDisplayLabel(source["display_path"], `${path}.display_path`, out);
+  }
+  if (source["repository_identity"] !== undefined) {
+    validateRepositoryCanonical(source["repository_identity"], `${path}.repository_identity`, out);
+  }
+  if (source["branch"] !== undefined) {
+    validateGitRefName(source["branch"], `${path}.branch`, out);
+  }
+  if (source["head_commit"] !== undefined) {
+    validateGitCommit(source["head_commit"], `${path}.head_commit`, out);
+  }
+  if (source["dirty"] !== undefined) {
+    validateWorkspaceObservedPayloadDirty(source["dirty"], `${path}.dirty`, out);
+  }
+  if (source["source"] !== undefined) {
+    validateWorkspaceObservationSource(source["source"], `${path}.source`, out);
+  }
+}
+
+/**
+ * Dirty state before it.
+ */
+export function validateWorkspaceHeadChangedPayloadPreviousDirty(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * Dirty state after it.
+ */
+export function validateWorkspaceHeadChangedPayloadDirty(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * Payload of workspace.head_changed. It carries both sides of the move, because a review
+ * captured before it was captured against the previous head and an auditor reading only
+ * the new one could not tell.
+ */
+export function validateWorkspaceHeadChangedPayload(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["workspace_id", "environment_id", "previous_branch", "previous_head_commit", "previous_dirty", "branch", "head_commit", "dirty"], ["workspace_id", "previous_branch", "previous_head_commit", "previous_dirty", "branch", "head_commit", "dirty"]);
+  if (source === null) return;
+  if (source["workspace_id"] !== undefined) {
+    validateIdentifier(source["workspace_id"], `${path}.workspace_id`, out);
+  }
+  if (source["environment_id"] !== undefined) {
+    validateIdentifier(source["environment_id"], `${path}.environment_id`, out);
+  }
+  if (source["previous_branch"] !== undefined) {
+    validateGitRefName(source["previous_branch"], `${path}.previous_branch`, out);
+  }
+  if (source["previous_head_commit"] !== undefined) {
+    validateGitCommit(source["previous_head_commit"], `${path}.previous_head_commit`, out);
+  }
+  if (source["previous_dirty"] !== undefined) {
+    validateWorkspaceHeadChangedPayloadPreviousDirty(source["previous_dirty"], `${path}.previous_dirty`, out);
+  }
+  if (source["branch"] !== undefined) {
+    validateGitRefName(source["branch"], `${path}.branch`, out);
+  }
+  if (source["head_commit"] !== undefined) {
+    validateGitCommit(source["head_commit"], `${path}.head_commit`, out);
+  }
+  if (source["dirty"] !== undefined) {
+    validateWorkspaceHeadChangedPayloadDirty(source["dirty"], `${path}.dirty`, out);
   }
 }
 
@@ -1102,7 +1698,7 @@ export function validateStreamErrorType(value: unknown, path: string, out: Schem
  * trace.
  */
 export function validateStreamErrorMessage(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 1024, pattern: PATTERN_9 });
+  checkString(value, path, out, { minLength: 1, maxLength: 1024, pattern: PATTERN_18 });
 }
 
 /**
@@ -1168,7 +1764,7 @@ export function validateApiErrorDetailsCandidates(value: unknown, path: string, 
 }
 
 export function validateApiErrorDetailsAllowedTransitionsItem(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_10 });
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_19 });
 }
 
 /**
@@ -1183,7 +1779,7 @@ export function validateApiErrorDetailsAllowedTransitions(value: unknown, path: 
 }
 
 export function validateApiErrorDetailsRequiredEvidenceItem(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_8 });
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_17 });
 }
 
 /**
@@ -1197,7 +1793,7 @@ export function validateApiErrorDetailsRequiredEvidence(value: unknown, path: st
 }
 
 export function validateApiErrorDetailsMissingContextItem(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_11 });
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_20 });
 }
 
 /**
@@ -1223,14 +1819,14 @@ export function validateApiErrorDetailsRetryAfterMs(value: unknown, path: string
  * The request member the refusal is about.
  */
 export function validateApiErrorDetailsField(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 128, pattern: PATTERN_12 });
+  checkString(value, path, out, { minLength: 1, maxLength: 128, pattern: PATTERN_21 });
 }
 
 /**
  * Stable sub-reason where one code covers several causes.
  */
 export function validateApiErrorDetailsReason(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_8 });
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_17 });
 }
 
 /**
@@ -1278,7 +1874,7 @@ export function validateApiErrorDetails(value: unknown, path: string, out: Schem
  * (docs/SECURITY.md section 18).
  */
 export function validateApiErrorMessage(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 1024, pattern: PATTERN_9 });
+  checkString(value, path, out, { minLength: 1, maxLength: 1024, pattern: PATTERN_18 });
 }
 
 /**
@@ -1339,7 +1935,7 @@ export function validateCursorClaimsVersion(value: unknown, path: string, out: S
  * Value of the collection's sort column at the last row of the previous page.
  */
 export function validateCursorClaimsSortKey(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 128, pattern: PATTERN_9 });
+  checkString(value, path, out, { minLength: 1, maxLength: 128, pattern: PATTERN_18 });
 }
 
 /**

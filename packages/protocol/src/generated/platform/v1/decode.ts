@@ -16,9 +16,22 @@ import type {
   ApiMeta,
   AuthenticationLoginFailedPayload,
   AuthenticationLoginSucceededPayload,
+  Connector,
+  ConnectorConnectedPayload,
+  ConnectorConnectedTrigger,
+  ConnectorDegradedPayload,
+  ConnectorDegradedTrigger,
+  ConnectorDisconnectedPayload,
+  ConnectorDisconnectedTrigger,
+  ConnectorEnrolledPayload,
+  ConnectorRevokedPayload,
+  ConnectorStatus,
   Correlation,
   CursorClaims,
   Envelope,
+  Environment,
+  EnvironmentStatus,
+  EnvironmentTrustLevel,
   ErrorClass,
   HumanSession,
   JobEnqueuedPayload,
@@ -58,6 +71,10 @@ import type {
   UserInvitedPayload,
   UserStatus,
   ValidationViewport,
+  Workspace,
+  WorkspaceHeadChangedPayload,
+  WorkspaceObservationSource,
+  WorkspaceObservedPayload,
 } from "./types.ts";
 
 /**
@@ -158,6 +175,71 @@ export function decodeHumanSession(value: unknown): HumanSession {
     display: source["display"] as string,
     ...(source["project_ids"] === undefined ? {} : { project_ids: (source["project_ids"] as unknown[]).map((item) => item as string) }),
     expires_at: source["expires_at"] as string,
+  };
+}
+
+/**
+ * Decodes a validated Environment.
+ */
+export function decodeEnvironment(value: unknown): Environment {
+  const source = value as Record<string, unknown>;
+  return {
+    id: source["id"] as string,
+    organisation_id: source["organisation_id"] as string,
+    ...(source["project_id"] === undefined ? {} : { project_id: source["project_id"] as string }),
+    name: source["name"] as string,
+    platform: source["platform"] as string,
+    architecture: source["architecture"] as string,
+    labels: (source["labels"] as unknown[]).map((item) => item as string),
+    trust_level: source["trust_level"] as EnvironmentTrustLevel,
+    status: source["status"] as EnvironmentStatus,
+    ...(source["last_seen_at"] === undefined ? {} : { last_seen_at: source["last_seen_at"] as string }),
+    created_at: source["created_at"] as string,
+  };
+}
+
+/**
+ * Decodes a validated Connector.
+ */
+export function decodeConnector(value: unknown): Connector {
+  const source = value as Record<string, unknown>;
+  return {
+    id: source["id"] as string,
+    organisation_id: source["organisation_id"] as string,
+    environment_id: source["environment_id"] as string,
+    ...(source["project_id"] === undefined ? {} : { project_id: source["project_id"] as string }),
+    certificate_fingerprint: source["certificate_fingerprint"] as string,
+    certificate_not_after: source["certificate_not_after"] as string,
+    version: source["version"] as string,
+    capabilities: (source["capabilities"] as unknown[]).map((item) => item as string),
+    status: source["status"] as ConnectorStatus,
+    ...(source["connected_at"] === undefined ? {} : { connected_at: source["connected_at"] as string }),
+    ...(source["last_heartbeat_at"] === undefined ? {} : { last_heartbeat_at: source["last_heartbeat_at"] as string }),
+    ...(source["revoked_at"] === undefined ? {} : { revoked_at: source["revoked_at"] as string }),
+    created_at: source["created_at"] as string,
+  };
+}
+
+/**
+ * Decodes a validated Workspace.
+ */
+export function decodeWorkspace(value: unknown): Workspace {
+  const source = value as Record<string, unknown>;
+  return {
+    id: source["id"] as string,
+    organisation_id: source["organisation_id"] as string,
+    project_id: source["project_id"] as string,
+    ...(source["environment_id"] === undefined ? {} : { environment_id: source["environment_id"] as string }),
+    ...(source["connector_id"] === undefined ? {} : { connector_id: source["connector_id"] as string }),
+    path_hash: source["path_hash"] as string,
+    display_path: source["display_path"] as string,
+    ...(source["repository_identity"] === undefined ? {} : { repository_identity: source["repository_identity"] as string }),
+    branch: source["branch"] as string,
+    head_commit: source["head_commit"] as string,
+    dirty: source["dirty"] as boolean,
+    source: source["source"] as WorkspaceObservationSource,
+    ...(source["last_observed_at"] === undefined ? {} : { last_observed_at: source["last_observed_at"] as string }),
+    created_at: source["created_at"] as string,
   };
 }
 
@@ -327,6 +409,112 @@ export function decodeProjectArchivedPayload(value: unknown): ProjectArchivedPay
   return {
     previous_status: source["previous_status"] as ProjectStatus,
     new_status: source["new_status"] as ProjectStatus,
+  };
+}
+
+/**
+ * Decodes a validated ConnectorEnrolledPayload.
+ */
+export function decodeConnectorEnrolledPayload(value: unknown): ConnectorEnrolledPayload {
+  const source = value as Record<string, unknown>;
+  return {
+    environment_id: source["environment_id"] as string,
+    environment_name: source["environment_name"] as string,
+    platform: source["platform"] as string,
+    architecture: source["architecture"] as string,
+    connector_version: source["connector_version"] as string,
+    capabilities: (source["capabilities"] as unknown[]).map((item) => item as string),
+    certificate_fingerprint: source["certificate_fingerprint"] as string,
+    identity_expires_at: source["identity_expires_at"] as string,
+    ...(source["enrolment_token_id"] === undefined ? {} : { enrolment_token_id: source["enrolment_token_id"] as string }),
+    new_status: source["new_status"] as ConnectorStatus,
+  };
+}
+
+/**
+ * Decodes a validated ConnectorConnectedPayload.
+ */
+export function decodeConnectorConnectedPayload(value: unknown): ConnectorConnectedPayload {
+  const source = value as Record<string, unknown>;
+  return {
+    previous_status: source["previous_status"] as ConnectorStatus,
+    new_status: source["new_status"] as ConnectorStatus,
+    trigger: source["trigger"] as ConnectorConnectedTrigger,
+  };
+}
+
+/**
+ * Decodes a validated ConnectorDegradedPayload.
+ */
+export function decodeConnectorDegradedPayload(value: unknown): ConnectorDegradedPayload {
+  const source = value as Record<string, unknown>;
+  return {
+    previous_status: source["previous_status"] as ConnectorStatus,
+    new_status: source["new_status"] as ConnectorStatus,
+    trigger: source["trigger"] as ConnectorDegradedTrigger,
+    silent_for_seconds_at_least: source["silent_for_seconds_at_least"] as number,
+  };
+}
+
+/**
+ * Decodes a validated ConnectorDisconnectedPayload.
+ */
+export function decodeConnectorDisconnectedPayload(value: unknown): ConnectorDisconnectedPayload {
+  const source = value as Record<string, unknown>;
+  return {
+    previous_status: source["previous_status"] as ConnectorStatus,
+    new_status: source["new_status"] as ConnectorStatus,
+    trigger: source["trigger"] as ConnectorDisconnectedTrigger,
+    ...(source["silent_for_seconds_at_least"] === undefined ? {} : { silent_for_seconds_at_least: source["silent_for_seconds_at_least"] as number }),
+  };
+}
+
+/**
+ * Decodes a validated ConnectorRevokedPayload.
+ */
+export function decodeConnectorRevokedPayload(value: unknown): ConnectorRevokedPayload {
+  const source = value as Record<string, unknown>;
+  return {
+    previous_status: source["previous_status"] as ConnectorStatus,
+    new_status: source["new_status"] as ConnectorStatus,
+    routes_revoked: source["routes_revoked"] as number,
+    sessions_disconnected: source["sessions_disconnected"] as number,
+    ...(source["channels_closed"] === undefined ? {} : { channels_closed: source["channels_closed"] as number }),
+  };
+}
+
+/**
+ * Decodes a validated WorkspaceObservedPayload.
+ */
+export function decodeWorkspaceObservedPayload(value: unknown): WorkspaceObservedPayload {
+  const source = value as Record<string, unknown>;
+  return {
+    workspace_id: source["workspace_id"] as string,
+    ...(source["environment_id"] === undefined ? {} : { environment_id: source["environment_id"] as string }),
+    path_hash: source["path_hash"] as string,
+    display_path: source["display_path"] as string,
+    ...(source["repository_identity"] === undefined ? {} : { repository_identity: source["repository_identity"] as string }),
+    branch: source["branch"] as string,
+    head_commit: source["head_commit"] as string,
+    dirty: source["dirty"] as boolean,
+    source: source["source"] as WorkspaceObservationSource,
+  };
+}
+
+/**
+ * Decodes a validated WorkspaceHeadChangedPayload.
+ */
+export function decodeWorkspaceHeadChangedPayload(value: unknown): WorkspaceHeadChangedPayload {
+  const source = value as Record<string, unknown>;
+  return {
+    workspace_id: source["workspace_id"] as string,
+    ...(source["environment_id"] === undefined ? {} : { environment_id: source["environment_id"] as string }),
+    previous_branch: source["previous_branch"] as string,
+    previous_head_commit: source["previous_head_commit"] as string,
+    previous_dirty: source["previous_dirty"] as boolean,
+    branch: source["branch"] as string,
+    head_commit: source["head_commit"] as string,
+    dirty: source["dirty"] as boolean,
   };
 }
 

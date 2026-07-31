@@ -85,10 +85,11 @@ const (
 	MessageTypeRoutePublishAck               MessageType = "route.publish.ack"
 	MessageTypeConnectorReconnectRequest     MessageType = "connector.reconnect.request"
 	MessageTypeConnectorReconnectResponse    MessageType = "connector.reconnect.response"
+	MessageTypeWorkspaceObserved             MessageType = "workspace.observed"
 )
 
 // MessageTypeValues lists every value in declaration order.
-var MessageTypeValues = []MessageType{MessageTypeConnectorRegistrationRequest, MessageTypeConnectorRegistrationResponse, MessageTypeHeartbeat, MessageTypeRoutePublish, MessageTypeRoutePublishAck, MessageTypeConnectorReconnectRequest, MessageTypeConnectorReconnectResponse}
+var MessageTypeValues = []MessageType{MessageTypeConnectorRegistrationRequest, MessageTypeConnectorRegistrationResponse, MessageTypeHeartbeat, MessageTypeRoutePublish, MessageTypeRoutePublishAck, MessageTypeConnectorReconnectRequest, MessageTypeConnectorReconnectResponse, MessageTypeWorkspaceObserved}
 
 // ErrorClass is defined by the connector protocol schema.
 //
@@ -240,6 +241,7 @@ var MessageDirections = map[MessageType]MessageDirection{
 	MessageTypeRoutePublishAck:               DirectionConnectorToControlPlane,
 	MessageTypeConnectorReconnectRequest:     DirectionConnectorToControlPlane,
 	MessageTypeConnectorReconnectResponse:    DirectionControlPlaneToConnector,
+	MessageTypeWorkspaceObserved:             DirectionConnectorToControlPlane,
 }
 
 // MessageChannels records the channel each message type travels on.
@@ -251,6 +253,7 @@ var MessageChannels = map[MessageType]Channel{
 	MessageTypeRoutePublishAck:               ChannelRoutes,
 	MessageTypeConnectorReconnectRequest:     ChannelControl,
 	MessageTypeConnectorReconnectResponse:    ChannelControl,
+	MessageTypeWorkspaceObserved:             ChannelEvents,
 }
 
 // PayloadMaxBytes records the maximum canonical payload size for each message type. A
@@ -263,6 +266,7 @@ var PayloadMaxBytes = map[MessageType]int{
 	MessageTypeRoutePublishAck:               1024,
 	MessageTypeConnectorReconnectRequest:     32768,
 	MessageTypeConnectorReconnectResponse:    57344,
+	MessageTypeWorkspaceObserved:             2048,
 }
 
 // ViolationReason classifies a refused frame. Only some reasons map to a wire error
@@ -410,6 +414,43 @@ type Certificate = string
 //
 // Operator-assigned environment label.
 type EnvironmentLabel = string
+
+// GitBranch is defined by the connector protocol schema.
+//
+// Checked-out branch name. A detached HEAD is reported as the literal HEAD rather than
+// as an invented branch.
+type GitBranch = string
+
+// GitCommit is defined by the connector protocol schema.
+//
+// HEAD commit identifier, lowercase hexadecimal.
+type GitCommit = string
+
+// PathHash is defined by the connector protocol schema.
+//
+// Stable sha256:<hex> digest of the workspace's absolute path on the development
+// machine (docs/DOMAIN_MODEL.md section 9). The digest is reported instead of the path
+// so that the control plane can recognise the same checkout across observations
+// without storing somebody else's directory layout.
+type PathHash = string
+
+// WorkspaceDisplayLabel is defined by the connector protocol schema.
+//
+// Human-readable label for the workspace, which is the checkout directory's own name
+// and never its full path (docs/CONNECTOR_PROTOCOL.md section 9). It is bounded and
+// refuses control characters and path separators, so a full path cannot be smuggled
+// through it.
+type WorkspaceDisplayLabel = string
+
+// RepositoryIdentity is defined by the connector protocol schema.
+//
+// Provider-agnostic canonical repository identity such as
+// github.com/example/refresh-surplus (docs/DOMAIN_MODEL.md section 6). It is derived
+// from the checkout's remote by the shared normaliser in packages/protocol, so the
+// connector, the control plane and the web application cannot disagree about what one
+// repository is. A userinfo component is dropped by that normaliser and never reaches
+// this field.
+type RepositoryIdentity = string
 
 // ConnectorCapability is defined by the connector protocol schema.
 //
@@ -651,10 +692,10 @@ type ReconnectStream struct {
 
 // WorkspaceHead is defined by the connector protocol schema.
 //
-// Head state of one workspace (docs/CONNECTOR_PROTOCOL.md section 9). Stage 0 reports
-// no workspace head state; the field exists so that Stage 1 Git context does not
-// change the message shape. Source file contents are never reported and this object
-// has no field capable of carrying them.
+// Head state of one workspace, carried in the reconnect claim of
+// docs/CONNECTOR_PROTOCOL.md section 17. Its scalar members are the same definitions
+// workspace_observation uses, so the two cannot drift. Source file contents are never
+// reported and this object has no field capable of carrying them.
 type WorkspaceHead struct {
 	// Workspace this head state describes.
 	WorkspaceID string `json:"workspace_id"`
@@ -666,13 +707,52 @@ type WorkspaceHead struct {
 	Dirty bool `json:"dirty"`
 }
 
+// WorkspaceObservation is defined by the connector protocol schema.
+//
+// Bounded Git context for one authorised workspace (docs/CONNECTOR_PROTOCOL.md section
+// 9, ADR-0022). It carries repository identity, branch, head commit, dirty state, a
+// display label and a stable path hash, and nothing else: there is no member capable
+// of carrying source file contents, a changed-path list, a process detail or a full
+// filesystem path, so the privacy rule is a property of the schema rather than of the
+// code that fills it in. project_id is a claim the control plane re-checks against the
+// enrolled identity's scope before it stores anything.
+type WorkspaceObservation struct {
+	// Workspace this observation describes, conventionally prefixed wsp_. It is the
+	// identifier a route publication names (section 11).
+	WorkspaceID string `json:"workspace_id"`
+	// Project the connector believes the workspace belongs to. A project outside the
+	// enrolled identity's scope is refused with PROJECT_NOT_AUTHORISED (section 21).
+	ProjectID string `json:"project_id"`
+	// Stable digest of the checkout's absolute path, which identifies the same checkout
+	// across observations without disclosing the path.
+	PathHash string `json:"path_hash"`
+	// The checkout directory's own name, for an operator reading the environment. Never
+	// the full path.
+	DisplayLabel string `json:"display_label"`
+	// Canonical identity of the checkout's remote. Absent when the checkout has no remote
+	// this connector could normalise; an absent value is reported as absent rather than
+	// guessed at.
+	RepositoryIdentity *string `json:"repository_identity,omitempty"`
+	// Checked-out branch.
+	Branch string `json:"branch"`
+	// HEAD commit identifier.
+	HeadCommit string `json:"head_commit"`
+	// Whether the working tree has uncommitted changes. Which files changed is
+	// deliberately not reportable at this version.
+	Dirty bool `json:"dirty"`
+	// When the connector observed this state. The control plane records its own instant
+	// beside it, because a development machine's clock is not authoritative.
+	ObservedAt string `json:"observed_at"`
+}
+
 // ReconnectRequest is defined by the connector protocol schema.
 //
 // What the connector believes it holds, sent on every control-channel establishment
-// (docs/CONNECTOR_PROTOCOL.md section 17). All six fields are always present; Stage 0
-// sends empty collections for known_agent_sessions and workspace_head_state, which are
-// Stage 1 capabilities. The payload carries no credential: the identity is the
-// mutually authenticated client certificate the channel already presented.
+// (docs/CONNECTOR_PROTOCOL.md section 17). All six fields are always present, and a
+// collection with nothing in it is sent empty rather than omitted, so the message
+// shape does not change with what a connector happens to be serving. The payload
+// carries no credential: the identity is the mutually authenticated client certificate
+// the channel already presented.
 type ReconnectRequest struct {
 	// Connector release version, which the control plane classifies per section 19.
 	ConnectorVersion string `json:"connector_version"`
@@ -683,10 +763,14 @@ type ReconnectRequest struct {
 	// Data streams the connector still holds open.
 	ActiveStreams []ReconnectStream `json:"active_streams"`
 	// Agent sessions the connector has observed locally, conventionally prefixed ags_.
-	// Stage 0 sends an empty array; agent-session re-establishment is Stage 1.
+	// This build sends an empty array: agent-session re-establishment is not implemented,
+	// and the field is sent empty rather than omitted so that its arrival does not change
+	// the message shape.
 	KnownAgentSessions []string `json:"known_agent_sessions"`
-	// Head state of the workspaces this connector serves. Stage 0 sends an empty array;
-	// workspace discovery is Stage 1 (section 9).
+	// Head state of the workspaces this connector serves (section 9). A connector
+	// configured with none sends an empty array; it is never omitted, so a control plane
+	// reading the claim can tell 'this connector serves no workspace' from 'this
+	// connector did not say'.
 	WorkspaceHeadState []WorkspaceHead `json:"workspace_head_state"`
 }
 
@@ -786,6 +870,11 @@ func (ReconnectRequest) isConnectorPayload() {}
 func (ReconnectResponse) MessageType() MessageType { return MessageTypeConnectorReconnectResponse }
 
 func (ReconnectResponse) isConnectorPayload() {}
+
+// MessageType reports the envelope type carrying a WorkspaceObservation.
+func (WorkspaceObservation) MessageType() MessageType { return MessageTypeWorkspaceObserved }
+
+func (WorkspaceObservation) isConnectorPayload() {}
 
 // Frame is a decoded control frame: envelope header plus its typed payload.
 type Frame struct {

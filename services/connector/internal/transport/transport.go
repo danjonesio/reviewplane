@@ -78,10 +78,23 @@ func (f *Failure) Error() string {
 func (f *Failure) Unwrap() error { return f.Err }
 
 // terminalClasses are the refusals no retry can resolve.
+//
+// PROJECT_NOT_AUTHORISED belongs here for the same reason the other four do: a
+// connector configured to report or serve a project it may not touch is a
+// misconfiguration only an operator can fix, so retrying with the same
+// configuration cannot succeed and would loop until somebody noticed. It stops
+// with the class named instead, which is what docs/UX_FLOWS.md section 18 means
+// by an actionable cause.
+//
+// This affects a WebSocket close reason and nothing else (section 5.3). A
+// route.publish.ack carrying PROJECT_NOT_AUTHORISED in its payload is a refusal
+// of one publication, not of the channel, and the connector keeps serving
+// everything else it was authorised for.
 var terminalClasses = []connectorv1.ErrorClass{
 	connectorv1.ErrorClassEnrolmentTokenInvalid,
 	connectorv1.ErrorClassIdentityRevoked,
 	connectorv1.ErrorClassProtocolUnsupported,
+	connectorv1.ErrorClassProjectNotAuthorised,
 	connectorv1.ErrorClassUpgradeRequired,
 }
 

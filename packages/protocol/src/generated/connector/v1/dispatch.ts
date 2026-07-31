@@ -18,6 +18,7 @@ import type {
   RegistrationResponse,
   RoutePublish,
   RoutePublishAck,
+  WorkspaceObservation,
 } from "./types.ts";
 import {
   decodeHeartbeat,
@@ -27,6 +28,7 @@ import {
   decodeRegistrationResponse,
   decodeRoutePublish,
   decodeRoutePublishAck,
+  decodeWorkspaceObservation,
 } from "./decode.ts";
 import {
   encodeHeartbeat,
@@ -36,6 +38,7 @@ import {
   encodeRegistrationResponse,
   encodeRoutePublish,
   encodeRoutePublishAck,
+  encodeWorkspaceObservation,
 } from "./encode.ts";
 import {
   validateHeartbeat,
@@ -45,6 +48,7 @@ import {
   validateRegistrationResponse,
   validateRoutePublish,
   validateRoutePublishAck,
+  validateWorkspaceObservation,
 } from "./validate.ts";
 
 /**
@@ -57,7 +61,8 @@ export type ConnectorPayload =
   | RoutePublish
   | RoutePublishAck
   | ReconnectRequest
-  | ReconnectResponse;
+  | ReconnectResponse
+  | WorkspaceObservation;
 
 /**
  * Validates a payload against the schema selected by message type.
@@ -85,6 +90,9 @@ export function validatePayload(type: MessageType, value: unknown, path: string,
     case "connector.reconnect.response":
       validateReconnectResponse(value, path, out);
       return;
+    case "workspace.observed":
+      validateWorkspaceObservation(value, path, out);
+      return;
   }
 }
 
@@ -107,6 +115,8 @@ export function decodeFrame(envelope: Envelope, value: unknown): ConnectorFrame 
       return { envelope, type: "connector.reconnect.request", payload: decodeReconnectRequest(value) };
     case "connector.reconnect.response":
       return { envelope, type: "connector.reconnect.response", payload: decodeReconnectResponse(value) };
+    case "workspace.observed":
+      return { envelope, type: "workspace.observed", payload: decodeWorkspaceObservation(value) };
   }
 }
 
@@ -129,5 +139,7 @@ export function encodeFramePayload(frame: ConnectorFrame): string {
       return encodeReconnectRequest(frame.payload);
     case "connector.reconnect.response":
       return encodeReconnectResponse(frame.payload);
+    case "workspace.observed":
+      return encodeWorkspaceObservation(frame.payload);
   }
 }

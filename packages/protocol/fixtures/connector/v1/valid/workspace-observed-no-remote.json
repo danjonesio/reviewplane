@@ -1,0 +1,17 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JQ8ZR3M4T5V6W7X8Y9Z0A1E8",
+  "type": "workspace.observed",
+  "sent_at": "2026-07-30T11:00:15Z",
+  "connector_id": "con_01JQ8ZR3M4T5V6W7X8Y9Z0A1C2",
+  "payload": {
+    "workspace_id": "wsp_01JQ8ZR3M4T5V6W7X8Y9Z0A1F2",
+    "project_id": "prj_01JQ8ZR3M4T5V6W7X8Y9Z0A1B3",
+    "path_hash": "sha256:1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809",
+    "display_label": "scratch",
+    "branch": "HEAD",
+    "head_commit": "0123456",
+    "dirty": false,
+    "observed_at": "2026-07-30T11:00:14Z"
+  }
+}

@@ -24,9 +24,17 @@ import { newMessageId } from "./identifiers.ts";
 /** How long the control plane waits for an acknowledgement. */
 export const DEFAULT_PUBLISH_TIMEOUT_MS = 30_000;
 
-/** The socket surface this module needs. `ws` and Fastify both satisfy it. */
+/**
+ * The socket surface this module needs. `ws` and Fastify both satisfy it.
+ *
+ * `close` is here because revocation has to reach a channel that is open now:
+ * `docs/CONNECTOR_PROTOCOL.md` §18 requires revocation to close the control and
+ * data channels, and a revocation that only wrote a row would leave the refused
+ * identity serving traffic until it happened to reconnect.
+ */
 export interface ControlSocket {
   send(data: string): void;
+  close(code?: number, reason?: string): void;
 }
 
 interface PendingPublication {
@@ -81,6 +89,46 @@ export class ControlChannelRegistry {
   /** Reports whether a connector currently holds a channel. */
   connected(connectorId: string): boolean {
     return this.#channels.has(connectorId);
+  }
+
+  /**
+   * Takes a connector's channel out of the registry and hands it back, without
+   * closing it.
+   *
+   * Detaching and closing are separate steps because revocation needs the count
+   * **before** it writes its audit event and the close **after** it has marked
+   * the record (`docs/CONNECTOR_PROTOCOL.md` §18). Doing both at once forced
+   * revocation to predict the count from `connected()` and then report a
+   * different one to its caller, so the event and the response could disagree
+   * about the same fact.
+   *
+   * Detaching first is safe on its own: a detached channel can no longer receive
+   * a publication, and the connector has no reason to reconnect until its socket
+   * actually closes.
+   */
+  detachChannel(connectorId: string): ControlSocket | null {
+    const socket = this.#channels.get(connectorId);
+    if (socket === undefined) return null;
+    this.#channels.delete(connectorId);
+    return socket;
+  }
+
+  /**
+   * Closes a detached channel.
+   *
+   * The reason is a `docs/CONNECTOR_PROTOCOL.md` §21 error class, because §5.3
+   * makes a close code and a class the whole of the refusal vocabulary at
+   * version 1. `IDENTITY_REVOKED` is terminal for the connector, so it reports
+   * the class and stops rather than reconnecting with a credential this control
+   * plane has just refused (§18).
+   */
+  static closeDetached(socket: ControlSocket, code: number, reason: string): void {
+    try {
+      socket.close(code, reason);
+    } catch {
+      // A socket the peer had already dropped needed no closing. It is still a
+      // channel this connector held and now does not.
+    }
   }
 
   /** Delivers an acknowledgement to whoever is waiting for it. */

@@ -21,9 +21,16 @@ import type {
   ApiMeta,
   AuthenticationLoginFailedPayload,
   AuthenticationLoginSucceededPayload,
+  Connector,
+  ConnectorConnectedPayload,
+  ConnectorDegradedPayload,
+  ConnectorDisconnectedPayload,
+  ConnectorEnrolledPayload,
+  ConnectorRevokedPayload,
   Correlation,
   CursorClaims,
   Envelope,
+  Environment,
   HumanSession,
   JobEnqueuedPayload,
   JobFailedPayload,
@@ -47,6 +54,9 @@ import type {
   UserCredentialsSetPayload,
   UserInvitedPayload,
   ValidationViewport,
+  Workspace,
+  WorkspaceHeadChangedPayload,
+  WorkspaceObservedPayload,
 } from "./types.ts";
 
 /**
@@ -156,6 +166,88 @@ export function encodeHumanSession(value: HumanSession): string {
     fields.push(`"project_ids":${`[${value.project_ids.map((item) => jsonString(item)).join(",")}]`}`);
   }
   fields.push(`"expires_at":${jsonString(value.expires_at)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a Environment.
+ */
+export function encodeEnvironment(value: Environment): string {
+  const fields: string[] = [];
+  fields.push(`"id":${jsonString(value.id)}`);
+  fields.push(`"organisation_id":${jsonString(value.organisation_id)}`);
+  if (value.project_id !== undefined) {
+    fields.push(`"project_id":${jsonString(value.project_id)}`);
+  }
+  fields.push(`"name":${jsonString(value.name)}`);
+  fields.push(`"platform":${jsonString(value.platform)}`);
+  fields.push(`"architecture":${jsonString(value.architecture)}`);
+  fields.push(`"labels":${`[${value.labels.map((item) => jsonString(item)).join(",")}]`}`);
+  fields.push(`"trust_level":${jsonString(value.trust_level)}`);
+  fields.push(`"status":${jsonString(value.status)}`);
+  if (value.last_seen_at !== undefined) {
+    fields.push(`"last_seen_at":${jsonString(value.last_seen_at)}`);
+  }
+  fields.push(`"created_at":${jsonString(value.created_at)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a Connector.
+ */
+export function encodeConnector(value: Connector): string {
+  const fields: string[] = [];
+  fields.push(`"id":${jsonString(value.id)}`);
+  fields.push(`"organisation_id":${jsonString(value.organisation_id)}`);
+  fields.push(`"environment_id":${jsonString(value.environment_id)}`);
+  if (value.project_id !== undefined) {
+    fields.push(`"project_id":${jsonString(value.project_id)}`);
+  }
+  fields.push(`"certificate_fingerprint":${jsonString(value.certificate_fingerprint)}`);
+  fields.push(`"certificate_not_after":${jsonString(value.certificate_not_after)}`);
+  fields.push(`"version":${jsonString(value.version)}`);
+  fields.push(`"capabilities":${`[${value.capabilities.map((item) => jsonString(item)).join(",")}]`}`);
+  fields.push(`"status":${jsonString(value.status)}`);
+  if (value.connected_at !== undefined) {
+    fields.push(`"connected_at":${jsonString(value.connected_at)}`);
+  }
+  if (value.last_heartbeat_at !== undefined) {
+    fields.push(`"last_heartbeat_at":${jsonString(value.last_heartbeat_at)}`);
+  }
+  if (value.revoked_at !== undefined) {
+    fields.push(`"revoked_at":${jsonString(value.revoked_at)}`);
+  }
+  fields.push(`"created_at":${jsonString(value.created_at)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a Workspace.
+ */
+export function encodeWorkspace(value: Workspace): string {
+  const fields: string[] = [];
+  fields.push(`"id":${jsonString(value.id)}`);
+  fields.push(`"organisation_id":${jsonString(value.organisation_id)}`);
+  fields.push(`"project_id":${jsonString(value.project_id)}`);
+  if (value.environment_id !== undefined) {
+    fields.push(`"environment_id":${jsonString(value.environment_id)}`);
+  }
+  if (value.connector_id !== undefined) {
+    fields.push(`"connector_id":${jsonString(value.connector_id)}`);
+  }
+  fields.push(`"path_hash":${jsonString(value.path_hash)}`);
+  fields.push(`"display_path":${jsonString(value.display_path)}`);
+  if (value.repository_identity !== undefined) {
+    fields.push(`"repository_identity":${jsonString(value.repository_identity)}`);
+  }
+  fields.push(`"branch":${jsonString(value.branch)}`);
+  fields.push(`"head_commit":${jsonString(value.head_commit)}`);
+  fields.push(`"dirty":${jsonBoolean(value.dirty)}`);
+  fields.push(`"source":${jsonString(value.source)}`);
+  if (value.last_observed_at !== undefined) {
+    fields.push(`"last_observed_at":${jsonString(value.last_observed_at)}`);
+  }
+  fields.push(`"created_at":${jsonString(value.created_at)}`);
   return `{${fields.join(",")}}`;
 }
 
@@ -361,6 +453,117 @@ export function encodeProjectArchivedPayload(value: ProjectArchivedPayload): str
   const fields: string[] = [];
   fields.push(`"previous_status":${jsonString(value.previous_status)}`);
   fields.push(`"new_status":${jsonString(value.new_status)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ConnectorEnrolledPayload.
+ */
+export function encodeConnectorEnrolledPayload(value: ConnectorEnrolledPayload): string {
+  const fields: string[] = [];
+  fields.push(`"environment_id":${jsonString(value.environment_id)}`);
+  fields.push(`"environment_name":${jsonString(value.environment_name)}`);
+  fields.push(`"platform":${jsonString(value.platform)}`);
+  fields.push(`"architecture":${jsonString(value.architecture)}`);
+  fields.push(`"connector_version":${jsonString(value.connector_version)}`);
+  fields.push(`"capabilities":${`[${value.capabilities.map((item) => jsonString(item)).join(",")}]`}`);
+  fields.push(`"certificate_fingerprint":${jsonString(value.certificate_fingerprint)}`);
+  fields.push(`"identity_expires_at":${jsonString(value.identity_expires_at)}`);
+  if (value.enrolment_token_id !== undefined) {
+    fields.push(`"enrolment_token_id":${jsonString(value.enrolment_token_id)}`);
+  }
+  fields.push(`"new_status":${jsonString(value.new_status)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ConnectorConnectedPayload.
+ */
+export function encodeConnectorConnectedPayload(value: ConnectorConnectedPayload): string {
+  const fields: string[] = [];
+  fields.push(`"previous_status":${jsonString(value.previous_status)}`);
+  fields.push(`"new_status":${jsonString(value.new_status)}`);
+  fields.push(`"trigger":${jsonString(value.trigger)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ConnectorDegradedPayload.
+ */
+export function encodeConnectorDegradedPayload(value: ConnectorDegradedPayload): string {
+  const fields: string[] = [];
+  fields.push(`"previous_status":${jsonString(value.previous_status)}`);
+  fields.push(`"new_status":${jsonString(value.new_status)}`);
+  fields.push(`"trigger":${jsonString(value.trigger)}`);
+  fields.push(`"silent_for_seconds_at_least":${jsonInteger(value.silent_for_seconds_at_least)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ConnectorDisconnectedPayload.
+ */
+export function encodeConnectorDisconnectedPayload(value: ConnectorDisconnectedPayload): string {
+  const fields: string[] = [];
+  fields.push(`"previous_status":${jsonString(value.previous_status)}`);
+  fields.push(`"new_status":${jsonString(value.new_status)}`);
+  fields.push(`"trigger":${jsonString(value.trigger)}`);
+  if (value.silent_for_seconds_at_least !== undefined) {
+    fields.push(`"silent_for_seconds_at_least":${jsonInteger(value.silent_for_seconds_at_least)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ConnectorRevokedPayload.
+ */
+export function encodeConnectorRevokedPayload(value: ConnectorRevokedPayload): string {
+  const fields: string[] = [];
+  fields.push(`"previous_status":${jsonString(value.previous_status)}`);
+  fields.push(`"new_status":${jsonString(value.new_status)}`);
+  fields.push(`"routes_revoked":${jsonInteger(value.routes_revoked)}`);
+  fields.push(`"sessions_disconnected":${jsonInteger(value.sessions_disconnected)}`);
+  if (value.channels_closed !== undefined) {
+    fields.push(`"channels_closed":${jsonInteger(value.channels_closed)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a WorkspaceObservedPayload.
+ */
+export function encodeWorkspaceObservedPayload(value: WorkspaceObservedPayload): string {
+  const fields: string[] = [];
+  fields.push(`"workspace_id":${jsonString(value.workspace_id)}`);
+  if (value.environment_id !== undefined) {
+    fields.push(`"environment_id":${jsonString(value.environment_id)}`);
+  }
+  fields.push(`"path_hash":${jsonString(value.path_hash)}`);
+  fields.push(`"display_path":${jsonString(value.display_path)}`);
+  if (value.repository_identity !== undefined) {
+    fields.push(`"repository_identity":${jsonString(value.repository_identity)}`);
+  }
+  fields.push(`"branch":${jsonString(value.branch)}`);
+  fields.push(`"head_commit":${jsonString(value.head_commit)}`);
+  fields.push(`"dirty":${jsonBoolean(value.dirty)}`);
+  fields.push(`"source":${jsonString(value.source)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a WorkspaceHeadChangedPayload.
+ */
+export function encodeWorkspaceHeadChangedPayload(value: WorkspaceHeadChangedPayload): string {
+  const fields: string[] = [];
+  fields.push(`"workspace_id":${jsonString(value.workspace_id)}`);
+  if (value.environment_id !== undefined) {
+    fields.push(`"environment_id":${jsonString(value.environment_id)}`);
+  }
+  fields.push(`"previous_branch":${jsonString(value.previous_branch)}`);
+  fields.push(`"previous_head_commit":${jsonString(value.previous_head_commit)}`);
+  fields.push(`"previous_dirty":${jsonBoolean(value.previous_dirty)}`);
+  fields.push(`"branch":${jsonString(value.branch)}`);
+  fields.push(`"head_commit":${jsonString(value.head_commit)}`);
+  fields.push(`"dirty":${jsonBoolean(value.dirty)}`);
   return `{${fields.join(",")}}`;
 }
 

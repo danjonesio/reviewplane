@@ -60,6 +60,20 @@ export interface StubOptions {
    */
   readonly screenshot?: Uint8Array;
   /**
+   * Start with an environment and an `ACTIVE` connector already enrolled, for
+   * the connector-health and revocation cases. Without it the deployment has
+   * none, which is what the "no connector connected" empty state is for.
+   */
+  readonly connectorConnected?: boolean;
+  /**
+   * Milliseconds after the enrolment page starts watching — the first read of
+   * the connector list, or the minting of a token — before a connector
+   * appears. This is what makes the live-update path of `docs/UX_FLOWS.md`
+   * section 5 testable: the enrolment finishes on another machine, so the page
+   * has to notice it rather than be told.
+   */
+  readonly connectorAppearsAfterMs?: number;
+  /**
    * The after screenshot of the verification submission, which is what the
    * before-and-after comparison compares against. A different picture from
    * `screenshot`, so a slider that moves visibly changes what is shown.
@@ -190,6 +204,20 @@ export const REVIEW = {
   created_at: "2026-07-30T10:12:04.118Z",
   updated_at: "2026-07-30T10:12:44.310Z",
 };
+
+/**
+ * The environment, connector and workspace a connector enrolment produces
+ * (`docs/DOMAIN_MODEL.md` sections 7 to 9). The commit is a whole
+ * forty-character digest, so an abbreviation that forgot to abbreviate is
+ * visible in the interface suite rather than plausible.
+ */
+export const ENVIRONMENT_NAME = "dev-ai-03";
+export const CONNECTOR_ID = "con_ui_suite";
+export const CONNECTOR_VERSION = "0.1.0";
+export const WORKSPACE_BRANCH = "feat/homepage-refresh";
+export const WORKSPACE_COMMIT = "4a45b94f1c2d3e4a5b6c7d8e9f0a1b2c3d4e5f60";
+export const WORKSPACE_DISPLAY_PATH = "refresh-surplus";
+export const ENROLMENT_TOKEN = "rpe_ui-suite-enrolment-token";
 
 export const MEASURED_ARTEFACT = "art_ui_suite_measured";
 export const UNMEASURED_ARTEFACT = "art_ui_suite_unmeasured";
@@ -437,6 +465,79 @@ export async function startStubControlPlane(options: StubOptions): Promise<StubC
   let bootstrapRequired = options.bootstrapRequired === true;
   let created = 0;
 
+  // ---------------------------------------------------- connector enrolment
+  /** When the enrolled connector becomes visible; null until something arms it. */
+  let connectorVisibleAt: number | null = options.connectorConnected === true ? 0 : null;
+  let connectorStatus = "ACTIVE";
+  let connectorRevokedAt: string | null = null;
+  let enrolmentTokensIssued = 0;
+
+  /** Starts the clock the simulated enrolment finishes on. */
+  function armConnector(): void {
+    if (connectorVisibleAt !== null) return;
+    if (options.connectorAppearsAfterMs === undefined) return;
+    connectorVisibleAt = Date.now() + options.connectorAppearsAfterMs;
+  }
+
+  function connectorPresent(): boolean {
+    return connectorVisibleAt !== null && Date.now() >= connectorVisibleAt;
+  }
+
+  function connectorRecord(): Record<string, unknown> {
+    return {
+      id: CONNECTOR_ID,
+      organisation_id: PROJECT.organisation_id,
+      environment_id: "env_ui_suite",
+      project_id: PROJECT.id,
+      certificate_fingerprint:
+        "sha256:3f7a1c9e04b28d6f5a1e7c4b90d2f6a83c5e1b7d4906f2a8c3b5d7e9f01a2b34",
+      version: CONNECTOR_VERSION,
+      capabilities: ["http-tunnel", "websocket-tunnel", "git-context"],
+      status: connectorStatus,
+      connected_at: "2026-07-30T09:41:12.000Z",
+      last_heartbeat_at: "2026-07-30T09:46:02.000Z",
+      // Explicitly null rather than absent, because that is what the control
+      // plane sends for a value it does not have. A page that only handled the
+      // absent spelling would render this as a date in 1970.
+      revoked_at: connectorRevokedAt,
+    };
+  }
+
+  function environmentRecord(): Record<string, unknown> {
+    return {
+      id: "env_ui_suite",
+      organisation_id: PROJECT.organisation_id,
+      project_id: PROJECT.id,
+      name: ENVIRONMENT_NAME,
+      platform: "linux",
+      architecture: "amd64",
+      labels: ["proxmox", "development"],
+      trust_level: "standard",
+      status: "ACTIVE",
+      last_seen_at: "2026-07-30T09:46:02.000Z",
+      created_at: "2026-07-30T09:41:10.000Z",
+      connectors: [connectorRecord()],
+      workspaces: [
+        {
+          id: "wsp_ui_suite",
+          organisation_id: PROJECT.organisation_id,
+          project_id: PROJECT.id,
+          environment_id: "env_ui_suite",
+          connector_id: CONNECTOR_ID,
+          path_hash: "sha256:8c1d0f4b7a3e6952c8b4d1f70a2e6c395b7d8f01a4c62e93d5b8f7a01c3e4d69",
+          display_path: WORKSPACE_DISPLAY_PATH,
+          repository_identity: "github.com/example/refresh-surplus",
+          branch: WORKSPACE_BRANCH,
+          head_commit: WORKSPACE_COMMIT,
+          dirty: true,
+          source: "connector_observed",
+          last_observed_at: "2026-07-30T09:46:00.000Z",
+          created_at: "2026-07-30T09:41:30.000Z",
+        },
+      ],
+    };
+  }
+
   const server: Server = createServer((request, response) => {
     void handle(request, response).catch(() => {
       if (!response.headersSent) sendJson(response, 500, { error: { code: "INTERNAL_ERROR" } });
@@ -666,6 +767,141 @@ export async function startStubControlPlane(options: StubOptions): Promise<StubC
     }
     if (path === `/api/v1/browser-sessions/${SESSION.id}`) {
       sendJson(response, 200, { data: SESSION });
+      return;
+    }
+
+    // ------------------------------------------- environments and connectors
+    if (path === "/api/v1/connectors/enrolment-tokens" && request.method === "POST") {
+      if (!hasCsrf(request)) {
+        sendJson(response, 403, {
+          error: {
+            code: "AUTHORISATION_DENIED",
+            message: "This request changes state and must carry the session's CSRF token.",
+          },
+        });
+        return;
+      }
+      const body = await readJsonBody(request);
+      armConnector();
+      enrolmentTokensIssued += 1;
+      const origin = `http://${request.headers.host ?? "127.0.0.1"}`;
+      const lifetime =
+        typeof body["expires_in_seconds"] === "number" ? body["expires_in_seconds"] : 3600;
+      sendJson(response, 201, {
+        data: {
+          id: `ent_ui_${String(enrolmentTokensIssued)}`,
+          organisation_id: PROJECT.organisation_id,
+          project_id: typeof body["project_id"] === "string" ? body["project_id"] : null,
+          environment_labels: Array.isArray(body["environment_labels"])
+            ? body["environment_labels"]
+            : [],
+          max_uses: typeof body["max_uses"] === "number" ? body["max_uses"] : 1,
+          expires_at: new Date(Date.now() + lifetime * 1000).toISOString(),
+          // Shown once, exactly as the control plane shows it once: the stub
+          // keeps no digest because it keeps nothing, but the shape is the
+          // shape the page has to be able to present.
+          enrolment_token: ENROLMENT_TOKEN,
+          enrolment_endpoint: `${origin.replace(/^http/u, "ws")}/connector/v1/enrol`,
+          control_plane_url: origin,
+          // The control plane's own command, which reads the token from a file
+          // rather than from the command line: a command line is in the process
+          // table and in shell history (`docs/CONNECTOR_PROTOCOL.md` §20). The
+          // token therefore has to reach the screen on its own, which is what
+          // the enrolment page's token field is for.
+          connector_command: [
+            "sudo reviewplane-connector enrol \\",
+            `  --control-plane ${origin} \\`,
+            "  --token-file /root/reviewplane-enrolment-token",
+          ].join("\n"),
+        },
+      });
+      return;
+    }
+
+    if (path === "/api/v1/connectors" && request.method === "GET") {
+      armConnector();
+      sendJson(response, 200, { data: connectorPresent() ? [connectorRecord()] : [] });
+      return;
+    }
+
+    const revokeMatch = /^\/api\/v1\/connectors\/([^/]+)\/revoke$/u.exec(path);
+    if (revokeMatch !== null && request.method === "POST") {
+      if (!hasCsrf(request)) {
+        sendJson(response, 403, {
+          error: {
+            code: "AUTHORISATION_DENIED",
+            message: "This request changes state and must carry the session's CSRF token.",
+          },
+        });
+        return;
+      }
+      if (revokeMatch[1] !== CONNECTOR_ID || !connectorPresent()) {
+        sendJson(response, 404, {
+          error: { code: "RESOURCE_NOT_FOUND", message: "The connector was not found." },
+        });
+        return;
+      }
+      connectorStatus = "REVOKED";
+      connectorRevokedAt = new Date().toISOString();
+      sendJson(response, 200, {
+        data: {
+          id: CONNECTOR_ID,
+          status: "REVOKED",
+          revoked_at: connectorRevokedAt,
+          routes_revoked: 2,
+          sessions_disconnected: 1,
+          channels_closed: 1,
+        },
+      });
+      return;
+    }
+
+    const connectorMatch = /^\/api\/v1\/connectors\/([^/]+)$/u.exec(path);
+    if (connectorMatch !== null) {
+      if (connectorMatch[1] !== CONNECTOR_ID || !connectorPresent()) {
+        sendJson(response, 404, {
+          error: { code: "RESOURCE_NOT_FOUND", message: "The connector was not found." },
+        });
+        return;
+      }
+      const { connectors: _connectors, workspaces: _workspaces, ...environment } =
+        environmentRecord();
+      sendJson(response, 200, {
+        data: {
+          ...connectorRecord(),
+          certificate_not_after: "2027-07-30T09:41:12.000Z",
+          environment,
+        },
+      });
+      return;
+    }
+
+    const environmentsMatch = /^\/api\/v1\/projects\/([^/]+)\/environments$/u.exec(path);
+    if (environmentsMatch !== null) {
+      armConnector();
+      const owner = environmentsMatch[1] as string;
+      if (!projects.has(owner)) {
+        sendJson(response, 404, {
+          error: { code: "RESOURCE_NOT_FOUND", message: "The project was not found." },
+        });
+        return;
+      }
+      const visible = connectorPresent() && owner === PROJECT.id;
+      sendJson(response, 200, { data: visible ? [environmentRecord()] : [] });
+      return;
+    }
+
+    const environmentMatch = /^\/api\/v1\/environments\/([^/]+)$/u.exec(path);
+    if (environmentMatch !== null) {
+      if (environmentMatch[1] !== "env_ui_suite" || !connectorPresent()) {
+        // A foreign identifier and an absent one are answered identically
+        // (`docs/API.md` section 5).
+        sendJson(response, 404, {
+          error: { code: "RESOURCE_NOT_FOUND", message: "The environment was not found." },
+        });
+        return;
+      }
+      sendJson(response, 200, { data: environmentRecord() });
       return;
     }
 

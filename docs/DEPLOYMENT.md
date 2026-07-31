@@ -539,16 +539,49 @@ carries.
 
 ## 13. Connector installation
 
-Linux example:
+The unit and an example configuration ship in the source tree at
+`services/connector/packaging/`. Linux example:
 
 ```bash
+sudo useradd --system --home-dir /var/lib/reviewplane-connector \
+  --shell /usr/sbin/nologin reviewplane-connector
 sudo install -m 0755 reviewplane-connector /usr/local/bin/reviewplane-connector
-sudo mkdir -p /etc/reviewplane-connector /var/lib/reviewplane-connector
-sudo install -m 0644 packaging/systemd/reviewplane-connector.service \
+sudo install -m 0644 services/connector/packaging/systemd/reviewplane-connector.service \
   /etc/systemd/system/reviewplane-connector.service
+sudo install -d -m 0750 -o reviewplane-connector -g reviewplane-connector \
+  /etc/reviewplane-connector
+sudo install -m 0640 -o reviewplane-connector -g reviewplane-connector \
+  services/connector/packaging/config.example.yaml \
+  /etc/reviewplane-connector/config.yaml
 sudo systemctl daemon-reload
-sudo systemctl enable --now reviewplane-connector
 ```
+
+Edit `/etc/reviewplane-connector/config.yaml` before starting: the control-plane
+URL, the environment name and the `workspaces` block are deployment-specific,
+and the example carries placeholders for all three. Every setting is validated at
+startup and an unknown one is an error rather than a value silently ignored
+(`CONFIGURATION.md` §1), so a mistake here fails immediately and names the
+setting.
+
+The service account is created by hand rather than by `DynamicUser=`, and this
+is deliberate. The connector reads the developer's checkouts to report branch
+and head commit (`CONNECTOR_PROTOCOL.md` §9), which needs a stable identity: the
+checkouts must grant it read access, and Git refuses to operate on a repository
+owned by another account unless `safe.directory` names it, which is
+configuration written against a specific user. Grant that access explicitly —
+
+```bash
+sudo systemctl edit reviewplane-connector   # [Service] / SupplementaryGroups=dan
+```
+
+— or run the connector as the developer, which on a single-developer machine is
+the honest arrangement. Widening the account instead is not the alternative it
+appears to be.
+
+`/var/lib/reviewplane-connector` is created by systemd's `StateDirectory=` at
+mode 0700. Do not relax it: the device private key lives there and the connector
+refuses to start when it is readable by group or other, on every start rather
+than only at enrolment (`SECURITY.md` §6.2).
 
 Enrol:
 
@@ -556,9 +589,42 @@ Enrol:
 sudo reviewplane-connector enrol \
   --control-plane https://connect.agents.example.internal \
   --token-file /root/reviewplane-enrolment-token
+sudo systemctl enable --now reviewplane-connector
 ```
 
-The token file should be deleted after successful enrolment.
+The token is read from a file rather than from the command line, because a
+command line is in the process table and in shell history. The token file should
+be deleted after successful enrolment. The exact command, with this
+deployment's URL already in it, is shown by the enrolment screen and returned by
+`API.md` §9 as `connector_command`.
+
+Enrolment is separate from `systemctl enable --now` because it is a one-time
+exchange that establishes an identity, and the unit's `Restart=` deliberately
+excludes exit code 3 — the refusals an operator must act on, such as an invalid
+token or a revoked identity — so that the service does not retry a credential
+the control plane has already refused (`CONNECTOR_PROTOCOL.md` §18).
+
+Verify from the control plane rather than only from the machine:
+
+```bash
+reviewplane connector list
+```
+
+It reports each enrolled connector with its environment, platform, project,
+version, capabilities, connection and heartbeat instants, revocation instant
+where there is one, and how many workspaces the environment holds. It reads and
+never revokes: revocation is an authorised, audited action, and a command taking
+no credential could not record who performed it (`API.md` §9 is where revocation
+lives).
+
+On the machine itself, the claim worth checking is that nothing listens:
+
+```bash
+ss -ltnp | grep reviewplane-connector   # expected: no output
+```
+
+Every connection the connector makes is outbound (`CONNECTOR_PROTOCOL.md` §5),
+so no inbound port needs opening on the development VM and none should appear.
 
 ## 14. Remote browser workers
 

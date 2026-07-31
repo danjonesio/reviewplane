@@ -38,6 +38,7 @@ import {
   transitionConnector,
   type ConnectorRecord,
 } from "./repository.ts";
+import { recordObservation, WorkspaceObservationRefused } from "./workspaces.ts";
 
 /** WebSocket close codes used here (RFC 6455 §7.4.1). */
 const CLOSE = {
@@ -124,12 +125,13 @@ function messageBuffer(payload: unknown): Buffer {
  * handled, never dropped. Serial delivery additionally keeps one connector's
  * frames in order and bounds how much work a burst can start at once.
  */
-class FrameQueue {
+export class FrameQueue {
   /** Frames buffered before the consumer exists. A burst beyond this is refused. */
   static readonly MAX_PENDING = 32;
 
   readonly #pending: Buffer[] = [];
   #consumer: ((raw: Buffer) => Promise<void>) | null = null;
+  #onConsumerError: ((error: unknown) => void) | null = null;
   #draining = false;
   #overflowed = false;
 
@@ -147,21 +149,107 @@ class FrameQueue {
     void this.#drain();
   }
 
-  setConsumer(consumer: (raw: Buffer) => Promise<void>): void {
+  /**
+   * Sets the consumer and the handler for anything it throws.
+   *
+   * `onError` is required rather than optional: a queue drained with `void` and
+   * no error handler is exactly the shape that terminated the process, and
+   * making the caller name what happens is what stops the next consumer being
+   * written without one.
+   */
+  setConsumer(consumer: (raw: Buffer) => Promise<void>, onError: (error: unknown) => void): void {
     this.#consumer = consumer;
+    this.#onConsumerError = onError;
     void this.#drain();
   }
 
+  /**
+   * Delivers buffered frames one at a time.
+   *
+   * The `catch` is the whole point of this method's shape, and it is a security
+   * control rather than tidiness. `#drain` is started with `void`, so a
+   * rejection here is an **unhandled rejection**, and Node terminates the
+   * process on one by default — which means any error a frame handler failed to
+   * anticipate lets a peer outside the control-plane trust boundary
+   * (`docs/SECURITY.md` §3) stop the control plane with an ordinary protocol
+   * message. It took down the HTTP API, the connector listener and the jobs
+   * role together, and under Compose's restart policy the connector re-sent the
+   * same frame on its next interval, so the outage was sustained rather than
+   * momentary.
+   *
+   * A handler is expected to refuse a frame it does not like, with a close code
+   * and a §21 error class. This is what happens when one does not: the failure
+   * is contained to the frame, reported, and the channel ends. It is deliberately
+   * unconditional — no error type is allowed past it — because the point is to
+   * bound what an unanticipated failure can cost, and an unanticipated failure
+   * is by definition one nobody enumerated.
+   */
   async #drain(): Promise<void> {
     if (this.#draining || this.#consumer === null) return;
     this.#draining = true;
     try {
       for (let next = this.#pending.shift(); next !== undefined; next = this.#pending.shift()) {
-        await this.#consumer(next);
+        try {
+          await this.#consumer(next);
+        } catch (error) {
+          this.#pending.length = 0;
+          this.#onConsumerError?.(error);
+          return;
+        }
       }
     } finally {
       this.#draining = false;
     }
+  }
+}
+
+/**
+ * The heartbeat floor for one channel (`docs/CONNECTOR_PROTOCOL.md` §8).
+ *
+ * A heartbeat is a liveness signal, and a signal that costs the receiver two
+ * database writes must not be sendable in a tight loop. Heartbeats arriving
+ * faster than a third of the configured interval do not refresh the liveness
+ * timestamps, and a connector that keeps it up past
+ * {@link HeartbeatFloor.MAX_DROPPED} loses its channel: at that point it is not
+ * keeping a channel alive, it is generating load, and a bound on what a peer
+ * can make the control plane do is what turns a flood into a refusal rather
+ * than into an outage.
+ *
+ * Dropping rather than refusing on the first one is deliberate. A connector
+ * that reconnects immediately after a network blip legitimately sends a
+ * heartbeat close behind its last one, and ending its channel for that would
+ * turn a recovered outage into a longer one. What a dropped heartbeat never
+ * costs is the recovery it carries: the caller runs the `ACTIVE` transition
+ * whether or not the floor admitted the frame.
+ */
+export class HeartbeatFloor {
+  /** How many refused heartbeats end the channel. */
+  static readonly MAX_DROPPED = 32;
+
+  readonly #minimumIntervalMs: number;
+  #lastAdmittedAt: number | null = null;
+  #dropped = 0;
+
+  constructor(minimumIntervalMs: number) {
+    this.#minimumIntervalMs = minimumIntervalMs;
+  }
+
+  get dropped(): number {
+    return this.#dropped;
+  }
+
+  /** Admits a heartbeat, or counts it as dropped. */
+  admit(now: number): boolean {
+    if (this.#lastAdmittedAt !== null && now - this.#lastAdmittedAt < this.#minimumIntervalMs) {
+      this.#dropped += 1;
+      return false;
+    }
+    this.#lastAdmittedAt = now;
+    return true;
+  }
+
+  exhausted(): boolean {
+    return this.#dropped > HeartbeatFloor.MAX_DROPPED;
   }
 }
 
@@ -325,6 +413,10 @@ async function handleControlSocket(
     return;
   }
 
+  const heartbeats = new HeartbeatFloor(
+    Math.max(1, Math.floor((context.config.heartbeatIntervalSeconds * 1000) / 3)),
+  );
+
   queue.setConsumer(async (raw) => {
     if (raw.length > MAX_INBOUND_MESSAGE_BYTES) {
       log.warn({ bytes: raw.length }, "refusing an oversized control frame");
@@ -359,7 +451,36 @@ async function handleControlSocket(
 
     switch (frame.type) {
       case "heartbeat": {
-        await recordHeartbeat(context.pool, connector.id);
+        // Liveness bookkeeping is rate limited; recovery is not.
+        //
+        // Recording a heartbeat is two updates, one of them across a subquery,
+        // and a connector is the one peer that can ask for them as fast as a
+        // socket allows. So a heartbeat arriving inside the floor does not
+        // refresh the timestamps, and a connector that keeps it up past
+        // `HeartbeatFloor.MAX_DROPPED` loses its channel — which bounds a flood
+        // at a few dozen statements rather than at however many frames fit down
+        // a socket.
+        //
+        // The status transition below runs either way, and that is the part
+        // that must not be rate limited. `docs/CONNECTOR_PROTOCOL.md` §8 says a
+        // heartbeat arriving in either degraded state returns the connector to
+        // `ACTIVE`; a floor that swallowed the first heartbeat after a network
+        // blip would leave a working connector reading as `DEGRADED` until the
+        // next interval, which is the opposite of what a heartbeat is for. The
+        // transition is one conditional update that returns no row when nothing
+        // changed, so running it always is cheap and running it never would be
+        // wrong.
+        const admitted = heartbeats.admit(Date.now());
+        if (!admitted && heartbeats.exhausted()) {
+          log.warn({ dropped: heartbeats.dropped }, "refusing a connector that floods the heartbeat channel");
+          socket.close(CLOSE.policyViolation, "PROTOCOL_UNSUPPORTED");
+          return;
+        }
+        if (admitted) {
+          await recordHeartbeat(context.pool, connector.id);
+        } else {
+          log.debug({ dropped: heartbeats.dropped }, "heartbeat arrived inside the minimum interval");
+        }
         const recovered = await transitionConnector(context.pool, {
           connectorId: connector.id,
           from: ["PENDING_ENROLMENT", "DEGRADED", "DISCONNECTED"],
@@ -375,6 +496,7 @@ async function handleControlSocket(
             active_routes: frame.payload.active_routes,
             active_streams: frame.payload.active_streams,
             recovered: recovered !== null,
+            rate_limited: !admitted,
           },
           "heartbeat received",
         );
@@ -382,6 +504,47 @@ async function handleControlSocket(
       }
       case "connector.reconnect.request": {
         await handleReconnect(context, socket, connector, frame.envelope.message_id, frame.payload, log);
+        break;
+      }
+      case "workspace.observed": {
+        // A report, never an authorisation. `recordObservation` re-derives
+        // whether this identity may act for the project the frame names, and a
+        // connector that names one it may not is refused with the §21 class
+        // `PROJECT_NOT_AUTHORISED` — terminal, because no retry with the same
+        // configuration can succeed and a loop would be the alternative.
+        try {
+          const recorded = await recordObservation(
+            context.pool,
+            {
+              organisationId: connector.organisationId,
+              connectorId: connector.id,
+              environmentId: connector.environmentId,
+              enrolledProjectId: connector.projectId,
+              requestId: frame.envelope.message_id,
+            },
+            frame.payload,
+          );
+          log.debug(
+            {
+              workspace_id: recorded.workspace.id,
+              project_id: recorded.workspace.project_id,
+              outcome: recorded.outcome,
+              branch: recorded.workspace.branch,
+              dirty: recorded.workspace.dirty,
+            },
+            "workspace observation recorded",
+          );
+        } catch (error) {
+          if (error instanceof WorkspaceObservationRefused) {
+            log.warn(
+              { reason: error.reason, project_id: frame.payload.project_id },
+              "workspace observation refused",
+            );
+            socket.close(CLOSE.policyViolation, "PROJECT_NOT_AUTHORISED");
+            return;
+          }
+          throw error;
+        }
         break;
       }
       case "route.publish.ack": {
@@ -404,6 +567,21 @@ async function handleControlSocket(
         log.warn({ message_type: frame.type }, "no handler for message type");
         socket.close(CLOSE.policyViolation, "PROTOCOL_UNSUPPORTED");
     }
+  },
+  (error: unknown) => {
+    // A frame handler failed in a way it did not anticipate. The channel ends
+    // with an internal-error close rather than a §21 class, because the class
+    // vocabulary describes authorisation, identity and lifecycle outcomes and
+    // this is none of those — the connector learns that the control plane could
+    // not process the frame, which is true, and reconnects under §17.
+    //
+    // The connector is told at all, which is the part that matters. Before this
+    // the failure was an unhandled rejection: the process ended, the frame was
+    // silently dropped from the connector's point of view, and it re-sent the
+    // same frame on its next interval into a control plane that had just
+    // restarted.
+    log.error({ err: error, connector_id: connector.id }, "a control frame handler failed");
+    socket.close(CLOSE.internalError, "");
   });
 
   socket.on("error", (error: Error) => {

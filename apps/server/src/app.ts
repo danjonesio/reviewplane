@@ -205,7 +205,6 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
 
   const connectors = await createConnectorModule(app, {
     pool,
-    bootstrapToken: config.bootstrapToken,
     logLevel: config.logLevel,
     ...(options.connectorConfig === undefined ? {} : { config: options.connectorConfig }),
     ...(options.logDestination === undefined ? {} : { logDestination: options.logDestination }),
@@ -244,21 +243,24 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
   // to the connector module rather than constructed inside it, because deciding
   // the fate of a route needs the gateway and the published-service records,
   // and the connector module owns neither.
-  connectors.useReconciler(
-    new PublishedServiceReconciler(
-      pool,
-      gateway,
-      {
-        organisationId: connectors.config.organisationId,
-        upgrade: {
-          minimumVersion: connectors.config.minimumConnectorVersion,
-          recommendedVersion: connectors.config.recommendedConnectorVersion,
-        },
+  const connectorReconciler = new PublishedServiceReconciler(
+    pool,
+    gateway,
+    {
+      organisationId: connectors.config.organisationId,
+      upgrade: {
+        minimumVersion: connectors.config.minimumConnectorVersion,
+        recommendedVersion: connectors.config.recommendedConnectorVersion,
       },
-      connectors.listener.log,
-      options.now ?? ((): Date => new Date()),
-    ),
+    },
+    connectors.listener.log,
+    options.now ?? ((): Date => new Date()),
   );
+  connectors.useReconciler(connectorReconciler);
+  // Revocation reaches the same three places reconciliation does — the gateway,
+  // the route records and the browser sessions — so it is supplied from the same
+  // object rather than reimplemented (`docs/CONNECTOR_PROTOCOL.md` §18).
+  connectors.useRevocationEffects(connectorReconciler);
 
   // ADR-0012: the driver is chosen once, from configuration validated at
   // startup, and nothing downstream can tell which one it got.

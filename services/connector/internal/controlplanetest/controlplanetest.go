@@ -88,6 +88,7 @@ type Server struct {
 	registrations  []connectorv1.RegistrationRequest
 	heartbeats     []connectorv1.Heartbeat
 	reconnects     []connectorv1.ReconnectRequest
+	observations   []connectorv1.WorkspaceObservation
 	acknowledged   []connectorv1.RoutePublishAck
 	connections    int
 	revoked        map[string]bool
@@ -269,6 +270,18 @@ func (s *Server) ReconnectRequests() []connectorv1.ReconnectRequest {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	return append([]connectorv1.ReconnectRequest(nil), s.reconnects...)
+}
+
+// Observations returns the section 9 workspace observations received so far.
+//
+// The double records them rather than ignoring them so that a test can assert
+// what actually crossed the wire: an observation the connector logged but never
+// sent, or sent before its reconciliation claim, would otherwise look the same
+// as one the control plane received.
+func (s *Server) Observations() []connectorv1.WorkspaceObservation {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return append([]connectorv1.WorkspaceObservation(nil), s.observations...)
 }
 
 // Acknowledgements returns the route acknowledgements received so far.
@@ -494,6 +507,10 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		case connectorv1.RoutePublishAck:
 			s.mutex.Lock()
 			s.acknowledged = append(s.acknowledged, message)
+			s.mutex.Unlock()
+		case connectorv1.WorkspaceObservation:
+			s.mutex.Lock()
+			s.observations = append(s.observations, message)
 			s.mutex.Unlock()
 		case connectorv1.ReconnectRequest:
 			s.mutex.Lock()

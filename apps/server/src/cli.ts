@@ -77,6 +77,8 @@ const USAGE = `reviewplane <command>
   status [--json]      report version, database and schema, artefact store,
                        connectors, browser capacity, sessions, queue depth,
                        storage use and certificate expiry
+  connector list       report the enrolled connectors, their environments and
+                       their connection health
   export-review --project <id|slug> --review <slug|id> [--out FILE]
                        write one review as the portable document of
                        docs/REVIEW_FORMAT.md, to FILE or to standard output
@@ -429,6 +431,78 @@ function readTtlSeconds(argv: readonly string[]): number | undefined {
 }
 
 /**
+ * `reviewplane connector list` (`docs/API.md` §9, `docs/OPERATIONS.md`).
+ *
+ * The same facts the connector health screen shows, for an operator who has a
+ * shell and no browser — which is the state a deployment is in while the first
+ * connector is being enrolled. It reads; it never revokes, because revocation
+ * is an authorised, audited action and a command that took no credential could
+ * not record who performed it.
+ */
+async function runConnectorList(pool: Pool, argv: readonly string[]): Promise<number> {
+  if (argv[0] !== "list") {
+    process.stderr.write(`unknown connector command: ${argv[0] ?? "(none)"}\n\nreviewplane connector list\n`);
+    return 1;
+  }
+  const state = await migrationState(pool);
+  if (state.pending.length > 0) {
+    process.stderr.write(
+      `the schema is behind this build (${String(state.pending.length)} migration(s) pending); run reviewplane migrate first\n`,
+    );
+    return 1;
+  }
+
+  const rows = await pool.query<{
+    id: string;
+    status: string;
+    version: string;
+    capabilities: string[];
+    connected_at: Date | null;
+    last_heartbeat_at: Date | null;
+    revoked_at: Date | null;
+    environment_id: string;
+    environment_name: string;
+    platform: string;
+    architecture: string;
+    project_id: string | null;
+    workspaces: string;
+  }>(
+    `select c.id, c.status, c.version, c.capabilities, c.connected_at, c.last_heartbeat_at,
+            c.revoked_at, c.environment_id, e.name as environment_name, e.platform, e.architecture,
+            c.project_id,
+            (select count(*)::text from workspaces w where w.environment_id = e.id) as workspaces
+       from connectors c
+       join environments e on e.id = c.environment_id
+      order by c.created_at desc
+      limit 200`,
+  );
+
+  if (rows.rows.length === 0) {
+    write("no connector is enrolled");
+    write("");
+    write("Mint an enrolment token from the web application, or with the API of docs/API.md section 9,");
+    write("then run reviewplane-connector enrol on the development machine.");
+    return 0;
+  }
+
+  const instant = (value: Date | null): string => (value === null ? "-" : value.toISOString());
+  for (const row of rows.rows) {
+    write(`${row.id}  ${row.status}`);
+    write(`  environment    ${row.environment_name} (${row.environment_id})`);
+    write(`  platform       ${row.platform}/${row.architecture}`);
+    write(`  project        ${row.project_id ?? "(organisation-wide)"}`);
+    write(`  version        ${row.version}`);
+    write(`  capabilities   ${row.capabilities.join(", ") || "(none)"}`);
+    write(`  connected at   ${instant(row.connected_at)}`);
+    write(`  last heartbeat ${instant(row.last_heartbeat_at)}`);
+    if (row.revoked_at !== null) write(`  revoked at     ${instant(row.revoked_at)}`);
+    write(`  workspaces     ${row.workspaces}`);
+    write("");
+  }
+  return 0;
+}
+
+/**
  * Whether `reviewplane serve` runs the jobs role beside the API.
  *
  * `docs/ARCHITECTURE.md` section 4.2 gives one codebase two ways to run
@@ -517,6 +591,8 @@ export async function main(argv: readonly string[]): Promise<number> {
         return await runStatus(pool, rest.includes("--json"));
       case "install-token":
         return await runInstallToken(pool, rest, rest.includes("--force"));
+      case "connector":
+        return await runConnectorList(pool, rest);
       case "export-review":
         return await runExportReview(pool, rest);
       default:

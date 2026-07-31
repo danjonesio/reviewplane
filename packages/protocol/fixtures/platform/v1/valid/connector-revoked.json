@@ -1,0 +1,26 @@
+{
+  "id": "evt_3000000000000000000000000000000e",
+  "schema_version": 1,
+  "sequence": 14,
+  "type": "connector.revoked",
+  "occurred_at": "2026-07-30T11:20:00.000Z",
+  "recorded_at": "2026-07-30T11:20:00.017Z",
+  "organisation_id": "org_2f1c8ba0d9e34a7f8b6c5d4e3f2a1b09",
+  "actor": {
+    "type": "human_user",
+    "id": "usr_1111222233334444555566667777888",
+    "display": "Dan Jones"
+  },
+  "correlation": {
+    "request_id": "req_0f1e2d3c4b5a6978",
+    "connector_id": "con_4c2e6d8fa0315b7c9d1e3f5071829304",
+    "environment_id": "env_3b1d5c7e9f204a6b8c0d2e4f60718293"
+  },
+  "payload": {
+    "previous_status": "ACTIVE",
+    "new_status": "REVOKED",
+    "routes_revoked": 2,
+    "sessions_disconnected": 1,
+    "channels_closed": 1
+  }
+}

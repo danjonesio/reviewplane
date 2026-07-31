@@ -33,6 +33,7 @@ import type {
   SessionDecision,
   SignedIdentity,
   WorkspaceHead,
+  WorkspaceObservation,
 } from "./types.ts";
 
 /**
@@ -236,6 +237,25 @@ export function encodeWorkspaceHead(value: WorkspaceHead): string {
   fields.push(`"branch":${jsonString(value.branch)}`);
   fields.push(`"head_commit":${jsonString(value.head_commit)}`);
   fields.push(`"dirty":${jsonBoolean(value.dirty)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a WorkspaceObservation.
+ */
+export function encodeWorkspaceObservation(value: WorkspaceObservation): string {
+  const fields: string[] = [];
+  fields.push(`"workspace_id":${jsonString(value.workspace_id)}`);
+  fields.push(`"project_id":${jsonString(value.project_id)}`);
+  fields.push(`"path_hash":${jsonString(value.path_hash)}`);
+  fields.push(`"display_label":${jsonString(value.display_label)}`);
+  if (value.repository_identity !== undefined) {
+    fields.push(`"repository_identity":${jsonString(value.repository_identity)}`);
+  }
+  fields.push(`"branch":${jsonString(value.branch)}`);
+  fields.push(`"head_commit":${jsonString(value.head_commit)}`);
+  fields.push(`"dirty":${jsonBoolean(value.dirty)}`);
+  fields.push(`"observed_at":${jsonString(value.observed_at)}`);
   return `{${fields.join(",")}}`;
 }
 

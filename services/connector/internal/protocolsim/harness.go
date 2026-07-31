@@ -10,6 +10,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -26,6 +28,7 @@ import (
 	"github.com/danjonesio/reviewplane/services/connector/internal/identity"
 	"github.com/danjonesio/reviewplane/services/connector/internal/logging"
 	"github.com/danjonesio/reviewplane/services/connector/internal/routes"
+	"github.com/danjonesio/reviewplane/services/connector/internal/workspaces"
 	"github.com/danjonesio/reviewplane/services/tunnel-gateway/datachannel"
 	"github.com/danjonesio/reviewplane/services/tunnel-gateway/wsx"
 )
@@ -145,6 +148,10 @@ type Harness struct {
 	streamSeq atomic.Uint64
 	cancel    context.CancelFunc
 	stopped   chan struct{}
+
+	// WorkspacePath is the checkout the connector observes, when the harness was
+	// asked for one.
+	WorkspacePath string
 }
 
 // logBuffer collects the connector's structured log so that a test can read the
@@ -183,6 +190,15 @@ type Options struct {
 	// SkipWaitForRoute returns before the route is serving, for a test that
 	// asserts the connector never gets there.
 	SkipWaitForRoute bool
+	// ObserveWorkspaces initialises a real Git checkout at the configured
+	// workspace path and wires the workspaces package into the connector, so
+	// that section 9 observations cross the same wire every other frame does.
+	// It is off by default: most of these tests are about the tunnel, and
+	// spawning git for them would add cost and flakiness for nothing.
+	ObserveWorkspaces bool
+	// ObserveInterval overrides the workspace observation interval. Tests use a
+	// short one so that a change is reported without waiting half a minute.
+	ObserveInterval time.Duration
 }
 
 // Start assembles the harness and, unless asked not to, waits until a request
@@ -309,8 +325,14 @@ func (h *Harness) enrolAndRun(t *testing.T, options Options) {
 	cfg.ControlPlane.TLS.CAFile = h.ControlPlane.CAFile
 	cfg.Identity.DataDir = dataDir
 	cfg.Heartbeat.Interval = time.Second
+	workspacePath := filepath.Join(dataDir, "workspace")
+	h.WorkspacePath = workspacePath
 	cfg.Workspaces = []config.Workspace{
-		{ID: WorkspaceID, Path: filepath.Join(dataDir, "workspace"), Project: ProjectID},
+		{ID: WorkspaceID, Path: workspacePath, Project: ProjectID},
+	}
+	cfg.GitContext.Interval = options.ObserveInterval
+	if cfg.GitContext.Interval <= 0 {
+		cfg.GitContext.Interval = 200 * time.Millisecond
 	}
 	cfg.Publication = config.Publication{
 		AllowedHosts: []string{"127.0.0.1"},
@@ -355,6 +377,14 @@ func (h *Harness) enrolAndRun(t *testing.T, options Options) {
 
 	store := identity.NewStore(dataDir)
 	runner := &channel.Runner{Config: cfg, Store: store, Logger: logger, Routes: manager}
+	if options.ObserveWorkspaces {
+		initialiseWorkspace(t, workspacePath)
+		runner.Workspaces = workspaces.New(workspaces.Options{
+			Workspaces: cfg.Workspaces,
+			Interval:   cfg.GitContext.Interval,
+			Logger:     logger,
+		})
+	}
 	if options.DesiredStateTimeout > 0 {
 		runner.DesiredStateTimeout = options.DesiredStateTimeout
 	}
@@ -394,6 +424,54 @@ func (h *Harness) enrolAndRun(t *testing.T, options Options) {
 			t.Error("the connector did not stop within fifteen seconds")
 		}
 	})
+}
+
+// initialiseWorkspace makes a real checkout at path, with a remote whose
+// canonical identity a test can assert.
+//
+// A real repository rather than a stub: what is being proved is that the
+// connector reports what git actually says, and a stub would prove only that
+// the harness agrees with itself.
+func initialiseWorkspace(t *testing.T, path string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed; a connector on such a machine reports no workspace context")
+	}
+	if err := os.MkdirAll(path, 0o750); err != nil {
+		t.Fatalf("creating the workspace: %v", err)
+	}
+	run := func(args ...string) {
+		t.Helper()
+		command := exec.Command("git", args...)
+		command.Dir = path
+		command.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+		}
+	}
+	run("init", "--initial-branch=main")
+	run("config", "user.email", "connector@example.internal")
+	run("config", "user.name", "Protocol Simulation")
+	run("config", "commit.gpgsign", "false")
+	run("remote", "add", "origin", "git@github.com:example/refresh-surplus.git")
+	if err := os.WriteFile(filepath.Join(path, "README.md"), []byte("# fixture\n"), 0o600); err != nil {
+		t.Fatalf("writing the workspace file: %v", err)
+	}
+	run("add", "-A")
+	run("commit", "-m", "first")
+}
+
+// DirtyWorkspace makes the observed checkout dirty, so that a test can watch a
+// change reach the control plane.
+func (h *Harness) DirtyWorkspace() {
+	h.T.Helper()
+	if h.WorkspacePath == "" {
+		h.T.Fatal("this harness observes no workspace")
+	}
+	name := filepath.Join(h.WorkspacePath, "uncommitted.txt")
+	if err := os.WriteFile(name, []byte("edited\n"), 0o600); err != nil {
+		h.T.Fatalf("dirtying the workspace: %v", err)
+	}
 }
 
 // AuthorisedPublication is the publication the control plane restates when it

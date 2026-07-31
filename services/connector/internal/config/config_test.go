@@ -58,7 +58,7 @@ publication:
   max_routes: 10
 
 privacy:
-  report_changed_paths: true
+  report_changed_paths: false
   report_process_details: false
   discover_workspaces: false
 
@@ -76,8 +76,70 @@ logging:
 	if cfg.Publication.MaxRoutes != 10 || len(cfg.Publication.AllowedHosts) != 2 {
 		t.Fatalf("publication = %+v", cfg.Publication)
 	}
-	if !cfg.Privacy.ReportChangedPaths {
-		t.Fatal("privacy.report_changed_paths should be true")
+	if cfg.GitContext.Interval != DefaultGitContextInterval {
+		t.Fatalf("git_context.interval = %s; an omitted block takes the default", cfg.GitContext.Interval)
+	}
+}
+
+// The example shipped in packaging/ is what an administrator installs, so it is
+// parsed by the parser rather than reviewed by eye: a setting renamed in the
+// code and not in the example would otherwise ship as a configuration file the
+// connector refuses to start on.
+func TestShippedExampleConfigurationParses(t *testing.T) {
+	path := filepath.Join("..", "..", "packaging", "config.example.yaml")
+	source, err := os.ReadFile(path) // #nosec G304 -- repository source
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	cfg, err := Parse(source)
+	if err != nil {
+		t.Fatalf("the shipped example must load: %v", err)
+	}
+	if cfg.ControlPlane.URL == nil || cfg.ControlPlane.URL.Scheme != "https" {
+		t.Fatalf("control_plane.url = %v", cfg.ControlPlane.URL)
+	}
+	if cfg.Identity.DataDir != DefaultDataDir {
+		t.Fatalf("identity.data_dir = %q; it must match StateDirectory in the systemd unit", cfg.Identity.DataDir)
+	}
+	if cfg.GitContext.Interval != 30*time.Second {
+		t.Fatalf("git_context.interval = %s", cfg.GitContext.Interval)
+	}
+	if len(cfg.Workspaces) != 1 || cfg.Workspaces[0].ID == "" || cfg.Workspaces[0].Project == "" {
+		t.Fatalf("workspaces = %+v; the example must show an entry a publication can name", cfg.Workspaces)
+	}
+	if cfg.Privacy.ReportChangedPaths || cfg.Privacy.ReportProcessDetail || cfg.Privacy.DiscoverWorkspaces {
+		t.Fatalf("privacy = %+v; all three are refused by this build", cfg.Privacy)
+	}
+}
+
+// The systemd unit and the configuration example describe one installation, so
+// the two paths they name must be the same path.
+func TestShippedUnitAgreesWithTheDefaultPaths(t *testing.T) {
+	path := filepath.Join("..", "..", "packaging", "systemd", "reviewplane-connector.service")
+	unit, err := os.ReadFile(path) // #nosec G304 -- repository source
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	text := string(unit)
+	for _, required := range []string{
+		"ExecStart=/usr/local/bin/reviewplane-connector run",
+		"StateDirectory=reviewplane-connector",
+		"ConfigurationDirectory=reviewplane-connector",
+		"NoNewPrivileges=yes",
+	} {
+		if !strings.Contains(text, required) {
+			t.Errorf("the unit does not carry %q", required)
+		}
+	}
+	// StateDirectory=<name> is /var/lib/<name>, which must be where the
+	// connector looks for its identity.
+	if DefaultDataDir != "/var/lib/reviewplane-connector" {
+		t.Fatalf("DefaultDataDir = %q no longer matches StateDirectory in the unit", DefaultDataDir)
+	}
+	// The connector opens no listening socket, so no socket unit may accompany
+	// it (ADR-0002).
+	if strings.Contains(text, "ListenStream") || strings.Contains(text, "[Socket]") {
+		t.Fatal("the unit describes a listening socket; the connector opens none")
 	}
 }
 
@@ -101,9 +163,15 @@ reconnect:
 environment:
   name: dev-ai-03
   labels: [proxmox, development]
+
+git_context:
+  interval: 45s
 `))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.GitContext.Interval != 45*time.Second {
+		t.Fatalf("git_context.interval = %s", cfg.GitContext.Interval)
 	}
 	if cfg.ControlPlane.TLS.CAFile != "/etc/reviewplane-connector/ca.pem" {
 		t.Fatalf("control_plane.tls.ca_file = %q", cfg.ControlPlane.TLS.CAFile)
@@ -195,9 +263,40 @@ func TestParseValidationErrors(t *testing.T) {
 			wantsub: "privacy.report_process_details must be false",
 		},
 		{
+			// The message must distinguish what exists from what does not: the
+			// checkouts named in the workspaces block are observed either way,
+			// and it is bounded root scanning that is missing.
 			name:    "workspace discovery",
 			source:  "privacy:\n  discover_workspaces: true\n",
-			wantsub: "privacy.discover_workspaces must be false",
+			wantsub: "bounded root scanning for unlisted checkouts is not implemented",
+		},
+		{
+			// Section 9 permits reporting changed paths where policy allows, and
+			// the version 1 payload has no member that can carry them, so
+			// accepting the setting would misrepresent what is reported.
+			name:    "changed-path reporting",
+			source:  "privacy:\n  report_changed_paths: true\n",
+			wantsub: "has no member that can carry a changed-path list",
+		},
+		{
+			name:    "git context interval below the minimum",
+			source:  "git_context:\n  interval: 1s\n",
+			wantsub: "git_context.interval must be between",
+		},
+		{
+			name:    "git context interval above the maximum",
+			source:  "git_context:\n  interval: 24h\n",
+			wantsub: "git_context.interval must be between",
+		},
+		{
+			name:    "git context interval is not a duration",
+			source:  "git_context:\n  interval: often\n",
+			wantsub: "git_context.interval must be a duration",
+		},
+		{
+			name:    "unknown git context setting",
+			source:  "git_context:\n  depth: 3\n",
+			wantsub: "unknown setting git_context.depth",
 		},
 		{
 			name:    "environment label character class",

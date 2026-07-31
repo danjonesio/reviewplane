@@ -26,6 +26,7 @@ export const LIMITS = {
  */
 export const CHANNELS = [
   "organisation",
+  "environment",
   "jobs",
   "stream",
   "api",
@@ -38,6 +39,7 @@ export type Channel = (typeof CHANNELS)[number];
  */
 export const CHANNEL_DESCRIPTIONS: Readonly<Record<Channel, string>> = {
   "organisation": "Organisation and project lifecycle (docs/EVENTS.md section 7).",
+  "environment": "Development environments, connectors and workspaces (docs/EVENTS.md section 7, docs/DOMAIN_MODEL.md sections 7 to 9). It is a channel of its own because a connector enrolment can precede any project association, so these occurrences are not organisation lifecycle and are not project lifecycle either.",
   "jobs": "Durable background work (docs/ARCHITECTURE.md section 4.8).",
   "stream": "The project event stream of docs/API.md section 18.1.",
   "api": "The HTTP response metadata and refusal envelope of docs/API.md section 5.",
@@ -60,6 +62,13 @@ export const MESSAGE_TYPE_VALUES = [
   "authentication.login_succeeded",
   "authentication.login_failed",
   "session.revoked",
+  "connector.enrolled",
+  "connector.connected",
+  "connector.degraded",
+  "connector.disconnected",
+  "connector.revoked",
+  "workspace.observed",
+  "workspace.head_changed",
   "job.enqueued",
   "job.succeeded",
   "job.failed",
@@ -76,6 +85,13 @@ export type MessageType =
   | "authentication.login_succeeded"
   | "authentication.login_failed"
   | "session.revoked"
+  | "connector.enrolled"
+  | "connector.connected"
+  | "connector.degraded"
+  | "connector.disconnected"
+  | "connector.revoked"
+  | "workspace.observed"
+  | "workspace.head_changed"
   | "job.enqueued"
   | "job.succeeded"
   | "job.failed";
@@ -234,6 +250,103 @@ export type UserStatus =
   | "suspended";
 
 /**
+ * Environment lifecycle status (docs/DOMAIN_MODEL.md section 7). Stage 1 defines one
+ * value: retiring an environment arrives with environment lifecycle management, and an
+ * enumeration promising a value nothing can reach would misdescribe the product.
+ */
+export const ENVIRONMENT_STATUS_VALUES = [
+  "ACTIVE",
+] as const;
+
+export type EnvironmentStatus =
+  | "ACTIVE";
+
+/**
+ * Environment trust level (docs/DOMAIN_MODEL.md section 7). Stage 1 has a single default
+ * value; a trust level that changes what an environment may do is a policy change rather
+ * than a field change, and arrives with the permission model.
+ */
+export const ENVIRONMENT_TRUST_LEVEL_VALUES = [
+  "standard",
+] as const;
+
+export type EnvironmentTrustLevel =
+  | "standard";
+
+/**
+ * Connector lifecycle status (docs/DOMAIN_MODEL.md section 8). DEGRADED and DISCONNECTED
+ * are conclusions the control plane draws from heartbeat silence and are never
+ * self-reported; REVOKED is terminal, and a connector in it is refused before a channel is
+ * established.
+ */
+export const CONNECTOR_STATUS_VALUES = [
+  "PENDING_ENROLMENT",
+  "ACTIVE",
+  "DEGRADED",
+  "DISCONNECTED",
+  "REVOKED",
+] as const;
+
+export type ConnectorStatus =
+  | "PENDING_ENROLMENT"
+  | "ACTIVE"
+  | "DEGRADED"
+  | "DISCONNECTED"
+  | "REVOKED";
+
+/**
+ * What returned a connector to ACTIVE. A closed vocabulary, so an audit record needs no
+ * free text (docs/SECURITY.md section 18).
+ */
+export const CONNECTOR_CONNECTED_TRIGGER_VALUES = [
+  "channel_opened",
+  "heartbeat",
+] as const;
+
+export type ConnectorConnectedTrigger =
+  | "channel_opened"
+  | "heartbeat";
+
+/**
+ * What made a connector DEGRADED. It has one cause: the control plane concluding delay
+ * from missed heartbeats.
+ */
+export const CONNECTOR_DEGRADED_TRIGGER_VALUES = [
+  "heartbeat_delay",
+] as const;
+
+export type ConnectorDegradedTrigger =
+  | "heartbeat_delay";
+
+/**
+ * What made a connector DISCONNECTED: its channel closed, or its silence exceeded the
+ * disconnect threshold.
+ */
+export const CONNECTOR_DISCONNECTED_TRIGGER_VALUES = [
+  "channel_closed",
+  "heartbeat_timeout",
+] as const;
+
+export type ConnectorDisconnectedTrigger =
+  | "channel_closed"
+  | "heartbeat_timeout";
+
+/**
+ * How a workspace came to be known (docs/CONNECTOR_PROTOCOL.md section 9).
+ * connector_report is a connector observing a configured path; administrative_registration
+ * is an operator or an agent session registering one directly. Broad filesystem scanning
+ * is disabled by default and has no value here, because this build performs none.
+ */
+export const WORKSPACE_OBSERVATION_SOURCE_VALUES = [
+  "connector_report",
+  "administrative_registration",
+] as const;
+
+export type WorkspaceObservationSource =
+  | "connector_report"
+  | "administrative_registration";
+
+/**
  * How a human authenticated. bootstrap_token is the ADR-0016 exchange, install_token is
  * the one-time administrator bootstrap, and password is a local account.
  */
@@ -367,6 +480,13 @@ export const MESSAGE_DIRECTIONS: Readonly<Record<MessageType, "control_plane_to_
   "authentication.login_succeeded": "control_plane_to_subscriber",
   "authentication.login_failed": "control_plane_to_subscriber",
   "session.revoked": "control_plane_to_subscriber",
+  "connector.enrolled": "control_plane_to_subscriber",
+  "connector.connected": "control_plane_to_subscriber",
+  "connector.degraded": "control_plane_to_subscriber",
+  "connector.disconnected": "control_plane_to_subscriber",
+  "connector.revoked": "control_plane_to_subscriber",
+  "workspace.observed": "control_plane_to_subscriber",
+  "workspace.head_changed": "control_plane_to_subscriber",
   "job.enqueued": "control_plane_to_subscriber",
   "job.succeeded": "control_plane_to_subscriber",
   "job.failed": "control_plane_to_subscriber",
@@ -386,6 +506,13 @@ export const MESSAGE_CHANNELS: Readonly<Record<MessageType, Channel>> = {
   "authentication.login_succeeded": "organisation",
   "authentication.login_failed": "organisation",
   "session.revoked": "organisation",
+  "connector.enrolled": "environment",
+  "connector.connected": "environment",
+  "connector.degraded": "environment",
+  "connector.disconnected": "environment",
+  "connector.revoked": "environment",
+  "workspace.observed": "environment",
+  "workspace.head_changed": "environment",
   "job.enqueued": "jobs",
   "job.succeeded": "jobs",
   "job.failed": "jobs",
@@ -406,6 +533,13 @@ export const PAYLOAD_MAX_BYTES: Readonly<Record<MessageType, number>> = {
   "authentication.login_succeeded": 512,
   "authentication.login_failed": 512,
   "session.revoked": 512,
+  "connector.enrolled": 1024,
+  "connector.connected": 512,
+  "connector.degraded": 512,
+  "connector.disconnected": 512,
+  "connector.revoked": 512,
+  "workspace.observed": 1024,
+  "workspace.head_changed": 1024,
   "job.enqueued": 1024,
   "job.succeeded": 1024,
   "job.failed": 1024,
@@ -682,6 +816,79 @@ export type EmailAddress = string;
 export type GitRefName = string;
 
 /**
+ * The canonical member of a repository identity on its own, for the records that store the
+ * normalised form without the clone URLs beside it (docs/DOMAIN_MODEL.md section 9). Its
+ * shape is repository_identity.canonical, and the shared normaliser in packages/protocol
+ * produces both, so a workspace and a project cannot disagree about what one repository
+ * is.
+ */
+export type RepositoryCanonical = string;
+
+/**
+ * Operator-assigned environment label. Its shape is the connector protocol's
+ * environment_label, because an enrolment token pins the labels a registering environment
+ * must declare (docs/CONNECTOR_PROTOCOL.md section 4.1).
+ */
+export type EnvironmentLabel = string;
+
+/**
+ * Operating system an environment runs, as the connector reported it.
+ */
+export type PlatformName = string;
+
+/**
+ * CPU architecture an environment runs, as the connector reported it.
+ */
+export type ArchitectureName = string;
+
+/**
+ * Capability a connector build advertises, such as http-tunnel, websocket-tunnel,
+ * git-context or local-mcp-bridge. Unknown values are accepted so that a newer connector
+ * is classified by docs/CONNECTOR_PROTOCOL.md section 19 rather than rejected outright.
+ */
+export type ConnectorCapability = string;
+
+/**
+ * Connector release version, for example 0.1.0. Its shape is the connector protocol's
+ * semantic_version.
+ */
+export type ConnectorVersion = string;
+
+/**
+ * sha256:<hex> digest of the DER form of an issued connector certificate (ADR-0014). It is
+ * unique across connectors and is how a verified peer certificate is resolved to a
+ * connector record.
+ */
+export type CertificateFingerprint = string;
+
+/**
+ * A lower bound, in seconds, on how long a connector had been silent when a conclusion was
+ * drawn about it.
+ */
+export type SilenceSeconds = number;
+
+/**
+ * Stable sha256:<hex> digest of a workspace's absolute path on the development machine.
+ * The control plane stores the digest rather than the path, because a display label and a
+ * stable local hash are sufficient to recognise the same checkout again
+ * (docs/DOMAIN_MODEL.md section 9).
+ */
+export type PathHash = string;
+
+/**
+ * Human-readable workspace label, which is the checkout directory's own name and never its
+ * full path. Path separators and control characters are refused, so a full path cannot be
+ * smuggled through it.
+ */
+export type WorkspaceDisplayLabel = string;
+
+/**
+ * A commit identifier, lowercase hexadecimal. Bounded so that an abbreviated and a full
+ * identifier are both accepted and nothing else is.
+ */
+export type GitCommit = string;
+
+/**
  * Provider-agnostic repository identity (docs/DOMAIN_MODEL.md section 6). canonical is the
  * normalised host-and-path form that two clone URLs for the same repository both reduce
  * to, which is what lets an SSH remote and an HTTPS remote be recognised as one
@@ -900,6 +1107,196 @@ export interface HumanSession {
    * When the session stops being usable without revocation.
    */
   readonly expires_at: Timestamp;
+}
+
+/**
+ * A registered development location such as a VM or workstation (docs/DOMAIN_MODEL.md
+ * section 7). An environment may host several workspaces, but every published service and
+ * session association is explicitly project scoped, so project_id is a default rather than
+ * the whole of the authorisation.
+ */
+export interface Environment {
+  /**
+   * Environment identity, conventionally prefixed env_.
+   */
+  readonly id: Identifier;
+  /**
+   * Owning organisation, carried for defence-in-depth filtering.
+   */
+  readonly organisation_id: Identifier;
+  /**
+   * Project the environment was enrolled for. Absent when the enrolment token was
+   * organisation scoped.
+   */
+  readonly project_id?: Identifier;
+  /**
+   * Operator-visible environment name, as the connector reported it. It is description and
+   * never an authorisation input.
+   */
+  readonly name: DisplayName;
+  /**
+   * Operating system the environment runs.
+   */
+  readonly platform: PlatformName;
+  /**
+   * CPU architecture the environment runs.
+   */
+  readonly architecture: ArchitectureName;
+  /**
+   * Operator-assigned labels. An enrolment token may pin the labels a registering
+   * environment must declare.
+   */
+  readonly labels: readonly EnvironmentLabel[];
+  /**
+   * Trust level. Stage 1 has one.
+   */
+  readonly trust_level: EnvironmentTrustLevel;
+  /**
+   * Lifecycle status.
+   */
+  readonly status: EnvironmentStatus;
+  /**
+   * When a connector for this environment was last heard from. Absent until one has been.
+   */
+  readonly last_seen_at?: Timestamp;
+  /**
+   * When the environment was registered.
+   */
+  readonly created_at: Timestamp;
+}
+
+/**
+ * A connector installation and its cryptographic identity (docs/DOMAIN_MODEL.md section
+ * 8). The device private key is generated on the development machine and never leaves it,
+ * so this record has no member capable of carrying one: it holds the certificate
+ * fingerprint the control plane resolves a verified peer certificate by, and nothing
+ * secret.
+ */
+export interface Connector {
+  /**
+   * Connector identity, conventionally prefixed con_.
+   */
+  readonly id: Identifier;
+  /**
+   * Owning organisation, carried for defence-in-depth filtering.
+   */
+  readonly organisation_id: Identifier;
+  /**
+   * Environment this connector runs in.
+   */
+  readonly environment_id: Identifier;
+  /**
+   * Project the connector was enrolled for. Absent when the enrolment token was
+   * organisation scoped.
+   */
+  readonly project_id?: Identifier;
+  /**
+   * Fingerprint of the issued client certificate, unique across connectors.
+   */
+  readonly certificate_fingerprint: CertificateFingerprint;
+  /**
+   * When the issued identity expires. Identities are bounded in time.
+   */
+  readonly certificate_not_after: Timestamp;
+  /**
+   * Connector release the environment runs.
+   */
+  readonly version: ConnectorVersion;
+  /**
+   * Capabilities the connector build advertises.
+   */
+  readonly capabilities: readonly ConnectorCapability[];
+  /**
+   * Lifecycle status.
+   */
+  readonly status: ConnectorStatus;
+  /**
+   * When the connector most recently reached ACTIVE. Absent before its first channel.
+   */
+  readonly connected_at?: Timestamp;
+  /**
+   * When the last heartbeat arrived. Absent before the first one.
+   */
+  readonly last_heartbeat_at?: Timestamp;
+  /**
+   * When the identity was revoked. Absent unless the connector is REVOKED.
+   */
+  readonly revoked_at?: Timestamp;
+  /**
+   * When the identity was issued.
+   */
+  readonly created_at: Timestamp;
+}
+
+/**
+ * A repository checkout a connector reports or an operator registers (docs/DOMAIN_MODEL.md
+ * section 9). It holds a stable path hash and a display label rather than the checkout's
+ * full path, and it has no member capable of carrying source file contents or a
+ * changed-path list: what is reportable about somebody else's machine is bounded by this
+ * schema rather than by the code that fills it in.
+ */
+export interface Workspace {
+  /**
+   * Workspace identity, conventionally prefixed wsp_.
+   */
+  readonly id: Identifier;
+  /**
+   * Owning organisation, carried for defence-in-depth filtering.
+   */
+  readonly organisation_id: Identifier;
+  /**
+   * Project the checkout belongs to.
+   */
+  readonly project_id: Identifier;
+  /**
+   * Environment holding the checkout. Absent for a workspace registered administratively
+   * rather than observed by a connector.
+   */
+  readonly environment_id?: Identifier;
+  /**
+   * Connector that last reported the checkout. Absent for an administratively registered
+   * workspace.
+   */
+  readonly connector_id?: Identifier;
+  /**
+   * Stable digest of the checkout's absolute path.
+   */
+  readonly path_hash: PathHash;
+  /**
+   * Label a human reads, which is the checkout directory's own name.
+   */
+  readonly display_path: WorkspaceDisplayLabel;
+  /**
+   * Canonical identity of the checkout's remote. Absent when the checkout has no remote
+   * that could be normalised; an absent value is reported as absent rather than guessed
+   * at.
+   */
+  readonly repository_identity?: RepositoryCanonical;
+  /**
+   * Checked-out branch.
+   */
+  readonly branch: GitRefName;
+  /**
+   * HEAD commit.
+   */
+  readonly head_commit: GitCommit;
+  /**
+   * Whether the working tree has uncommitted changes. Which files changed is deliberately
+   * not recorded.
+   */
+  readonly dirty: boolean;
+  /**
+   * How the workspace came to be known.
+   */
+  readonly source: WorkspaceObservationSource;
+  /**
+   * When the control plane last received this state. Absent until a first observation.
+   */
+  readonly last_observed_at?: Timestamp;
+  /**
+   * When the workspace record was created.
+   */
+  readonly created_at: Timestamp;
 }
 
 /**
@@ -1212,6 +1609,238 @@ export interface ProjectArchivedPayload {
    * Status after the change.
    */
   readonly new_status: ProjectStatus;
+}
+
+/**
+ * Payload of connector.enrolled. It records the identity that was issued and the
+ * environment it was issued to, and it never carries the enrolment token that was
+ * redeemed: an event is append-only, so a credential written into one cannot be taken out
+ * again (docs/EVENTS.md section 8).
+ */
+export interface ConnectorEnrolledPayload {
+  /**
+   * Environment the identity was issued to.
+   */
+  readonly environment_id: Identifier;
+  /**
+   * Name the environment reported for itself. Description, never an authorisation input.
+   */
+  readonly environment_name: DisplayName;
+  /**
+   * Operating system the environment reported.
+   */
+  readonly platform: PlatformName;
+  /**
+   * CPU architecture the environment reported.
+   */
+  readonly architecture: ArchitectureName;
+  /**
+   * Connector release that enrolled.
+   */
+  readonly connector_version: ConnectorVersion;
+  /**
+   * Capabilities the connector build advertised.
+   */
+  readonly capabilities: readonly ConnectorCapability[];
+  /**
+   * Fingerprint of the certificate that was issued.
+   */
+  readonly certificate_fingerprint: CertificateFingerprint;
+  /**
+   * When the issued identity expires.
+   */
+  readonly identity_expires_at: Timestamp;
+  /**
+   * Identifier of the token that was redeemed. The identifier, never the token.
+   */
+  readonly enrolment_token_id?: Identifier;
+  /**
+   * Status the record entered, which is PENDING_ENROLMENT until the first authenticated
+   * channel.
+   */
+  readonly new_status: ConnectorStatus;
+}
+
+/**
+ * Payload of connector.connected. Both sides of the transition are named, so the audit
+ * trail states what moved rather than only where it landed, and the trigger is a closed
+ * vocabulary so no free text is needed.
+ */
+export interface ConnectorConnectedPayload {
+  /**
+   * Status before the transition.
+   */
+  readonly previous_status: ConnectorStatus;
+  /**
+   * Status after it, which is ACTIVE.
+   */
+  readonly new_status: ConnectorStatus;
+  /**
+   * Whether a channel was established or a heartbeat arrived from a degraded state.
+   */
+  readonly trigger: ConnectorConnectedTrigger;
+}
+
+/**
+ * Payload of connector.degraded. Degradation is a conclusion drawn from silence, so the
+ * payload states how long the silence had lasted rather than what the connector said about
+ * itself.
+ */
+export interface ConnectorDegradedPayload {
+  /**
+   * Status before the transition.
+   */
+  readonly previous_status: ConnectorStatus;
+  /**
+   * Status after it, which is DEGRADED.
+   */
+  readonly new_status: ConnectorStatus;
+  /**
+   * What caused it. Degradation has one cause: missed heartbeats.
+   */
+  readonly trigger: ConnectorDegradedTrigger;
+  /**
+   * Lower bound on the silence, because the sweep observes silence rather than measuring
+   * it.
+   */
+  readonly silent_for_seconds_at_least: SilenceSeconds;
+}
+
+/**
+ * Payload of connector.disconnected. A closed channel and an exhausted heartbeat budget
+ * are different observations and are distinguished by trigger, so an operator can tell a
+ * clean stop from a network that went away.
+ */
+export interface ConnectorDisconnectedPayload {
+  /**
+   * Status before the transition.
+   */
+  readonly previous_status: ConnectorStatus;
+  /**
+   * Status after it, which is DISCONNECTED.
+   */
+  readonly new_status: ConnectorStatus;
+  /**
+   * Whether the channel closed or the disconnect threshold was exceeded.
+   */
+  readonly trigger: ConnectorDisconnectedTrigger;
+  /**
+   * Lower bound on the silence. Present only for heartbeat_timeout: a closed channel is
+   * observed rather than inferred.
+   */
+  readonly silent_for_seconds_at_least?: SilenceSeconds;
+}
+
+/**
+ * Payload of connector.revoked. It records what revocation reached, because
+ * docs/CONNECTOR_PROTOCOL.md section 18 makes revocation five things at once and an
+ * auditor needs to see that all five happened.
+ */
+export interface ConnectorRevokedPayload {
+  /**
+   * Status before revocation.
+   */
+  readonly previous_status: ConnectorStatus;
+  /**
+   * Status after it, which is REVOKED.
+   */
+  readonly new_status: ConnectorStatus;
+  /**
+   * How many published services the revocation closed.
+   */
+  readonly routes_revoked: number;
+  /**
+   * How many browser sessions were marked disconnected by it.
+   */
+  readonly sessions_disconnected: number;
+  /**
+   * How many live connector channels were closed. Zero when the connector held none.
+   */
+  readonly channels_closed?: number;
+}
+
+/**
+ * Payload of workspace.observed. It carries exactly what docs/CONNECTOR_PROTOCOL.md
+ * section 9 permits a connector to report about a checkout, and has no member capable of
+ * carrying file contents, a changed-path list or a full filesystem path.
+ */
+export interface WorkspaceObservedPayload {
+  /**
+   * Workspace that was observed.
+   */
+  readonly workspace_id: Identifier;
+  /**
+   * Environment holding it. Absent for an administratively registered workspace.
+   */
+  readonly environment_id?: Identifier;
+  /**
+   * Stable digest of the checkout's absolute path.
+   */
+  readonly path_hash: PathHash;
+  /**
+   * The checkout directory's own name.
+   */
+  readonly display_path: WorkspaceDisplayLabel;
+  /**
+   * Canonical identity of the checkout's remote, when it has one that could be normalised.
+   */
+  readonly repository_identity?: RepositoryCanonical;
+  /**
+   * Checked-out branch.
+   */
+  readonly branch: GitRefName;
+  /**
+   * HEAD commit.
+   */
+  readonly head_commit: GitCommit;
+  /**
+   * Whether the working tree had uncommitted changes.
+   */
+  readonly dirty: boolean;
+  /**
+   * How the workspace came to be known.
+   */
+  readonly source: WorkspaceObservationSource;
+}
+
+/**
+ * Payload of workspace.head_changed. It carries both sides of the move, because a review
+ * captured before it was captured against the previous head and an auditor reading only
+ * the new one could not tell.
+ */
+export interface WorkspaceHeadChangedPayload {
+  /**
+   * Workspace whose head moved.
+   */
+  readonly workspace_id: Identifier;
+  /**
+   * Environment holding it, when a connector reported the change.
+   */
+  readonly environment_id?: Identifier;
+  /**
+   * Branch before the change.
+   */
+  readonly previous_branch: GitRefName;
+  /**
+   * HEAD commit before it.
+   */
+  readonly previous_head_commit: GitCommit;
+  /**
+   * Dirty state before it.
+   */
+  readonly previous_dirty: boolean;
+  /**
+   * Branch after it.
+   */
+  readonly branch: GitRefName;
+  /**
+   * HEAD commit after it.
+   */
+  readonly head_commit: GitCommit;
+  /**
+   * Dirty state after it.
+   */
+  readonly dirty: boolean;
 }
 
 /**
@@ -1579,6 +2208,41 @@ export type PlatformFrame =
       readonly envelope: Envelope;
       readonly type: "session.revoked";
       readonly payload: SessionRevokedPayload;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "connector.enrolled";
+      readonly payload: ConnectorEnrolledPayload;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "connector.connected";
+      readonly payload: ConnectorConnectedPayload;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "connector.degraded";
+      readonly payload: ConnectorDegradedPayload;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "connector.disconnected";
+      readonly payload: ConnectorDisconnectedPayload;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "connector.revoked";
+      readonly payload: ConnectorRevokedPayload;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "workspace.observed";
+      readonly payload: WorkspaceObservedPayload;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "workspace.head_changed";
+      readonly payload: WorkspaceHeadChangedPayload;
     }
   | {
       readonly envelope: Envelope;

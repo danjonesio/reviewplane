@@ -199,19 +199,47 @@ it is bound to.
 
 ### 4.3 Workspace registration
 
-Stage 1's connector reports the checkout an agent is working in. Stage 0
-registers it administratively, because MCP session initialisation has to answer
-with a branch and a head commit and an invented value would be worse than an
-absent one (`docs/DOMAIN_MODEL.md` section 9):
+A workspace reaches the control plane two ways, and both are supported. A
+connector reports the checkouts it was configured with, as bounded Git context
+on its own channel (`CONNECTOR_PROTOCOL.md` §9, ADR-0022). An operator or an
+agent session registers one directly through the routes below, which is what a
+project with no connector uses — MCP session initialisation has to answer with a
+branch and a head commit, and an invented value would be worse than an absent
+one (`DOMAIN_MODEL.md` §9):
 
 ```text
 PUT /api/v1/projects/:projectId/workspaces
 GET /api/v1/projects/:projectId/workspaces
 ```
 
-`PUT` takes `root_path`, `branch`, `head_commit` and optional `dirty`, and
-upserts on `(project_id, root_path)`. The recorded branch is what
-`finding_submit_verification` checks a claimed fix against.
+`PUT` takes `root_path`, `branch`, `head_commit` and optional `dirty`. It
+upserts on `(project_id, path_hash)` among the workspaces that belong to no
+environment, which is what a workspace registered here is. The target is the
+path hash rather than the path, because a connector-reported workspace stores no
+path at all and a conflict target naming one could never match its row; and it
+is qualified by the absent environment because a checkout at the same path on a
+development machine is a different record, owned by the environment that
+reported it (`DOMAIN_MODEL.md` §9).
+
+Both sides hash the same bytes, so a checkout registered here and later observed
+by a connector resolves to one record rather than two: the connector adopts the
+registered row and its `source` moves to `connector_report`.
+
+Adoption is bounded twice. It reaches only a record with no environment — a
+record another environment owns is refused, so registering a workspace is not a
+way to hand one machine's checkout to another. And it requires the **path hash
+to match**: naming a registered workspace's identifier while reporting a
+different path is refused, because otherwise the record would keep the
+`root_path` an operator supplied — which `MCP_SPEC.md` §4 resolves a
+`workspace_hint` against — while its digest, label, branch and head commit came
+from a machine that has never seen that directory.
+
+The recorded branch is what `finding_submit_verification` checks a claimed fix
+against.
+
+A workspace registered here retains its `root_path`, because `workspace_hint`
+resolves against it (`MCP_SPEC.md` §4). A connector-reported one does not: the
+path never leaves the development machine.
 
 ## 5. Common metadata
 
@@ -487,11 +515,17 @@ The response is the only place the token value appears; the control plane stores
     "max_uses": 1,
     "expires_at": "2026-07-28T12:00:00.000Z",
     "enrolment_token": "shown once",
-    "enrolment_endpoint": "wss://agents.example.internal/connector/v1/enrol"
+    "enrolment_endpoint": "wss://agents.example.internal/connector/v1/enrol",
+    "control_plane_url": "wss://agents.example.internal",
+    "connector_command": "sudo reviewplane-connector enrol \\\n  --control-plane https://agents.example.internal \\\n  --token-file /root/reviewplane-enrolment-token"
   },
   "meta": { "request_id": "req_..." }
 }
 ```
+
+`connector_command` is the ready-to-run command `UX_FLOWS.md` §5 asks the enrolment screen to display, assembled by the control plane so that every surface shows the same one. It reads the token from a **file** rather than from a command line, because a command line is in the process table and in shell history (`CONNECTOR_PROTOCOL.md` §20). The connector dials over `wss` and an operator types an `https` base URL, so the advertised origin is rendered back as the `https://` form `--control-plane` accepts; `control_plane_url` carries the advertised origin itself for a caller assembling something else.
+
+`project_id` is resolved inside the caller's scope. A project the caller cannot reach is refused as an absent project rather than as a forbidden one.
 
 ### Certificate-authority export
 
@@ -509,18 +543,134 @@ The response is the only place the token value appears; the control plane stores
 }
 ```
 
+### Environment views
+
+`GET /api/v1/projects/:projectId/environments` returns the project's
+environments; `GET /api/v1/environments/:environmentId` returns one. Both carry
+the environment's own record plus nested `connectors` and `workspaces` arrays,
+because the question an operator is asking — is this machine connected, and what
+does it have checked out — is answered by all three together and would otherwise
+take three round trips and a join in the client.
+
+```json
+{
+  "data": {
+    "id": "env_...",
+    "organisation_id": "org_...",
+    "project_id": "prj_...",
+    "name": "dev-ai-03",
+    "platform": "linux",
+    "architecture": "amd64",
+    "labels": ["proxmox", "development"],
+    "trust_level": "standard",
+    "status": "ACTIVE",
+    "last_seen_at": "2026-07-31T09:12:04.000Z",
+    "created_at": "2026-07-30T18:02:11.000Z",
+    "connectors": [
+      {
+        "id": "con_...",
+        "environment_id": "env_...",
+        "project_id": "prj_...",
+        "certificate_fingerprint": "sha256:...",
+        "version": "0.1.0",
+        "capabilities": ["http-tunnel", "websocket-tunnel", "git-context", "local-mcp-bridge"],
+        "status": "ACTIVE",
+        "connected_at": "2026-07-31T09:00:00.000Z",
+        "last_heartbeat_at": "2026-07-31T09:12:04.000Z",
+        "revoked_at": null
+      }
+    ],
+    "workspaces": [
+      {
+        "id": "wsp_...",
+        "project_id": "prj_...",
+        "path_hash": "sha256:...",
+        "display_path": "refresh-surplus",
+        "repository_identity": "github.com/example/refresh-surplus",
+        "branch": "main",
+        "head_commit": "d191e28...",
+        "dirty": false,
+        "source": "connector_report",
+        "last_observed_at": "2026-07-31T09:11:58.000Z"
+      }
+    ]
+  },
+  "meta": { "request_id": "req_..." }
+}
+```
+
+A workspace carries `display_path` and `path_hash` and no root path: a
+connector-reported checkout's filesystem path never leaves the development
+machine (`DOMAIN_MODEL.md` §9). `source` distinguishes a checkout a connector
+observed from one an operator or agent session registered. Every value in these
+two arrays was reported by another machine and is description, never an
+authorisation input.
+
+`GET /api/v1/connectors/:connectorId` returns one connector with the same
+summary plus `certificate_not_after` and its nested `environment`, so that an
+operator can see when the identity expires without exporting the certificate.
+
+### Revocation
+
+`POST /api/v1/connectors/:connectorId/revoke` invalidates one connector identity
+(`CONNECTOR_PROTOCOL.md` §18). It is irreversible: re-enrolment creates a new
+connector identity rather than restoring this one.
+
+```json
+{
+  "data": {
+    "id": "con_...",
+    "status": "REVOKED",
+    "revoked_at": "2026-07-31T09:20:00.000Z",
+    "routes_revoked": 2,
+    "sessions_disconnected": 1,
+    "channels_closed": 1,
+    "already_revoked": false
+  },
+  "meta": { "request_id": "req_..." }
+}
+```
+
+The three counts say what the revocation actually reached, so a screen can
+report it rather than implying more or less than happened; `sessions_disconnected`
+counts browser sessions moved to `DEGRADED`, which is what losing a connector
+does to a session (`DOMAIN_MODEL.md` §12). Revoking an already-revoked connector
+is not an error: it answers `already_revoked: true` and changes nothing, so a
+retried request cannot produce a second set of counts for work that happened
+once.
+
 ### Administrative authentication on this surface
 
-These endpoints require the bootstrap administrator token of `ARCHITECTURE.md`
-§11 as `Authorization: Bearer <token>`, compared in constant time and never
-logged. A connector credential — its identity, certificate, fingerprint or
-enrolment token — MUST NOT be accepted here (`TESTING.md` §10).
+These endpoints require an organisation administrator. Two credentials satisfy
+that: a human session cookie from section 4.0, and the bootstrap administrator
+token of `ARCHITECTURE.md` §11 as `Authorization: Bearer <token>`, compared in
+constant time and never logged. Enrolling an environment from the web
+application is what added the first; the token continues to work unchanged, and
+is what an operator with a shell and no browser, and the end-to-end harness, use.
 
-Local accounts arrived with section 4.0 and have not yet replaced the token on
-these connector routes: enrolling an environment from the web application is the
-connector-enrolment slice rather than this one. A human session therefore does
-not reach them today, and the token is what an operator and the end-to-end
-harness use.
+The caller MUST be an **organisation-wide** session. A session scoped to a
+project is a delegation for that project and does not administer the
+organisation, so it is refused `AUTHORISATION_DENIED`. A machine credential —
+browser worker, agent, or a connector's own identity, certificate, fingerprint
+or enrolment token — MUST NOT be accepted here at all (`TESTING.md` §10).
+
+Every state-changing route on this surface — `POST …/enrolment-tokens` and
+`POST …/:connectorId/revoke` — applies the strict CSRF guard of section 4, in a
+`preHandler` so that it runs **before the request body is decoded**. A refusal
+that happened after parsing would still have spent the work an attacker asked
+for. The guard is what makes cookie authentication safe here: a browser attaches
+a cookie to a request another origin caused and does not attach a bearer token,
+so the cookie alone must not be sufficient. Minting an enrolment token is
+exactly the shape that must not be forgeable — it is a credential that enrols a
+machine — and revoking a connector is exactly the shape that must not be
+forgeable in the other direction.
+
+Every lookup on this surface carries the identifier, the organisation and the
+session's project scope in one predicate. A connector or environment outside the
+caller's scope produces no row, so a foreign identifier and an unknown one answer
+`RESOURCE_NOT_FOUND` byte-identically and neither can be used to enumerate the
+other (§5). A test asserts the two response bodies are identical rather than
+merely equivalent.
 
 ## 10. Published-service endpoints
 

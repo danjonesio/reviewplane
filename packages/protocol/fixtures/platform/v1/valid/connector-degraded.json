@@ -1,0 +1,22 @@
+{
+  "id": "evt_3000000000000000000000000000000c",
+  "schema_version": 1,
+  "sequence": 9,
+  "type": "connector.degraded",
+  "occurred_at": "2026-07-30T11:04:29.500Z",
+  "recorded_at": "2026-07-30T11:04:29.512Z",
+  "organisation_id": "org_2f1c8ba0d9e34a7f8b6c5d4e3f2a1b09",
+  "actor": {
+    "type": "system"
+  },
+  "correlation": {
+    "connector_id": "con_4c2e6d8fa0315b7c9d1e3f5071829304",
+    "environment_id": "env_3b1d5c7e9f204a6b8c0d2e4f60718293"
+  },
+  "payload": {
+    "previous_status": "ACTIVE",
+    "new_status": "DEGRADED",
+    "trigger": "heartbeat_delay",
+    "silent_for_seconds_at_least": 45
+  }
+}

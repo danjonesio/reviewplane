@@ -312,6 +312,122 @@ export class PublishedServiceReconciler implements ConnectorReconciler {
   }
 
   /**
+   * A connector identity has been revoked
+   * (`docs/CONNECTOR_PROTOCOL.md` §18).
+   *
+   * Unlike a disconnect, this is not an outage the routes survive: every route
+   * the connector holds is withdrawn from the gateway and ended in the record,
+   * and every browser session bound to one is degraded. The gateway is told
+   * first, for the reason the file header gives — marking a record closed while
+   * the tunnel still carried it would make the closure a claim rather than a
+   * fact.
+   *
+   * The sessions are degraded rather than terminated because
+   * `docs/DOMAIN_MODEL.md` §12 requires a session that lost its connector to
+   * stay retained and diagnosable. Nothing will return them to `READY`: the
+   * route is revoked, and a re-enrolled environment is a new identity with new
+   * publications.
+   */
+  async revokeConnectorRoutes(input: {
+    readonly connectorId: string;
+    readonly requestId: string;
+    readonly actor: { readonly type: "human_user" | "system"; readonly id?: string };
+  }): Promise<{ readonly routesRevoked: number; readonly sessionsDisconnected: number }> {
+    const now = this.#now();
+    const actor =
+      input.actor.id === undefined
+        ? { type: input.actor.type }
+        : { type: input.actor.type, id: input.actor.id };
+
+    const client = await this.#pool.connect();
+    let routes: PublishedService[];
+    let sessions: repository.BoundBrowserSession[];
+    try {
+      routes = await repository.findLiveForConnector(client, input.connectorId, MAX_LIVE_ROUTES);
+      sessions = await repository.findLiveSessionsForConnector(client, input.connectorId);
+    } finally {
+      client.release();
+    }
+
+    let routesRevoked = 0;
+    for (const route of routes) {
+      await this.#gateway.revokeRoute(route.id);
+      await inTransaction(this.#pool, async (transaction) => {
+        const ended = await repository.markEnded(transaction, route.id, "revoked");
+        if (ended === null) return;
+        routesRevoked += 1;
+        const revokedCapabilities = await repository.revokeCapabilitiesForService(transaction, route.id);
+        await appendEvent(transaction, {
+          type: "published_service.revoked",
+          organisationId: this.#config.organisationId,
+          projectId: ended.project_id,
+          actor,
+          correlation: {
+            request_id: input.requestId,
+            connector_id: input.connectorId,
+            published_service_id: route.id,
+          },
+          payload: {
+            published_service_id: route.id,
+            previous_status: route.status,
+            new_status: "revoked",
+            reason: "revoked",
+            trigger: "connector_revoked",
+            revoked_capability_ids: revokedCapabilities,
+          },
+          occurredAt: now,
+        });
+      });
+    }
+
+    let sessionsDisconnected = 0;
+    for (const session of sessions) {
+      await inTransaction(this.#pool, async (transaction) => {
+        const previous = await repository.setSessionStatus(transaction, session.id, "DEGRADED", [
+          "REQUESTED",
+          "ALLOCATING",
+          "READY",
+          "ACTIVE",
+          "PAUSED",
+        ]);
+        if (previous === null) return;
+        sessionsDisconnected += 1;
+        await appendEvent(transaction, {
+          type: "browser_session.degraded",
+          organisationId: session.organisation_id,
+          projectId: session.project_id,
+          actor,
+          correlation: {
+            request_id: input.requestId,
+            connector_id: input.connectorId,
+            browser_session_id: session.id,
+            ...(session.published_service_id === null
+              ? {}
+              : { published_service_id: session.published_service_id }),
+          },
+          payload: {
+            previous_status: previous,
+            new_status: "DEGRADED",
+            reason: "connector_revoked",
+          },
+          occurredAt: now,
+        });
+      });
+    }
+
+    this.#logger.warn(
+      {
+        connector_id: input.connectorId,
+        request_id: input.requestId,
+        routes_revoked: routesRevoked,
+        sessions_disconnected: sessionsDisconnected,
+      },
+      "connector revocation withdrew its routes",
+    );
+    return { routesRevoked, sessionsDisconnected };
+  }
+
+  /**
    * A connector's channel has gone.
    *
    * Its routes stay in the record — they are unavailable, not revoked, and a

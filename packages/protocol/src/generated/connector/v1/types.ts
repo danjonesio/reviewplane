@@ -91,6 +91,7 @@ export const MESSAGE_TYPE_VALUES = [
   "route.publish.ack",
   "connector.reconnect.request",
   "connector.reconnect.response",
+  "workspace.observed",
 ] as const;
 
 export type MessageType =
@@ -100,7 +101,8 @@ export type MessageType =
   | "route.publish"
   | "route.publish.ack"
   | "connector.reconnect.request"
-  | "connector.reconnect.response";
+  | "connector.reconnect.response"
+  | "workspace.observed";
 
 /**
  * Stable connector error class (docs/CONNECTOR_PROTOCOL.md section 21). This enumeration
@@ -256,6 +258,7 @@ export const MESSAGE_DIRECTIONS: Readonly<Record<MessageType, "connector_to_cont
   "route.publish.ack": "connector_to_control_plane",
   "connector.reconnect.request": "connector_to_control_plane",
   "connector.reconnect.response": "control_plane_to_connector",
+  "workspace.observed": "connector_to_control_plane",
 };
 
 /**
@@ -269,6 +272,7 @@ export const MESSAGE_CHANNELS: Readonly<Record<MessageType, Channel>> = {
   "route.publish.ack": "routes",
   "connector.reconnect.request": "control",
   "connector.reconnect.response": "control",
+  "workspace.observed": "events",
 };
 
 /**
@@ -283,6 +287,7 @@ export const PAYLOAD_MAX_BYTES: Readonly<Record<MessageType, number>> = {
   "route.publish.ack": 1024,
   "connector.reconnect.request": 32768,
   "connector.reconnect.response": 57344,
+  "workspace.observed": 2048,
 };
 
 /**
@@ -445,6 +450,41 @@ export type Certificate = string;
  * Operator-assigned environment label.
  */
 export type EnvironmentLabel = string;
+
+/**
+ * Checked-out branch name. A detached HEAD is reported as the literal HEAD rather than as
+ * an invented branch.
+ */
+export type GitBranch = string;
+
+/**
+ * HEAD commit identifier, lowercase hexadecimal.
+ */
+export type GitCommit = string;
+
+/**
+ * Stable sha256:<hex> digest of the workspace's absolute path on the development machine
+ * (docs/DOMAIN_MODEL.md section 9). The digest is reported instead of the path so that the
+ * control plane can recognise the same checkout across observations without storing
+ * somebody else's directory layout.
+ */
+export type PathHash = string;
+
+/**
+ * Human-readable label for the workspace, which is the checkout directory's own name and
+ * never its full path (docs/CONNECTOR_PROTOCOL.md section 9). It is bounded and refuses
+ * control characters and path separators, so a full path cannot be smuggled through it.
+ */
+export type WorkspaceDisplayLabel = string;
+
+/**
+ * Provider-agnostic canonical repository identity such as
+ * github.com/example/refresh-surplus (docs/DOMAIN_MODEL.md section 6). It is derived from
+ * the checkout's remote by the shared normaliser in packages/protocol, so the connector,
+ * the control plane and the web application cannot disagree about what one repository is.
+ * A userinfo component is dropped by that normaliser and never reaches this field.
+ */
+export type RepositoryIdentity = string;
 
 /**
  * Capability advertised by the connector build. Known version 1 values are listed in
@@ -806,10 +846,10 @@ export interface ReconnectStream {
 }
 
 /**
- * Head state of one workspace (docs/CONNECTOR_PROTOCOL.md section 9). Stage 0 reports no
- * workspace head state; the field exists so that Stage 1 Git context does not change the
- * message shape. Source file contents are never reported and this object has no field
- * capable of carrying them.
+ * Head state of one workspace, carried in the reconnect claim of
+ * docs/CONNECTOR_PROTOCOL.md section 17. Its scalar members are the same definitions
+ * workspace_observation uses, so the two cannot drift. Source file contents are never
+ * reported and this object has no field capable of carrying them.
  */
 export interface WorkspaceHead {
   /**
@@ -819,11 +859,11 @@ export interface WorkspaceHead {
   /**
    * Checked-out branch.
    */
-  readonly branch: string;
+  readonly branch: GitBranch;
   /**
    * HEAD commit identifier.
    */
-  readonly head_commit: string;
+  readonly head_commit: GitCommit;
   /**
    * Whether the working tree has uncommitted changes.
    */
@@ -831,11 +871,68 @@ export interface WorkspaceHead {
 }
 
 /**
+ * Bounded Git context for one authorised workspace (docs/CONNECTOR_PROTOCOL.md section 9,
+ * ADR-0022). It carries repository identity, branch, head commit, dirty state, a display
+ * label and a stable path hash, and nothing else: there is no member capable of carrying
+ * source file contents, a changed-path list, a process detail or a full filesystem path,
+ * so the privacy rule is a property of the schema rather than of the code that fills it
+ * in. project_id is a claim the control plane re-checks against the enrolled identity's
+ * scope before it stores anything.
+ */
+export interface WorkspaceObservation {
+  /**
+   * Workspace this observation describes, conventionally prefixed wsp_. It is the
+   * identifier a route publication names (section 11).
+   */
+  readonly workspace_id: Identifier;
+  /**
+   * Project the connector believes the workspace belongs to. A project outside the
+   * enrolled identity's scope is refused with PROJECT_NOT_AUTHORISED (section 21).
+   */
+  readonly project_id: Identifier;
+  /**
+   * Stable digest of the checkout's absolute path, which identifies the same checkout
+   * across observations without disclosing the path.
+   */
+  readonly path_hash: PathHash;
+  /**
+   * The checkout directory's own name, for an operator reading the environment. Never the
+   * full path.
+   */
+  readonly display_label: WorkspaceDisplayLabel;
+  /**
+   * Canonical identity of the checkout's remote. Absent when the checkout has no remote
+   * this connector could normalise; an absent value is reported as absent rather than
+   * guessed at.
+   */
+  readonly repository_identity?: RepositoryIdentity;
+  /**
+   * Checked-out branch.
+   */
+  readonly branch: GitBranch;
+  /**
+   * HEAD commit identifier.
+   */
+  readonly head_commit: GitCommit;
+  /**
+   * Whether the working tree has uncommitted changes. Which files changed is deliberately
+   * not reportable at this version.
+   */
+  readonly dirty: boolean;
+  /**
+   * When the connector observed this state. The control plane records its own instant
+   * beside it, because a development machine's clock is not authoritative.
+   */
+  readonly observed_at: Timestamp;
+}
+
+/**
  * What the connector believes it holds, sent on every control-channel establishment
- * (docs/CONNECTOR_PROTOCOL.md section 17). All six fields are always present; Stage 0
- * sends empty collections for known_agent_sessions and workspace_head_state, which are
- * Stage 1 capabilities. The payload carries no credential: the identity is the mutually
- * authenticated client certificate the channel already presented.
+ * (docs/CONNECTOR_PROTOCOL.md section 17). All six fields are always present, and a
+ * collection with nothing in it is sent empty rather than omitted, so the message shape
+ * does not change with what a connector happens to be serving. The payload carries no
+ * credential: the identity is the mutually authenticated client certificate the channel
+ * already presented.
  */
 export interface ReconnectRequest {
   /**
@@ -855,13 +952,16 @@ export interface ReconnectRequest {
    */
   readonly active_streams: readonly ReconnectStream[];
   /**
-   * Agent sessions the connector has observed locally, conventionally prefixed ags_. Stage
-   * 0 sends an empty array; agent-session re-establishment is Stage 1.
+   * Agent sessions the connector has observed locally, conventionally prefixed ags_. This
+   * build sends an empty array: agent-session re-establishment is not implemented, and the
+   * field is sent empty rather than omitted so that its arrival does not change the
+   * message shape.
    */
   readonly known_agent_sessions: readonly Identifier[];
   /**
-   * Head state of the workspaces this connector serves. Stage 0 sends an empty array;
-   * workspace discovery is Stage 1 (section 9).
+   * Head state of the workspaces this connector serves (section 9). A connector configured
+   * with none sends an empty array; it is never omitted, so a control plane reading the
+   * claim can tell 'this connector serves no workspace' from 'this connector did not say'.
    */
   readonly workspace_head_state: readonly WorkspaceHead[];
 }
@@ -977,5 +1077,10 @@ export type ConnectorFrame =
       readonly envelope: Envelope;
       readonly type: "connector.reconnect.response";
       readonly payload: ReconnectResponse;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "workspace.observed";
+      readonly payload: WorkspaceObservation;
     }
 ;

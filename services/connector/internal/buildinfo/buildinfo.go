@@ -15,8 +15,31 @@ const Name = "reviewplane-connector"
 // UserAgent identifies the connector on the enrolment and control connections.
 const UserAgent = Name + "/" + Version
 
-// Capabilities are the Stage 0 capabilities advertised in the registration
-// request. docs/CONNECTOR_PROTOCOL.md section 4.3 shows the full version 1 set;
-// this build advertises only the tunnel capabilities, because Git context and
-// the local MCP bridge are later stages.
-var Capabilities = []connectorv1.ConnectorCapability{"http-tunnel", "websocket-tunnel"}
+// Capabilities are the capabilities advertised in the registration request and
+// restated in the section 17 reconnect claim. docs/CONNECTOR_PROTOCOL.md
+// section 4.3 fixes the version 1 vocabulary; a capability is advertised only
+// when this build actually implements it, because the control plane decides
+// what to ask of a connector from this list.
+//
+// What each means in this build:
+//
+//   - http-tunnel and websocket-tunnel: a published route carries HTTP requests
+//     and upgraded connections to a loopback development service (sections 12
+//     and 13).
+//   - git-context: the connector observes the branch, head commit, dirty state
+//     and normalised remote identity of its explicitly configured workspaces
+//     and reports them as workspace.observed (section 9). It does not include
+//     workspace discovery, which is still refused by configuration, and it
+//     never reports a file's contents or a changed-path list.
+//   - local-mcp-bridge: the command surface of section 14 exists —
+//     "reviewplane-connector mcp" resolves the local workspace and project and
+//     reports its state. The short-lived agent-session credential exchange it
+//     will proxy is a separate issue (RVP-49), and until that lands the command
+//     refuses rather than pretending: advertising the capability describes the
+//     command, not a credential path.
+var Capabilities = []connectorv1.ConnectorCapability{
+	"http-tunnel",
+	"websocket-tunnel",
+	"git-context",
+	"local-mcp-bridge",
+}

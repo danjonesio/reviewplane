@@ -551,6 +551,15 @@ describe("event records", () => {
       // be sampled or summarised rather than emitted as durable events.
       ["modules/browser-sessions/workers.ts", "worker registration and heartbeats are liveness, not domain state"],
       ["modules/connectors/monitor.ts", "connector liveness bookkeeping; the transitions it detects are evented by the channel"],
+      // The scan matches on prose here, not on SQL: this module issues no
+      // statement of its own. Every write it causes goes through
+      // `modules/connectors/repository.ts` (the lifecycle transitions, which
+      // append `connector.connected` and `connector.disconnected` in the same
+      // transaction) or `modules/connectors/workspaces.ts` (which appends
+      // `workspace.observed` and `workspace.head_changed` in the same
+      // transaction). The one write that produces no event is the heartbeat
+      // timestamp, which is liveness for the same reason `monitor.ts` above is.
+      ["modules/connectors/channel.ts", "issues no SQL; the transitions and observations it dispatches are evented by repository.ts and workspaces.ts"],
       ["modules/connectors/repository.ts", "row access for the connector module, which appends its events in its own layer"],
       ["modules/connectors/certificate-authority.ts", "the certificate authority is deployment material, not a project record"],
       ["modules/published-services/repository.ts", "row access for the published-service service, which appends the events"],

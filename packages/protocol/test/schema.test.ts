@@ -70,6 +70,9 @@ test("version 1 defines exactly the messages the issue scopes", () => {
       // deliberate edit here as well as in the schema.
       "connector.reconnect.request",
       "connector.reconnect.response",
+      // docs/CONNECTOR_PROTOCOL.md section 9, ADR-0022. The first message
+      // defined for the `events` channel, which section 6 previously reserved.
+      "workspace.observed",
     ],
   );
 });

@@ -141,6 +141,55 @@
       "kind": "api_error_response",
       "file": "valid/api-error-paginated-meta.json",
       "note": "meta carries next_cursor on a refusal as well as on a success, because meta is one shape (section 6)."
+    },
+    {
+      "name": "connector-enrolled",
+      "kind": "platform_event",
+      "file": "valid/connector-enrolled.json",
+      "message_type": "connector.enrolled",
+      "note": "An enrolment token was redeemed and a device identity issued. The token identifier is recorded and the token is not: an event is append-only (docs/EVENTS.md section 8)."
+    },
+    {
+      "name": "connector-connected",
+      "kind": "platform_event",
+      "file": "valid/connector-connected.json",
+      "message_type": "connector.connected",
+      "note": "The connector's first authenticated channel moved it out of PENDING_ENROLMENT. Both sides of the transition are named."
+    },
+    {
+      "name": "connector-degraded",
+      "kind": "platform_event",
+      "file": "valid/connector-degraded.json",
+      "message_type": "connector.degraded",
+      "note": "A conclusion drawn from silence, so the payload states how long the silence had lasted and the actor is system rather than the connector."
+    },
+    {
+      "name": "connector-disconnected",
+      "kind": "platform_event",
+      "file": "valid/connector-disconnected.json",
+      "message_type": "connector.disconnected",
+      "note": "The disconnect threshold was exceeded, which is why the trigger is heartbeat_timeout rather than channel_closed."
+    },
+    {
+      "name": "connector-revoked",
+      "kind": "platform_event",
+      "file": "valid/connector-revoked.json",
+      "message_type": "connector.revoked",
+      "note": "Revocation reached the channels, the routes and the sessions, and the payload records how much of each, because docs/CONNECTOR_PROTOCOL.md section 18 makes revocation all of those at once."
+    },
+    {
+      "name": "workspace-observed",
+      "kind": "platform_event",
+      "file": "valid/workspace-observed.json",
+      "message_type": "workspace.observed",
+      "note": "Bounded Git context recorded against a project stream: a display label and a path hash rather than a path, and no changed-file list."
+    },
+    {
+      "name": "workspace-head-changed",
+      "kind": "platform_event",
+      "file": "valid/workspace-head-changed.json",
+      "message_type": "workspace.head_changed",
+      "note": "Both sides of the move, because a review captured before it was captured against the previous head."
     }
   ],
   "invalid": [
@@ -239,6 +288,30 @@
       "expect_reason": "schema_violation",
       "expect_error_class": "VALIDATION_FAILED",
       "note": "details is a fixed vocabulary rather than a free object, which is what stops a handler attaching a cookie or a request body to a refusal."
+    },
+    {
+      "name": "event-connector-enrolled-carries-the-token",
+      "kind": "platform_event",
+      "file": "invalid/event-connector-enrolled-carries-the-token.json",
+      "expect_reason": "schema_violation",
+      "expect_error_class": "VALIDATION_FAILED",
+      "note": "The enrolment payload has no member capable of carrying the token, so the refusal is the schema's rather than a reviewer's."
+    },
+    {
+      "name": "event-workspace-observed-carries-a-path",
+      "kind": "platform_event",
+      "file": "invalid/event-workspace-observed-carries-a-path.json",
+      "expect_reason": "schema_violation",
+      "expect_error_class": "VALIDATION_FAILED",
+      "note": "A full filesystem path cannot be smuggled through display_path: the pattern refuses path separators."
+    },
+    {
+      "name": "event-connector-degraded-self-reported",
+      "kind": "platform_event",
+      "file": "invalid/event-connector-degraded-self-reported.json",
+      "expect_reason": "schema_violation",
+      "expect_error_class": "VALIDATION_FAILED",
+      "note": "A connector cannot report itself degraded: heartbeat is not in the degraded trigger vocabulary, because a silent connector reports nothing."
     }
   ]
 }

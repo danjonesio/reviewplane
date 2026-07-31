@@ -47,6 +47,32 @@ const writeTimeout = 15 * time.Second
 // 5 tries again — with no route being served in the meantime.
 const DefaultDesiredStateTimeout = 15 * time.Second
 
+// Workspaces reports bounded Git context for the configured workspaces
+// (docs/CONNECTOR_PROTOCOL.md section 9).
+//
+// It is a separate interface from Publisher because the two answer to different
+// parts of the protocol and fail independently: a connector whose workspaces
+// cannot be observed must still serve its routes, and one whose routes were all
+// revoked must still say what its checkouts are doing. A nil Workspaces reports
+// none, exactly as a nil Routes publishes none.
+type Workspaces interface {
+	// Refresh re-observes every configured workspace.
+	Refresh(ctx context.Context)
+	// HeadState is the section 17 reconnect claim, from the last observation.
+	HeadState() []connectorv1.WorkspaceHead
+	// Report is every current observation, sent once per established channel
+	// after reconciliation has completed.
+	Report() []connectorv1.WorkspaceObservation
+	// Changed observes again and returns only what moved since it was last
+	// reported.
+	Changed(ctx context.Context) []connectorv1.WorkspaceObservation
+	// Forget clears what has been reported, so that the next channel starts
+	// with a full report.
+	Forget()
+	// Interval is how often Changed is polled.
+	Interval() time.Duration
+}
+
 // Publisher answers a route publication and reconciles on reconnect.
 //
 // It is an interface so that the control channel can be tested without a
@@ -81,6 +107,11 @@ type Runner struct {
 	// one, and docs/UX_FLOWS.md section 18 requires an actionable cause.
 	Routes Publisher
 
+	// Workspaces supplies the section 9 observations and the section 17 head
+	// state. A nil Workspaces claims and reports none, which is what a
+	// connector with no workspaces block does.
+	Workspaces Workspaces
+
 	// DesiredStateTimeout bounds the wait for the section 17 desired state.
 	// Zero means DefaultDesiredStateTimeout.
 	DesiredStateTimeout time.Duration
@@ -93,6 +124,8 @@ type Runner struct {
 	OnPublished func(ack connectorv1.RoutePublishAck)
 	// OnReconciled reports the outcome of each reconciliation exchange.
 	OnReconciled func(result routes.ReconciliationResult)
+	// OnObserved reports each batch of workspace observations sent.
+	OnObserved func(observations []connectorv1.WorkspaceObservation)
 
 	startedAt time.Time
 }
@@ -114,6 +147,16 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 	if !r.Store.Enrolled() {
 		return ErrNotEnrolled
+	}
+
+	// The workspaces are observed once before the first dial, so that the very
+	// first reconnect claim carries real head state rather than an empty array.
+	// It runs here rather than inside the session because the claim is the first
+	// frame on an established channel and nothing may delay it: a checkout on a
+	// stalled mount would otherwise hold up reconciliation, during which the
+	// connector serves no route at all (docs/CONNECTOR_PROTOCOL.md section 17).
+	if r.Workspaces != nil {
+		r.Workspaces.Refresh(ctx)
 	}
 
 	policy := backoff.Policy{
@@ -253,10 +296,18 @@ func (r *Runner) session(ctx context.Context, attempt int) (time.Duration, error
 		return uptime(), err
 	}
 
-	var finished = make(chan struct{})
+	var finished sync.WaitGroup
+	finished.Add(2)
 	go func() {
-		defer close(finished)
+		defer finished.Done()
 		err := r.heartbeatLoop(sessionCtx, writer, logger)
+		if err != nil && sessionCtx.Err() == nil {
+			state.fail(err)
+		}
+	}()
+	go func() {
+		defer finished.Done()
+		err := r.observationLoop(sessionCtx, state, writer, logger)
 		if err != nil && sessionCtx.Err() == nil {
 			state.fail(err)
 		}
@@ -264,7 +315,13 @@ func (r *Runner) session(ctx context.Context, attempt int) (time.Duration, error
 
 	readErr := r.readLoop(sessionCtx, conn, writer, idle, state, logger)
 	cancel()
-	<-finished
+	finished.Wait()
+	// The next channel starts with a full report. A control plane that restarted
+	// has no memory of what this connector sent, and a workspace suppressed as
+	// unchanged would stay invisible until it happened to change.
+	if r.Workspaces != nil {
+		r.Workspaces.Forget()
+	}
 
 	if failure := state.failure(); failure != nil {
 		return uptime(), failure
@@ -328,6 +385,22 @@ func (s *sessionState) claimReconciliation(correlationID string) bool {
 	return true
 }
 
+// markReconciled releases whatever is waiting for reconciliation to finish. It
+// is idempotent, because a duplicate desired state is refused rather than
+// applied and must not close the channel a second time.
+func (s *sessionState) markReconciled() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.reconciled == nil {
+		return
+	}
+	select {
+	case <-s.reconciled:
+	default:
+		close(s.reconciled)
+	}
+}
+
 // openReconciliation withdraws every route and sends the section 17 reconnect
 // payload, then arms the bounded wait for the answer.
 func (r *Runner) openReconciliation(
@@ -336,17 +409,33 @@ func (r *Runner) openReconciliation(
 	writer *frameWriter,
 	logger *slog.Logger,
 ) error {
+	state.mu.Lock()
+	state.reconciled = make(chan struct{})
+	state.mu.Unlock()
 	if r.Routes == nil {
+		// Nothing to reconcile, so nothing waits: the observation loop is
+		// released rather than left blocked on an exchange that will not happen.
+		state.markReconciled()
 		return nil
 	}
 	request := r.Routes.BeginReconciliation()
+	// The route manager owns the route half of the claim and knows nothing about
+	// workspaces; the head state is filled in here rather than by widening the
+	// Publisher interface with a responsibility it does not have. All six fields
+	// stay present, and workspace_head_state is now the connector's real
+	// observed state rather than an empty array.
+	request.WorkspaceHeadState = []connectorv1.WorkspaceHead{}
+	if r.Workspaces != nil {
+		if claimed := r.Workspaces.HeadState(); len(claimed) > 0 {
+			request.WorkspaceHeadState = claimed
+		}
+	}
 	messageID, err := protocolio.NewMessageID()
 	if err != nil {
 		return err
 	}
 	state.mu.Lock()
 	state.pendingReconciliation = messageID
-	state.reconciled = make(chan struct{})
 	state.mu.Unlock()
 
 	if err := writer.sendWithID(messageID, request); err != nil {
@@ -357,6 +446,7 @@ func (r *Runner) openReconciliation(
 		slog.String("message_id", messageID),
 		slog.Int("claimed_routes", len(request.ActiveRoutes)),
 		slog.Int("claimed_streams", len(request.ActiveStreams)),
+		slog.Int("claimed_workspaces", len(request.WorkspaceHeadState)),
 	)
 
 	timeout := r.DesiredStateTimeout
@@ -424,6 +514,98 @@ func (r *Runner) heartbeatLoop(
 		case <-ticker.C:
 		}
 	}
+}
+
+// observationLoop reports workspace Git context for the life of one channel
+// (docs/CONNECTOR_PROTOCOL.md section 9).
+//
+// It waits for reconciliation before it sends anything. Reconciliation is the
+// first frame on every established channel (section 8), and a connector that
+// interleaved an observation with its own claim would be describing workspaces
+// to a control plane that has not yet said which routes it authorises. The
+// initial full report therefore follows the desired state, and only changes
+// follow it after that.
+//
+// Every frame goes through the same frameWriter as the heartbeat, so the
+// single-writer discipline holds: two goroutines writing to one WebSocket would
+// interleave frames, which the peer would read as a malformed message.
+func (r *Runner) observationLoop(
+	ctx context.Context,
+	state *sessionState,
+	writer *frameWriter,
+	logger *slog.Logger,
+) error {
+	if r.Workspaces == nil {
+		return nil
+	}
+	state.mu.Lock()
+	reconciled := state.reconciled
+	state.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		return nil
+	case <-reconciled:
+	}
+
+	if err := r.sendObservations(ctx, writer, logger, r.Workspaces.Report(), "initial"); err != nil {
+		return err
+	}
+
+	ticker := time.NewTicker(r.Workspaces.Interval())
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+		if err := r.sendObservations(ctx, writer, logger, r.Workspaces.Changed(ctx), "changed"); err != nil {
+			return err
+		}
+	}
+}
+
+// sendObservations writes one frame per observation.
+//
+// Each observation is its own message rather than a batch, because the schema
+// binds one workspace_observation to one envelope and bounds its payload at
+// 2 048 bytes; batching would need a message type version 1 does not define.
+func (r *Runner) sendObservations(
+	ctx context.Context,
+	writer *frameWriter,
+	logger *slog.Logger,
+	observations []connectorv1.WorkspaceObservation,
+	trigger string,
+) error {
+	if len(observations) == 0 {
+		return nil
+	}
+	for _, observation := range observations {
+		if ctx.Err() != nil {
+			return nil
+		}
+		if err := writer.send(observation); err != nil {
+			return err
+		}
+		// The path is not logged, for the same reason it is not sent: the
+		// workspace identifier and the display label are what identify a
+		// checkout (docs/DOMAIN_MODEL.md section 9).
+		logger.Debug("workspace observed",
+			slog.String("workspace_id", observation.WorkspaceID),
+			slog.String("project_id", observation.ProjectID),
+			slog.String("branch", observation.Branch),
+			slog.Bool("dirty", observation.Dirty),
+			slog.String("trigger", trigger),
+		)
+	}
+	logger.Info("workspace observations sent",
+		slog.Int("observations", len(observations)),
+		slog.String("trigger", trigger),
+	)
+	if r.OnObserved != nil {
+		r.OnObserved(observations)
+	}
+	return nil
 }
 
 func (r *Runner) sendHeartbeat(writer *frameWriter) error {
@@ -590,12 +772,7 @@ func (r *Runner) handleDesiredState(
 		)
 		return
 	}
-	state.mu.Lock()
-	reconciled := state.reconciled
-	state.mu.Unlock()
-	if reconciled != nil {
-		close(reconciled)
-	}
+	state.markReconciled()
 
 	if r.Routes != nil {
 		decisionLogger := state.logger

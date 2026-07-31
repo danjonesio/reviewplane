@@ -15,6 +15,9 @@
  * Every surface here reads through the project-scoped API, so what a session
  * may see is decided by the control plane. Navigation reflects authorisation;
  * it never grants it (`docs/SECURITY.md` section 7).
+ *
+ * Environments is the exception to "one file": it owns connector enrolment and
+ * connector health as well, and lives in `environments.tsx`.
  */
 
 import { Link, Outlet, createRoute } from "@tanstack/react-router";
@@ -266,30 +269,6 @@ function ProjectReviews(): ReactElement {
   );
 }
 
-function ProjectEnvironments(): ReactElement {
-  const { project } = useProject();
-  return (
-    <section aria-labelledby="project-environments-heading">
-      <h2 id="project-environments-heading" className="text-lg font-semibold">
-        Environments
-      </h2>
-      <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">
-        A development environment reaches this project through a connector, which dials out from the
-        machine your application runs on. Nothing listens on that machine.
-      </p>
-      <pre className="mt-4 overflow-x-auto rounded border border-slate-300 bg-slate-50 p-4 text-xs dark:border-slate-700 dark:bg-slate-950">
-        <code>{`sudo reviewplane-connector enrol \\
-  --control-plane ${globalThis.location.origin} \\
-  --project ${project?.slug ?? ""} \\
-  --token <one-time-token>`}</code>
-      </pre>
-      <p className="mt-2 text-xs text-slate-600 dark:text-slate-400">
-        Enrolment tokens are minted by an administrator and shown once.
-      </p>
-    </section>
-  );
-}
-
 function ProjectSettings(): ReactElement {
   const queryClient = useQueryClient();
   const { projectId, project } = useProject();
@@ -446,12 +425,6 @@ export const projectReviewsRoute = createRoute({
   getParentRoute: () => projectRoute,
   path: "reviews",
   component: ProjectReviews,
-});
-
-export const projectEnvironmentsRoute = createRoute({
-  getParentRoute: () => projectRoute,
-  path: "environments",
-  component: ProjectEnvironments,
 });
 
 export const projectSettingsRoute = createRoute({

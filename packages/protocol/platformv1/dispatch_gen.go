@@ -29,6 +29,20 @@ func validatePayload(messageType MessageType, value any, path string, out *[]Sch
 		validateAuthenticationLoginFailedPayload(value, path, out)
 	case MessageTypeSessionRevoked:
 		validateSessionRevokedPayload(value, path, out)
+	case MessageTypeConnectorEnrolled:
+		validateConnectorEnrolledPayload(value, path, out)
+	case MessageTypeConnectorConnected:
+		validateConnectorConnectedPayload(value, path, out)
+	case MessageTypeConnectorDegraded:
+		validateConnectorDegradedPayload(value, path, out)
+	case MessageTypeConnectorDisconnected:
+		validateConnectorDisconnectedPayload(value, path, out)
+	case MessageTypeConnectorRevoked:
+		validateConnectorRevokedPayload(value, path, out)
+	case MessageTypeWorkspaceObserved:
+		validateWorkspaceObservedPayload(value, path, out)
+	case MessageTypeWorkspaceHeadChanged:
+		validateWorkspaceHeadChangedPayload(value, path, out)
 	case MessageTypeJobEnqueued:
 		validateJobEnqueuedPayload(value, path, out)
 	case MessageTypeJobSucceeded:
@@ -61,6 +75,20 @@ func decodePayload(messageType MessageType, value any) Payload {
 		return DecodeAuthenticationLoginFailedPayload(value)
 	case MessageTypeSessionRevoked:
 		return DecodeSessionRevokedPayload(value)
+	case MessageTypeConnectorEnrolled:
+		return DecodeConnectorEnrolledPayload(value)
+	case MessageTypeConnectorConnected:
+		return DecodeConnectorConnectedPayload(value)
+	case MessageTypeConnectorDegraded:
+		return DecodeConnectorDegradedPayload(value)
+	case MessageTypeConnectorDisconnected:
+		return DecodeConnectorDisconnectedPayload(value)
+	case MessageTypeConnectorRevoked:
+		return DecodeConnectorRevokedPayload(value)
+	case MessageTypeWorkspaceObserved:
+		return DecodeWorkspaceObservedPayload(value)
+	case MessageTypeWorkspaceHeadChanged:
+		return DecodeWorkspaceHeadChangedPayload(value)
 	case MessageTypeJobEnqueued:
 		return DecodeJobEnqueuedPayload(value)
 	case MessageTypeJobSucceeded:
@@ -94,6 +122,20 @@ func EncodePayload(payload Payload) ([]byte, error) {
 		return EncodeAuthenticationLoginFailedPayload(value)
 	case SessionRevokedPayload:
 		return EncodeSessionRevokedPayload(value)
+	case ConnectorEnrolledPayload:
+		return EncodeConnectorEnrolledPayload(value)
+	case ConnectorConnectedPayload:
+		return EncodeConnectorConnectedPayload(value)
+	case ConnectorDegradedPayload:
+		return EncodeConnectorDegradedPayload(value)
+	case ConnectorDisconnectedPayload:
+		return EncodeConnectorDisconnectedPayload(value)
+	case ConnectorRevokedPayload:
+		return EncodeConnectorRevokedPayload(value)
+	case WorkspaceObservedPayload:
+		return EncodeWorkspaceObservedPayload(value)
+	case WorkspaceHeadChangedPayload:
+		return EncodeWorkspaceHeadChangedPayload(value)
 	case JobEnqueuedPayload:
 		return EncodeJobEnqueuedPayload(value)
 	case JobSucceededPayload:
@@ -107,7 +149,7 @@ func EncodePayload(payload Payload) ([]byte, error) {
 // IsKnownMessageType reports whether a value names a version 1 message type.
 func IsKnownMessageType(value string) bool {
 	switch MessageType(value) {
-	case MessageTypeOrganisationCreated, MessageTypeProjectCreated, MessageTypeProjectUpdated, MessageTypeProjectRepositoryChanged, MessageTypeProjectArchived, MessageTypeUserInvited, MessageTypeUserCredentialsSet, MessageTypeAuthenticationLoginSucceeded, MessageTypeAuthenticationLoginFailed, MessageTypeSessionRevoked, MessageTypeJobEnqueued, MessageTypeJobSucceeded, MessageTypeJobFailed:
+	case MessageTypeOrganisationCreated, MessageTypeProjectCreated, MessageTypeProjectUpdated, MessageTypeProjectRepositoryChanged, MessageTypeProjectArchived, MessageTypeUserInvited, MessageTypeUserCredentialsSet, MessageTypeAuthenticationLoginSucceeded, MessageTypeAuthenticationLoginFailed, MessageTypeSessionRevoked, MessageTypeConnectorEnrolled, MessageTypeConnectorConnected, MessageTypeConnectorDegraded, MessageTypeConnectorDisconnected, MessageTypeConnectorRevoked, MessageTypeWorkspaceObserved, MessageTypeWorkspaceHeadChanged, MessageTypeJobEnqueued, MessageTypeJobSucceeded, MessageTypeJobFailed:
 		return true
 	}
 	return false

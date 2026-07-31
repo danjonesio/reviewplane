@@ -129,6 +129,11 @@ project's Environments tab.
 
 ## 5. Connector enrolment
 
+Enrolment lives inside the project that owns the environment (§2.1), not in a
+primary navigation entry of its own. Three surfaces: what is connected and how
+healthy it is; minting a token and watching the machine arrive; and one
+connector's whole record.
+
 ### UI
 
 Display:
@@ -144,18 +149,74 @@ Example:
 ```bash
 sudo reviewplane-connector enrol \
   --control-plane https://agents.example.internal \
-  --token <one-time-token>
+  --token-file /root/reviewplane-enrolment-token
 ```
+
+The screen MUST display the command the control plane assembled
+(`API.md` §9) rather than one composed in the browser, so that every surface
+shows the same command and none of them can drift from what the binary accepts.
+It reads the token from a file rather than from the command line, because a
+command line is in the process table and in shell history
+(`CONNECTOR_PROTOCOL.md` §20).
+
+The shown-once warning MUST be visible without scrolling and MUST say why:
+the control plane stores only a digest, so no administrator and no support
+request can produce the token a second time, and a lost one is replaced by
+minting another rather than recovered.
+
+Getting the command out of the page MUST work without a clipboard. A copy button
+is not sufficient on its own — not every browser exposes the clipboard, and one
+that does may refuse the write, neither of which is the reader's mistake. The
+command block MUST therefore be focusable and selectable with a visible focus
+indicator, and a refused clipboard MUST fall back to selecting it and saying so
+in words. A page whose only route out was a clipboard the browser declined would
+be a page a keyboard user could not finish.
 
 ### Completion
 
-The UI updates live when connector enrols and reports:
+Enrolment happens on another machine, so completion arrives as a change in the
+connector list rather than as an answer to a request: the screen updates on its
+own and says so, and nothing needs refreshing.
+
+It reports:
 
 - Environment name
 - Version
 - Platform
 - Connection health
 - Detected authorised workspace
+
+These five MUST be announced in a polite live region, as one sentence rather
+than as five fields, because a live region is read aloud rather than scanned. A
+connector that was already active when the page opened MUST NOT be announced as
+having just enrolled: only an identity that appeared after the page was opened
+is a completion of *this* flow.
+
+Connection health is a sentence, not a colour: the status word carries a badge,
+and the sentence says what the word means — waiting for the connector to dial
+out, connected and answering heartbeats, connected but heartbeats are late, or
+no heartbeat and no open channel (§19).
+
+The detected workspace names the checkout directory and the branch it is on. A
+project may legitimately have none yet — the connector reports only explicitly
+configured paths (`CONNECTOR_PROTOCOL.md` §9) — and the screen MUST say so
+plainly rather than leaving the field blank.
+
+Everything on these screens was reported by another machine. It is description,
+never an authorisation input, and it MUST be rendered as text rather than as
+anything the reporting machine could aim (ADR-0010).
+
+### Revocation
+
+Revoking a connector is terminal — a revoked identity is refused before a channel
+is established, and re-enrolment creates a new one — so it MUST be a deliberate
+two-step action whose confirmation states those consequences in words rather
+than relying on a red button to imply them.
+
+The outcome MUST report what the revocation actually reached: routes revoked,
+sessions degraded and channels closed (`API.md` §9). It MUST be announced in the
+live region as well as shown in the list, so that a person who cannot see the
+list change still learns what revoking did.
 
 ## 6. Start browser session
 
@@ -512,6 +573,27 @@ and it says which capabilities remain — a session whose live capture is
 unavailable is still usable for navigation and screenshot capture. A stream
 that connects but stops painting says so as well, because a frozen picture is
 indistinguishable from a still page.
+
+**No connector connected** is the first of these a new deployment meets, and it
+is the one most likely to be read as a fault. It is not: a project with no
+environment simply has nothing to publish yet, so a browser session would have
+no application to open. The state MUST say that in those terms — why there is
+nothing here, and what depends on it — and MUST offer the enrolment flow of §5
+as its action rather than leaving the reader to find it.
+
+A refusal on these surfaces MUST be reported by its stable code rather than as
+"something went wrong". `RESOURCE_NOT_FOUND` is the one that needs care: the API
+answers it identically for an identifier that does not exist and one this session
+is not authorised for, deliberately, so that neither can be used to enumerate the
+other (`API.md` §5). The UI MUST NOT resolve that ambiguity in either direction —
+saying "this does not exist, or this session is not authorised for it" is
+accurate, and guessing which would either leak the distinction or state a
+falsehood.
+
+A connector that stopped reporting is not the same as one that was revoked. The
+first is a health state that may recover on its own; the second is terminal and
+recovers only by enrolling a new identity (`CONNECTOR_PROTOCOL.md` §18). The UI
+MUST distinguish them, because the action a reader should take differs.
 
 ## 19. Accessibility
 

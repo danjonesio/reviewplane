@@ -375,6 +375,40 @@ func EncodeWorkspaceHead(value WorkspaceHead) ([]byte, error) {
 	return w.result()
 }
 
+// encodeWorkspaceObservationInto writes the canonical encoding of a
+// WorkspaceObservation.
+func encodeWorkspaceObservationInto(w *canonicalWriter, value WorkspaceObservation) {
+	w.beginObject()
+	w.key("workspace_id")
+	w.string(value.WorkspaceID)
+	w.key("project_id")
+	w.string(value.ProjectID)
+	w.key("path_hash")
+	w.string(value.PathHash)
+	w.key("display_label")
+	w.string(value.DisplayLabel)
+	if value.RepositoryIdentity != nil {
+		w.key("repository_identity")
+		w.string((*value.RepositoryIdentity))
+	}
+	w.key("branch")
+	w.string(value.Branch)
+	w.key("head_commit")
+	w.string(value.HeadCommit)
+	w.key("dirty")
+	w.boolean(value.Dirty)
+	w.key("observed_at")
+	w.string(value.ObservedAt)
+	w.endObject()
+}
+
+// EncodeWorkspaceObservation returns the canonical encoding of a WorkspaceObservation.
+func EncodeWorkspaceObservation(value WorkspaceObservation) ([]byte, error) {
+	var w canonicalWriter
+	encodeWorkspaceObservationInto(&w, value)
+	return w.result()
+}
+
 // encodeReconnectRequestInto writes the canonical encoding of a ReconnectRequest.
 func encodeReconnectRequestInto(w *canonicalWriter, value ReconnectRequest) {
 	w.beginObject()
