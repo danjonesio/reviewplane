@@ -868,7 +868,13 @@ artefact shares its content-addressed key**. It records `artefact.deleted`,
 whose payload says whether the bytes were removed. An optional
 `X-ReviewPlane-Reason` header is recorded with the event. A cookie-authenticated
 caller must carry the CSRF token, as it must for every state-changing route
-(section 4.0). An agent credential may read evidence and may not delete it.
+(section 4.0).
+
+**Only a human may delete.** An agent credential may read evidence and a
+browser-worker credential may write it; neither may remove it, and both are
+refused with `AUTHORISATION_DENIED`. That is the same authority boundary the
+finding lifecycle draws: a machine principal adds to the record and does not
+close it.
 
 ### Reading content back
 

@@ -448,6 +448,34 @@ test("deleting removes the bytes, audits the deletion and leaves the identifier 
   assert.equal(events.rows[0]?.payload["reason"], "superseded by a recapture");
 });
 
+test("a machine credential may write or read evidence and may not delete it", async () => {
+  const { projectId } = await seedProjectAndWorker(harness);
+  const { artefactId } = await upload(projectId, encodePng(16, 16));
+
+  const byWorker = await harness.built.app.inject({
+    method: "DELETE",
+    url: `/api/v1/artefacts/${artefactId}`,
+    headers: WORKER,
+  });
+  assert.equal(byWorker.statusCode, 403, byWorker.body);
+  assert.equal(
+    (byWorker.json() as { error: { code: string } }).error.code,
+    "AUTHORISATION_DENIED",
+  );
+
+  // And the artefact is untouched.
+  const record = await harness.built.app.inject({
+    method: "GET",
+    url: `/api/v1/artefacts/${artefactId}`,
+    headers: ADMIN,
+  });
+  assert.equal(record.statusCode, 200);
+  const deletions = await postgres.pool.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM events WHERE type = 'artefact.deleted'",
+  );
+  assert.equal(deletions.rows[0]?.count, "0", "a refused delete wrote an event");
+});
+
 test("deleting one of two artefacts with identical bytes keeps the shared object", async () => {
   const { projectId } = await seedProjectAndWorker(harness);
   const bytes = encodePng(32, 32);

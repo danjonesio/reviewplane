@@ -369,13 +369,17 @@ export async function registerArtefactRoutes(
   app.delete("/api/v1/artefacts/:artefactId", async (request, reply) => {
     const { artefactId } = request.params as { artefactId: string };
     const caller = await resolveCaller(request, "write");
-    if (caller.subjectType === "agent_session") {
-      // An agent submits evidence and never destroys it. `AGENTS.md`'s
-      // acceptance-authority rule has the same shape: an agent may add to the
-      // record and may not close it.
+    if (caller.subjectType !== "human_user") {
+      // Only a human destroys evidence. An agent submits it and a worker
+      // captures it; neither may remove it. `AGENTS.md`'s acceptance-authority
+      // rule has the same shape — a machine principal may add to the record and
+      // may not close it — and `docs/SECURITY.md` §6.3 and §6.4 keep machine
+      // credentials out of anything administrative.
       throw new ApiError(
         "AUTHORISATION_DENIED",
-        "An agent credential may read evidence and may not delete it.",
+        caller.subjectType === "agent_session"
+          ? "An agent credential may read evidence and may not delete it."
+          : "A browser-worker credential may write evidence and may not delete it.",
       );
     }
     const record = await options.artefacts.getInScope(artefactId, caller.scope);

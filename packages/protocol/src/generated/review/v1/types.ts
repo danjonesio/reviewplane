@@ -1402,8 +1402,11 @@ export interface ArtefactUploadIntentResponse {
    */
   readonly upload_path?: string;
   /**
-   * Absolute short-lived presigned URL to PUT the bytes to, under the s3 driver. It is
-   * scoped to this one object and expires; it is never a durable public URL.
+   * Absolute short-lived presigned URL to PUT the bytes to. It is scoped to this one
+   * object and expires; it is never a durable public URL. ADR-0012 permits the s3 driver
+   * to issue one and Stage 1 does not: both drivers proxy the upload so that content-type
+   * validation happens before any byte is stored, so this member is reserved and never
+   * present today.
    */
   readonly upload_url?: string;
   /**
