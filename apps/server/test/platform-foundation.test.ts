@@ -562,6 +562,22 @@ describe("event records", () => {
     const root = join(import.meta.dirname, "..", "src");
     const offenders: string[] = [];
 
+    // Prose is not a write. A block comment explaining that a claim is
+    // `SELECT ... FOR UPDATE SKIP LOCKED` used to make the module that
+    // contained it an offender, which is a scan that reports what a file says
+    // rather than what it does. Only whole-line and block comments are removed,
+    // so a `//` inside a string — a URL, most often — cannot truncate a line of
+    // real code and hide a write on it.
+    const stripComments = (source: string): string =>
+      source
+        .replaceAll(/\/\*[\s\S]*?\*\//gu, "")
+        .split("\n")
+        .filter((line) => {
+          const trimmed = line.trimStart();
+          return !trimmed.startsWith("//") && !trimmed.startsWith("*");
+        })
+        .join("\n");
+
     const walk = async (directory: string, prefix: string): Promise<void> => {
       for (const entry of await readdir(directory, { withFileTypes: true })) {
         const relative = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
@@ -570,7 +586,7 @@ describe("event records", () => {
           continue;
         }
         if (!entry.name.endsWith(".ts")) continue;
-        const source = await readFile(join(directory, entry.name), "utf8");
+        const source = stripComments(await readFile(join(directory, entry.name), "utf8"));
         const writes = /\b(INSERT INTO|UPDATE |DELETE FROM)\b/iu.test(source);
         if (!writes) continue;
         if (exempt.has(relative)) continue;
