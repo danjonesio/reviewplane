@@ -56,9 +56,10 @@ The bundled configuration is `deploy/compose/gateway/`. It is the only service
 in the Compose stack that publishes a host port, and it is deliberately thin: it
 holds no credential, reaches no database and gets no Docker socket.
 
-- `/api/*` and `/ws/*` proxy to the control plane, the second carrying
+- `/api/*` and `/ws/*` proxy to the `api` service, the second carrying
   WebSocket upgrades. Idle timeouts are long enough for a live viewer watching
-  a quiet page.
+  a quiet page. `/mcp/*` proxies to the `mcp` service, which is a separate
+  process behind a separate route (§4.4, ADR-0020), with its own body limit.
 - Everything else is served from the web application's build output, with an
   unknown path falling back to the document because routing is client-side
   (ADR-0011).
@@ -73,6 +74,11 @@ holds no credential, reaches no database and gets no Docker socket.
   the server-rendering process and the component that serves static files is
   this one.
 
+`pnpm test:edge` starts the gateway alone and asserts its TLS, document,
+refusal and header behaviour from outside; `pnpm test:install` drives `/api`,
+`/ws` and `/mcp` through it to real upstreams, because a proxy rule asserted as
+configuration is a proxy rule nothing has ever used.
+
 ### 4.2 Server
 
 One codebase may initially run multiple process roles:
@@ -83,7 +89,13 @@ One codebase may initially run multiple process roles:
 
 `reviewplane serve` runs `api`, and runs `jobs` beside it in a single-container
 deployment; `reviewplane jobs` runs the role alone where a deployment separates
-them. `realtime` is not separated: event fan-out runs in the `api` process,
+them. `REVIEWPLANE_SERVE_RUNS_JOBS=false` is how a deployment says it has
+separated them, and `deploy/compose/compose.yaml` sets it, because it runs a
+`jobs` container. Both runners together are safe — a claim is
+`SELECT ... FOR UPDATE SKIP LOCKED`, so two of them never take the same row —
+but a `jobs` container whose readiness and logs describe only some of the work
+being done is worse than no separation at all. `realtime` is not separated:
+event fan-out runs in the `api` process,
 reading the outbox of §10, and separating it later changes which process runs
 the dispatcher rather than how an event reaches a subscriber. Every role answers
 `/health/live`, `/health/ready` and `/version` from one implementation
@@ -695,6 +707,10 @@ Single host:
 - One job worker
 - One browser worker
 - Bundled PostgreSQL and filesystem artefact storage
+
+`deploy/compose/compose.yaml` is that deployment: `api`, `mcp`, `jobs`,
+`browser-worker`, `postgres` and `gateway`, plus `tunnel-gateway` for the route
+capabilities of §7. Installation is `docs/DEPLOYMENT.md` §8 and nothing else.
 
 ### Stage 2
 

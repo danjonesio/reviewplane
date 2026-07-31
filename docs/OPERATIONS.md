@@ -70,28 +70,74 @@ and the edge gateway use. They answer from the same state.
 
 ## 3. Service status command
 
-Provide:
-
 ```bash
-reviewplane status
+reviewplane status          # one screen, for a human over SSH
+reviewplane status --json   # the automation shape
 ```
 
-Output should include:
+In the Compose stack it is `./reviewplane status`, which runs the command inside
+the `api` container (`docs/DEPLOYMENT.md` §11).
 
-- Version
-- Database connectivity and schema
-- Artefact store availability
-- Active connectors
-- Browser worker capacity
-- Active sessions
-- Queue depth
-- Storage use
-- Certificate expiry warnings
+Output includes, and the `--json` object carries a key for each:
 
-The command exists and reports the version, the schema version and the count of
-pending migrations, the artefact driver, artefact-store availability and
-storage use. `--json` prints the same values for automation. It exits `1` when
-the store is unreachable or migrations are pending.
+| Field | JSON key | What it reports |
+|---|---|---|
+| Version | `version` | Version, git revision, build time and protocol version, from the image |
+| Database connectivity and schema | `database` | Reachability, schema version and pending migration count |
+| Artefact store availability | `artefact_store` | Driver, path, and whether a **write** succeeds |
+| Active connectors | `connectors` | Active, degraded, disconnected and total enrolled |
+| Browser worker capacity | `browser_capacity` | Live workers, workers gone quiet, total slots, slots in use, slots free, sandboxed workers, and the silence threshold the counts were computed with |
+| Active sessions | `sessions` | Sessions that have not ended |
+| Queue depth | `queue` | Pending, running and failed durable jobs |
+| Storage use | `storage` | Available artefact count and bytes, database size, volume free and total |
+| Certificate expiry warnings | `certificate` | The expiry of the certificate the configured TLS listener actually serves |
+
+Two properties are deliberate.
+
+**Availability is a bounded write probe, not a directory listing.** The artefact
+failure an operator meets is a volume that mounted read-only or filled up, and a
+read succeeds against both. The probe is also raced against a timer, because a
+wedged network mount blocks in the kernel and a status command that hung on the
+store it was asked about would be useless in exactly the outage it exists for.
+
+**Capacity is what a worker has been heard from about.** A browser worker
+heartbeats every 15 seconds, and one that has been silent for **45 seconds** —
+three missed heartbeats, the margin
+`REVIEWPLANE_CONNECTOR_DEGRADED_AFTER_SECONDS` gives a connector — has its slots
+excluded from `capacity`, `available` and `in_use`, and is counted in
+`stale_workers` instead. A worker that has registered and not yet reached its
+first heartbeat counts from its registration, so a stack coming up does not
+report a false shortage for fifteen seconds.
+
+This is a reporting rule and nothing more. No process reaps a stopped worker's
+row: it stays `active` in `browser_workers` until something marks it otherwise,
+which is worker-lifecycle work `status` does not do. What `status` must not do
+is answer "four slots free" about a container that is gone, because an operator
+asking why a session will not start would read that as the scheduler's problem
+and look in the wrong place. The stale row is still reported, because "a worker
+registered and went quiet" is a container to restart while "no worker ever
+registered" is a stack that never came up.
+
+**Zero is not a failure.** A fresh installation has no connectors, no sessions
+and no queued work, and reporting that as unhealthy would train an operator to
+ignore the command. Only the database, the schema and the artefact store make
+the report `degraded`; no browser capacity, a worker gone quiet, a worker
+reporting the Chromium sandbox disabled and a certificate near expiry are
+`warnings`.
+
+The exit code is the automation interface: `0` when every check passes, `4` when
+one that the deployment cannot work without has failed. `4` rather than `1`
+because `1` is "the command failed" and this is "the command succeeded and the
+answer is bad" (`docs/DEPLOYMENT.md` §11).
+
+A failure detail never carries a connection string, a credential or a network
+address (§18 of `docs/SECURITY.md`): status output is pasted into issues.
+
+`REVIEWPLANE_STATUS_TLS_ENDPOINT` names the listener whose certificate expiry is
+reported, as `host:port`. In the Compose stack it is the edge gateway, which the
+`api` role reaches over the `edge` network. A deployment that terminates TLS in
+front of the stack clears it, and the section reports "not configured" rather
+than inventing a failure.
 
 The schema is read before the artefact figures, and the figures are not read at
 all while migrations are pending: against a database nobody has migrated the
@@ -109,10 +155,10 @@ identical bytes are one stored object. Bytes declared by intents that have not
 completed verification are reported separately, because they are not evidence
 and may never become any.
 
-The remaining figures — connectors, worker capacity, sessions, queue depth,
-certificate expiry — are not yet reported. They arrive with the stages that own
-them, and the command prints what it can measure rather than a zero that reads
-as a measurement.
+Connectors, browser capacity, sessions, queue depth and certificate expiry are
+reported alongside these. Where a figure is genuinely absent — no connector
+enrolled, no TLS endpoint configured — the section says so rather than printing a
+zero that reads as a measurement.
 
 ## 4. Structured logs
 
@@ -350,6 +396,25 @@ Commands support `--json` for automation.
 - Artefact upload and retrieval
 
 The command must avoid destructive tests unless explicitly requested.
+
+### Implemented today
+
+`reviewplane doctor` does not exist yet. Four of the checks above are answered
+by `reviewplane status` (§3), which is what an operator diagnosing an
+installation runs today:
+
+| Check | Answered by |
+|---|---|
+| TLS | `certificate`: the expiry of the certificate the gateway actually serves |
+| Database | `database`: reachability, schema version and pending migrations |
+| Artefact store read and write | `artefact_store`: a bounded write probe |
+| Browser launch | `browser_capacity`: a registered worker has launched Chromium and reported its capacity and sandbox posture |
+
+The remaining checks — DNS, WebSocket upgrade, connector handshake, tunnel
+loopback route, MCP authentication, artefact upload and retrieval — are actions
+rather than readings, and belong to a command that may perform them. They are
+exercised end to end by `pnpm test:e2e` and `pnpm test:integration`, not by an
+operator command.
 
 ## 16. Storage planning
 

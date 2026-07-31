@@ -440,6 +440,7 @@ The controls above are properties of the shipped container, not deployment advic
 - `deploy/compose/browser-worker-seccomp.json` is Docker's default profile with one change: `clone`, `clone3` and `unshare` no longer require `CAP_SYS_ADMIN`, because Chromium's sandbox is built on user namespaces. That set is the measured minimum — removing any one of the three stops either Node or the sandbox from starting, and `setns` is not needed and stays gated. Every other gate is unchanged.
 - A host that restricts unprivileged user namespaces (`kernel.apparmor_restrict_unprivileged_userns=1`) MUST grant the container the AppArmor `userns` permission or clear that sysctl. Disabling the Chromium sandbox is not the supported alternative.
 - Each browser session gets its own ephemeral profile directory and its own browser process. Termination removes the directory; nothing from a session survives it, and no state crosses between sessions or projects.
+- `pnpm test:install` asserts these against a **running** installation rather than against the file: it reads the worker's uid from inside the container, its capability set and read-only root filesystem from Docker, and its sandbox posture from `browser_workers.sandbox_enabled` — which is what the worker reported about the Chromium it launched, not what an environment variable claims. It also lists `/run/secrets` inside the worker to prove no database, artefact-store or bootstrap credential is there, and that no artefact volume is mounted.
 - The worker restricts egress to the origin of the session's published service, at navigation and at subresource level. A session with no published service reaches nothing.
 - Every session carries a duration limit the worker enforces itself, so a session cannot outlive its allocation even if the control plane is unreachable.
 
@@ -714,6 +715,19 @@ Release requirements:
 - Multi-architecture release testing
 - Published checksums
 - Supported upgrade path
+
+### Implemented today
+
+| Requirement | State |
+|---|---|
+| Pinned images | `deploy/compose/compose.yaml` pins PostgreSQL by immutable digest and every ReviewPlane image by `${REVIEWPLANE_VERSION}`, which `./configure` writes into `.env`. There is no `latest` tag. Every GitHub Actions step is pinned to a commit. |
+| Documented build pipeline | `.github/workflows/release-images.yml` builds and pushes the six images of `docs/DEPLOYMENT.md` §2 from a `v<version>` tag, stamping the version, the revision and the build time into each, and records the immutable digest of each push in its run summary. It uses no third-party action. |
+| Container and binary signing, SBOM | Not implemented. Stage 2. Until they exist, `./configure` falls back to building the images from the checkout when a release is not published, and says so: an installation that cannot verify a signature is better served by a build it performed itself than by an unsigned pull. |
+| Multi-architecture release testing | Not implemented. `linux/amd64` only. Stage 2. |
+| Dependency scanning, published checksums | Not implemented. |
+
+A release that claims more than this table is a release that has failed
+`docs/DESIGN_PRINCIPLES.md`.
 
 ## 20. Backup security
 

@@ -54,7 +54,7 @@ COMPOSE=(
   --project-name "${COMPOSE_PROJECT_NAME}"
   --project-directory "${COMPOSE_DIR}"
   -f "${COMPOSE_DIR}/compose.yaml"
-  --profile e2e
+  --profile development
 )
 KEEP_UP="${REVIEWPLANE_E2E_KEEP_UP:-0}"
 
@@ -69,8 +69,8 @@ fail() { printf '\n\033[31mFAILED: %s\033[0m\n' "$*" >&2; exit 1; }
 cleanup() {
   local status=$?
   if [[ ${status} -ne 0 ]]; then
-    printf '\n--- server log (tail) ---\n' >&2
-    "${COMPOSE[@]}" logs --tail 60 server >&2 2>/dev/null || true
+    printf '\n--- api log (tail) ---\n' >&2
+    "${COMPOSE[@]}" logs --tail 60 api >&2 2>/dev/null || true
     printf '\n--- tunnel-gateway log (tail) ---\n' >&2
     "${COMPOSE[@]}" logs --tail 60 tunnel-gateway >&2 2>/dev/null || true
     printf '\n--- dev-fixture log (tail) ---\n' >&2
@@ -84,7 +84,7 @@ cleanup() {
     "${COMPOSE[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   else
     info "stack left running (REVIEWPLANE_E2E_KEEP_UP=1); tear down with:"
-    info "  docker compose --project-name ${COMPOSE_PROJECT_NAME} --project-directory ${COMPOSE_DIR} --profile e2e down -v"
+    info "  docker compose --project-name ${COMPOSE_PROJECT_NAME} --project-directory ${COMPOSE_DIR} --profile development down -v"
   fi
   exit "${status}"
 }
@@ -107,7 +107,7 @@ source "${COMPOSE_DIR}/.env"
 export REVIEWPLANE_TUNNEL_CERTIFICATE_SPKI
 BOOTSTRAP_TOKEN="$(cat "${COMPOSE_DIR}/secrets/bootstrap_token")"
 
-# Every API call goes through the server container, because nothing publishes a
+# Every API call goes through the `api` container, because nothing publishes a
 # host port. `docker compose exec` on a distroless image has no shell, so the
 # calls run from the server image, which has Node.
 api() {
@@ -115,7 +115,7 @@ api() {
   "${COMPOSE[@]}" exec -T \
     -e RP_METHOD="${method}" -e RP_PATH="${path}" -e RP_BODY="${body}" \
     -e RP_TOKEN="${BOOTSTRAP_TOKEN}" \
-    server node -e '
+    api node -e '
       const method = process.env.RP_METHOD;
       const path = process.env.RP_PATH;
       const body = process.env.RP_BODY;
@@ -194,19 +194,19 @@ step "1. Start the Compose stack (docs/TESTING.md section 3 step 1)"
 "${COMPOSE[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
 info "compose project: ${COMPOSE_PROJECT_NAME}"
 
-"${COMPOSE[@]}" build --quiet server browser-worker tunnel-gateway dev-fixture
+"${COMPOSE[@]}" build --quiet api browser-worker tunnel-gateway dev-fixture
 
 # The order is forced by two dependencies that only exist at run time.
 #
 # The tunnel gateway verifies connector identities against the connector CA,
 # which the control plane generates at its own first start (ADR-0014), so the
-# gateway cannot start until the server has run once and the CA has been
+# gateway cannot start until the api role has run once and the CA has been
 # exported. The browser worker registers with the control plane as it starts,
-# so it cannot come up before the server either. Bringing everything up at once
+# so it cannot come up before the api role either. Bringing everything up at once
 # would make both of those a race that usually loses.
-"${COMPOSE[@]}" up -d --wait --wait-timeout 300 postgres server \
+"${COMPOSE[@]}" up -d --wait --wait-timeout 300 postgres api \
   || fail "postgres and the control plane did not become healthy"
-info "postgres and server are up"
+info "postgres and api are up"
 
 # ---------------------------------------------------------------------------
 step "2. Enrol the connector fixture (step 2)"
@@ -242,7 +242,7 @@ info "wrote tls/connector-trust.pem (connector CA + tunnel CA)"
 # otherwise lose intermittently.
 GATEWAY_READY=0
 for _ in $(seq 1 60); do
-  if "${COMPOSE[@]}" exec -T server node -e '
+  if "${COMPOSE[@]}" exec -T api node -e '
       fetch("http://tunnel-gateway:8445/healthz")
         .then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1));
     ' 2>/dev/null; then
@@ -470,7 +470,7 @@ capture_screenshot() {
   # reachable only through a short-lived grant bound to the subject that minted
   # it, so this mints one and redeems it with the same credential. The grant
   # identifier in the URL admits nobody on its own.
-  "${COMPOSE[@]}" exec -T -e RP_ID="${artefact}" -e RP_TOKEN="${BOOTSTRAP_TOKEN}" server node -e '
+  "${COMPOSE[@]}" exec -T -e RP_ID="${artefact}" -e RP_TOKEN="${BOOTSTRAP_TOKEN}" api node -e '
       const authorization = `Bearer ${process.env.RP_TOKEN}`;
       const granted = await fetch(`http://127.0.0.1:8080/api/v1/artefacts/${process.env.RP_ID}/grants`, {
         method: "POST",
@@ -858,7 +858,7 @@ info "${THROUGHPUT_LINE}"
 # The gateway's own counters, which are the other side of the same story: how
 # many upgrades it carried and how many bytes went each way.
 TUNNEL_TOKEN="$(cat "${COMPOSE_DIR}/secrets/tunnel_control_token")"
-"${COMPOSE[@]}" exec -T -e RP_TOKEN="${TUNNEL_TOKEN}" server node -e '
+"${COMPOSE[@]}" exec -T -e RP_TOKEN="${TUNNEL_TOKEN}" api node -e '
     const response = await fetch("http://tunnel-gateway:8445/metrics", {
       headers: { authorization: `Bearer ${process.env.RP_TOKEN}` },
     });

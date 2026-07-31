@@ -9,6 +9,10 @@
  * someone must remember to write.
  */
 
+import { randomBytes } from "node:crypto";
+import { mkdir, rename, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
+
 import Fastify, { type FastifyInstance } from "fastify";
 import websocket from "@fastify/websocket";
 
@@ -71,6 +75,34 @@ export interface ConnectorModuleOptions {
 }
 
 /**
+ * Publishes the connector authority's certificate where the tunnel gateway can
+ * read it (ADR-0014).
+ *
+ * The authority is created by this process on first start and lives in the
+ * database, so nothing an installer runs beforehand can produce the file; the
+ * tunnel gateway reads one at startup and refuses to start without it. Writing
+ * it here is what lets `docker compose up -d` bring up a complete stack rather
+ * than one where an operator must fetch a certificate through the API and
+ * restart a container — which is what `deploy/compose/e2e/run.sh` had to do,
+ * and what an installation following `docs/DEPLOYMENT.md` section 8 had no way
+ * of doing at all.
+ *
+ * It writes the certificate and never the key. The write is atomic — a
+ * temporary file and a rename — because the gateway may read it at any moment,
+ * and a half-written PEM is a gateway that trusts nothing.
+ */
+async function exportCertificateAuthority(
+  path: string | undefined,
+  certificatePem: string,
+): Promise<void> {
+  if (path === undefined || path === "") return;
+  await mkdir(dirname(path), { recursive: true });
+  const temporary = `${path}.${randomBytes(6).toString("hex")}.tmp`;
+  await writeFile(temporary, certificatePem, { mode: 0o644 });
+  await rename(temporary, path);
+}
+
+/**
  * Registers the human-facing connector API on the main app and builds the
  * connector listener.
  */
@@ -83,6 +115,7 @@ export async function createConnectorModule(
 
   const authority = await ensureCertificateAuthority(options.pool);
   const listenerCertificate = await ensureListenerCertificate(options.pool, config, authority);
+  await exportCertificateAuthority(config.certificateAuthorityExportFile, authority.certificatePem);
 
   const channels = new ControlChannelRegistry();
   const revocationHolder: { current: RevocationEffects | undefined } = { current: undefined };

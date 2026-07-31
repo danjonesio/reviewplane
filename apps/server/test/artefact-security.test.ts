@@ -501,20 +501,29 @@ test("the browser worker container holds no artefact storage of any kind", async
   const block = nextService === null ? rest : rest.slice(0, nextService.index + 1);
   assert.ok(block.includes("REVIEWPLANE_WORKER_NAME"), "the worker block was not isolated");
 
+  // Comments are stripped before matching. The property is about what the
+  // service is *configured* with, and a comment recording that the worker
+  // deliberately mounts no artefact volume would otherwise fail the assertion
+  // that the worker mounts no artefact volume.
+  const configuration = block
+    .split("\n")
+    .filter((line) => !/^\s*#/u.test(line))
+    .join("\n");
+
   assert.equal(
-    /artefact/iu.test(block),
+    /artefact/iu.test(configuration),
     false,
-    `the browser-worker service references artefact storage:\n${block}`,
+    `the browser-worker service references artefact storage:\n${configuration}`,
   );
   assert.equal(
-    /REVIEWPLANE_S3_|s3_access|s3_secret/iu.test(block),
+    /REVIEWPLANE_S3_|s3_access|s3_secret/iu.test(configuration),
     false,
-    `the browser-worker service references S3 credentials:\n${block}`,
+    `the browser-worker service references S3 credentials:\n${configuration}`,
   );
   // What it does have: a route to the control-plane API, which is the only way
   // it can store anything at all.
-  assert.match(block, /http:\/\/server:8080/u);
+  assert.match(configuration, /http:\/\/api:8080/u);
   process.stdout.write(
-    "EVIDENCE worker storage: the browser-worker compose service mounts no artefact volume, holds no artefact secret and reads no artefact or S3 setting; it uploads through http://server:8080\n",
+    "EVIDENCE worker storage: the browser-worker compose service mounts no artefact volume, holds no artefact secret and reads no artefact or S3 setting; it uploads through http://api:8080\n",
   );
 });

@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+#
+# The operator command line, run against this installation
+# (`docs/OPERATIONS.md` section 14).
+#
+# `reviewplane` itself ships inside the server image, so that the schema a
+# deployment applies and the state it reports always match the code that will
+# read them (`docs/DEPLOYMENT.md` section 11). This script is the two lines of
+# Docker plumbing that would otherwise be in every operator's shell history:
+#
+#   ./reviewplane status --json   -> docker compose exec -T api reviewplane status --json
+#
+# It prefers `exec` on the running `api` container, because that is the process
+# with the artefact volume mounted and a route to the gateway, and those are two
+# of the things `status` reports. With the stack down it falls back to a
+# one-shot container, which can still answer `migrate` and `version`.
+#
+# Usage: ./reviewplane <command> [arguments]
+#   ./reviewplane status [--json]
+#   ./reviewplane install-token [--ttl-seconds N] [--force]
+#   ./reviewplane migrate [--status]
+#   ./reviewplane version
+
+set -euo pipefail
+
+COMPOSE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMPOSE=(docker compose --project-directory "${COMPOSE_DIR}")
+
+if [[ $# -eq 0 ]]; then
+  sed -n '19,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+  exit 1
+fi
+
+if ! docker info > /dev/null 2>&1; then
+  printf 'reviewplane: the Docker daemon is not reachable.\n' >&2
+  exit 2
+fi
+
+API_STATE="$("${COMPOSE[@]}" ps --format '{{.Service}} {{.State}}' 2> /dev/null | awk '$1 == "api" { print $2 }' || true)"
+
+if [[ "${API_STATE}" == "running" ]]; then
+  # -T: no TTY, so the output is the same whether a human or a script is
+  # reading it, and `--json` stays parseable.
+  exec "${COMPOSE[@]}" exec -T api reviewplane "$@"
+fi
+
+printf 'reviewplane: the api service is not running; using a one-shot container.\n' >&2
+printf '             status reports what a container without the stack can see.\n' >&2
+exec "${COMPOSE[@]}" run --rm --no-deps -T api reviewplane "$@"

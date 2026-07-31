@@ -5,7 +5,7 @@
 # values filled in. It is mounted read-only into the dev-fixture container.
 
 control_plane:
-  url: https://server:8443
+  url: https://api:8443
   tls:
     # The connector trust bundle: the control-plane CA that the control plane
     # serves its certificate from, and the tunnel gateway's own certificate.

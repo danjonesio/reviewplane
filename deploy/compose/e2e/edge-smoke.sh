@@ -62,10 +62,17 @@ export REVIEWPLANE_GATEWAY_PORT="${PORT}"
 # read it, but Compose refuses to parse the file without it.
 export REVIEWPLANE_TUNNEL_CERTIFICATE_SPKI="${REVIEWPLANE_TUNNEL_CERTIFICATE_SPKI:-edge-smoke-does-not-use-a-tunnel}"
 
+# This gate builds the gateway image from the checkout rather than pulling the
+# release, so the assertions describe the working tree. Set as an environment
+# variable rather than in `.env`, because an operator's `.env` is theirs.
+export REVIEWPLANE_PULL_POLICY=build
+
 # The name compose.yaml pins the built image to. `docker compose config
 # --images <service>` ignores the service argument and lists the whole file, so
 # the name is derived here the same way compose.yaml derives it.
-GATEWAY_IMAGE="${REVIEWPLANE_IMAGE_PREFIX:-reviewplane}/gateway:local"
+IMAGE_PREFIX="${REVIEWPLANE_IMAGE_PREFIX:-ghcr.io/danjonesio}"
+IMAGE_VERSION="${REVIEWPLANE_VERSION:-0.1.0}"
+GATEWAY_IMAGE="${IMAGE_PREFIX}/reviewplane-gateway:${IMAGE_VERSION}"
 
 BOLD=$'\033[1m'
 RED=$'\033[31m'
@@ -242,6 +249,25 @@ if grep -q "skipping automatic certificate management" <<<"${ESCAPE_HATCH}"; the
 else
   fail "the supplied certificate was not loaded; Caddy would fall back to its own"
 fi
+
+step "7. Every proxy rule names a service that exists"
+# The proxy peers are started by `pnpm test:install`, which drives `/api`,
+# `/ws` and `/mcp` through this gateway to real upstreams. What this gate can
+# assert without paying for those images is the failure that would make all
+# three fall through to the single-page application document: an upstream named
+# in the Caddyfile that is not a service in compose.yaml. Renaming a service and
+# forgetting the routing file produces exactly that, and it looks like a working
+# deployment until someone signs in.
+SERVICES="$("${COMPOSE[@]}" config --services)"
+while read -r upstream; do
+  [[ -z "${upstream}" ]] && continue
+  if grep -qx "${upstream}" <<< "${SERVICES}"; then
+    info "reverse_proxy ${upstream} -> a service in compose.yaml"
+  else
+    fail "the Caddyfile proxies to ${upstream}, which is not a service in compose.yaml"
+  fi
+done < <(grep -oE 'reverse_proxy[[:space:]]+[A-Za-z0-9_-]+:[0-9]+' "${COMPOSE_DIR}/gateway/Caddyfile" \
+  | awk '{print $2}' | cut -d: -f1 | sort -u)
 
 if [[ "${FAILURES}" -eq 0 ]]; then
   printf '\n%s== The edge gateway serves the product over TLS%s\n' "${BOLD}" "${RESET}"

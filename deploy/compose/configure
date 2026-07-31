@@ -1,0 +1,421 @@
+#!/usr/bin/env bash
+#
+# First-run configuration for the single-host installation
+# (`docs/DEPLOYMENT.md` section 8).
+#
+# It does the four things an operator would otherwise have to do by hand and
+# get wrong once:
+#
+#   1. checks that Docker Engine and Compose v2 are present and usable;
+#   2. creates the installation layout and generates every secret the stack
+#      mounts, as files rather than environment values (section 7);
+#   3. issues the tunnel certificate authority and the gateway leaf, and records
+#      the public-key pin the browser worker is started with (ADR-0015);
+#   4. writes the pinned version configuration into `.env` and decides whether
+#      the images are pulled or built.
+#
+# It is idempotent. Existing secrets are left alone, because regenerating the
+# capability signing key while the stack is running would invalidate every
+# capability the control plane has already minted, and regenerating the gateway
+# certificate would invalidate the pin the worker was started with. `--force`
+# replaces everything.
+#
+# It prints the setup URL, and the one-time administrator token when the control
+# plane is running: the token is minted from the database and stored only as a
+# digest (`docs/DEPLOYMENT.md` section 11), so there is nothing to print before
+# `docker compose up -d`. Run `./reviewplane install-token` after the stack is
+# up, or re-run this script, whichever is to hand.
+#
+# Usage:
+#   ./configure                      configure this installation
+#   ./configure --force              replace every generated secret and key
+#   ./configure --image-source build build the images from this checkout
+#   ./configure --development        also prepare the `development` profile
+#   ./configure --quiet              print only what an operator must act on
+
+set -euo pipefail
+
+COMPOSE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SECRETS="${COMPOSE_DIR}/secrets"
+TLS="${COMPOSE_DIR}/tls"
+# The tunnel CA's private key lives outside ${TLS}, which is bind-mounted into
+# the tunnel gateway and the development fixture. Nothing in either container
+# needs it — a CA key signs certificates, and signing happens here — so it has
+# no business being reachable from inside one. Its mode already denies both
+# service users, but "unreadable material inside a mount" is a weaker property
+# than "material that is not in the mount", and only the second survives someone
+# later loosening a mode or adding a container that runs as root.
+CA="${COMPOSE_DIR}/ca"
+ENV_FILE="${COMPOSE_DIR}/.env"
+ENV_EXAMPLE="${COMPOSE_DIR}/.env.example"
+
+# The release this installation runs. It is the tag the images carry and the
+# value `/version` and `reviewplane status` report.
+DEFAULT_VERSION="0.1.0"
+DEFAULT_IMAGE_PREFIX="ghcr.io/danjonesio"
+
+FORCE=0
+QUIET=0
+DEVELOPMENT=0
+IMAGE_SOURCE="auto"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --force) FORCE=1 ;;
+    --quiet) QUIET=1 ;;
+    --development) DEVELOPMENT=1 ;;
+    --image-source)
+      shift
+      IMAGE_SOURCE="${1:-}"
+      ;;
+    --image-source=*) IMAGE_SOURCE="${1#*=}" ;;
+    -h | --help)
+      sed -n '3,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *)
+      printf 'configure: unknown argument %s\n' "$1" >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+case "${IMAGE_SOURCE}" in
+  auto | registry | build) ;;
+  *)
+    printf 'configure: --image-source must be auto, registry or build\n' >&2
+    exit 2
+    ;;
+esac
+
+BOLD=$'\033[1m'
+RESET=$'\033[0m'
+
+say() { [[ "${QUIET}" -eq 1 ]] || printf '%s\n' "$1"; }
+step() { [[ "${QUIET}" -eq 1 ]] || printf '\n%s%s%s\n' "${BOLD}" "$1" "${RESET}"; }
+die() {
+  printf 'configure: %s\n' "$1" >&2
+  exit 1
+}
+
+# ---------------------------------------------------------------------------
+# 1. Docker Engine and Compose
+#
+# Checked rather than assumed, because every failure below this line reads as a
+# ReviewPlane problem when it is a Docker one. The daemon check is `docker
+# info`, not `docker --version`: a client with no daemon answers the second.
+# ---------------------------------------------------------------------------
+
+step "1. Docker Engine and Compose"
+
+command -v docker > /dev/null 2>&1 || die "Docker is not installed. See https://docs.docker.com/engine/install/"
+docker info > /dev/null 2>&1 || die "the Docker daemon is not reachable. Start it, or add this user to the docker group."
+say "   Docker Engine $(docker version --format '{{.Server.Version}}')"
+
+docker compose version > /dev/null 2>&1 ||
+  die "Docker Compose v2 is required (the 'docker compose' subcommand, not 'docker-compose')."
+COMPOSE_VERSION="$(docker compose version --short)"
+COMPOSE_MAJOR="${COMPOSE_VERSION%%.*}"
+COMPOSE_MAJOR="${COMPOSE_MAJOR#v}"
+[[ "${COMPOSE_MAJOR}" =~ ^[0-9]+$ ]] || die "could not read the Compose version (${COMPOSE_VERSION})."
+[[ "${COMPOSE_MAJOR}" -ge 2 ]] || die "Docker Compose v2 or later is required; found ${COMPOSE_VERSION}."
+say "   Docker Compose ${COMPOSE_VERSION}"
+
+command -v openssl > /dev/null 2>&1 || die "openssl is required to generate the installation's keys."
+
+# ---------------------------------------------------------------------------
+# 2. Installation layout
+# ---------------------------------------------------------------------------
+
+step "2. Installation layout"
+
+mkdir -p "${SECRETS}" "${TLS}" "${CA}"
+chmod 700 "${CA}"
+say "   secrets/  tls/  ca/"
+
+if [[ ! -f "${ENV_FILE}" ]]; then
+  cp "${ENV_EXAMPLE}" "${ENV_FILE}"
+  say "   .env created from .env.example"
+fi
+
+# Sets a key in `.env` without disturbing the comments or the operator's own
+# edits. A generated value that overwrote the file would lose the settings the
+# documented flow tells an operator to make there.
+set_env() {
+  local key="$1" value="$2" tmp
+  tmp="$(mktemp "${ENV_FILE}.XXXXXX")"
+  if [[ -f "${ENV_FILE}" ]] && grep -q "^${key}=" "${ENV_FILE}"; then
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+      if [[ "${line}" == "${key}="* ]]; then
+        printf '%s=%s\n' "${key}" "${value}"
+      else
+        printf '%s\n' "${line}"
+      fi
+    done < "${ENV_FILE}" > "${tmp}"
+  else
+    [[ -f "${ENV_FILE}" ]] && cat "${ENV_FILE}" > "${tmp}"
+    printf '%s=%s\n' "${key}" "${value}" >> "${tmp}"
+  fi
+  mv "${tmp}" "${ENV_FILE}"
+  chmod 644 "${ENV_FILE}"
+}
+
+read_env() {
+  local key="$1" line
+  line="$(grep "^${key}=" "${ENV_FILE}" 2> /dev/null | tail -1 || true)"
+  printf '%s' "${line#*=}"
+}
+
+# ---------------------------------------------------------------------------
+# 3. Secrets
+#
+# Mode 0644 rather than 0600, and that needs justifying. `uid`, `gid` and `mode`
+# on a Compose secret reference are honoured by Docker Swarm only; plain Compose
+# bind-mounts the file with the permissions it has on the host, and every
+# service here runs as uid 10001 rather than as the user running this script, so
+# a 0600 secret is unreadable to the service that needs it. The directory is the
+# boundary: `secrets/` is 0700, so the files are reachable only by this user and
+# by root, and by the containers Compose mounts them into.
+#
+# A deployment with more than one administrator SHOULD deliver these through
+# Swarm or Kubernetes secrets, or pre-create them owned by uid 10001.
+# ---------------------------------------------------------------------------
+
+step "3. Secrets"
+
+chmod 700 "${SECRETS}"
+
+random_token() {
+  # 48 bytes base64url: comfortably past the 32-character minimum the control
+  # plane enforces on every administrative and inter-service credential.
+  openssl rand -base64 48 | tr -d '\n=' | tr '+/' '-_'
+}
+
+GENERATED=0
+write_secret() {
+  local name="$1" value="$2" path="${SECRETS}/$1"
+  if [[ -s "${path}" && "${FORCE}" -eq 0 ]]; then
+    return
+  fi
+  printf '%s' "${value}" > "${path}"
+  chmod 644 "${path}"
+  say "   wrote secrets/${name}"
+  GENERATED=$((GENERATED + 1))
+}
+
+write_secret postgres_password "$(random_token)"
+write_secret bootstrap_token "$(random_token)"
+write_secret worker_credential "$(random_token)"
+write_secret worker_command_credential "$(random_token)"
+write_secret tunnel_control_token "$(random_token)"
+
+# The database URL has to agree with the password that was just written, which
+# may be one an earlier run generated.
+POSTGRES_PASSWORD="$(cat "${SECRETS}/postgres_password")"
+if [[ ! -s "${SECRETS}/database_url" || "${FORCE}" -eq 1 ]]; then
+  printf 'postgres://reviewplane:%s@postgres:5432/reviewplane' "${POSTGRES_PASSWORD}" \
+    > "${SECRETS}/database_url"
+  chmod 644 "${SECRETS}/database_url"
+  say "   wrote secrets/database_url"
+  GENERATED=$((GENERATED + 1))
+fi
+
+# One capability signing key, in the two forms its two readers want: the control
+# plane signs with the raw key, the tunnel gateway selects from a keyring by key
+# id. Deriving both from one value is what stops them drifting apart.
+CAPABILITY_KEY_ID="stage0-a"
+if [[ ! -s "${SECRETS}/capability_signing_key" || "${FORCE}" -eq 1 ]]; then
+  CAPABILITY_KEY="$(openssl rand -base64 32)"
+  printf '%s' "${CAPABILITY_KEY}" > "${SECRETS}/capability_signing_key"
+  printf '%s:%s' "${CAPABILITY_KEY_ID}" "${CAPABILITY_KEY}" > "${SECRETS}/capability_keys"
+  chmod 644 "${SECRETS}/capability_signing_key" "${SECRETS}/capability_keys"
+  say "   wrote secrets/capability_signing_key and secrets/capability_keys"
+  GENERATED=$((GENERATED + 1))
+fi
+
+# The enrolment token is issued by the running control plane, not here. The file
+# has to exist for Compose to resolve the secret, so it is created empty; a
+# development-profile run fills it in.
+if [[ ! -f "${SECRETS}/enrolment_token" ]]; then
+  : > "${SECRETS}/enrolment_token"
+  chmod 644 "${SECRETS}/enrolment_token"
+fi
+
+[[ "${GENERATED}" -eq 0 ]] && say "   every secret already exists; nothing regenerated"
+
+# ---------------------------------------------------------------------------
+# 4. Tunnel certificate authority and the gateway's leaf
+#
+# No public authority can issue for a reserved TLD, so the deployment runs its
+# own. It is a real two-level chain rather than a self-signed leaf because a
+# trust anchor has to be a CA: Go refuses a self-signed leaf presented as a root
+# with "certificate signed by unknown authority", which is what the connector's
+# data channel would hit. The browser worker does not use this chain at all — it
+# pins the leaf's public key (ADR-0015) — but the connector does.
+# ---------------------------------------------------------------------------
+
+step "4. Tunnel certificate authority"
+
+if [[ ! -s "${TLS}/gateway.crt" || "${FORCE}" -eq 1 ]]; then
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+    -keyout "${CA}/tunnel-ca.key" -out "${TLS}/tunnel-ca.pem" \
+    -days 365 -nodes -subj "/CN=ReviewPlane Tunnel CA/O=ReviewPlane" \
+    -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+    -addext "keyUsage=critical,keyCertSign,cRLSign" \
+    2> /dev/null
+
+  openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+    -keyout "${TLS}/gateway.key" -out "${TLS}/gateway.csr" \
+    -nodes -subj "/CN=tunnel-gateway/O=ReviewPlane" 2> /dev/null
+
+  cat > "${TLS}/gateway.ext" << 'EXT'
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = DNS:*.internal.invalid,DNS:internal.invalid,DNS:tunnel-gateway,DNS:localhost,IP:127.0.0.1
+EXT
+
+  openssl x509 -req -in "${TLS}/gateway.csr" \
+    -CA "${TLS}/tunnel-ca.pem" -CAkey "${CA}/tunnel-ca.key" -CAcreateserial \
+    -out "${TLS}/gateway.crt" -days 365 -sha256 \
+    -extfile "${TLS}/gateway.ext" 2> /dev/null
+
+  rm -f "${TLS}/gateway.csr" "${TLS}/gateway.ext" "${TLS}/tunnel-ca.srl" "${CA}/tunnel-ca.srl"
+
+  # The tunnel gateway runs as uid 10001 and mounts this directory read-only, so
+  # the material is readable rather than 0600 for the reason recorded above.
+  chmod 644 "${TLS}/gateway.crt" "${TLS}/gateway.key" "${TLS}/tunnel-ca.pem"
+  chmod 600 "${CA}/tunnel-ca.key"
+  say "   wrote ca/tunnel-ca.key (never mounted), tls/tunnel-ca.pem, tls/gateway.crt, tls/gateway.key"
+else
+  say "   the tunnel certificate already exists; left alone"
+fi
+
+# The pin the browser worker is started with. It is a digest of a public key, so
+# it is deployment data rather than a secret, and it is written to `.env` rather
+# than to `secrets/`: an operator has to be able to check that the value the
+# worker was started with matches the certificate the gateway is serving.
+SPKI="$(openssl x509 -in "${TLS}/gateway.crt" -pubkey -noout \
+  | openssl pkey -pubin -outform der \
+  | openssl dgst -sha256 -binary \
+  | openssl base64)"
+set_env REVIEWPLANE_TUNNEL_CERTIFICATE_SPKI "${SPKI}"
+say "   REVIEWPLANE_TUNNEL_CERTIFICATE_SPKI=${SPKI}"
+
+# ---------------------------------------------------------------------------
+# 5. Pinned version configuration
+#
+# `docs/DEPLOYMENT.md` section 2 requires production files to pin exact versions
+# or immutable digests. The version is written into `.env` rather than left to
+# the compose file's default, so that `docker compose config` shows an operator
+# the exact tag their installation will run and an upgrade is a visible edit.
+# ---------------------------------------------------------------------------
+
+step "5. Version and image source"
+
+VERSION="$(read_env REVIEWPLANE_VERSION)"
+[[ -n "${VERSION}" ]] || VERSION="${DEFAULT_VERSION}"
+set_env REVIEWPLANE_VERSION "${VERSION}"
+
+PREFIX="$(read_env REVIEWPLANE_IMAGE_PREFIX)"
+[[ -n "${PREFIX}" ]] || PREFIX="${DEFAULT_IMAGE_PREFIX}"
+set_env REVIEWPLANE_IMAGE_PREFIX "${PREFIX}"
+
+# `auto` asks the registry rather than guessing. A published release is pulled;
+# anything else is built from the checkout this script is part of, which is what
+# `git clone` of the deployment repository leaves behind. The probe is bounded
+# so that a host with no route to the registry falls back rather than hanging.
+resolve_image_source() {
+  local candidate="${PREFIX}/reviewplane-server:${VERSION}"
+  if timeout 30 docker manifest inspect "${candidate}" > /dev/null 2>&1; then
+    printf 'registry'
+    return
+  fi
+  printf 'build'
+}
+
+EFFECTIVE_SOURCE="${IMAGE_SOURCE}"
+if [[ "${EFFECTIVE_SOURCE}" == "auto" ]]; then
+  say "   asking the registry for ${PREFIX}/reviewplane-server:${VERSION}"
+  EFFECTIVE_SOURCE="$(resolve_image_source)"
+fi
+
+if [[ "${EFFECTIVE_SOURCE}" == "build" ]]; then
+  [[ -f "${COMPOSE_DIR}/../../apps/server/Dockerfile" ]] ||
+    die "release images for ${VERSION} are not available and this is not a source checkout, so there is nothing to build. Check REVIEWPLANE_VERSION and REVIEWPLANE_IMAGE_PREFIX in .env."
+  set_env REVIEWPLANE_PULL_POLICY build
+  # Build stamps, so that `/version` and `reviewplane status` describe the
+  # revision this installation was built from rather than "unknown".
+  REVISION="$(git -C "${COMPOSE_DIR}" rev-parse --short HEAD 2> /dev/null || printf 'unknown')"
+  set_env REVIEWPLANE_REVISION "${REVISION}"
+  set_env REVIEWPLANE_BUILT_AT "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  say "   images will be BUILT from this checkout (revision ${REVISION})"
+  say "   no signed release image is published for ${VERSION} yet; docker compose up -d builds them"
+else
+  set_env REVIEWPLANE_PULL_POLICY missing
+  set_env REVIEWPLANE_REVISION unknown
+  set_env REVIEWPLANE_BUILT_AT unknown
+  say "   images will be PULLED from ${PREFIX} at version ${VERSION}"
+fi
+
+# ---------------------------------------------------------------------------
+# 6. The development profile
+#
+# Off by default: `docs/DEPLOYMENT.md` section 6 requires the default
+# installation to need no profile.
+# ---------------------------------------------------------------------------
+
+if [[ "${DEVELOPMENT}" -eq 1 ]]; then
+  step "6. Development profile"
+  if [[ ! -s "${COMPOSE_DIR}/connector-config.generated.yaml" || "${FORCE}" -eq 1 ]]; then
+    cp "${COMPOSE_DIR}/connector-config.yaml" "${COMPOSE_DIR}/connector-config.generated.yaml"
+    chmod 644 "${COMPOSE_DIR}/connector-config.generated.yaml"
+    say "   wrote connector-config.generated.yaml"
+  fi
+  say "   start it with: docker compose --profile development up -d"
+fi
+
+# ---------------------------------------------------------------------------
+# 7. Where to go next
+# ---------------------------------------------------------------------------
+
+DOMAIN="$(read_env REVIEWPLANE_GATEWAY_DOMAIN)"
+[[ -n "${DOMAIN}" ]] || DOMAIN="localhost"
+PORT="$(read_env REVIEWPLANE_GATEWAY_PORT)"
+[[ -n "${PORT}" ]] || PORT="8443"
+SETUP_URL="https://${DOMAIN}:${PORT}/"
+
+step "Configured"
+printf '   setup URL   %s\n' "${SETUP_URL}"
+
+# The one-time administrator token is minted from the database and stored only
+# as a digest, so it does not exist until the control plane is running
+# (`docs/DEPLOYMENT.md` section 11). When it is, mint it here; when it is not,
+# say exactly which command prints it. It is never written to a file and never
+# logged: `docs/SECURITY.md` section 18.
+API_STATE="$(docker compose --project-directory "${COMPOSE_DIR}" ps --format '{{.Service}} {{.State}}' 2> /dev/null | awk '$1 == "api" { print $2 }' || true)"
+if [[ "${API_STATE}" == "running" ]]; then
+  TOKEN_OUTPUT="$(docker compose --project-directory "${COMPOSE_DIR}" exec -T api reviewplane install-token 2>&1 || true)"
+  if grep -q "administrator install token" <<< "${TOKEN_OUTPUT}"; then
+    printf '\n%s\n' "${TOKEN_OUTPUT}"
+  elif grep -q "already has an administrator credential" <<< "${TOKEN_OUTPUT}"; then
+    printf '   administrator  already claimed; sign in at the setup URL\n'
+  else
+    printf '   administrator  could not mint a token yet: %s\n' "${TOKEN_OUTPUT}"
+    printf '                  run ./reviewplane install-token once the API reports ready\n'
+  fi
+else
+  cat << NEXT
+
+   Next:
+
+     docker compose config        check the resolved configuration
+     docker compose pull          fetch the pinned images
+     docker compose up -d         start the stack
+     ./reviewplane status         check the deployment
+     ./reviewplane install-token  print the one-time administrator token
+
+   Then open ${SETUP_URL} and complete "Set up this installation".
+NEXT
+fi
