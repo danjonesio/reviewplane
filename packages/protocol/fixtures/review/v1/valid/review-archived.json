@@ -1,0 +1,24 @@
+{
+  "id": "evt_01JREVIEWARCHIVED",
+  "schema_version": 1,
+  "occurred_at": "2026-07-31T09:02:11.004Z",
+  "recorded_at": "2026-07-31T09:02:11.011Z",
+  "organisation_id": "org_01JREFRESH",
+  "project_id": "prj_01JREFRESHSURPLUS",
+  "sequence": 74,
+  "type": "review.archived",
+  "actor": {
+    "type": "human_user",
+    "id": "vwr_01JBOOTSTRAPADMIN",
+    "display": "bootstrap administrator"
+  },
+  "correlation": {
+    "review_id": "rev_01JBUGSONHOMEPAGE"
+  },
+  "payload": {
+    "review_id": "rev_01JBUGSONHOMEPAGE",
+    "from": "ACCEPTED",
+    "version": 9,
+    "reason": "Superseded by the product-page review."
+  }
+}

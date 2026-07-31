@@ -213,9 +213,20 @@ export function validateFindingSeverity(value: unknown, path: string, out: Schem
 }
 
 /**
+ * How urgently a review should be worked (docs/DOMAIN_MODEL.md section 14). It orders a
+ * queue and never gates a transition: an urgent review and a routine one obey the same
+ * lifecycle and the same authority rules.
+ */
+export function validateReviewPriority(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["critical","high","medium","low"] });
+}
+
+/**
  * Whether a human or an agent authored the finding. It is recorded on the first row rather
  * than derived later, because the acceptance authority rule depends on it for the life of
- * the finding.
+ * the finding. It is derived by the control plane from the authenticated actor and is
+ * never a field a caller may supply: a client able to set it could forge a human-authored
+ * finding, or relabel its own to escape the rule that a human decides.
  */
 export function validateFindingSource(value: unknown, path: string, out: SchemaViolation[]): void {
   checkString(value, path, out, { values: ["human","agent"] });
@@ -274,7 +285,7 @@ export function validateVerificationStatus(value: unknown, path: string, out: Sc
  * equal the keys of x-protocol.messages.
  */
 export function validateMessageType(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["review.created","review.named","review.status_changed","finding.created","finding.annotated","finding.status_changed","review.claimed","finding.claimed","finding.comment_added","finding.verification_submitted","artefact.upload_started","artefact.upload_completed","artefact.upload_failed","artefact.access_granted","screenshot.captured"] });
+  checkString(value, path, out, { values: ["review.created","review.named","review.status_changed","finding.created","finding.annotated","finding.status_changed","review.claimed","finding.claimed","finding.comment_added","finding.verification_submitted","review.assigned","review.accepted","review.reopened","review.archived","review.comment_added","finding.resolved","finding.reopened","review.status_change_denied","finding.status_change_denied","artefact.upload_started","artefact.upload_completed","artefact.upload_failed","artefact.access_granted","screenshot.captured"] });
 }
 
 /**
@@ -460,6 +471,16 @@ export function validateElementContext(value: unknown, path: string, out: Schema
 }
 
 /**
+ * How many times the review has been reopened after acceptance. It is on the record
+ * because reopening preserves prior history rather than replacing it (docs/DOMAIN_MODEL.md
+ * section 14), so the count is the only thing that distinguishes a first acceptance from a
+ * later one.
+ */
+export function validateReviewReopenCount(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 0, maximum: 100000 });
+}
+
+/**
  * Findings currently in the review.
  */
 export function validateReviewFindingCount(value: unknown, path: string, out: SchemaViolation[]): void {
@@ -472,7 +493,7 @@ export function validateReviewFindingCount(value: unknown, path: string, out: Sc
  * on the record itself for defence-in-depth filtering (section 3).
  */
 export function validateReview(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["id", "organisation_id", "project_id", "slug", "title", "description", "status", "version", "created_by", "captured_branch", "captured_commit", "captured_workspace_id", "source_browser_session_id", "finding_count", "created_at", "updated_at", "closed_at"], ["id", "organisation_id", "project_id", "slug", "title", "status", "version", "created_by", "captured_branch", "captured_commit", "captured_workspace_id", "source_browser_session_id", "created_at", "updated_at"]);
+  const source = checkObject(value, path, out, ["id", "organisation_id", "project_id", "slug", "title", "description", "status", "priority", "version", "created_by", "assigned_user_id", "assigned_agent_session_id", "reopen_count", "captured_branch", "captured_commit", "captured_workspace_id", "source_browser_session_id", "finding_count", "created_at", "updated_at", "closed_at"], ["id", "organisation_id", "project_id", "slug", "title", "status", "version", "created_by", "captured_branch", "captured_commit", "captured_workspace_id", "source_browser_session_id", "created_at", "updated_at"]);
   if (source === null) return;
   if (source["id"] !== undefined) {
     validateIdentifier(source["id"], `${path}.id`, out);
@@ -495,11 +516,23 @@ export function validateReview(value: unknown, path: string, out: SchemaViolatio
   if (source["status"] !== undefined) {
     validateReviewStatus(source["status"], `${path}.status`, out);
   }
+  if (source["priority"] !== undefined) {
+    validateReviewPriority(source["priority"], `${path}.priority`, out);
+  }
   if (source["version"] !== undefined) {
     validateVersionNumber(source["version"], `${path}.version`, out);
   }
   if (source["created_by"] !== undefined) {
     validateActor(source["created_by"], `${path}.created_by`, out);
+  }
+  if (source["assigned_user_id"] !== undefined) {
+    validateIdentifier(source["assigned_user_id"], `${path}.assigned_user_id`, out);
+  }
+  if (source["assigned_agent_session_id"] !== undefined) {
+    validateIdentifier(source["assigned_agent_session_id"], `${path}.assigned_agent_session_id`, out);
+  }
+  if (source["reopen_count"] !== undefined) {
+    validateReviewReopenCount(source["reopen_count"], `${path}.reopen_count`, out);
   }
   if (source["captured_branch"] !== undefined) {
     validateBranchName(source["captured_branch"], `${path}.captured_branch`, out);
@@ -825,6 +858,18 @@ export function validateErrorDetailsRequiredEvidence(value: unknown, path: strin
 }
 
 /**
+ * The transitions this actor may make from the current status, as from:to labels, returned
+ * with a refused transition (docs/API.md section 5). A refusal that only says no makes a
+ * caller guess, and a guessing agent retries.
+ */
+export function validateErrorDetailsAllowedTransitions(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 1, maxItems: 32, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateReasonText(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
  * How long to wait before retrying, returned with RATE_LIMITED.
  */
 export function validateErrorDetailsRetryAfterMs(value: unknown, path: string, out: SchemaViolation[]): void {
@@ -836,7 +881,7 @@ export function validateErrorDetailsRetryAfterMs(value: unknown, path: string, o
  * cannot become a channel for arbitrary content.
  */
 export function validateErrorDetails(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["current_version", "expected_version", "field", "missing_context", "required_evidence", "retry_after_ms"], []);
+  const source = checkObject(value, path, out, ["current_version", "expected_version", "field", "missing_context", "required_evidence", "allowed_transitions", "reason", "retry_after_ms"], []);
   if (source === null) return;
   if (source["current_version"] !== undefined) {
     validateVersionNumber(source["current_version"], `${path}.current_version`, out);
@@ -852,6 +897,12 @@ export function validateErrorDetails(value: unknown, path: string, out: SchemaVi
   }
   if (source["required_evidence"] !== undefined) {
     validateErrorDetailsRequiredEvidence(source["required_evidence"], `${path}.required_evidence`, out);
+  }
+  if (source["allowed_transitions"] !== undefined) {
+    validateErrorDetailsAllowedTransitions(source["allowed_transitions"], `${path}.allowed_transitions`, out);
+  }
+  if (source["reason"] !== undefined) {
+    validateReasonText(source["reason"], `${path}.reason`, out);
   }
   if (source["retry_after_ms"] !== undefined) {
     validateErrorDetailsRetryAfterMs(source["retry_after_ms"], `${path}.retry_after_ms`, out);
@@ -882,7 +933,7 @@ export function validateDomainError(value: unknown, path: string, out: SchemaVio
  * from cannot be judged against a later state of the code.
  */
 export function validateReviewCreateRequest(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["slug", "title", "description", "status", "captured_branch", "captured_commit", "captured_workspace_id", "source_browser_session_id"], ["slug", "title", "captured_branch", "captured_commit", "captured_workspace_id", "source_browser_session_id"]);
+  const source = checkObject(value, path, out, ["slug", "title", "description", "status", "priority", "captured_branch", "captured_commit", "captured_workspace_id", "source_browser_session_id"], ["slug", "title", "captured_branch", "captured_commit", "captured_workspace_id", "source_browser_session_id"]);
   if (source === null) return;
   if (source["slug"] !== undefined) {
     validateSlug(source["slug"], `${path}.slug`, out);
@@ -895,6 +946,9 @@ export function validateReviewCreateRequest(value: unknown, path: string, out: S
   }
   if (source["status"] !== undefined) {
     validateReviewStatus(source["status"], `${path}.status`, out);
+  }
+  if (source["priority"] !== undefined) {
+    validateReviewPriority(source["priority"], `${path}.priority`, out);
   }
   if (source["captured_branch"] !== undefined) {
     validateBranchName(source["captured_branch"], `${path}.captured_branch`, out);
@@ -915,7 +969,7 @@ export function validateReviewCreateRequest(value: unknown, path: string, out: S
  * needs the refusal more than it needs the convenience.
  */
 export function validateReviewUpdateRequest(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["expected_version", "title", "slug", "description", "status"], ["expected_version"]);
+  const source = checkObject(value, path, out, ["expected_version", "title", "slug", "description", "status", "priority"], ["expected_version"]);
   if (source === null) return;
   if (source["expected_version"] !== undefined) {
     validateVersionNumber(source["expected_version"], `${path}.expected_version`, out);
@@ -931,6 +985,104 @@ export function validateReviewUpdateRequest(value: unknown, path: string, out: S
   }
   if (source["status"] !== undefined) {
     validateReviewStatus(source["status"], `${path}.status`, out);
+  }
+  if (source["priority"] !== undefined) {
+    validateReviewPriority(source["priority"], `${path}.priority`, out);
+  }
+}
+
+/**
+ * Assigns a review to a human or to an agent session. Exactly one of the two is named: a
+ * review owned by both would leave the question the assignment exists to answer
+ * unanswered, and clearing an assignment is done by naming neither.
+ */
+export function validateReviewAssignRequest(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["expected_version", "assigned_user_id", "assigned_agent_session_id", "reason"], ["expected_version"]);
+  if (source === null) return;
+  if (source["expected_version"] !== undefined) {
+    validateVersionNumber(source["expected_version"], `${path}.expected_version`, out);
+  }
+  if (source["assigned_user_id"] !== undefined) {
+    validateIdentifier(source["assigned_user_id"], `${path}.assigned_user_id`, out);
+  }
+  if (source["assigned_agent_session_id"] !== undefined) {
+    validateIdentifier(source["assigned_agent_session_id"], `${path}.assigned_agent_session_id`, out);
+  }
+  if (source["reason"] !== undefined) {
+    validateReasonText(source["reason"], `${path}.reason`, out);
+  }
+}
+
+/**
+ * Body of the review lifecycle routes: request-review, accept, reopen and archive
+ * (docs/API.md section 12). The target status is fixed by the route rather than named in
+ * the body, so a caller cannot ask one route for another route's transition.
+ */
+export function validateReviewTransitionRequest(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["expected_version", "reason"], ["expected_version"]);
+  if (source === null) return;
+  if (source["expected_version"] !== undefined) {
+    validateVersionNumber(source["expected_version"], `${path}.expected_version`, out);
+  }
+  if (source["reason"] !== undefined) {
+    validateReasonText(source["reason"], `${path}.reason`, out);
+  }
+}
+
+/**
+ * Claims one finding. The claim carries the same expected_version as any other write, so a
+ * human and an agent claiming at once produce one claim and one VERSION_CONFLICT rather
+ * than two silent overwrites.
+ */
+export function validateFindingClaimRequest(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["expected_version"], ["expected_version"]);
+  if (source === null) return;
+  if (source["expected_version"] !== undefined) {
+    validateVersionNumber(source["expected_version"], `${path}.expected_version`, out);
+  }
+}
+
+/**
+ * Body of the human-only finding disposition routes: accept, reopen and wont-fix
+ * (docs/API.md section 13). Each is refused for an agent actor in the domain layer with
+ * AUTHORISATION_DENIED, whatever credential reached the route.
+ */
+export function validateFindingTransitionRequest(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["expected_version", "reason", "duplicate_of_finding_id"], ["expected_version"]);
+  if (source === null) return;
+  if (source["expected_version"] !== undefined) {
+    validateVersionNumber(source["expected_version"], `${path}.expected_version`, out);
+  }
+  if (source["reason"] !== undefined) {
+    validateReasonText(source["reason"], `${path}.reason`, out);
+  }
+  if (source["duplicate_of_finding_id"] !== undefined) {
+    validateIdentifier(source["duplicate_of_finding_id"], `${path}.duplicate_of_finding_id`, out);
+  }
+}
+
+/**
+ * Appends a comment to a review or a finding. There is no author field: attribution is
+ * derived from the authenticated actor, because a caller able to name its own actor type
+ * could make an agent's note read as a human's (docs/DOMAIN_MODEL.md section 18).
+ */
+export function validateCommentCreateRequest(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["body"], ["body"]);
+  if (source === null) return;
+  if (source["body"] !== undefined) {
+    validateBodyText(source["body"], `${path}.body`, out);
+  }
+}
+
+/**
+ * Edits a comment. The edit appends a new revision and retains the previous one, so the
+ * history a reader needs to judge a changed instruction is never lost.
+ */
+export function validateCommentUpdateRequest(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["body"], ["body"]);
+  if (source === null) return;
+  if (source["body"] !== undefined) {
+    validateBodyText(source["body"], `${path}.body`, out);
   }
 }
 
@@ -951,7 +1103,7 @@ export function validateFindingCreateRequestAnnotations(value: unknown, path: st
  * best effort; a request missing one is refused rather than stored incomplete.
  */
 export function validateFindingCreateRequest(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["title", "description", "severity", "source", "url", "viewport", "scroll_position", "captured_commit", "screenshot_artefact_id", "element_context", "acceptance_criteria", "annotations"], ["title", "severity", "source", "url", "viewport", "scroll_position", "captured_commit", "screenshot_artefact_id"]);
+  const source = checkObject(value, path, out, ["title", "description", "severity", "url", "viewport", "scroll_position", "captured_commit", "screenshot_artefact_id", "element_context", "acceptance_criteria", "annotations"], ["title", "severity", "url", "viewport", "scroll_position", "captured_commit", "screenshot_artefact_id"]);
   if (source === null) return;
   if (source["title"] !== undefined) {
     validateTitleText(source["title"], `${path}.title`, out);
@@ -961,9 +1113,6 @@ export function validateFindingCreateRequest(value: unknown, path: string, out: 
   }
   if (source["severity"] !== undefined) {
     validateFindingSeverity(source["severity"], `${path}.severity`, out);
-  }
-  if (source["source"] !== undefined) {
-    validateFindingSource(source["source"], `${path}.source`, out);
   }
   if (source["url"] !== undefined) {
     validateCapturedUrl(source["url"], `${path}.url`, out);
@@ -1162,12 +1311,14 @@ export function validateFindingStatusChanged(value: unknown, path: string, out: 
 }
 
 /**
- * One chronological discussion item on a finding (docs/DOMAIN_MODEL.md section 18).
- * Comments are append-only; the actor type is always explicit, because a reader must be
- * able to tell an agent's note from a human's without inferring it from the wording.
+ * One chronological discussion item on a review or on one of its findings
+ * (docs/DOMAIN_MODEL.md section 18). finding_id is absent for a comment on the review
+ * itself. Comments are append-only; the actor type is always explicit, because a reader
+ * must be able to tell an agent's note from a human's without inferring it from the
+ * wording, and it is derived from the authenticated actor rather than supplied.
  */
 export function validateComment(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["id", "organisation_id", "project_id", "review_id", "finding_id", "body", "created_by", "revision", "created_at"], ["id", "finding_id", "body", "created_by", "revision", "created_at"]);
+  const source = checkObject(value, path, out, ["id", "organisation_id", "project_id", "review_id", "finding_id", "body", "created_by", "revision", "supersedes_comment_id", "superseded_at", "created_at"], ["id", "review_id", "body", "created_by", "revision", "created_at"]);
   if (source === null) return;
   if (source["id"] !== undefined) {
     validateIdentifier(source["id"], `${path}.id`, out);
@@ -1192,6 +1343,12 @@ export function validateComment(value: unknown, path: string, out: SchemaViolati
   }
   if (source["revision"] !== undefined) {
     validateVersionNumber(source["revision"], `${path}.revision`, out);
+  }
+  if (source["supersedes_comment_id"] !== undefined) {
+    validateIdentifier(source["supersedes_comment_id"], `${path}.supersedes_comment_id`, out);
+  }
+  if (source["superseded_at"] !== undefined) {
+    validateTimestamp(source["superseded_at"], `${path}.superseded_at`, out);
   }
   if (source["created_at"] !== undefined) {
     validateTimestamp(source["created_at"], `${path}.created_at`, out);
@@ -1296,6 +1453,261 @@ export function validateFindingCommentAdded(value: unknown, path: string, out: S
   if (source === null) return;
   if (source["comment"] !== undefined) {
     validateComment(source["comment"], `${path}.comment`, out);
+  }
+}
+
+/**
+ * Payload of review.comment_added.
+ */
+export function validateReviewCommentAdded(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["comment"], ["comment"]);
+  if (source === null) return;
+  if (source["comment"] !== undefined) {
+    validateComment(source["comment"], `${path}.comment`, out);
+  }
+}
+
+/**
+ * Payload of review.assigned.
+ */
+export function validateReviewAssigned(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["review_id", "assigned_user_id", "assigned_agent_session_id", "previous_assigned_user_id", "previous_assigned_agent_session_id", "version", "reason"], ["review_id", "version"]);
+  if (source === null) return;
+  if (source["review_id"] !== undefined) {
+    validateIdentifier(source["review_id"], `${path}.review_id`, out);
+  }
+  if (source["assigned_user_id"] !== undefined) {
+    validateIdentifier(source["assigned_user_id"], `${path}.assigned_user_id`, out);
+  }
+  if (source["assigned_agent_session_id"] !== undefined) {
+    validateIdentifier(source["assigned_agent_session_id"], `${path}.assigned_agent_session_id`, out);
+  }
+  if (source["previous_assigned_user_id"] !== undefined) {
+    validateIdentifier(source["previous_assigned_user_id"], `${path}.previous_assigned_user_id`, out);
+  }
+  if (source["previous_assigned_agent_session_id"] !== undefined) {
+    validateIdentifier(source["previous_assigned_agent_session_id"], `${path}.previous_assigned_agent_session_id`, out);
+  }
+  if (source["version"] !== undefined) {
+    validateVersionNumber(source["version"], `${path}.version`, out);
+  }
+  if (source["reason"] !== undefined) {
+    validateReasonText(source["reason"], `${path}.reason`, out);
+  }
+}
+
+/**
+ * Findings the review held when it was accepted.
+ */
+export function validateReviewAcceptedFindingCount(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 0, maximum: 100000 });
+}
+
+/**
+ * How many of those a human authored. Acceptance rests on every one of them having reached
+ * a final disposition, so the count is recorded rather than left to be recomputed against
+ * a table that has since moved on.
+ */
+export function validateReviewAcceptedHumanFindingCount(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 0, maximum: 100000 });
+}
+
+/**
+ * Payload of review.accepted.
+ */
+export function validateReviewAccepted(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["review_id", "accepted_by", "version", "finding_count", "human_finding_count", "reason"], ["review_id", "accepted_by", "version", "finding_count", "human_finding_count"]);
+  if (source === null) return;
+  if (source["review_id"] !== undefined) {
+    validateIdentifier(source["review_id"], `${path}.review_id`, out);
+  }
+  if (source["accepted_by"] !== undefined) {
+    validateActor(source["accepted_by"], `${path}.accepted_by`, out);
+  }
+  if (source["version"] !== undefined) {
+    validateVersionNumber(source["version"], `${path}.version`, out);
+  }
+  if (source["finding_count"] !== undefined) {
+    validateReviewAcceptedFindingCount(source["finding_count"], `${path}.finding_count`, out);
+  }
+  if (source["human_finding_count"] !== undefined) {
+    validateReviewAcceptedHumanFindingCount(source["human_finding_count"], `${path}.human_finding_count`, out);
+  }
+  if (source["reason"] !== undefined) {
+    validateReasonText(source["reason"], `${path}.reason`, out);
+  }
+}
+
+/**
+ * How many times this review has now been reopened. Prior findings, evidence and comments
+ * are retained, so the count is what distinguishes one acceptance cycle from the next.
+ */
+export function validateReviewReopenedReopenCount(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 1, maximum: 100000 });
+}
+
+/**
+ * Payload of review.reopened.
+ */
+export function validateReviewReopened(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["review_id", "from", "to", "version", "reopen_count", "reason"], ["review_id", "from", "to", "version", "reopen_count"]);
+  if (source === null) return;
+  if (source["review_id"] !== undefined) {
+    validateIdentifier(source["review_id"], `${path}.review_id`, out);
+  }
+  if (source["from"] !== undefined) {
+    validateReviewStatus(source["from"], `${path}.from`, out);
+  }
+  if (source["to"] !== undefined) {
+    validateReviewStatus(source["to"], `${path}.to`, out);
+  }
+  if (source["version"] !== undefined) {
+    validateVersionNumber(source["version"], `${path}.version`, out);
+  }
+  if (source["reopen_count"] !== undefined) {
+    validateReviewReopenedReopenCount(source["reopen_count"], `${path}.reopen_count`, out);
+  }
+  if (source["reason"] !== undefined) {
+    validateReasonText(source["reason"], `${path}.reason`, out);
+  }
+}
+
+/**
+ * Payload of review.archived.
+ */
+export function validateReviewArchived(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["review_id", "from", "version", "reason"], ["review_id", "from", "version"]);
+  if (source === null) return;
+  if (source["review_id"] !== undefined) {
+    validateIdentifier(source["review_id"], `${path}.review_id`, out);
+  }
+  if (source["from"] !== undefined) {
+    validateReviewStatus(source["from"], `${path}.from`, out);
+  }
+  if (source["version"] !== undefined) {
+    validateVersionNumber(source["version"], `${path}.version`, out);
+  }
+  if (source["reason"] !== undefined) {
+    validateReasonText(source["reason"], `${path}.reason`, out);
+  }
+}
+
+/**
+ * Payload of finding.resolved.
+ */
+export function validateFindingResolved(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["finding_id", "review_id", "disposition", "source", "decided_by", "version", "duplicate_of_finding_id", "reason"], ["finding_id", "review_id", "disposition", "source", "decided_by", "version"]);
+  if (source === null) return;
+  if (source["finding_id"] !== undefined) {
+    validateIdentifier(source["finding_id"], `${path}.finding_id`, out);
+  }
+  if (source["review_id"] !== undefined) {
+    validateIdentifier(source["review_id"], `${path}.review_id`, out);
+  }
+  if (source["disposition"] !== undefined) {
+    validateFindingStatus(source["disposition"], `${path}.disposition`, out);
+  }
+  if (source["source"] !== undefined) {
+    validateFindingSource(source["source"], `${path}.source`, out);
+  }
+  if (source["decided_by"] !== undefined) {
+    validateActor(source["decided_by"], `${path}.decided_by`, out);
+  }
+  if (source["version"] !== undefined) {
+    validateVersionNumber(source["version"], `${path}.version`, out);
+  }
+  if (source["duplicate_of_finding_id"] !== undefined) {
+    validateIdentifier(source["duplicate_of_finding_id"], `${path}.duplicate_of_finding_id`, out);
+  }
+  if (source["reason"] !== undefined) {
+    validateReasonText(source["reason"], `${path}.reason`, out);
+  }
+}
+
+/**
+ * Payload of review.status_change_denied.
+ */
+export function validateReviewStatusChangeDenied(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["review_id", "from", "requested", "code", "reason"], ["review_id", "from", "requested", "code"]);
+  if (source === null) return;
+  if (source["review_id"] !== undefined) {
+    validateIdentifier(source["review_id"], `${path}.review_id`, out);
+  }
+  if (source["from"] !== undefined) {
+    validateReviewStatus(source["from"], `${path}.from`, out);
+  }
+  if (source["requested"] !== undefined) {
+    validateReviewStatus(source["requested"], `${path}.requested`, out);
+  }
+  if (source["code"] !== undefined) {
+    validateErrorClass(source["code"], `${path}.code`, out);
+  }
+  if (source["reason"] !== undefined) {
+    validateReasonText(source["reason"], `${path}.reason`, out);
+  }
+}
+
+/**
+ * Payload of finding.status_change_denied.
+ */
+export function validateFindingStatusChangeDenied(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["finding_id", "review_id", "from", "requested", "source", "code", "reason"], ["finding_id", "review_id", "from", "requested", "source", "code"]);
+  if (source === null) return;
+  if (source["finding_id"] !== undefined) {
+    validateIdentifier(source["finding_id"], `${path}.finding_id`, out);
+  }
+  if (source["review_id"] !== undefined) {
+    validateIdentifier(source["review_id"], `${path}.review_id`, out);
+  }
+  if (source["from"] !== undefined) {
+    validateFindingStatus(source["from"], `${path}.from`, out);
+  }
+  if (source["requested"] !== undefined) {
+    validateFindingStatus(source["requested"], `${path}.requested`, out);
+  }
+  if (source["source"] !== undefined) {
+    validateFindingSource(source["source"], `${path}.source`, out);
+  }
+  if (source["code"] !== undefined) {
+    validateErrorClass(source["code"], `${path}.code`, out);
+  }
+  if (source["reason"] !== undefined) {
+    validateReasonText(source["reason"], `${path}.reason`, out);
+  }
+}
+
+/**
+ * Verifications the finding already holds. Reopening preserves prior verification history
+ * (docs/DOMAIN_MODEL.md section 15), so the count says what was kept rather than implying
+ * a fresh start.
+ */
+export function validateFindingReopenedVerificationCount(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 0, maximum: 100000 });
+}
+
+/**
+ * Payload of finding.reopened.
+ */
+export function validateFindingReopened(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["finding_id", "review_id", "from", "version", "verification_count", "reason"], ["finding_id", "review_id", "from", "version", "verification_count"]);
+  if (source === null) return;
+  if (source["finding_id"] !== undefined) {
+    validateIdentifier(source["finding_id"], `${path}.finding_id`, out);
+  }
+  if (source["review_id"] !== undefined) {
+    validateIdentifier(source["review_id"], `${path}.review_id`, out);
+  }
+  if (source["from"] !== undefined) {
+    validateFindingStatus(source["from"], `${path}.from`, out);
+  }
+  if (source["version"] !== undefined) {
+    validateVersionNumber(source["version"], `${path}.version`, out);
+  }
+  if (source["verification_count"] !== undefined) {
+    validateFindingReopenedVerificationCount(source["verification_count"], `${path}.verification_count`, out);
+  }
+  if (source["reason"] !== undefined) {
+    validateReasonText(source["reason"], `${path}.reason`, out);
   }
 }
 

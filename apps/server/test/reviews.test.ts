@@ -137,7 +137,8 @@ function findingBody(fixture: Fixture, overrides: Record<string, unknown> = {}) 
     title: "Hero heading overlaps the basket button",
     description: "At 390x844 the heading wraps onto the button and hides it.",
     severity: "high",
-    source: "human",
+    // No `source`: it is derived from the authenticated actor and the schema
+    // has no such field (docs/DOMAIN_MODEL.md section 15).
     url: "https://route-01jhomepage.internal.invalid/",
     viewport: { width: 390, height: 844, device_scale_factor: 2 },
     scroll_position: { x: 0, y: 320 },
@@ -635,16 +636,21 @@ test("a viewer scoped to another project cannot reach this project's review", as
   const token = (minted.json() as { data: { token: string } }).data.token;
   const cookie = `reviewplane_viewer=${encodeURIComponent(token)}`;
 
+  // Not found, not "forbidden". This assertion used to require
+  // `PROJECT_CONTEXT_MISMATCH`, which pinned the defect of RVP-67 in place: a
+  // distinct refusal for "exists but is not yours" tells a caller that another
+  // tenant's identifier is real, which is the enumeration the rule exists to
+  // prevent (`docs/SECURITY.md` section 7).
   for (const url of [
     `/api/v1/reviews/${review.data.id}`,
     `/api/v1/reviews/${review.data.id}/findings`,
     `/api/v1/projects/${fixture.projectId}/reviews`,
   ]) {
     const refused = await harness.built.app.inject({ method: "GET", url, headers: { cookie } });
-    assert.equal(refused.statusCode, 403, `${url} was readable`);
+    assert.equal(refused.statusCode, 404, `${url} was readable`);
     assert.equal(
       (refused.json() as { error: { code: string } }).error.code,
-      "PROJECT_CONTEXT_MISMATCH",
+      "RESOURCE_NOT_FOUND",
     );
   }
 

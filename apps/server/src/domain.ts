@@ -103,17 +103,29 @@ export { BrowserWorkerClient } from "./modules/browser-sessions/worker-client.ts
 export { WorkerRegistry } from "./modules/browser-sessions/workers.ts";
 
 export {
+  ACTIVE_REVIEW_STATUSES,
+  AGENT_REVIEW_STATUSES,
   AGENT_TRANSITION_LABELS,
   agentTransitionsFrom,
   assertActorMayMoveFinding,
+  assertActorMayMoveReview,
   assertCompletionEvidence,
   assertExpectedVersion,
   assertFindingTransition,
+  assertReviewAcceptable,
+  assertReviewMutable,
   assertReviewTransition,
   assertVerificationCommitContext,
+  isHumanActor,
 } from "./modules/reviews/domain.ts";
+export { REVIEW_EXPORT_CONTENT_TYPE, reviewExportHandler } from "./modules/reviews/export-job.ts";
 export {
   ReviewService,
+  sourceForActor,
+  type AssignReviewInput,
+  type DisposeFindingInput,
+  type ReviewExport,
+  type ReviewTransitionInput,
   type Scope,
   type SubmitVerificationInput,
   type Verification,

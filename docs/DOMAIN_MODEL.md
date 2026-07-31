@@ -465,12 +465,62 @@ CANCELLED
 ARCHIVED
 ```
 
+### Transitions
+
+Each transition names the actor types that may **request** it. Absence from the
+table means refused: a status machine with an implicit "anything else is fine"
+arm is not a status machine.
+
+| From | To | May request |
+|---|---|---|
+| `DRAFT` | `READY`, `CANCELLED` | `human_user` |
+| `READY` | `ASSIGNED` | `human_user`, `agent_session` |
+| `READY` | `DRAFT`, `CANCELLED` | `human_user` |
+| `ASSIGNED` | `IN_PROGRESS` | `human_user`, `agent_session` |
+| `ASSIGNED` | `READY`, `CANCELLED` | `human_user` |
+| `IN_PROGRESS` | `AWAITING_HUMAN_REVIEW` | `human_user`, `agent_session` |
+| `IN_PROGRESS` | `CHANGES_REQUESTED`, `CANCELLED` | `human_user` |
+| `AWAITING_HUMAN_REVIEW` | `ACCEPTED`, `CHANGES_REQUESTED`, `CANCELLED` | `human_user` |
+| `CHANGES_REQUESTED` | `IN_PROGRESS` | `human_user`, `agent_session` |
+| `CHANGES_REQUESTED` | `ASSIGNED`, `CANCELLED` | `human_user` |
+| `ACCEPTED` | `CHANGES_REQUESTED` (reopen), `ARCHIVED` | `human_user` |
+| `CANCELLED` | `ARCHIVED` | `human_user` |
+| `ARCHIVED` | — | — |
+
+An agent therefore reaches exactly three of the nine statuses: `ASSIGNED` by
+claiming, and `IN_PROGRESS` and `AWAITING_HUMAN_REVIEW` by working. `ACCEPTED`
+is human-only, which is the authority boundary of `AGENTS.md`; so are every
+withdrawal and every archival, because an agent that could cancel a review could
+dispose of the feedback it was given rather than answering it.
+
+This table is **data**, not prose: it lives in
+`x-protocol.vocabularies.review_status_transitions` in
+`packages/protocol/schemas/review/v1.schema.json`, and the control plane, the
+MCP layer and the web application all read it from there rather than restating
+it (ADR-0024). The rows above are that vocabulary rendered for a human reader,
+and a contract test holds the two to each other.
+
 ### Invariants
 
 - Slug is unique within active reviews in a project
-- Accepted reviews are immutable except for archival metadata and comments
-- Reopening an accepted review creates a new review revision or explicit reopen event
+- Accepted reviews are immutable except for archival metadata, comments and an
+  explicit reopen. An ordinary edit is refused with `POLICY_DENIED` rather than
+  silently dropped, and a reopen carries no other field: a caller that could
+  retitle an accepted review by reopening it in the same request would have
+  found a way around the rule rather than an exception to it
+- Reopening an accepted review is an explicit `review.reopened` event. Prior
+  findings, verifications, comments and events are all retained; `reopen_count`
+  is what distinguishes one acceptance cycle from the next
 - A review may contain findings captured from multiple pages and sessions
+- `priority` orders a queue and gates nothing: an urgent review and a routine
+  one obey the same lifecycle and the same authority rules
+- Acceptance requires that every **human-authored** finding has reached a final
+  disposition — `RESOLVED`, `WONT_FIX` or `DUPLICATE`. Waiving is a decision, so
+  a waived finding counts as decided. An agent-authored finding is not a
+  condition: a human accepting a review is judging the feedback they gave
+- Acceptance records the human who decided, beside the status. A `review.accepted`
+  whose actor is anything but `human_user` is not representable: the domain layer
+  refuses it, and the `reviews` table constrains `accepted_by_actor_type`
 
 ## 15. Finding
 
@@ -518,12 +568,68 @@ WONT_FIX
 DUPLICATE
 ```
 
+### Transitions
+
+As with a review, each transition names the actor types that may request it, and
+absence means refused.
+
+| From | To | May request |
+|---|---|---|
+| `OPEN` | `CLAIMED` | `human_user`, `agent_session` |
+| `OPEN` | `IN_PROGRESS`, `BLOCKED`, `WONT_FIX`, `DUPLICATE` | `human_user` |
+| `CLAIMED` | `IN_PROGRESS` | `human_user`, `agent_session` |
+| `CLAIMED` | `BLOCKED`, `OPEN` | `human_user` |
+| `IN_PROGRESS` | `FIXED_UNVERIFIED`, `BLOCKED` | `human_user`, `agent_session` |
+| `IN_PROGRESS` | `AWAITING_HUMAN_REVIEW` | `human_user` |
+| `BLOCKED` | `IN_PROGRESS`, `OPEN` | `human_user` |
+| `FIXED_UNVERIFIED` | `AWAITING_HUMAN_REVIEW` | `human_user`, `agent_session` |
+| `FIXED_UNVERIFIED` | `IN_PROGRESS` | `human_user` |
+| `AWAITING_HUMAN_REVIEW` | `RESOLVED`, `REOPENED`, `WONT_FIX`, `DUPLICATE` | `human_user` |
+| `RESOLVED` | `REOPENED` | `human_user` |
+| `REOPENED` | `IN_PROGRESS` | `human_user`, `agent_session` |
+| `REOPENED` | `CLAIMED` | `human_user` |
+| `WONT_FIX`, `DUPLICATE` | `REOPENED` | `human_user` |
+
+The six rows naming `agent_session` are exactly the list of
+`docs/MCP_SPEC.md` §7.7 and nothing else. They stop at
+`AWAITING_HUMAN_REVIEW`, which is the product invariant of `AGENTS.md` expressed
+as data: an agent submits work for review and a human decides.
+
+Like the review table, this one is data in
+`x-protocol.vocabularies.finding_status_transitions` in
+`packages/protocol/schemas/review/v1.schema.json` (ADR-0024).
+
 ### Authority rules
 
 - Human-created findings require human acceptance
-- Agent-created findings may be auto-resolved by policy if configured
-- `WONT_FIX` requires a human decision or explicit project policy
-- Reopening preserves prior verification history
+- Agent-created findings may be auto-resolved by policy if configured. **Stage 1
+  configures no such policy**, so a final disposition is a human decision
+  whoever authored the finding, and an agent requesting one is refused with
+  `AUTHORISATION_DENIED` **from any status** — the rule is about the decision,
+  not about the move, so it is checked before the lifecycle is consulted. An
+  agent requesting any other transition outside its six is refused with
+  `POLICY_DENIED` and `details.allowed_transitions`
+- `WONT_FIX` requires a human decision or explicit project policy, and a reason.
+  Waiving a reported problem without one is not a decision anybody can review
+  later
+- `DUPLICATE` names the finding it duplicates, which must be another finding of
+  the same project
+- Reopening preserves prior verification history. The `finding.reopened` event
+  carries how many verifications the finding already holds, so a reader is not
+  left to assume a fresh start
+- `source` is derived by the control plane from the authenticated actor and is
+  immutable thereafter. It is never a field a client may supply: a caller able
+  to set it could forge a human-authored finding, or relabel its own to escape
+  the rule that a human decides. Everything that is not an `agent_session`
+  records `human`, which is the conservative direction
+- A refused transition is itself audited, as `finding.status_change_denied` or
+  `review.status_change_denied` — **every** refusal, not only the authority
+  ones, because a refused request is an attempt whichever check refused it. The
+  transaction the refusal happened in rolls back, so the record is written
+  outside it: an attempt with no record is indistinguishable from one that never
+  happened, and the Stage 1 exit criterion is that the attempt leaves a trail.
+  Where the audit write itself fails, the refusal still stands and the loss is
+  logged rather than discarded
 
 ## 16. Annotation
 
@@ -630,11 +736,35 @@ Selectors are hints, not permanent identity. Reproduction must tolerate changed 
 
 ## 18. Comment
 
-A chronological discussion item on a review or finding.
+A chronological discussion item on a review or finding. A comment carries the
+review it belongs to always, and the finding only when it is on one: a comment
+on the review itself has no finding.
 
-Comments may be authored by humans, agents or system actors. Actor type must always be explicit.
+Comments may be authored by humans, agents or system actors. Actor type must
+always be explicit, and it is **derived from the authenticated actor** rather
+than supplied: a caller able to name its own actor type could make an agent's
+note read as a human's, and the request schema therefore has no author field at
+all.
 
-Comments are append-only. Editing creates a new revision and retains history.
+Comments are append-only. Editing creates a new revision and retains history: the
+edit inserts a new row naming the revision it supersedes, and the row it replaces
+is stamped `superseded_at` rather than overwritten. The text a reader acted on
+stays readable after the author changed their mind, which matters most for the
+comments that are instructions.
+
+Two rules keep the history readable:
+
+- Only the actor that wrote a comment may edit it. An edit by anybody else would
+  appear over the original author's attribution, which is the forgery the
+  explicit actor type exists to prevent.
+- Only the current revision may be edited. A superseded one is refused with
+  `VERSION_CONFLICT`, and a unique index on the superseded reference enforces the
+  same thing under concurrency, so two simultaneous edits produce one revision
+  and one refusal rather than a forked history.
+
+A closed review still takes comments (§14). Discussion of a decision has to
+outlive the decision, or the only way to say something about an accepted review
+would be to reopen it.
 
 ## 19. Verification
 
@@ -798,3 +928,15 @@ Signals include:
 - Viewport or feature flags are unavailable
 
 Staleness is a warning and workflow input, not automatic invalidation. The agent must reproduce the issue against current code.
+
+Stage 1 **persists the captured context and computes no staleness**. A review
+records `captured_branch`, `captured_commit` and `captured_workspace_id`, and a
+finding records `captured_commit`, so the Stage 2 calculation is a read rather
+than a migration. Where a value is unknown the field is absent rather than
+guessed.
+
+"Not automatic invalidation" is structural rather than a rule somebody has to
+remember. There is no transition into a final disposition that a non-human actor
+may request (§15), so nothing a staleness calculation could return would close a
+finding: the worst it can do is tell a human and an agent that the capture no
+longer matches the code, which is what a warning is for.

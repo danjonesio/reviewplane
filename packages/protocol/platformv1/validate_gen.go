@@ -72,7 +72,7 @@ func validateActorType(value any, path string, out *[]SchemaViolation) {
 // (docs/ARCHITECTURE.md section 4.8). It is an enumeration because an operator reading
 // a failed job needs a name with a fixed meaning, not free text a caller chose.
 func validateJobKind(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{values: []string{"event_outbox_dispatch", "idempotency_key_expiry", "published_service_expiry"}})
+	checkString(value, path, out, stringOpts{values: []string{"event_outbox_dispatch", "idempotency_key_expiry", "published_service_expiry", "review_export"}})
 }
 
 // validateJobFailureReason checks why a job attempt failed. Stable, so a dead-lettered

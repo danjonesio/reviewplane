@@ -14,6 +14,7 @@
  * reviewplane serve             the api role: HTTP API, connector listener
  * reviewplane jobs              the jobs role: durable background work
  * reviewplane install-token     mint the one-time administrator bootstrap token
+ * reviewplane export-review     write one review as a portable document
  * reviewplane version           the build this image carries
  * ```
  *
@@ -23,7 +24,9 @@
  * branch on "needs migrating" without parsing output.
  */
 
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -35,9 +38,12 @@ import { migrate, migrationState } from "./db/migrate.ts";
 import { createPool, type Pool } from "./db/pool.ts";
 import { readBuildInfo, registerHealthRoutes } from "./health.ts";
 import { JobRunner } from "./jobs/runner.ts";
+import { ArtefactService } from "./modules/artefacts/service.ts";
+import { FilesystemArtefactStore } from "./modules/artefacts/store.ts";
 import { InstallTokenStore } from "./modules/identity/install-tokens.ts";
 import { OrganisationStore } from "./modules/identity/organisations.ts";
 import { UserStore } from "./modules/identity/users.ts";
+import { ReviewService } from "./modules/reviews/service.ts";
 
 /** Exit code for `migrate --status` when the schema is behind the code. */
 export const EXIT_MIGRATIONS_PENDING = 3;
@@ -51,6 +57,9 @@ const USAGE = `reviewplane <command>
   install-token [--ttl-seconds N]
                        mint the one-time administrator bootstrap token and print
                        it once; it is single-use and expires (default 24 hours)
+  export-review --project <id|slug> --review <slug|id> [--out FILE]
+                       write one review as the portable document of
+                       docs/REVIEW_FORMAT.md, to FILE or to standard output
   version              print the build information
 
 Configuration is read from the environment; see docs/CONFIGURATION.md.
@@ -267,6 +276,89 @@ async function runInstallToken(pool: Pool, argv: readonly string[], force: boole
   return 0;
 }
 
+/**
+ * `reviewplane export-review` (`docs/API.md` section 12,
+ * `docs/REVIEW_FORMAT.md`).
+ *
+ * The operator half of the export. The HTTP route queues a durable job and
+ * stores an artefact, which is right for a reviewer clicking a button; an
+ * operator with shell access on the control plane wants the document itself,
+ * on standard output or in a file, without an artefact grant to fetch it back
+ * through.
+ *
+ * It builds the same document the job builds, from the same code, so the two
+ * cannot drift. It writes no artefact and no event: nothing changed, and an
+ * export that only read rows is not a state change to audit. Reading the review
+ * through the API — which does leave a record — is the auditable path.
+ */
+async function runExportReview(pool: Pool, argv: readonly string[]): Promise<number> {
+  const projectRef = readOption(argv, "--project");
+  const reviewRef = readOption(argv, "--review");
+  if (projectRef === undefined || reviewRef === undefined) {
+    process.stderr.write("export-review requires --project and --review\n");
+    return 1;
+  }
+
+  const project = await pool.query<{ id: string; organisation_id: string }>(
+    "select id, organisation_id from projects where id = $1 or slug = $1",
+    [projectRef],
+  );
+  const projectRow = project.rows[0];
+  if (projectRow === undefined) {
+    process.stderr.write(`no project matches ${projectRef}\n`);
+    return 1;
+  }
+  const scope = { organisationId: projectRow.organisation_id, projectId: projectRow.id };
+
+  const review = await pool.query<{ id: string }>(
+    `select id from reviews
+      where organisation_id = $1 and project_id = $2 and (id = $3 or slug = $3)
+      order by created_at desc
+      limit 1`,
+    [scope.organisationId, scope.projectId, reviewRef],
+  );
+  const reviewRow = review.rows[0];
+  if (reviewRow === undefined) {
+    process.stderr.write(`no review matches ${reviewRef} in ${projectRow.id}\n`);
+    return 1;
+  }
+
+  // The whole server configuration is deliberately not loaded. This command
+  // reads rows and writes a file; it has no gateway, no worker and no
+  // capability key, exactly as `migrate` does not. The artefact store is
+  // constructed because `ReviewService` takes one, and it is never touched: the
+  // metadata-only document carries digests and no bytes.
+  const artefacts = new ArtefactService(
+    pool,
+    new FilesystemArtefactStore(
+      process.env["REVIEWPLANE_ARTEFACT_PATH"] ?? "/var/lib/reviewplane/artefacts",
+    ),
+    1,
+  );
+  const document = await new ReviewService(pool, artefacts).buildExportDocument(
+    scope,
+    reviewRow.id,
+  );
+  const rendered = `${JSON.stringify(document, null, 2)}\n`;
+  const out = readOption(argv, "--out");
+  if (out === undefined) {
+    process.stdout.write(rendered);
+    return 0;
+  }
+  await writeFile(out, rendered, { mode: 0o600 });
+  write(`wrote ${out}`);
+  write(`sha256 ${createHash("sha256").update(rendered, "utf8").digest("hex")}`);
+  return 0;
+}
+
+/** Reads `--name value` from an argument list. */
+function readOption(argv: readonly string[], name: string): string | undefined {
+  const index = argv.indexOf(name);
+  if (index === -1) return undefined;
+  const value = argv[index + 1];
+  return value === undefined || value.startsWith("--") ? undefined : value;
+}
+
 function readTtlSeconds(argv: readonly string[]): number | undefined {
   const index = argv.indexOf("--ttl-seconds");
   if (index === -1) return undefined;
@@ -344,6 +436,8 @@ export async function main(argv: readonly string[]): Promise<number> {
         return await runJobs(pool, rest.includes("--once"));
       case "install-token":
         return await runInstallToken(pool, rest, rest.includes("--force"));
+      case "export-review":
+        return await runExportReview(pool, rest);
       default:
         process.stderr.write(`unknown command: ${command}\n\n${USAGE}`);
         return 1;

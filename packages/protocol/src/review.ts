@@ -20,4 +20,5 @@
 
 export * from "./generated/review/v1/index.ts";
 export * from "./review-event.ts";
+export * from "./review-transitions.ts";
 export * from "./annotation-geometry.ts";
