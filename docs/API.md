@@ -122,10 +122,12 @@ change nothing else.
 Two state-changing routes here authenticate by neither cookie nor bearer:
 `POST /api/v1/auth/bootstrap` and `POST /api/v1/auth/sessions` carry their own
 credential in the body, so there is no session for a CSRF token to belong to.
-They are guarded instead by the configured `Origin` allow list — a request whose
-`Origin` the deployment does not list is refused with `AUTHORISATION_DENIED` —
-which is what stops another site signing somebody in or claiming an unclaimed
-installation.
+They are guarded instead by `REVIEWPLANE_ALLOWED_ORIGINS`: where a deployment
+configures the list, a request whose `Origin` is not on it is refused with
+`AUTHORISATION_DENIED`, which is what stops another site signing somebody in or
+claiming an unclaimed installation. Where it configures none, these two routes
+apply no origin check and rely on `SameSite=Strict` alone
+(`docs/CONFIGURATION.md` section 2.1).
 
 ### 4.1 Viewer sessions
 

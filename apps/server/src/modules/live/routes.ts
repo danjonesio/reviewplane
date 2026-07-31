@@ -192,10 +192,10 @@ export async function registerLiveRoutes(
    *     that cannot end is worse than one whose sign-out can be forged.
    *
    *     What that costs is bounded by the strict guard everywhere else, and
-   *     only by it. A token-less session is not read-only by nature: until
-   *     RVP-12's second review, one could retitle a review and move it from
-   *     `DRAFT` to `READY` on a cookie alone, because those routes applied no
-   *     guard. They apply the strict one now, so the whole of what a forged
+   *     only by it. A token-less session is not read-only by nature: until the
+   *     strict guard reached the review routes, one could retitle a review and
+   *     move it from `DRAFT` to `READY` on a cookie alone, because those routes
+   *     applied no guard at all. They apply it now, so the whole of what a forged
    *     request can achieve against a token-less session is to end it — no
    *     domain record moves, and the operator obtains another session by
    *     presenting the bootstrap token again. That is a denial of the caller's

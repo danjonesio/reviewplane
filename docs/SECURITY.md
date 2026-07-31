@@ -149,7 +149,8 @@ said would survive local accounts.
   session achieves nothing but ending it is true only while every other
   state-changing route refuses one. Sign-in and the installation claim carry
   their own credential in the body and have no session for a token to belong to,
-  so they are guarded by the configured `Origin` allow list instead.
+  so they are guarded by the `Origin` allow list instead, where a deployment
+  configures one (`docs/CONFIGURATION.md` section 2.1).
 - **Session rotation on privilege change.** Signing in revokes the session the
   request arrived with and issues a new one that names it; claiming the
   installation revokes every session the account held. Each revocation records
