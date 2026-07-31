@@ -4,12 +4,13 @@ name: CI
 # root, run on every pull request and on `main`.
 #
 # The container harnesses — `pnpm test:browser`, `test:ui`, `test:integration`,
-# `test:e2e` and `test:edge` — are deliberately not here. They build images and
-# take minutes rather than seconds, so they run in
-# `.github/workflows/container-harnesses.yml` on a schedule, on demand, and on a
-# labelled pull request. Turning the whole of `docs/TESTING.md` section 16 into
-# a release pipeline is RVP-57; this workflow is the part of it that can run on
-# every change today.
+# `test:e2e`, `test:edge` and `test:install` — are deliberately not here. They
+# build images and take minutes rather than seconds, so they run in
+# `.github/workflows/container-harnesses.yml`, which reports its own rolled-up
+# `Harness gates` check: on a schedule, on demand, and on every pull request
+# that is not documentation-only. Turning the whole of `docs/TESTING.md` section
+# 16 into a release pipeline is RVP-57; these two workflows are the part of it
+# that can run on every change today.
 #
 # Every action is pinned to a commit, not a tag, because a tag is mutable and
 # `docs/SECURITY.md` section 19 requires a pinned supply chain. The version each
