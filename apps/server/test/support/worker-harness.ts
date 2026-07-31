@@ -111,6 +111,12 @@ export interface HarnessOptions {
   readonly publisher?: RoutePublisher;
   /** Substitutes the tunnel gateway, which this harness does not run. */
   readonly gateway?: TunnelGateway;
+  /**
+   * Runs the durable job role beside the API, so a suite can drain the queue
+   * itself. It is off by default: a runner polling in the background would make
+   * every other suite's assertions race work it did not ask for.
+   */
+  readonly runJobs?: boolean;
 }
 
 const DEFAULT_ALLOCATION = {
@@ -278,6 +284,7 @@ export async function startHarness(pool: Pool, options: HarnessOptions = {}): Pr
     workerFetch,
     ...(options.publisher === undefined ? {} : { publisher: options.publisher }),
     ...(options.gateway === undefined ? {} : { gateway: options.gateway }),
+    ...(options.runJobs === true ? { runJobs: true } : {}),
   });
   await built.app.ready();
 

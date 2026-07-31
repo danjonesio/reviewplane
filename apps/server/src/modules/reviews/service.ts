@@ -30,16 +30,20 @@ import {
   type FindingSource,
   type FindingStatus,
   type Review,
+  type ReviewPriority,
   type ReviewStatus,
   type VerificationChecks,
   type VerificationReference,
   type Viewport,
+  isFinalDisposition,
+  mayActorMoveFinding,
 } from "@reviewplane/protocol/review";
 
 import { inTransaction } from "../../db/pool.ts";
 import { ApiError, notFound } from "../../errors.ts";
 import { appendEvent, type EventActor } from "../../events/append.ts";
 import { newId } from "../../ids.ts";
+import { enqueueJob } from "../../jobs/runner.ts";
 import type { ArtefactService } from "../artefacts/service.ts";
 import {
   ACTIVE_REVIEW_STATUSES,
@@ -50,7 +54,10 @@ import {
   assertExpectedVersion,
   assertFindingTransition,
   assertGeometry,
+  assertReviewAcceptable,
   assertReviewMutable,
+  assertActorMayCloseReview,
+  assertActorMayDispose,
   assertReviewTransition,
   assertVerificationCommitContext,
 } from "./domain.ts";
@@ -85,6 +92,7 @@ export interface CreateReviewInput {
   readonly title: string;
   readonly description?: string;
   readonly status?: ReviewStatus;
+  readonly priority?: ReviewPriority;
   readonly capturedBranch: string;
   readonly capturedCommit: string;
   readonly capturedWorkspaceId: string;
@@ -97,6 +105,56 @@ export interface UpdateReviewInput {
   readonly slug?: string;
   readonly description?: string;
   readonly status?: ReviewStatus;
+  readonly priority?: ReviewPriority;
+  /** Recorded on the events the change produces, never on the record. */
+  readonly reason?: string;
+}
+
+/** Who a review is assigned to. Naming neither clears the assignment. */
+export interface AssignReviewInput {
+  readonly expectedVersion: number;
+  readonly assignedUserId?: string;
+  readonly assignedAgentSessionId?: string;
+  readonly reason?: string;
+}
+
+/** The lifecycle routes of `docs/API.md` section 12 all carry this much. */
+export interface ReviewTransitionInput {
+  readonly expectedVersion: number;
+  readonly reason?: string;
+}
+
+/** A human's final decision about one finding. */
+export interface DisposeFindingInput {
+  readonly expectedVersion: number;
+  readonly reason?: string;
+  readonly duplicateOfFindingId?: string;
+}
+
+/** One page of a keyset-paginated collection. */
+export interface RepositoryPage<T> {
+  readonly items: readonly T[];
+  readonly nextCursor: { readonly sortKey: string; readonly id: string } | null;
+}
+
+/** The position after the last row a caller has seen. */
+export interface PageCursor {
+  readonly limit: number;
+  readonly after: { readonly sortKey: string; readonly id: string } | null;
+}
+
+/** A review export, as `docs/API.md` section 12 answers it. */
+export interface ReviewExport {
+  readonly id: string;
+  readonly review_id: string;
+  readonly status: "pending" | "ready" | "failed";
+  readonly privacy_mode: string;
+  readonly artefact_id: string | null;
+  readonly sha256: string | null;
+  readonly size_bytes: number | null;
+  readonly failure_reason: string | null;
+  readonly created_at: string;
+  readonly completed_at: string | null;
 }
 
 export interface CreateAnnotationInput {
@@ -112,7 +170,6 @@ export interface CreateFindingInput {
   readonly title: string;
   readonly description?: string;
   readonly severity: Finding["severity"];
-  readonly source: FindingSource;
   readonly url: string;
   readonly viewport: Record<string, unknown>;
   readonly scrollPosition: Record<string, unknown>;
@@ -131,6 +188,9 @@ export interface UpdateFindingInput {
   readonly status?: FindingStatus;
   readonly acceptanceCriteria?: string;
   readonly resolutionNote?: string;
+  /** Recorded with a final disposition or a reopen, and on their events. */
+  readonly reason?: string;
+  readonly duplicateOfFindingId?: string;
 }
 
 function timestamp(value: unknown): string {
@@ -162,8 +222,21 @@ function toReview(row: Record<string, unknown>, findingCount?: number): Review {
     title: row["title"] as string,
     ...(row["description"] === null ? {} : { description: row["description"] as string }),
     status: row["status"] as ReviewStatus,
+    ...(row["priority"] === null || row["priority"] === undefined
+      ? {}
+      : { priority: row["priority"] as ReviewPriority }),
     version: Number(row["version"]),
     created_by: createdBy ?? { type: "system" },
+    ...(row["assigned_user_id"] === null || row["assigned_user_id"] === undefined
+      ? {}
+      : { assigned_user_id: row["assigned_user_id"] as string }),
+    ...(row["assigned_agent_session_id"] === null ||
+    row["assigned_agent_session_id"] === undefined
+      ? {}
+      : { assigned_agent_session_id: row["assigned_agent_session_id"] as string }),
+    ...(row["reopen_count"] === undefined
+      ? {}
+      : { reopen_count: Number(row["reopen_count"]) }),
     captured_branch: row["captured_branch"] as string,
     captured_commit: row["captured_commit"] as string,
     captured_workspace_id: row["captured_workspace_id"] as string,
@@ -235,11 +308,36 @@ function toComment(row: Record<string, unknown>): Comment {
     organisation_id: row["organisation_id"] as string,
     project_id: row["project_id"] as string,
     review_id: row["review_id"] as string,
-    finding_id: row["finding_id"] as string,
+    // Absent rather than null for a comment on the review itself: a consumer
+    // testing for the key gets the same answer whichever writer produced it.
+    ...(row["finding_id"] === null || row["finding_id"] === undefined
+      ? {}
+      : { finding_id: row["finding_id"] as string }),
     body: row["body"] as string,
     created_by: createdBy ?? { type: "system" },
     revision: Number(row["revision"]),
+    ...(row["supersedes_comment_id"] === null || row["supersedes_comment_id"] === undefined
+      ? {}
+      : { supersedes_comment_id: row["supersedes_comment_id"] as string }),
+    ...(row["superseded_at"] === null || row["superseded_at"] === undefined
+      ? {}
+      : { superseded_at: timestamp(row["superseded_at"]) }),
     created_at: timestamp(row["created_at"]),
+  };
+}
+
+function toReviewExport(row: Record<string, unknown>): ReviewExport {
+  return {
+    id: row["id"] as string,
+    review_id: row["review_id"] as string,
+    status: row["status"] as ReviewExport["status"],
+    privacy_mode: row["privacy_mode"] as string,
+    artefact_id: (row["artefact_id"] as string | null) ?? null,
+    sha256: (row["sha256"] as string | null) ?? null,
+    size_bytes: row["size_bytes"] === null ? null : Number(row["size_bytes"]),
+    failure_reason: (row["failure_reason"] as string | null) ?? null,
+    created_at: timestamp(row["created_at"]),
+    completed_at: row["completed_at"] === null ? null : timestamp(row["completed_at"]),
   };
 }
 
@@ -273,13 +371,71 @@ function toVerification(
 /** PostgreSQL's unique-violation class. */
 const UNIQUE_VIOLATION = "23505";
 
+/**
+ * A refusal that has to be audited after the transaction it happened in has
+ * rolled back (`docs/EVENTS.md` section 7).
+ *
+ * A denied transition writes no state, so it cannot ride along with one. The
+ * event still has to exist: the Stage 1 exit criterion is that an agent cannot
+ * finally accept a human-authored finding **and that the attempt is audited**,
+ * and an attempt with no record is indistinguishable from one that never
+ * happened.
+ */
+interface PendingDenial {
+  readonly type: "review.status_change_denied" | "finding.status_change_denied";
+  readonly correlation: Record<string, string>;
+  readonly payload: Record<string, unknown>;
+}
+
+/**
+ * An actor as an event payload carries it (`docs/EVENTS.md` section 5).
+ *
+ * Absent members are dropped rather than written as null, so a consumer testing
+ * for `id` gets the same answer whichever writer produced the event.
+ */
+function eventActor(actor: EventActor): Record<string, unknown> {
+  return {
+    type: actor.type,
+    ...(actor.id === undefined ? {} : { id: actor.id }),
+    ...(actor.display === undefined ? {} : { display: actor.display }),
+  };
+}
+
+/**
+ * The source of a finding, derived from the authenticated actor.
+ *
+ * `docs/DOMAIN_MODEL.md` section 15 decides the acceptance authority rule on
+ * this value, so it is computed here and is not a field any request body can
+ * carry. A client able to set it could forge a human-authored finding, or
+ * relabel its own as an agent's to slip a final disposition past the rule that
+ * a human decides. Everything that is not an agent session is recorded as
+ * `human`, which is the conservative direction: a finding wrongly labelled
+ * human requires a human to close it, and a finding wrongly labelled agent
+ * would not.
+ */
+export function sourceForActor(actorType: EventActor["type"]): FindingSource {
+  return actorType === "agent_session" ? "agent" : "human";
+}
+
+/**
+ * Somewhere to report an audit write this service could not complete.
+ *
+ * It is the minimum surface Fastify's logger already satisfies, so the server
+ * passes `app.log` and nothing has to learn a second logging interface.
+ */
+export interface ReviewServiceLogger {
+  error(fields: Record<string, unknown>, message: string): void;
+}
+
 export class ReviewService {
   readonly #pool: Pool;
   readonly #artefacts: ArtefactService;
+  readonly #logger: ReviewServiceLogger | undefined;
 
-  constructor(pool: Pool, artefacts: ArtefactService) {
+  constructor(pool: Pool, artefacts: ArtefactService, logger?: ReviewServiceLogger) {
     this.#pool = pool;
     this.#artefacts = artefacts;
+    this.#logger = logger;
   }
 
   // -----------------------------------------------------------------------
@@ -314,11 +470,11 @@ export class ReviewService {
       return await inTransaction(this.#pool, async (client) => {
         const inserted = await client.query(
           `INSERT INTO reviews (
-              id, organisation_id, project_id, slug, title, description, status,
+              id, organisation_id, project_id, slug, title, description, status, priority,
               created_by_actor_type, created_by_actor_id, created_by_actor_display,
               captured_branch, captured_commit, captured_workspace_id,
               source_browser_session_id
-           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
            RETURNING *`,
           [
             id,
@@ -328,6 +484,7 @@ export class ReviewService {
             input.title,
             input.description ?? null,
             status,
+            input.priority ?? "medium",
             actor.type,
             actor.id ?? null,
             actor.display ?? null,
@@ -393,17 +550,53 @@ export class ReviewService {
   }
 
   async listReviews(scope: Scope, limit = 50): Promise<Review[]> {
+    const page = await this.listReviewsPage(scope, {
+      limit: Math.min(Math.max(limit, 1), 200),
+      after: null,
+    });
+    return [...page.items];
+  }
+
+  /**
+   * One keyset page of reviews, newest first (`docs/API.md` section 6).
+   *
+   * Newest first because a reviewer opening a project wants what was just
+   * captured. The cursor is the previous page's last `(created_at, id)`, which
+   * is stable under insertion: a review created while somebody is paging
+   * appears at the front rather than shifting the page boundaries and losing a
+   * row, which is what an offset would do.
+   */
+  async listReviewsPage(scope: Scope, page: PageCursor): Promise<RepositoryPage<Review>> {
     const rows = await this.#pool.query(
       `SELECT r.*, (SELECT count(*) FROM findings f WHERE f.review_id = r.id) AS finding_count
          FROM reviews r
         WHERE r.organisation_id = $1 AND r.project_id = $2
-        ORDER BY r.created_at DESC
-        LIMIT $3`,
-      [scope.organisationId, scope.projectId, Math.min(Math.max(limit, 1), 200)],
+          AND ($3::timestamptz IS NULL OR (r.created_at, r.id) < ($3::timestamptz, $4::text))
+        ORDER BY r.created_at DESC, r.id DESC
+        LIMIT $5`,
+      [
+        scope.organisationId,
+        scope.projectId,
+        page.after?.sortKey ?? null,
+        page.after?.id ?? null,
+        page.limit + 1,
+      ],
     );
-    return rows.rows.map((row) =>
-      toReview(row as Record<string, unknown>, Number((row as Record<string, unknown>)["finding_count"])),
+    const all = rows.rows.map((row) =>
+      toReview(
+        row as Record<string, unknown>,
+        Number((row as Record<string, unknown>)["finding_count"]),
+      ),
     );
+    const items = all.slice(0, page.limit);
+    const last = items[items.length - 1];
+    return {
+      items,
+      nextCursor:
+        all.length > page.limit && last !== undefined
+          ? { sortKey: last.created_at, id: last.id }
+          : null,
+    };
   }
 
   async updateReview(
@@ -412,9 +605,10 @@ export class ReviewService {
     input: UpdateReviewInput,
     actor: EventActor,
   ): Promise<Review> {
-    const fields = (["title", "slug", "description"] as const).filter(
+    const fields = (["title", "slug", "description", "priority"] as const).filter(
       (field) => input[field] !== undefined,
     );
+    let denied: PendingDenial | null = null;
     try {
       return await inTransaction(this.#pool, async (client) => {
         const current = await this.#lockReview(client, scope, reviewId);
@@ -423,22 +617,64 @@ export class ReviewService {
           ...(input.status === undefined ? {} : { status: input.status }),
           fields,
         });
-        if (input.status !== undefined && input.status !== current.status) {
-          assertReviewTransition(current.status, input.status);
-          assertActorMayMoveReview(actor.type, input.status);
+        const nextStatus = input.status ?? current.status;
+        const changing = nextStatus !== current.status;
+        if (changing) {
+          // Remembered before any check is raised, for the reason
+          // `updateFinding` states: a rolled-back transaction records nothing,
+          // and a refusal captured only after the legality check leaves the
+          // majority of refusals — `IN_PROGRESS -> ACCEPTED` by an agent among
+          // them — with no trail at all.
+          denied = {
+            type: "review.status_change_denied",
+            correlation: { review_id: reviewId },
+            payload: {
+              review_id: reviewId,
+              from: current.status,
+              requested: nextStatus,
+            },
+          };
+          // Closing a review is a human decision from any status, so it is
+          // refused before the lifecycle is consulted (`docs/API.md` section 12).
+          assertActorMayCloseReview(actor.type, nextStatus);
+          assertReviewTransition(current.status, nextStatus);
+          assertActorMayMoveReview(actor.type, current.status, nextStatus);
+          denied = null;
         }
 
-        const nextStatus = input.status ?? current.status;
-        const closed = nextStatus === "ACCEPTED" || nextStatus === "CANCELLED" || nextStatus === "ARCHIVED";
+        // Acceptance is the one transition with a precondition beyond the
+        // table: `docs/API.md` section 12 requires every human-authored finding
+        // to be resolved or explicitly waived first. It is checked here, inside
+        // the transaction that holds the review's row lock, so a finding
+        // reopened concurrently cannot slip past between the check and the
+        // write.
+        const accepting = changing && nextStatus === "ACCEPTED";
+        const counts = accepting
+          ? await this.#assertFindingsPermitAcceptance(client, scope, reviewId)
+          : null;
+        const reopening = changing && current.status === "ACCEPTED";
+
+        const closed =
+          nextStatus === "ACCEPTED" || nextStatus === "CANCELLED" || nextStatus === "ARCHIVED";
         const updated = await client.query(
           `UPDATE reviews
               SET title = COALESCE($4, title),
                   slug = COALESCE($5, slug),
                   description = COALESCE($6, description),
+                  priority = COALESCE($9, priority),
                   status = $7,
                   version = version + 1,
                   updated_at = now(),
-                  closed_at = CASE WHEN $8 THEN COALESCE(closed_at, now()) ELSE closed_at END
+                  closed_at = CASE WHEN $8 THEN COALESCE(closed_at, now())
+                                   WHEN $10 THEN NULL ELSE closed_at END,
+                  reopen_count = reopen_count + CASE WHEN $10 THEN 1 ELSE 0 END,
+                  accepted_at = CASE WHEN $11 THEN now() WHEN $10 THEN NULL ELSE accepted_at END,
+                  accepted_by_actor_type = CASE WHEN $11 THEN $12 WHEN $10 THEN NULL
+                                                ELSE accepted_by_actor_type END,
+                  accepted_by_actor_id = CASE WHEN $11 THEN $13 WHEN $10 THEN NULL
+                                              ELSE accepted_by_actor_id END,
+                  accepted_by_actor_display = CASE WHEN $11 THEN $14 WHEN $10 THEN NULL
+                                                   ELSE accepted_by_actor_display END
             WHERE id = $1 AND organisation_id = $2 AND project_id = $3
             RETURNING *`,
           [
@@ -450,6 +686,12 @@ export class ReviewService {
             input.description ?? null,
             nextStatus,
             closed,
+            input.priority ?? null,
+            reopening,
+            accepting,
+            accepting ? actor.type : null,
+            accepting ? (actor.id ?? null) : null,
+            accepting ? (actor.display ?? null) : null,
           ],
         );
         const review = toReview(updated.rows[0] as Record<string, unknown>);
@@ -470,7 +712,7 @@ export class ReviewService {
             },
           });
         }
-        if (nextStatus !== current.status) {
+        if (changing) {
           await appendEvent(client, {
             type: "review.status_changed",
             organisationId: scope.organisationId,
@@ -482,14 +724,246 @@ export class ReviewService {
               from: current.status,
               to: nextStatus,
               version: review.version,
+              ...(input.reason === undefined ? {} : { reason: input.reason }),
+            },
+          });
+        }
+        // The decision events sit beside the status change rather than instead
+        // of it. A timeline reader needs the movement; an auditor asking who
+        // crossed the authority boundary of `AGENTS.md` needs the decision, and
+        // a status alone does not carry it (`docs/EVENTS.md` section 7).
+        if (accepting && counts !== null) {
+          await appendEvent(client, {
+            type: "review.accepted",
+            organisationId: scope.organisationId,
+            projectId: scope.projectId,
+            actor,
+            correlation: { review_id: reviewId },
+            payload: {
+              review_id: reviewId,
+              accepted_by: eventActor(actor),
+              version: review.version,
+              finding_count: counts.total,
+              human_finding_count: counts.human,
+              ...(input.reason === undefined ? {} : { reason: input.reason }),
+            },
+          });
+        }
+        if (reopening) {
+          await appendEvent(client, {
+            type: "review.reopened",
+            organisationId: scope.organisationId,
+            projectId: scope.projectId,
+            actor,
+            correlation: { review_id: reviewId },
+            payload: {
+              review_id: reviewId,
+              from: current.status,
+              to: nextStatus,
+              version: review.version,
+              reopen_count: review.reopen_count ?? 1,
+              ...(input.reason === undefined ? {} : { reason: input.reason }),
+            },
+          });
+        }
+        if (changing && nextStatus === "ARCHIVED") {
+          await appendEvent(client, {
+            type: "review.archived",
+            organisationId: scope.organisationId,
+            projectId: scope.projectId,
+            actor,
+            correlation: { review_id: reviewId },
+            payload: {
+              review_id: reviewId,
+              from: current.status,
+              version: review.version,
+              ...(input.reason === undefined ? {} : { reason: input.reason }),
             },
           });
         }
         return review;
       });
     } catch (error) {
+      await this.#recordDenial(scope, actor, denied, error);
       throw this.#translateSlugConflict(error, input.slug ?? "");
     }
+  }
+
+  /**
+   * Assigns a review to a human or to an agent session
+   * (`docs/API.md` section 12, `docs/EVENTS.md` section 7 `review.assigned`).
+   *
+   * Assignment is direction, not lifecycle: it says who should do the work and
+   * leaves the status saying what stage the work is at. A `READY` review
+   * becomes `ASSIGNED` because that is what section 14 means by the word, and a
+   * review already under way merely changes hands.
+   *
+   * It is separate from `review.claimed` on purpose. A human assigning work and
+   * a worker taking it are different facts, and an auditor asking "was this
+   * given to the agent or did it take it?" needs both recorded.
+   */
+  async assignReview(
+    scope: Scope,
+    reviewId: string,
+    input: AssignReviewInput,
+    actor: EventActor,
+  ): Promise<Review> {
+    if (input.assignedUserId !== undefined && input.assignedAgentSessionId !== undefined) {
+      throw new ApiError(
+        "UNSUPPORTED_CAPABILITY",
+        "A review is assigned to a human or to an agent session, not to both: an assignment held by two principals does not answer the question it exists to answer.",
+        { field: "assigned_agent_session_id" },
+      );
+    }
+    if (input.assignedUserId !== undefined) {
+      await this.#requireUserInOrganisation(scope, input.assignedUserId);
+    }
+    if (input.assignedAgentSessionId !== undefined) {
+      await this.#requireAgentSessionInProject(scope, input.assignedAgentSessionId);
+    }
+
+    return inTransaction(this.#pool, async (client) => {
+      const current = await this.#lockReview(client, scope, reviewId);
+      assertExpectedVersion(current.version, input.expectedVersion, "review");
+      assertReviewMutable(current.status, { fields: ["assigned_to"] });
+      const nextStatus = current.status === "READY" ? "ASSIGNED" : current.status;
+      if (nextStatus !== current.status) {
+        assertReviewTransition(current.status, nextStatus);
+        assertActorMayMoveReview(actor.type, current.status, nextStatus);
+      }
+
+      const updated = await client.query(
+        `UPDATE reviews
+            SET assigned_user_id = $4,
+                assigned_agent_session_id = $5,
+                status = $6,
+                version = version + 1,
+                updated_at = now()
+          WHERE id = $1 AND organisation_id = $2 AND project_id = $3
+          RETURNING *`,
+        [
+          reviewId,
+          scope.organisationId,
+          scope.projectId,
+          input.assignedUserId ?? null,
+          input.assignedAgentSessionId ?? null,
+          nextStatus,
+        ],
+      );
+      const review = toReview(updated.rows[0] as Record<string, unknown>);
+      await appendEvent(client, {
+        type: "review.assigned",
+        organisationId: scope.organisationId,
+        projectId: scope.projectId,
+        actor,
+        correlation: {
+          review_id: reviewId,
+          ...(input.assignedAgentSessionId === undefined
+            ? {}
+            : { agent_session_id: input.assignedAgentSessionId }),
+        },
+        payload: {
+          review_id: reviewId,
+          ...(input.assignedUserId === undefined
+            ? {}
+            : { assigned_user_id: input.assignedUserId }),
+          ...(input.assignedAgentSessionId === undefined
+            ? {}
+            : { assigned_agent_session_id: input.assignedAgentSessionId }),
+          ...(current.assignedUserId === null
+            ? {}
+            : { previous_assigned_user_id: current.assignedUserId }),
+          ...(current.assignedAgentSessionId === null
+            ? {}
+            : { previous_assigned_agent_session_id: current.assignedAgentSessionId }),
+          version: review.version,
+          ...(input.reason === undefined ? {} : { reason: input.reason }),
+        },
+      });
+      if (nextStatus !== current.status) {
+        await appendEvent(client, {
+          type: "review.status_changed",
+          organisationId: scope.organisationId,
+          projectId: scope.projectId,
+          actor,
+          correlation: { review_id: reviewId },
+          payload: {
+            review_id: reviewId,
+            from: current.status,
+            to: nextStatus,
+            version: review.version,
+            reason: "assigned",
+          },
+        });
+      }
+      return review;
+    });
+  }
+
+  /**
+   * The four lifecycle routes of `docs/API.md` section 12.
+   *
+   * Each is `updateReview` with the target status fixed by the route rather
+   * than named in the body, so a caller cannot ask one route for another's
+   * transition — and, more importantly, so there is exactly one code path that
+   * checks a version, checks legality, checks authority and writes the event.
+   * A second implementation of "accept a review" is a second place for the
+   * authority rule to be got wrong.
+   */
+  async requestHumanReview(
+    scope: Scope,
+    reviewId: string,
+    input: ReviewTransitionInput,
+    actor: EventActor,
+  ): Promise<Review> {
+    return this.updateReview(
+      scope,
+      reviewId,
+      { ...input, status: "AWAITING_HUMAN_REVIEW" },
+      actor,
+    );
+  }
+
+  async acceptReview(
+    scope: Scope,
+    reviewId: string,
+    input: ReviewTransitionInput,
+    actor: EventActor,
+  ): Promise<Review> {
+    return this.updateReview(scope, reviewId, { ...input, status: "ACCEPTED" }, actor);
+  }
+
+  /**
+   * Reopens a review. From `ACCEPTED` this is the explicit reopen of
+   * `docs/DOMAIN_MODEL.md` section 14 and records `review.reopened`; from any
+   * other status it is the ordinary move to `CHANGES_REQUESTED`.
+   *
+   * Nothing is discarded either way. The findings, their verifications, the
+   * comments and every event stay exactly where they were; the review simply
+   * becomes writable again, and `reopen_count` says how many times that has
+   * happened.
+   */
+  async reopenReview(
+    scope: Scope,
+    reviewId: string,
+    input: ReviewTransitionInput,
+    actor: EventActor,
+  ): Promise<Review> {
+    return this.updateReview(
+      scope,
+      reviewId,
+      { ...input, status: "CHANGES_REQUESTED" },
+      actor,
+    );
+  }
+
+  async archiveReview(
+    scope: Scope,
+    reviewId: string,
+    input: ReviewTransitionInput,
+    actor: EventActor,
+  ): Promise<Review> {
+    return this.updateReview(scope, reviewId, { ...input, status: "ARCHIVED" }, actor);
   }
 
   // -----------------------------------------------------------------------
@@ -552,7 +1026,9 @@ export class ReviewService {
           input.title,
           input.description ?? null,
           input.severity,
-          input.source,
+          // Never `input.source`: there is no such field, because the authority
+          // rule of `docs/DOMAIN_MODEL.md` section 15 is decided on this value.
+          sourceForActor(actor.type),
           actor.type,
           actor.id ?? null,
           actor.display ?? null,
@@ -646,19 +1122,57 @@ export class ReviewService {
     input: UpdateFindingInput,
     actor: EventActor,
   ): Promise<Finding> {
-    return inTransaction(this.#pool, async (client) => {
+    let denied: PendingDenial | null = null;
+    try {
+      return await inTransaction(this.#pool, async (client) => {
       const current = await this.#lockFinding(client, scope, findingId);
       assertExpectedVersion(current.version, input.expectedVersion, "finding");
       const nextStatus = input.status ?? current.status;
       if (nextStatus !== current.status) {
+        // Remembered before **any** check is raised, because every refusal of a
+        // requested transition is a fact worth auditing and the transaction
+        // that would have carried the event is about to roll back. Capturing it
+        // after the legality check — as this did until the RVP-37 review — left
+        // the majority of refusals unrecorded, including the one that matters
+        // most: an agent that had actually claimed the work asking to resolve
+        // it. The payload carries the refusal's own code, so it says which
+        // class of refusal it was rather than needing one flag per class.
+        denied = {
+          type: "finding.status_change_denied",
+          correlation: { review_id: current.review_id, finding_id: findingId },
+          payload: {
+            finding_id: findingId,
+            review_id: current.review_id,
+            from: current.status,
+            requested: nextStatus,
+            source: current.source,
+          },
+        };
+        // The order is the rule (`docs/API.md` section 13). A final disposition
+        // is a human decision from any status, so it is refused before the
+        // lifecycle is consulted: otherwise the answer would depend on where the
+        // finding happened to be, and an agent asking to resolve a finding it
+        // had claimed would be told the move was impossible rather than that the
+        // decision was not its to make.
+        assertActorMayDispose(actor.type, current.source, nextStatus);
         assertFindingTransition(current.status, nextStatus);
         assertActorMayMoveFinding(actor.type, current.source, current.status, nextStatus);
+        denied = null;
         assertCompletionEvidence(nextStatus, {
           resolutionNote: input.resolutionNote ?? current.resolution_note ?? undefined,
         });
       }
 
       const claiming = nextStatus === "CLAIMED" && current.status !== "CLAIMED";
+      const disposing = nextStatus !== current.status && isFinalDisposition(nextStatus);
+      const reopening = nextStatus === "REOPENED" && current.status !== "REOPENED";
+      if (input.duplicateOfFindingId !== undefined) {
+        await this.#requireFindingInProject(scope, input.duplicateOfFindingId, findingId);
+      }
+      const verificationCount = reopening
+        ? await this.#countVerificationsOn(client, scope, findingId)
+        : 0;
+
       const updated = await client.query(
         `UPDATE findings
             SET title = COALESCE($4, title),
@@ -671,7 +1185,19 @@ export class ReviewService {
                 updated_at = now(),
                 claimed_by_actor_type = CASE WHEN $10 THEN $11 ELSE claimed_by_actor_type END,
                 claimed_by_actor_id = CASE WHEN $10 THEN $12 ELSE claimed_by_actor_id END,
-                claimed_by_actor_display = CASE WHEN $10 THEN $13 ELSE claimed_by_actor_display END
+                claimed_by_actor_display = CASE WHEN $10 THEN $13 ELSE claimed_by_actor_display END,
+                resolved_at = CASE WHEN $14 THEN now() WHEN $15 THEN NULL ELSE resolved_at END,
+                resolved_by_actor_type = CASE WHEN $14 THEN $11 WHEN $15 THEN NULL
+                                              ELSE resolved_by_actor_type END,
+                resolved_by_actor_id = CASE WHEN $14 THEN $12 WHEN $15 THEN NULL
+                                            ELSE resolved_by_actor_id END,
+                resolved_by_actor_display = CASE WHEN $14 THEN $13 WHEN $15 THEN NULL
+                                                 ELSE resolved_by_actor_display END,
+                disposition_reason = CASE WHEN $14 THEN $16 WHEN $15 THEN NULL
+                                          ELSE disposition_reason END,
+                duplicate_of_finding_id = CASE WHEN $14 THEN $17 WHEN $15 THEN NULL
+                                               ELSE duplicate_of_finding_id END,
+                reopen_count = reopen_count + CASE WHEN $15 THEN 1 ELSE 0 END
           WHERE id = $1 AND organisation_id = $2 AND project_id = $3
           RETURNING *`,
         [
@@ -688,6 +1214,10 @@ export class ReviewService {
           actor.type,
           actor.id ?? null,
           actor.display ?? null,
+          disposing,
+          reopening,
+          input.reason ?? null,
+          input.duplicateOfFindingId ?? null,
         ],
       );
       const finding = toFinding(updated.rows[0] as Record<string, unknown>);
@@ -704,11 +1234,7 @@ export class ReviewService {
           payload: {
             finding_id: findingId,
             review_id: finding.review_id,
-            claimed_by: {
-              type: actor.type,
-              ...(actor.id === undefined ? {} : { id: actor.id }),
-              ...(actor.display === undefined ? {} : { display: actor.display }),
-            },
+            claimed_by: eventActor(actor),
             version: finding.version,
           },
         });
@@ -727,11 +1253,144 @@ export class ReviewService {
             to: nextStatus,
             version: finding.version,
             source: current.source,
+            ...(input.reason === undefined ? {} : { reason: input.reason }),
+          },
+        });
+      }
+      // The decision events. `finding.status_changed` says the finding moved;
+      // these say a human decided, and `docs/EVENTS.md` section 7 lists them
+      // separately because an auditor looking for the authority boundary of
+      // `AGENTS.md` should not have to match on a status value to find it.
+      if (disposing) {
+        await appendEvent(client, {
+          type: "finding.resolved",
+          organisationId: scope.organisationId,
+          projectId: scope.projectId,
+          actor,
+          correlation: { review_id: finding.review_id, finding_id: findingId },
+          payload: {
+            finding_id: findingId,
+            review_id: finding.review_id,
+            disposition: nextStatus,
+            source: current.source,
+            decided_by: eventActor(actor),
+            version: finding.version,
+            ...(input.duplicateOfFindingId === undefined
+              ? {}
+              : { duplicate_of_finding_id: input.duplicateOfFindingId }),
+            ...(input.reason === undefined ? {} : { reason: input.reason }),
+          },
+        });
+      }
+      if (reopening) {
+        await appendEvent(client, {
+          type: "finding.reopened",
+          organisationId: scope.organisationId,
+          projectId: scope.projectId,
+          actor,
+          correlation: { review_id: finding.review_id, finding_id: findingId },
+          payload: {
+            finding_id: findingId,
+            review_id: finding.review_id,
+            from: current.status,
+            version: finding.version,
+            // Reopening preserves prior verification history rather than
+            // discarding it (`docs/DOMAIN_MODEL.md` section 15). The count says
+            // what was kept, so a reader is not left to assume a fresh start.
+            verification_count: verificationCount,
+            ...(input.reason === undefined ? {} : { reason: input.reason }),
           },
         });
       }
       return finding;
-    });
+      });
+    } catch (error) {
+      await this.#recordDenial(scope, actor, denied, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Claims one finding (`docs/API.md` section 13,
+   * `docs/MCP_SPEC.md` section 7.7).
+   *
+   * The claim is an ordinary optimistic-concurrency write, which is the point:
+   * a human and an agent claiming the same finding at once produce one claim
+   * and one `VERSION_CONFLICT` carrying the version the record actually holds,
+   * rather than two writes where the second silently wins.
+   */
+  async claimFinding(
+    scope: Scope,
+    findingId: string,
+    expectedVersion: number,
+    actor: EventActor,
+  ): Promise<Finding> {
+    return this.updateFinding(scope, findingId, { expectedVersion, status: "CLAIMED" }, actor);
+  }
+
+  /**
+   * A human's final decision about one finding: accept it as resolved, waive it
+   * as `WONT_FIX`, or mark it a duplicate (`docs/API.md` section 13).
+   *
+   * The authority check is not here. It is in `assertActorMayMoveFinding`,
+   * which `updateFinding` calls, so an agent credential reaching this method by
+   * any route — HTTP, MCP or a future internal job — is refused by the same
+   * rule. Putting the check on this method instead would make the refusal a
+   * property of the entry point rather than of the domain.
+   */
+  async disposeFinding(
+    scope: Scope,
+    findingId: string,
+    disposition: FindingStatus,
+    input: DisposeFindingInput,
+    actor: EventActor,
+  ): Promise<Finding> {
+    if (disposition === "WONT_FIX" && (input.reason ?? "").trim() === "") {
+      throw new ApiError(
+        "EVIDENCE_REQUIRED",
+        "Waiving a reported problem requires a reason: a decision nobody can read later is not one anybody can review.",
+        { field: "reason", required_evidence: ["reason"] },
+      );
+    }
+    if (disposition === "DUPLICATE" && input.duplicateOfFindingId === undefined) {
+      throw new ApiError(
+        "UNSUPPORTED_CAPABILITY",
+        "A duplicate must name the finding it duplicates.",
+        { field: "duplicate_of_finding_id" },
+      );
+    }
+    return this.updateFinding(
+      scope,
+      findingId,
+      {
+        expectedVersion: input.expectedVersion,
+        status: disposition,
+        ...(input.reason === undefined ? {} : { reason: input.reason }),
+        ...(input.duplicateOfFindingId === undefined
+          ? {}
+          : { duplicateOfFindingId: input.duplicateOfFindingId }),
+      },
+      actor,
+    );
+  }
+
+  /** Reopens a finding. Prior verification history is retained, not cleared. */
+  async reopenFinding(
+    scope: Scope,
+    findingId: string,
+    input: ReviewTransitionInput,
+    actor: EventActor,
+  ): Promise<Finding> {
+    return this.updateFinding(
+      scope,
+      findingId,
+      {
+        expectedVersion: input.expectedVersion,
+        status: "REOPENED",
+        ...(input.reason === undefined ? {} : { reason: input.reason }),
+      },
+      actor,
+    );
   }
 
   /**
@@ -754,7 +1413,15 @@ export class ReviewService {
       assertExpectedVersion(current.version, expectedVersion, "review");
       assertReviewMutable(current.status, { fields: ["claimed_by"] });
       const nextStatus = current.status === "READY" ? "ASSIGNED" : current.status;
-      if (nextStatus !== current.status) assertReviewTransition(current.status, nextStatus);
+      if (nextStatus !== current.status) {
+        assertReviewTransition(current.status, nextStatus);
+        // Authority as well as legality. A claim moves the review, and a move
+        // an actor may not make is not made lawful by the route it arrived on
+        // (ADR-0024). It is permitted today only because `READY -> ASSIGNED`
+        // names `agent_session` in the table, which is exactly the fact this
+        // call checks rather than assumes.
+        assertActorMayMoveReview(actor.type, current.status, nextStatus);
+      }
 
       const updated = await client.query(
         `UPDATE reviews
@@ -879,23 +1546,185 @@ export class ReviewService {
     actor: EventActor,
   ): Promise<Comment> {
     const finding = await this.getFinding(scope, findingId);
-    const review = await this.getReview(scope, finding.review_id);
-    assertReviewMutable(review.status, { fields: ["comments"] });
+    return this.#insertComment(scope, finding.review_id, findingId, body, null, actor);
+  }
+
+  /**
+   * Appends a comment to the review itself
+   * (`docs/DOMAIN_MODEL.md` section 18, `docs/API.md` section 12).
+   *
+   * A closed review still takes comments. Section 14 makes an accepted review
+   * immutable "except for archival metadata and comments", and the exception is
+   * the point: discussion of a decision has to outlive the decision, or the
+   * only way to say something about an accepted review is to reopen it.
+   */
+  async addReviewComment(
+    scope: Scope,
+    reviewId: string,
+    body: string,
+    actor: EventActor,
+  ): Promise<Comment> {
+    await this.getReview(scope, reviewId);
+    return this.#insertComment(scope, reviewId, null, body, null, actor);
+  }
+
+  /**
+   * Edits a comment (`docs/DOMAIN_MODEL.md` section 18: "Comments are
+   * append-only. Editing creates a new revision and retains history").
+   *
+   * The edit inserts a new row carrying `supersedes_comment_id` and stamps the
+   * row it replaces with `superseded_at`. Nothing overwrites a body, so the
+   * text a reader acted on is still readable after the author changed their
+   * mind — which matters most for the comments that are instructions.
+   *
+   * Only the author may edit, and only the current revision may be edited. The
+   * first rule is what stops attribution being laundered: an edit by somebody
+   * else would appear over the original author's name. The second is what stops
+   * the history forking, and it is enforced by a unique index as well, so two
+   * concurrent edits produce one revision and one refusal.
+   */
+  async editComment(
+    scope: Scope,
+    commentId: string,
+    body: string,
+    actor: EventActor,
+  ): Promise<Comment> {
+    const existing = await this.#pool.query<Record<string, unknown>>(
+      `SELECT * FROM comments
+        WHERE id = $1 AND organisation_id = $2 AND project_id = $3`,
+      [commentId, scope.organisationId, scope.projectId],
+    );
+    const row = existing.rows[0];
+    if (row === undefined) throw notFound("The comment");
+    const current = toComment(row);
+    if (current.superseded_at !== undefined) {
+      throw new ApiError(
+        "VERSION_CONFLICT",
+        "This revision has already been superseded. Edit the current revision.",
+        { current_version: current.revision + 1 },
+      );
+    }
+    if (
+      current.created_by.type !== actor.type ||
+      (current.created_by.id ?? null) !== (actor.id ?? null)
+    ) {
+      // Attribution is non-forgeable, and an edit by another actor over the
+      // original author's name is exactly the forgery this prevents.
+      throw new ApiError(
+        "AUTHORISATION_DENIED",
+        "A comment may only be edited by the actor that wrote it.",
+        { field: "body" },
+      );
+    }
+    return this.#insertComment(
+      scope,
+      current.review_id,
+      current.finding_id ?? null,
+      body,
+      current,
+      actor,
+    );
+  }
+
+  /** The current revision of every comment on a finding, oldest first. */
+  async listComments(scope: Scope, findingId: string, limit = 20): Promise<Comment[]> {
+    await this.getFinding(scope, findingId);
+    const rows = await this.#pool.query(
+      `SELECT * FROM comments
+        WHERE finding_id = $1 AND organisation_id = $2 AND project_id = $3
+          AND superseded_at IS NULL
+        ORDER BY created_at, id
+        LIMIT $4`,
+      [findingId, scope.organisationId, scope.projectId, Math.min(Math.max(limit, 1), 20)],
+    );
+    return rows.rows.map((row) => toComment(row as Record<string, unknown>));
+  }
+
+  /**
+   * Comments on a review or a finding, current projection or full history.
+   *
+   * `revisions: "all"` returns superseded revisions too, because the history is
+   * retained rather than overwritten and a reader judging a changed instruction
+   * needs what it said before.
+   */
+  async listCommentsFor(
+    scope: Scope,
+    target: { readonly reviewId: string; readonly findingId?: string },
+    options: { readonly limit?: number; readonly revisions?: "current" | "all" } = {},
+  ): Promise<Comment[]> {
+    const limit = Math.min(Math.max(options.limit ?? 50, 1), 200);
+    const rows = await this.#pool.query(
+      `SELECT * FROM comments
+        WHERE organisation_id = $1 AND project_id = $2 AND review_id = $3
+          AND ($4::text IS NULL OR finding_id = $4)
+          AND ($4::text IS NOT NULL OR finding_id IS NULL)
+          AND ($5::boolean OR superseded_at IS NULL)
+        ORDER BY created_at, id
+        LIMIT $6`,
+      [
+        scope.organisationId,
+        scope.projectId,
+        target.reviewId,
+        target.findingId ?? null,
+        options.revisions === "all",
+        limit,
+      ],
+    );
+    return rows.rows.map((row) => toComment(row as Record<string, unknown>));
+  }
+
+  /**
+   * Writes one comment revision and its event, in one transaction.
+   *
+   * `previous` is the revision this one replaces, or null for an original. The
+   * two cases share a path because they are the same write: an edit is an
+   * append with a back-reference, not a different kind of operation.
+   */
+  async #insertComment(
+    scope: Scope,
+    reviewId: string,
+    findingId: string | null,
+    body: string,
+    previous: Comment | null,
+    actor: EventActor,
+  ): Promise<Comment> {
     const id = newId("cmt_");
     return inTransaction(this.#pool, async (client) => {
+      if (previous !== null) {
+        const superseded = await client.query(
+          `UPDATE comments SET superseded_at = now()
+            WHERE id = $1 AND organisation_id = $2 AND project_id = $3
+              AND superseded_at IS NULL`,
+          [previous.id, scope.organisationId, scope.projectId],
+        );
+        if (superseded.rowCount === 0) {
+          throw new ApiError(
+            "VERSION_CONFLICT",
+            "This revision has already been superseded. Edit the current revision.",
+            { current_version: previous.revision + 1 },
+          );
+        }
+      }
       const inserted = await client.query(
         `INSERT INTO comments
-           (id, organisation_id, project_id, review_id, finding_id, body,
+           (id, organisation_id, project_id, review_id, finding_id, body, revision,
+            supersedes_comment_id,
             created_by_actor_type, created_by_actor_id, created_by_actor_display)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
          RETURNING *`,
         [
           id,
           scope.organisationId,
           scope.projectId,
-          finding.review_id,
+          reviewId,
           findingId,
           body,
+          previous === null ? 1 : previous.revision + 1,
+          previous === null ? null : previous.id,
+          // Attribution is derived from the authenticated actor, never from the
+          // request: `docs/DOMAIN_MODEL.md` section 18 requires the actor type
+          // to be explicit, and a caller able to state it could make an agent's
+          // note read as a human's.
           actor.type,
           actor.id ?? null,
           actor.display ?? null,
@@ -903,27 +1732,18 @@ export class ReviewService {
       );
       const comment = toComment(inserted.rows[0] as Record<string, unknown>);
       await appendEvent(client, {
-        type: "finding.comment_added",
+        type: findingId === null ? "review.comment_added" : "finding.comment_added",
         organisationId: scope.organisationId,
         projectId: scope.projectId,
         actor,
-        correlation: { review_id: finding.review_id, finding_id: findingId },
+        correlation: {
+          review_id: reviewId,
+          ...(findingId === null ? {} : { finding_id: findingId }),
+        },
         payload: { comment },
       });
       return comment;
     });
-  }
-
-  async listComments(scope: Scope, findingId: string, limit = 20): Promise<Comment[]> {
-    await this.getFinding(scope, findingId);
-    const rows = await this.#pool.query(
-      `SELECT * FROM comments
-        WHERE finding_id = $1 AND organisation_id = $2 AND project_id = $3
-        ORDER BY created_at, id
-        LIMIT $4`,
-      [findingId, scope.organisationId, scope.projectId, Math.min(Math.max(limit, 1), 20)],
-    );
-    return rows.rows.map((row) => toComment(row as Record<string, unknown>));
   }
 
   /**
@@ -1013,18 +1833,28 @@ export class ReviewService {
         position += 1;
       }
 
+      // Where the submission may advance the finding, derived from the
+      // transition table rather than restated (ADR-0024). Writing
+      // `CASE WHEN status = 'IN_PROGRESS' THEN 'FIXED_UNVERIFIED'` in SQL, as
+      // this did until the RVP-37 review, is a second copy of a rule the
+      // protocol already holds — and a copy in a dialect nothing typechecks.
+      const advances =
+        mayActorMoveFinding(actor.type, finding.status, "FIXED_UNVERIFIED") &&
+        !isFinalDisposition(finding.status);
+      const advanced: FindingStatus = advances ? "FIXED_UNVERIFIED" : finding.status;
+
       // The summary is the resolution note. Recording it on the finding is what
       // lets assertCompletionEvidence pass for FIXED_UNVERIFIED without the
       // agent having to say the same thing twice.
       const updated = await client.query(
         `UPDATE findings
             SET resolution_note = $4,
-                status = CASE WHEN status = 'IN_PROGRESS' THEN 'FIXED_UNVERIFIED' ELSE status END,
+                status = $5,
                 version = version + 1,
                 updated_at = now()
           WHERE id = $1 AND organisation_id = $2 AND project_id = $3
           RETURNING *`,
-        [findingId, scope.organisationId, scope.projectId, input.summary],
+        [findingId, scope.organisationId, scope.projectId, input.summary, advanced],
       );
       const moved = toFinding(updated.rows[0] as Record<string, unknown>);
       const verification = toVerification(
@@ -1173,8 +2003,357 @@ export class ReviewService {
   }
 
   // -----------------------------------------------------------------------
+  // Export
+  // -----------------------------------------------------------------------
+
+  /**
+   * Requests a review export (`docs/API.md` section 12,
+   * `docs/REVIEW_FORMAT.md`).
+   *
+   * The export is a durable job rather than work done inside the request. A
+   * review with a hundred findings and their evidence manifests is not
+   * something to build while a caller holds a socket open, and a job survives
+   * the control-plane restart that a long request would not.
+   *
+   * Asking twice while a run is in flight joins the first run. That is enforced
+   * by a partial unique index rather than by a read followed by a write: two
+   * concurrent requests would both find no pending export and both queue one,
+   * which is how a caller ends up with two artefacts and no way to say which is
+   * the export.
+   */
+  async requestExport(
+    scope: Scope,
+    reviewId: string,
+    actor: EventActor,
+  ): Promise<ReviewExport> {
+    await this.getReview(scope, reviewId);
+    const id = newId("rex_");
+    try {
+      return await inTransaction(this.#pool, async (client) => {
+        const job = await enqueueJob(client, {
+          organisationId: scope.organisationId,
+          projectId: scope.projectId,
+          kind: "review_export",
+          payload: { review_export_id: id, review_id: reviewId },
+          idempotencyKey: `review_export:${id}`,
+        });
+        const inserted = await client.query(
+          `INSERT INTO review_exports
+             (id, organisation_id, project_id, review_id, job_id, status, privacy_mode,
+              requested_by_actor_type, requested_by_actor_id, requested_by_actor_display)
+           VALUES ($1,$2,$3,$4,$5,'pending','metadata_only',$6,$7,$8)
+           RETURNING *`,
+          [
+            id,
+            scope.organisationId,
+            scope.projectId,
+            reviewId,
+            job.id,
+            actor.type,
+            actor.id ?? null,
+            actor.display ?? null,
+          ],
+        );
+        return toReviewExport(inserted.rows[0] as Record<string, unknown>);
+      });
+    } catch (error) {
+      if ((error as { code?: string }).code === UNIQUE_VIOLATION) {
+        const pending = await this.latestExport(scope, reviewId);
+        if (pending !== null) return pending;
+      }
+      throw error;
+    }
+  }
+
+  /** The most recent export of a review, or null. */
+  async latestExport(scope: Scope, reviewId: string): Promise<ReviewExport | null> {
+    const rows = await this.#pool.query(
+      `SELECT * FROM review_exports
+        WHERE review_id = $1 AND organisation_id = $2 AND project_id = $3
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      [reviewId, scope.organisationId, scope.projectId],
+    );
+    const row = rows.rows[0] as Record<string, unknown> | undefined;
+    return row === undefined ? null : toReviewExport(row);
+  }
+
+  /**
+   * The portable review document of `docs/REVIEW_FORMAT.md` section 3.
+   *
+   * Stage 1 exports in the metadata-only privacy mode of section 8: the review,
+   * its findings, its comments and an artefact manifest of digests, with no
+   * bytes embedded. That is the mode a self-hosted deployment can produce
+   * without a second decision about who may read the evidence, and the manifest
+   * still carries the hashes section 7 requires for integrity.
+   */
+  async buildExportDocument(
+    scope: Scope,
+    reviewId: string,
+  ): Promise<Record<string, unknown>> {
+    const review = await this.getReview(scope, reviewId);
+    const findings = await this.listFindings(scope, reviewId);
+    const comments = await this.#pool.query(
+      `SELECT * FROM comments
+        WHERE review_id = $1 AND organisation_id = $2 AND project_id = $3
+        ORDER BY created_at, id`,
+      [reviewId, scope.organisationId, scope.projectId],
+    );
+    const artefacts = await this.#pool.query<{
+      id: string;
+      kind: string;
+      content_type: string;
+      size_bytes: string | null;
+      sha256: string | null;
+      redaction_state: string | null;
+    }>(
+      `SELECT DISTINCT a.id, a.kind, a.content_type, a.size_bytes, a.sha256, a.redaction_state
+         FROM artefacts a
+        WHERE a.project_id = $2 AND a.organisation_id = $3
+          AND a.id IN (SELECT screenshot_artefact_id FROM findings WHERE review_id = $1)
+        ORDER BY a.id`,
+      [reviewId, scope.projectId, scope.organisationId],
+    );
+    const project = await this.#pool.query<{ name: string; repository_identity: unknown }>(
+      "SELECT name, repository_identity FROM projects WHERE id = $1 AND organisation_id = $2",
+      [scope.projectId, scope.organisationId],
+    );
+    const projectRow = project.rows[0];
+
+    return {
+      format: "reviewplane-review",
+      version: 1,
+      privacy_mode: "metadata_only",
+      exported_at: new Date().toISOString(),
+      review: {
+        id: review.id,
+        slug: review.slug,
+        title: review.title,
+        ...(review.description === undefined ? {} : { description: review.description }),
+        status: review.status,
+        ...(review.priority === undefined ? {} : { priority: review.priority }),
+        project: {
+          name: projectRow?.name ?? "",
+          ...(projectRow?.repository_identity === null ||
+          projectRow?.repository_identity === undefined
+            ? {}
+            : { repository_identity: projectRow.repository_identity }),
+        },
+        source: { branch: review.captured_branch, commit: review.captured_commit },
+        created_at: review.created_at,
+        ...(review.closed_at === undefined ? {} : { closed_at: review.closed_at }),
+      },
+      findings: findings.map((finding) => ({
+        id: finding.id,
+        title: finding.title,
+        ...(finding.description === undefined ? {} : { description: finding.description }),
+        severity: finding.severity,
+        status: finding.status,
+        source: finding.source,
+        url: finding.url,
+        viewport: finding.viewport,
+        scroll_position: finding.scroll_position,
+        captured_commit: finding.captured_commit,
+        ...(finding.element_context === undefined
+          ? {}
+          : { element_context: finding.element_context }),
+        ...(finding.acceptance_criteria === undefined
+          ? {}
+          : { acceptance_criteria: finding.acceptance_criteria }),
+        evidence: { screenshot_artefact_id: finding.screenshot_artefact_id },
+        created_at: finding.created_at,
+      })),
+      comments: comments.rows.map((row) => toComment(row as Record<string, unknown>)),
+      artefacts: artefacts.rows.map((row) => ({
+        id: row.id,
+        kind: row.kind,
+        content_type: row.content_type,
+        ...(row.size_bytes === null ? {} : { size_bytes: Number(row.size_bytes) }),
+        ...(row.sha256 === null ? {} : { sha256: row.sha256 }),
+        ...(row.redaction_state === null ? {} : { redaction_state: row.redaction_state }),
+      })),
+    };
+  }
+
+  /**
+   * Records that an export succeeded, with the artefact it produced.
+   *
+   * The row moves to `ready` and gains its artefact in the same statement, so
+   * the constraint that a ready export has an artefact, a digest and a size is
+   * satisfied or the write fails. There is no window in which an export reports
+   * itself complete and has nothing behind it — which is what
+   * `docs/TESTING.md` section 11 asks of a failed export run.
+   */
+  async completeExport(
+    exportId: string,
+    result: { readonly artefactId: string; readonly sha256: string; readonly sizeBytes: number },
+    client: PoolClient,
+  ): Promise<void> {
+    await client.query(
+      `UPDATE review_exports
+          SET status = 'ready', artefact_id = $2, sha256 = $3, size_bytes = $4,
+              failure_reason = NULL, completed_at = now()
+        WHERE id = $1 AND status = 'pending'`,
+      [exportId, result.artefactId, result.sha256, result.sizeBytes],
+    );
+  }
+
+  /** Records that an export attempt failed, leaving no artefact behind. */
+  async failExport(exportId: string, reason: string): Promise<void> {
+    await this.#pool.query(
+      `UPDATE review_exports
+          SET status = 'failed', failure_reason = $2, completed_at = now()
+        WHERE id = $1 AND status = 'pending'`,
+      [exportId, reason.slice(0, 500)],
+    );
+  }
+
+  // -----------------------------------------------------------------------
   // Internals
   // -----------------------------------------------------------------------
+
+  /**
+   * The acceptance precondition of `docs/API.md` section 12.
+   *
+   * It reads the findings inside the caller's transaction, which already holds
+   * the review's row lock, so a finding cannot be reopened between the check
+   * and the write.
+   */
+  async #assertFindingsPermitAcceptance(
+    client: PoolClient,
+    scope: Scope,
+    reviewId: string,
+  ): Promise<{ total: number; human: number }> {
+    const rows = await client.query<{ id: string; source: FindingSource; status: FindingStatus }>(
+      `SELECT id, source, status FROM findings
+        WHERE review_id = $1 AND organisation_id = $2 AND project_id = $3
+        ORDER BY created_at, id`,
+      [reviewId, scope.organisationId, scope.projectId],
+    );
+    assertReviewAcceptable(rows.rows);
+    return {
+      total: rows.rows.length,
+      human: rows.rows.filter((finding) => finding.source === "human").length,
+    };
+  }
+
+  /**
+   * Writes the audit record for a refused transition, in its own transaction.
+   *
+   * Its own, because the transaction that raised the refusal has rolled back
+   * and everything written inside it went with the refusal. Writing the denial
+   * afterwards is the only way it survives, and it is safe to write: nothing
+   * about it depends on the state the refused write would have produced.
+   *
+   * A failure to record the denial never masks the denial: the caller is
+   * refused either way, and turning "we could not write the audit line" into a
+   * different refusal would tell an attacker something about the audit trail
+   * rather than about their request. But it is **logged**, with enough context
+   * to reconstruct the attempt. A discarded failure would make a lost audit
+   * record invisible, which is the one outcome worse than a noisy one: an
+   * operator asking whether an agent tried to accept a finding would read an
+   * empty result and conclude that nothing happened.
+   */
+  async #recordDenial(
+    scope: Scope,
+    actor: EventActor,
+    denied: PendingDenial | null,
+    error: unknown,
+  ): Promise<void> {
+    if (denied === null || !(error instanceof ApiError)) return;
+    try {
+      await inTransaction(this.#pool, async (client) => {
+        await appendEvent(client, {
+          type: denied.type,
+          organisationId: scope.organisationId,
+          projectId: scope.projectId,
+          actor,
+          correlation: denied.correlation,
+          payload: {
+            ...denied.payload,
+            code: error.code,
+            // The refusal's own message, never the request: a payload is not a
+            // place to echo caller-supplied text (`docs/EVENTS.md` section 8).
+            reason: error.message.slice(0, 500),
+          },
+        });
+      });
+    } catch (failure) {
+      // The refusal still stands; what is lost is the record of it, and that
+      // loss is itself an operational fact. The fields are the attempt, not the
+      // request: no body, no credential (`docs/SECURITY.md` section 18).
+      this.#logger?.error(
+        {
+          event_type: denied.type,
+          organisation_id: scope.organisationId,
+          project_id: scope.projectId,
+          actor_type: actor.type,
+          actor_id: actor.id ?? null,
+          refusal_code: error.code,
+          ...denied.payload,
+          err: failure instanceof Error ? failure.message : String(failure),
+        },
+        "the audit record for a refused transition could not be written",
+      );
+    }
+  }
+
+  async #countVerificationsOn(
+    client: PoolClient,
+    scope: Scope,
+    findingId: string,
+  ): Promise<number> {
+    const rows = await client.query<{ count: string }>(
+      `SELECT count(*) AS count FROM verifications
+        WHERE finding_id = $1 AND organisation_id = $2 AND project_id = $3`,
+      [findingId, scope.organisationId, scope.projectId],
+    );
+    return Number(rows.rows[0]?.count ?? 0);
+  }
+
+  /**
+   * A user the caller may assign to.
+   *
+   * The organisation is in the predicate rather than compared afterwards, and a
+   * user outside it is answered not-found: `docs/SECURITY.md` section 7 requires
+   * that a foreign identifier be indistinguishable from an unknown one, or the
+   * pair is an existence oracle.
+   */
+  async #requireUserInOrganisation(scope: Scope, userId: string): Promise<void> {
+    const rows = await this.#pool.query<{ id: string }>(
+      "SELECT id FROM users WHERE id = $1 AND organisation_id = $2",
+      [userId, scope.organisationId],
+    );
+    if (rows.rows[0] === undefined) throw notFound("The user");
+  }
+
+  async #requireAgentSessionInProject(scope: Scope, agentSessionId: string): Promise<void> {
+    const rows = await this.#pool.query<{ id: string }>(
+      `SELECT id FROM agent_sessions
+        WHERE id = $1 AND project_id = $2 AND organisation_id = $3`,
+      [agentSessionId, scope.projectId, scope.organisationId],
+    );
+    if (rows.rows[0] === undefined) throw notFound("The agent session");
+  }
+
+  /** The finding a duplicate points at: same project, and not itself. */
+  async #requireFindingInProject(
+    scope: Scope,
+    findingId: string,
+    notThisOne: string,
+  ): Promise<void> {
+    if (findingId === notThisOne) {
+      throw new ApiError("UNSUPPORTED_CAPABILITY", "A finding cannot duplicate itself.", {
+        field: "duplicate_of_finding_id",
+      });
+    }
+    const rows = await this.#pool.query<{ id: string }>(
+      `SELECT id FROM findings
+        WHERE id = $1 AND organisation_id = $2 AND project_id = $3`,
+      [findingId, scope.organisationId, scope.projectId],
+    );
+    if (rows.rows[0] === undefined) throw notFound("The duplicated finding");
+  }
 
   async #insertAnnotation(
     client: PoolClient,
@@ -1219,16 +2398,34 @@ export class ReviewService {
     client: PoolClient,
     scope: Scope,
     reviewId: string,
-  ): Promise<{ version: number; status: ReviewStatus; slug: string }> {
-    const rows = await client.query<{ version: number; status: ReviewStatus; slug: string }>(
-      `SELECT version, status, slug FROM reviews
+  ): Promise<{
+    version: number;
+    status: ReviewStatus;
+    slug: string;
+    assignedUserId: string | null;
+    assignedAgentSessionId: string | null;
+  }> {
+    const rows = await client.query<{
+      version: number;
+      status: ReviewStatus;
+      slug: string;
+      assigned_user_id: string | null;
+      assigned_agent_session_id: string | null;
+    }>(
+      `SELECT version, status, slug, assigned_user_id, assigned_agent_session_id FROM reviews
         WHERE id = $1 AND organisation_id = $2 AND project_id = $3
         FOR UPDATE`,
       [reviewId, scope.organisationId, scope.projectId],
     );
     const row = rows.rows[0];
     if (row === undefined) throw notFound("The review");
-    return { ...row, version: Number(row.version) };
+    return {
+      version: Number(row.version),
+      status: row.status,
+      slug: row.slug,
+      assignedUserId: row.assigned_user_id,
+      assignedAgentSessionId: row.assigned_agent_session_id,
+    };
   }
 
   async #lockFinding(
@@ -1240,14 +2437,16 @@ export class ReviewService {
     status: FindingStatus;
     source: FindingSource;
     resolution_note: string | null;
+    review_id: string;
   }> {
     const rows = await client.query<{
       version: number;
       status: FindingStatus;
       source: FindingSource;
       resolution_note: string | null;
+      review_id: string;
     }>(
-      `SELECT version, status, source, resolution_note FROM findings
+      `SELECT version, status, source, resolution_note, review_id FROM findings
         WHERE id = $1 AND organisation_id = $2 AND project_id = $3
         FOR UPDATE`,
       [findingId, scope.organisationId, scope.projectId],
@@ -1313,27 +2512,27 @@ export class ReviewService {
       id: string;
       kind: string;
       state: string;
-      organisation_id: string;
-      project_id: string;
       browser_session_id: string | null;
       session_project_id: string | null;
     }>(
-      `SELECT a.id, a.kind, a.state, a.organisation_id, a.project_id, a.browser_session_id,
+      // The tenant terms are in the predicate rather than compared afterwards.
+      // Comparing after the read is the shape that produced a live
+      // cross-organisation breach on the review routes (RVP-66): it leaves a
+      // foreign row loaded and relies on every later branch remembering to
+      // reject it. Here a row from another project or organisation is simply
+      // not returned, so it cannot be reached by forgetting a comparison.
+      `SELECT a.id, a.kind, a.state, a.browser_session_id,
               b.project_id AS session_project_id
          FROM artefacts a
          LEFT JOIN browser_sessions b ON b.id = a.browser_session_id
-        WHERE a.id = ANY($1)`,
-      [unique],
+        WHERE a.id = ANY($1) AND a.project_id = $2 AND a.organisation_id = $3`,
+      [unique, scope.projectId, scope.organisationId],
     );
     const found = new Map(rows.rows.map((row) => [row.id, row]));
     const evidence: { id: string; kind: string }[] = [];
     for (const artefactId of unique) {
       const row = found.get(artefactId);
-      if (
-        row === undefined ||
-        row.project_id !== scope.projectId ||
-        row.organisation_id !== scope.organisationId
-      ) {
+      if (row === undefined) {
         throw notFound(`The evidence artefact ${artefactId}`);
       }
       if (row.browser_session_id !== null && row.session_project_id !== scope.projectId) {

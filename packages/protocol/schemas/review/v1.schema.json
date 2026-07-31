@@ -81,6 +81,60 @@
         "payload": "finding_verification_submitted",
         "description": "An agent submitted a claim with evidence that a finding is resolved (docs/DOMAIN_MODEL.md section 19). It is the event that carries the before-and-after evidence a human then judges; submitting it accepts nothing."
       },
+      "review.assigned": {
+        "channel": "review",
+        "direction": "control_plane_to_client",
+        "payload": "review_assigned",
+        "description": "A review was assigned to a human or to an agent session. Assignment is separate from review.claimed because one is a human directing work and the other is a worker taking it, and an auditor needs to tell the two apart."
+      },
+      "review.accepted": {
+        "channel": "review",
+        "direction": "control_plane_to_client",
+        "payload": "review_accepted",
+        "description": "A human accepted a review. The payload names the human who decided and the findings the decision rested on, because acceptance is the authority boundary of AGENTS.md and an audit trail that only recorded the status would not say who crossed it."
+      },
+      "review.reopened": {
+        "channel": "review",
+        "direction": "control_plane_to_client",
+        "payload": "review_reopened",
+        "description": "An accepted review was reopened. docs/DOMAIN_MODEL.md section 14 makes an accepted review immutable, so reopening is recorded as an explicit event rather than as an ordinary status change; prior findings, evidence and comments are retained."
+      },
+      "review.archived": {
+        "channel": "review",
+        "direction": "control_plane_to_client",
+        "payload": "review_archived",
+        "description": "A review was archived. Archival is not deletion: the findings, evidence and events all outlive it, which is why the event records the status it was archived from."
+      },
+      "review.comment_added": {
+        "channel": "review",
+        "direction": "control_plane_to_client",
+        "payload": "review_comment_added",
+        "description": "A comment was appended to a review itself rather than to one of its findings (docs/DOMAIN_MODEL.md section 18). It is a separate type from finding.comment_added so that a consumer filtering a finding's timeline does not have to inspect a payload to know whether an event belongs to it."
+      },
+      "finding.resolved": {
+        "channel": "finding",
+        "direction": "control_plane_to_client",
+        "payload": "finding_resolved",
+        "description": "A human accepted a finding as resolved, or explicitly waived it as WONT_FIX or DUPLICATE. It is separate from finding.status_changed because a final disposition is the decision the authority rule of docs/DOMAIN_MODEL.md section 15 reserves to a human, and it must be findable in the stream without matching on a status value."
+      },
+      "finding.reopened": {
+        "channel": "finding",
+        "direction": "control_plane_to_client",
+        "payload": "finding_reopened",
+        "description": "A human reopened a finding that had been resolved or waived. Prior verification history is retained rather than discarded, so the event carries how many verifications already exist."
+      },
+      "review.status_change_denied": {
+        "channel": "review",
+        "direction": "control_plane_to_client",
+        "payload": "review_status_change_denied",
+        "description": "A principal asked for a review transition it may not make, and was refused. It is recorded because the refusal is the authority boundary of AGENTS.md holding: an attempt to accept a review with agent credentials must leave a trail, and a rolled-back transaction leaves none."
+      },
+      "finding.status_change_denied": {
+        "channel": "finding",
+        "direction": "control_plane_to_client",
+        "payload": "finding_status_change_denied",
+        "description": "A principal asked for a finding transition it may not make, and was refused. The Stage 1 exit criterion is that an agent cannot finally accept a human-authored finding and that the attempt is audited; this is the audit half, and it is written outside the refused transaction because that transaction never commits."
+      },
       "artefact.upload_started": {
         "channel": "evidence",
         "direction": "control_plane_to_client",
@@ -185,6 +239,42 @@
         "max_bytes_limit": "max_request_bytes",
         "description": "Artefact-store driver, reachability and storage use, as reviewplane status reports them (docs/OPERATIONS.md section 3)."
       },
+      "review_assign_request": {
+        "channel": "command",
+        "def": "review_assign_request",
+        "max_bytes_limit": "max_request_bytes",
+        "description": "Body of POST /api/v1/reviews/:reviewId/assign. Exactly one of a user or an agent session is named; assigning to both would leave the question of who owns the work unanswered."
+      },
+      "review_transition_request": {
+        "channel": "command",
+        "def": "review_transition_request",
+        "max_bytes_limit": "max_request_bytes",
+        "description": "Body of the review lifecycle routes of docs/API.md section 12: request-review, accept, reopen and archive. Each carries expected_version, because each is a write to a record two principals may be holding."
+      },
+      "finding_claim_request": {
+        "channel": "command",
+        "def": "finding_claim_request",
+        "max_bytes_limit": "max_request_bytes",
+        "description": "Body of POST /api/v1/findings/:findingId/claim. The claim uses the same optimistic-concurrency mechanism as any other write, so a human and an agent claiming at once produce one claim and one VERSION_CONFLICT."
+      },
+      "finding_transition_request": {
+        "channel": "command",
+        "def": "finding_transition_request",
+        "max_bytes_limit": "max_request_bytes",
+        "description": "Body of the human-only finding disposition routes of docs/API.md section 13: accept, reopen and wont-fix. They are human-only in the domain layer, so an agent credential reaching one is refused with AUTHORISATION_DENIED and audited."
+      },
+      "comment_create_request": {
+        "channel": "command",
+        "def": "comment_create_request",
+        "max_bytes_limit": "max_request_bytes",
+        "description": "Body of POST /api/v1/reviews/:reviewId/comments and POST /api/v1/findings/:findingId/comments. It carries no author: attribution is derived from the authenticated actor and is not a field a caller may set (docs/DOMAIN_MODEL.md section 18)."
+      },
+      "comment_update_request": {
+        "channel": "command",
+        "def": "comment_update_request",
+        "max_bytes_limit": "max_request_bytes",
+        "description": "Body of PATCH /api/v1/comments/:commentId. An edit appends a new revision and retains the previous one; nothing overwrites a comment in place."
+      },
       "domain_error": {
         "channel": "refusal",
         "def": "domain_error",
@@ -264,6 +354,80 @@
       "reference_frame": {
         "description": "The frame normalised geometry is expressed in. It is the artefact content rectangle of docs/DOMAIN_MODEL.md section 16: the full intrinsic pixel extent of the stored image, origin at its top-left. It is deliberately neither the viewport, nor the element, nor the rendered element box, because those three differ under zoom, container resize and a device-pixel-ratio change while the content rectangle does not.",
         "values": ["artefact_content_rectangle"]
+      },
+      "review_status_transitions": {
+        "description": "The review lifecycle of docs/DOMAIN_MODEL.md section 14 as data, one entry per legal transition, in the form from:to:actor_types. The third field is the authority column: which actor types may request that transition. Absence from this list means refused — a status machine with an implicit \"anything else is fine\" branch is not a status machine. The list is the single source the control plane, the MCP layer and the web application all read (ADR-0024), so a permitted action is never computed twice from two copies of the rule. An agent may reach exactly three of the nine statuses: ASSIGNED by claiming, IN_PROGRESS and AWAITING_HUMAN_REVIEW by working. ACCEPTED is human-only, which is the authority boundary of AGENTS.md. ACCEPTED to CHANGES_REQUESTED is the reopen of section 14, an explicit and audited exception to the immutability of an accepted review.",
+        "values": [
+          "DRAFT:READY:human_user",
+          "DRAFT:CANCELLED:human_user",
+          "READY:ASSIGNED:human_user,agent_session",
+          "READY:DRAFT:human_user",
+          "READY:CANCELLED:human_user",
+          "ASSIGNED:IN_PROGRESS:human_user,agent_session",
+          "ASSIGNED:READY:human_user",
+          "ASSIGNED:CANCELLED:human_user",
+          "IN_PROGRESS:AWAITING_HUMAN_REVIEW:human_user,agent_session",
+          "IN_PROGRESS:CHANGES_REQUESTED:human_user",
+          "IN_PROGRESS:CANCELLED:human_user",
+          "AWAITING_HUMAN_REVIEW:ACCEPTED:human_user",
+          "AWAITING_HUMAN_REVIEW:CHANGES_REQUESTED:human_user",
+          "AWAITING_HUMAN_REVIEW:CANCELLED:human_user",
+          "CHANGES_REQUESTED:IN_PROGRESS:human_user,agent_session",
+          "CHANGES_REQUESTED:ASSIGNED:human_user",
+          "CHANGES_REQUESTED:CANCELLED:human_user",
+          "ACCEPTED:CHANGES_REQUESTED:human_user",
+          "ACCEPTED:ARCHIVED:human_user",
+          "CANCELLED:ARCHIVED:human_user"
+        ]
+      },
+      "finding_status_transitions": {
+        "description": "The finding lifecycle of docs/DOMAIN_MODEL.md section 15 as data, one entry per legal transition, in the form from:to:actor_types. The third field is the authority column of the same section, and the entries naming agent_session are exactly the six transitions of docs/MCP_SPEC.md section 7.7 and nothing else. The list stops at AWAITING_HUMAN_REVIEW for an agent, which is the product invariant of AGENTS.md expressed as data: an agent submits work for review and a human decides. RESOLVED, WONT_FIX and DUPLICATE are final dispositions and are human-only whoever authored the finding, because Stage 1 enables no policy that would auto-resolve an agent-authored one.",
+        "values": [
+          "OPEN:CLAIMED:human_user,agent_session",
+          "OPEN:IN_PROGRESS:human_user",
+          "OPEN:BLOCKED:human_user",
+          "OPEN:WONT_FIX:human_user",
+          "OPEN:DUPLICATE:human_user",
+          "CLAIMED:IN_PROGRESS:human_user,agent_session",
+          "CLAIMED:BLOCKED:human_user",
+          "CLAIMED:OPEN:human_user",
+          "IN_PROGRESS:FIXED_UNVERIFIED:human_user,agent_session",
+          "IN_PROGRESS:BLOCKED:human_user,agent_session",
+          "IN_PROGRESS:AWAITING_HUMAN_REVIEW:human_user",
+          "BLOCKED:IN_PROGRESS:human_user",
+          "BLOCKED:OPEN:human_user",
+          "FIXED_UNVERIFIED:AWAITING_HUMAN_REVIEW:human_user,agent_session",
+          "FIXED_UNVERIFIED:IN_PROGRESS:human_user",
+          "AWAITING_HUMAN_REVIEW:RESOLVED:human_user",
+          "AWAITING_HUMAN_REVIEW:REOPENED:human_user",
+          "AWAITING_HUMAN_REVIEW:WONT_FIX:human_user",
+          "AWAITING_HUMAN_REVIEW:DUPLICATE:human_user",
+          "RESOLVED:REOPENED:human_user",
+          "REOPENED:CLAIMED:human_user",
+          "REOPENED:IN_PROGRESS:human_user,agent_session",
+          "WONT_FIX:REOPENED:human_user",
+          "DUPLICATE:REOPENED:human_user"
+        ]
+      },
+      "final_finding_dispositions": {
+        "description": "The finding statuses that finally dispose of the reported problem. Reaching one is a decision about whether the problem was real, which docs/DOMAIN_MODEL.md section 15 reserves to a human for a human-authored finding and which Stage 1 reserves to a human for an agent-authored one too, because no project policy exists yet to permit auto-resolution. Review acceptance treats them as the statuses a finding must have reached before the review may be accepted.",
+        "values": ["RESOLVED", "WONT_FIX", "DUPLICATE"]
+      },
+      "active_review_statuses": {
+        "description": "The review statuses whose slug still reserves the project-scoped name of docs/DOMAIN_MODEL.md section 14. A withdrawn review releases its name and an accepted one keeps it, because an agent told to work on bugs-on-homepage must never face two candidates.",
+        "values": [
+          "DRAFT",
+          "READY",
+          "ASSIGNED",
+          "IN_PROGRESS",
+          "AWAITING_HUMAN_REVIEW",
+          "CHANGES_REQUESTED",
+          "ACCEPTED"
+        ]
+      },
+      "immutable_review_statuses": {
+        "description": "The review statuses in which a review is closed to ordinary edits (docs/DOMAIN_MODEL.md section 14). Comments, archival metadata and an explicit reopen remain available; everything else is refused with POLICY_DENIED rather than silently dropped.",
+        "values": ["ACCEPTED", "CANCELLED", "ARCHIVED"]
       }
     },
     "identifier_prefixes": {
@@ -502,9 +666,14 @@
       "description": "Finding severity (docs/DOMAIN_MODEL.md section 15).",
       "enum": ["critical", "high", "medium", "low", "suggestion"]
     },
+    "review_priority": {
+      "type": "string",
+      "description": "How urgently a review should be worked (docs/DOMAIN_MODEL.md section 14). It orders a queue and never gates a transition: an urgent review and a routine one obey the same lifecycle and the same authority rules.",
+      "enum": ["critical", "high", "medium", "low"]
+    },
     "finding_source": {
       "type": "string",
-      "description": "Whether a human or an agent authored the finding. It is recorded on the first row rather than derived later, because the acceptance authority rule depends on it for the life of the finding.",
+      "description": "Whether a human or an agent authored the finding. It is recorded on the first row rather than derived later, because the acceptance authority rule depends on it for the life of the finding. It is derived by the control plane from the authenticated actor and is never a field a caller may supply: a client able to set it could forge a human-authored finding, or relabel its own to escape the rule that a human decides.",
       "enum": ["human", "agent"]
     },
     "annotation_type": {
@@ -568,6 +737,15 @@
         "finding.claimed",
         "finding.comment_added",
         "finding.verification_submitted",
+        "review.assigned",
+        "review.accepted",
+        "review.reopened",
+        "review.archived",
+        "review.comment_added",
+        "finding.resolved",
+        "finding.reopened",
+        "review.status_change_denied",
+        "finding.status_change_denied",
         "artefact.upload_started",
         "artefact.upload_completed",
         "artefact.upload_failed",
@@ -795,6 +973,10 @@
           "$ref": "#/$defs/review_status",
           "description": "Lifecycle status."
         },
+        "priority": {
+          "$ref": "#/$defs/review_priority",
+          "description": "How urgently the review should be worked. Ordering only; it gates nothing."
+        },
         "version": {
           "$ref": "#/$defs/version_number",
           "description": "Optimistic-concurrency version."
@@ -802,6 +984,20 @@
         "created_by": {
           "$ref": "#/$defs/actor",
           "description": "Actor that created the review."
+        },
+        "assigned_user_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Human the review is assigned to, where one is."
+        },
+        "assigned_agent_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Agent session the review is assigned to or claimed by, where one is."
+        },
+        "reopen_count": {
+          "type": "integer",
+          "description": "How many times the review has been reopened after acceptance. It is on the record because reopening preserves prior history rather than replacing it (docs/DOMAIN_MODEL.md section 14), so the count is the only thing that distinguishes a first acceptance from a later one.",
+          "minimum": 0,
+          "maximum": 100000
         },
         "captured_branch": {
           "$ref": "#/$defs/branch_name",
@@ -1546,6 +1742,20 @@
             "description": "Name of a missing piece of evidence."
           }
         },
+        "allowed_transitions": {
+          "type": "array",
+          "description": "The transitions this actor may make from the current status, as from:to labels, returned with a refused transition (docs/API.md section 5). A refusal that only says no makes a caller guess, and a guessing agent retries.",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/reason_text",
+            "description": "One from:to label."
+          }
+        },
+        "reason": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Why, where one code covers several causes (docs/API.md section 5)."
+        },
         "retry_after_ms": {
           "type": "integer",
           "description": "How long to wait before retrying, returned with RATE_LIMITED.",
@@ -1605,6 +1815,10 @@
           "$ref": "#/$defs/review_status",
           "description": "Initial status. Defaults to DRAFT; only DRAFT and READY may be requested at creation."
         },
+        "priority": {
+          "$ref": "#/$defs/review_priority",
+          "description": "How urgently the review should be worked. Defaults to medium."
+        },
         "captured_branch": {
           "$ref": "#/$defs/branch_name",
           "description": "Branch the findings were captured from."
@@ -1649,6 +1863,112 @@
         "status": {
           "$ref": "#/$defs/review_status",
           "description": "Requested status."
+        },
+        "priority": {
+          "$ref": "#/$defs/review_priority",
+          "description": "New priority."
+        }
+      }
+    },
+    "review_assign_request": {
+      "type": "object",
+      "description": "Assigns a review to a human or to an agent session. Exactly one of the two is named: a review owned by both would leave the question the assignment exists to answer unanswered, and clearing an assignment is done by naming neither.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["expected_version"],
+      "properties": {
+        "expected_version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version the caller last read."
+        },
+        "assigned_user_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Human to assign the review to."
+        },
+        "assigned_agent_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Agent session to assign the review to."
+        },
+        "reason": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Why, recorded on the event."
+        }
+      }
+    },
+    "review_transition_request": {
+      "type": "object",
+      "description": "Body of the review lifecycle routes: request-review, accept, reopen and archive (docs/API.md section 12). The target status is fixed by the route rather than named in the body, so a caller cannot ask one route for another route's transition.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["expected_version"],
+      "properties": {
+        "expected_version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version the caller last read."
+        },
+        "reason": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Why, recorded on the event so an auditor reads a decision rather than a status."
+        }
+      }
+    },
+    "finding_claim_request": {
+      "type": "object",
+      "description": "Claims one finding. The claim carries the same expected_version as any other write, so a human and an agent claiming at once produce one claim and one VERSION_CONFLICT rather than two silent overwrites.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["expected_version"],
+      "properties": {
+        "expected_version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version the caller last read."
+        }
+      }
+    },
+    "finding_transition_request": {
+      "type": "object",
+      "description": "Body of the human-only finding disposition routes: accept, reopen and wont-fix (docs/API.md section 13). Each is refused for an agent actor in the domain layer with AUTHORISATION_DENIED, whatever credential reached the route.",
+      "additionalProperties": false,
+      "x-max-bytes": 4096,
+      "required": ["expected_version"],
+      "properties": {
+        "expected_version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version the caller last read."
+        },
+        "reason": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Why the decision was made. Required for wont-fix, because waiving a reported problem without a reason is not a decision anybody can review later."
+        },
+        "duplicate_of_finding_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "The finding this one duplicates, where the disposition is DUPLICATE."
+        }
+      }
+    },
+    "comment_create_request": {
+      "type": "object",
+      "description": "Appends a comment to a review or a finding. There is no author field: attribution is derived from the authenticated actor, because a caller able to name its own actor type could make an agent's note read as a human's (docs/DOMAIN_MODEL.md section 18).",
+      "additionalProperties": false,
+      "x-max-bytes": 6144,
+      "required": ["body"],
+      "properties": {
+        "body": {
+          "$ref": "#/$defs/body_text",
+          "description": "Comment text. Rendered as text and never as markup."
+        }
+      }
+    },
+    "comment_update_request": {
+      "type": "object",
+      "description": "Edits a comment. The edit appends a new revision and retains the previous one, so the history a reader needs to judge a changed instruction is never lost.",
+      "additionalProperties": false,
+      "x-max-bytes": 6144,
+      "required": ["body"],
+      "properties": {
+        "body": {
+          "$ref": "#/$defs/body_text",
+          "description": "Replacement text, recorded as the next revision."
         }
       }
     },
@@ -1660,7 +1980,6 @@
       "required": [
         "title",
         "severity",
-        "source",
         "url",
         "viewport",
         "scroll_position",
@@ -1679,10 +1998,6 @@
         "severity": {
           "$ref": "#/$defs/finding_severity",
           "description": "Severity."
-        },
-        "source": {
-          "$ref": "#/$defs/finding_source",
-          "description": "Whether a human or an agent authored the finding."
         },
         "url": {
           "$ref": "#/$defs/captured_url",
@@ -1927,10 +2242,10 @@
     },
     "comment": {
       "type": "object",
-      "description": "One chronological discussion item on a finding (docs/DOMAIN_MODEL.md section 18). Comments are append-only; the actor type is always explicit, because a reader must be able to tell an agent's note from a human's without inferring it from the wording.",
+      "description": "One chronological discussion item on a review or on one of its findings (docs/DOMAIN_MODEL.md section 18). finding_id is absent for a comment on the review itself. Comments are append-only; the actor type is always explicit, because a reader must be able to tell an agent's note from a human's without inferring it from the wording, and it is derived from the authenticated actor rather than supplied.",
       "additionalProperties": false,
       "x-max-bytes": 6144,
-      "required": ["id", "finding_id", "body", "created_by", "revision", "created_at"],
+      "required": ["id", "review_id", "body", "created_by", "revision", "created_at"],
       "properties": {
         "id": {
           "$ref": "#/$defs/identifier",
@@ -1946,11 +2261,11 @@
         },
         "review_id": {
           "$ref": "#/$defs/identifier",
-          "description": "Review the finding belongs to."
+          "description": "Review the comment belongs to, directly or through its finding."
         },
         "finding_id": {
           "$ref": "#/$defs/identifier",
-          "description": "Finding the comment is on."
+          "description": "Finding the comment is on. Absent when the comment is on the review itself."
         },
         "body": {
           "$ref": "#/$defs/body_text",
@@ -1958,11 +2273,19 @@
         },
         "created_by": {
           "$ref": "#/$defs/actor",
-          "description": "Who wrote it."
+          "description": "Who wrote it, derived from the authenticated actor and never from the request body."
         },
         "revision": {
           "$ref": "#/$defs/version_number",
           "description": "Revision of the comment. Editing records a new revision and retains the previous one."
+        },
+        "supersedes_comment_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "The revision this one replaces, where it is an edit. The replaced row survives: an edit appends, it does not overwrite."
+        },
+        "superseded_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When a later revision replaced this one. A revision carrying it is history rather than the current text."
         },
         "created_at": {
           "$ref": "#/$defs/timestamp",
@@ -2054,6 +2377,295 @@
         "comment": {
           "$ref": "#/$defs/comment",
           "description": "The comment as recorded."
+        }
+      }
+    },
+    "review_comment_added": {
+      "type": "object",
+      "description": "Payload of review.comment_added.",
+      "additionalProperties": false,
+      "x-max-bytes": 6144,
+      "required": ["comment"],
+      "properties": {
+        "comment": {
+          "$ref": "#/$defs/comment",
+          "description": "The comment as recorded. It carries no finding_id, because it is on the review itself."
+        }
+      }
+    },
+    "review_assigned": {
+      "type": "object",
+      "description": "Payload of review.assigned.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["review_id", "version"],
+      "properties": {
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review assigned."
+        },
+        "assigned_user_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Human it was assigned to, where it was."
+        },
+        "assigned_agent_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Agent session it was assigned to, where it was."
+        },
+        "previous_assigned_user_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Human it was assigned to before, where one held it."
+        },
+        "previous_assigned_agent_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Agent session it was assigned to before, where one held it."
+        },
+        "version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version after the assignment."
+        },
+        "reason": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Why, where the caller supplied one."
+        }
+      }
+    },
+    "review_accepted": {
+      "type": "object",
+      "description": "Payload of review.accepted.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["review_id", "accepted_by", "version", "finding_count", "human_finding_count"],
+      "properties": {
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review accepted."
+        },
+        "accepted_by": {
+          "$ref": "#/$defs/actor",
+          "description": "The human who decided. The type is always human_user: an agent reaching this event is not representable, because the domain layer refuses the transition before the event is written."
+        },
+        "version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version after acceptance."
+        },
+        "finding_count": {
+          "type": "integer",
+          "description": "Findings the review held when it was accepted.",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "human_finding_count": {
+          "type": "integer",
+          "description": "How many of those a human authored. Acceptance rests on every one of them having reached a final disposition, so the count is recorded rather than left to be recomputed against a table that has since moved on.",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "reason": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Why, where the caller supplied one."
+        }
+      }
+    },
+    "review_reopened": {
+      "type": "object",
+      "description": "Payload of review.reopened.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["review_id", "from", "to", "version", "reopen_count"],
+      "properties": {
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review reopened."
+        },
+        "from": {
+          "$ref": "#/$defs/review_status",
+          "description": "Status it was reopened from."
+        },
+        "to": {
+          "$ref": "#/$defs/review_status",
+          "description": "Status it was reopened into."
+        },
+        "version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version after the reopen."
+        },
+        "reopen_count": {
+          "type": "integer",
+          "description": "How many times this review has now been reopened. Prior findings, evidence and comments are retained, so the count is what distinguishes one acceptance cycle from the next.",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "reason": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Why, where the caller supplied one."
+        }
+      }
+    },
+    "review_archived": {
+      "type": "object",
+      "description": "Payload of review.archived.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["review_id", "from", "version"],
+      "properties": {
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review archived."
+        },
+        "from": {
+          "$ref": "#/$defs/review_status",
+          "description": "Status it was archived from. Archival is not deletion: the findings, evidence and events all outlive it."
+        },
+        "version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version after archival."
+        },
+        "reason": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Why, where the caller supplied one."
+        }
+      }
+    },
+    "finding_resolved": {
+      "type": "object",
+      "description": "Payload of finding.resolved.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["finding_id", "review_id", "disposition", "source", "decided_by", "version"],
+      "properties": {
+        "finding_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Finding disposed of."
+        },
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review it belongs to."
+        },
+        "disposition": {
+          "$ref": "#/$defs/finding_status",
+          "description": "The final disposition reached: RESOLVED, WONT_FIX or DUPLICATE."
+        },
+        "source": {
+          "$ref": "#/$defs/finding_source",
+          "description": "Who authored the finding, recorded here because it is the input the authority rule of docs/DOMAIN_MODEL.md section 15 was decided on."
+        },
+        "decided_by": {
+          "$ref": "#/$defs/actor",
+          "description": "The human who decided. Stage 1 enables no policy that would let anything else reach this event."
+        },
+        "version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version after the decision."
+        },
+        "duplicate_of_finding_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "The finding this one duplicates, where the disposition is DUPLICATE."
+        },
+        "reason": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Why, where the caller supplied one. Required by the route for WONT_FIX."
+        }
+      }
+    },
+    "review_status_change_denied": {
+      "type": "object",
+      "description": "Payload of review.status_change_denied.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["review_id", "from", "requested", "code"],
+      "properties": {
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review the transition was requested on."
+        },
+        "from": {
+          "$ref": "#/$defs/review_status",
+          "description": "Status the review actually held."
+        },
+        "requested": {
+          "$ref": "#/$defs/review_status",
+          "description": "Status the principal asked for."
+        },
+        "code": {
+          "$ref": "#/$defs/error_class",
+          "description": "The stable refusal code the caller was answered with."
+        },
+        "reason": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Short explanation, drawn from the refusal rather than from the request."
+        }
+      }
+    },
+    "finding_status_change_denied": {
+      "type": "object",
+      "description": "Payload of finding.status_change_denied.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["finding_id", "review_id", "from", "requested", "source", "code"],
+      "properties": {
+        "finding_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Finding the transition was requested on."
+        },
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review it belongs to."
+        },
+        "from": {
+          "$ref": "#/$defs/finding_status",
+          "description": "Status the finding actually held."
+        },
+        "requested": {
+          "$ref": "#/$defs/finding_status",
+          "description": "Status the principal asked for."
+        },
+        "source": {
+          "$ref": "#/$defs/finding_source",
+          "description": "Who authored the finding. It is the input the authority rule was decided on, so a reader can see why the refusal happened without re-deriving it."
+        },
+        "code": {
+          "$ref": "#/$defs/error_class",
+          "description": "The stable refusal code the caller was answered with."
+        },
+        "reason": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Short explanation, drawn from the refusal rather than from the request."
+        }
+      }
+    },
+    "finding_reopened": {
+      "type": "object",
+      "description": "Payload of finding.reopened.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["finding_id", "review_id", "from", "version", "verification_count"],
+      "properties": {
+        "finding_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Finding reopened."
+        },
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review it belongs to."
+        },
+        "from": {
+          "$ref": "#/$defs/finding_status",
+          "description": "Status it was reopened from."
+        },
+        "version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version after the reopen."
+        },
+        "verification_count": {
+          "type": "integer",
+          "description": "Verifications the finding already holds. Reopening preserves prior verification history (docs/DOMAIN_MODEL.md section 15), so the count says what was kept rather than implying a fresh start.",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "reason": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Why, where the caller supplied one."
         }
       }
     },

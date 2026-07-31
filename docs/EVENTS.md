@@ -256,6 +256,8 @@ and no expiry job run.
 - `review.accepted`
 - `review.reopened`
 - `review.archived`
+- `review.comment_added`
+- `review.status_change_denied`
 
 ### Finding
 
@@ -265,11 +267,47 @@ and no expiry job run.
 - `finding.status_changed`
 - `finding.comment_added`
 - `finding.verification_submitted`
+- `finding.resolved`
+- `finding.reopened`
+- `finding.status_change_denied`
 
 `review.claimed` and `finding.claimed` are separate from the status change
 beside them, because assignment and lifecycle are different facts: a claim says
 who is working, and the status says what stage the work is at. A human reading
 the timeline needs both.
+
+`review.assigned` is separate from `review.claimed` for the same kind of reason:
+a human directing work and a worker taking it are different facts, and an auditor
+asking "was this given to the agent, or did it take it?" needs to be able to
+tell.
+
+`review.accepted`, `finding.resolved` and `finding.reopened` sit beside the
+status change rather than instead of it. The status says the record moved; these
+say a **human decided**, and name which human. That is the authority boundary of
+`AGENTS.md`, and an audit trail that recorded only a status would not say who
+crossed it. `review.accepted` also records how many findings the review held and
+how many of them a human authored, because acceptance rests on every one of those
+having reached a final disposition and the table will have moved on by the time
+anybody reads the event. `finding.reopened` records how many verifications the
+finding already holds, because reopening preserves that history rather than
+replacing it.
+
+`review.comment_added` is a separate type from `finding.comment_added` so that a
+consumer filtering one finding's timeline does not have to inspect a payload to
+decide whether an event belongs to it. An edited comment produces another
+`*.comment_added` for the new revision: an edit is an append with a
+back-reference, not a different kind of occurrence.
+
+`review.status_change_denied` and `finding.status_change_denied` record a
+transition a principal asked for and **may not make**. They are the only events
+in this catalogue written for something that did not happen, and they exist
+because the refusal is the invariant holding: `AGENTS.md` requires that an agent
+cannot finally accept a human-authored finding, and a Stage 1 exit criterion
+requires that the attempt is audited. The transaction the refusal happened in
+rolls back, taking any event written inside it, so these are written afterwards
+in their own transaction. They carry the status the record actually held, the
+status that was asked for, the finding's `source` where there is one, and the
+stable refusal code — and never any part of the request.
 
 `finding.verification_submitted` carries the whole claim — summary, branch,
 commit, tested viewports, checks and every artefact identifier — with status

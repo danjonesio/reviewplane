@@ -270,6 +270,7 @@ reviewplane serve              # the api role
 reviewplane jobs [--once]      # the jobs role
 reviewplane install-token      # mint the one-time administrator bootstrap token
 reviewplane status [--json]    # build, schema and artefact-store health and use
+reviewplane export-review      # write one review as a portable document
 reviewplane version            # the build this image carries
 ```
 
@@ -286,6 +287,16 @@ cannot.
 Storage use counts each content-addressed key once. Two artefacts holding
 identical bytes are one stored object, so summing per artefact would overstate
 the volume an operator has to back up.
+
+`reviewplane export-review --project <id|slug> --review <slug|id> [--out FILE]`
+writes the portable review document of `docs/REVIEW_FORMAT.md` to a file or to
+standard output, and prints its SHA-256 when it writes a file. It is the
+operator's half of the export: `GET /api/v1/reviews/:reviewId/export` queues a
+durable job and stores an artefact, which is right for a reviewer clicking a
+button, while an operator with a shell on the control plane wants the document
+itself without an artefact grant to fetch it back through. Both build the same
+document from the same code. The command writes nothing and records no event —
+it only reads.
 
 ### First run: claiming the installation
 

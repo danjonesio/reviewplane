@@ -569,16 +569,26 @@ Allowed agent transitions:
 - `FIXED_UNVERIFIED` -> `AWAITING_HUMAN_REVIEW`
 - `REOPENED` -> `IN_PROGRESS`
 
+This list is not maintained here. It is the rows naming `agent_session` in
+`x-protocol.vocabularies.finding_status_transitions` in
+`packages/protocol/schemas/review/v1.schema.json`, which is the single source the
+control plane, this layer and the web application all read (ADR-0024). The six
+above are that vocabulary rendered for a human reader, and a contract test holds
+the two to each other.
+
 Human-only transitions remain unavailable, and unavailable means **not
 expressible**. The status enumeration this tool accepts contains none of
 `RESOLVED`, `WONT_FIX`, `DUPLICATE` or `ACCEPTED`, so an agent cannot name a
 final disposition and therefore cannot request one (ADR-0020). The authority
 rule of `docs/DOMAIN_MODEL.md` section 15 is additionally enforced in the domain
 layer, which refuses the same transitions for an `agent_session` actor whatever
-the protocol layer let through.
+the protocol layer let through, and records `finding.status_change_denied` when
+it does.
 
-A transition outside the list is refused with `POLICY_DENIED` and
-`details.allowed_transitions`, so a refusal says what is possible from here
+A final disposition an agent somehow requests — `RESOLVED`, `WONT_FIX` or
+`DUPLICATE` — is refused with `AUTHORISATION_DENIED`, whoever authored the
+finding. Any other transition outside the list is refused with `POLICY_DENIED`
+and `details.allowed_transitions`, so a refusal says what is possible from here
 rather than only what is not.
 
 `BLOCKED` requires a `reason`, and `FIXED_UNVERIFIED` requires a

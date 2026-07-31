@@ -144,6 +144,41 @@ Required transition tests:
 - Staleness warning does not auto-close finding
 - Verification requires evidence under policy
 
+They are exercised where the rule lives. Six run without a database or an HTTP
+server, in `apps/server/test/review-domain.test.ts`, because the rules are pure
+functions over a status, an actor type and a source: a rule that can only be
+reached through a handler and a transaction is a rule nobody will exercise. The
+two with a genuinely stateful half — "review slug uniqueness is project scoped",
+which is a partial unique index, and the concurrent half of "finding claim uses
+optimistic version" — run against a real database in
+`apps/server/test/review-lifecycle.test.ts`, where two callers race one row lock
+and exactly one wins.
+
+"Staleness warning does not auto-close finding" is asserted structurally rather
+than by simulating a warning: no non-human actor may request any final
+disposition, so nothing a staleness calculation could return would close a
+finding (`docs/DOMAIN_MODEL.md` section 24).
+
+The transition tables and their authority column are **data** in
+`packages/protocol/schemas/review/v1.schema.json` (ADR-0024), so the domain
+tests assert against the table the server reads rather than against a second copy
+of the rule. A contract test holds the agent-permitted set to the six transitions
+of `docs/MCP_SPEC.md` section 7.7 and the agent-reachable review statuses to the
+three of `docs/DOMAIN_MODEL.md` section 14.
+
+Required authority and audit tests:
+
+- An agent credential is refused on every finding-disposition route, and nothing
+  moves
+- An `agent_session` actor reaching the domain layer directly — the path the MCP
+  server takes — is refused for `RESOLVED`, `WONT_FIX` and `DUPLICATE`, and each
+  attempt records `finding.status_change_denied`
+- A client-supplied `source` is refused rather than honoured, and a finding's
+  source follows the actor that created it
+- Comment attribution cannot be spoofed, and an edit by another actor is refused
+- A foreign review and a foreign finding are answered exactly as unknown ones
+  are, on every route added with the lifecycle work
+
 ## 5. Control-lease tests
 
 - Agent owns initial epoch

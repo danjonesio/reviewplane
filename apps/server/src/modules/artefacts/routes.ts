@@ -15,10 +15,11 @@
  * and compared afterwards, which made the two refusals distinguishable and the
  * identifier space enumerable.
  *
- * That repairs the defect **in this module only**. RVP-66 and RVP-67 also name
- * `modules/reviews/routes.ts`, whose `scopeForRecord` still authorises on the
- * project a record names without comparing the caller's organisation; nothing
- * here fixes that, and no comment in this file should be read as saying it did.
+ * This repaired the defect in this module; `modules/reviews/routes.ts`, which
+ * RVP-66 and RVP-67 also named, was repaired separately and now resolves every
+ * record through one helper that takes the organisation from the authenticated
+ * principal rather than from the row. Two ways to reach a record by identifier
+ * is what let the two modules drift apart in the first place.
  *
  * **Reading bytes back works differently from every other route here**, and
  * deliberately so (ADR-0019). There is **no** path that serves an artefact from
