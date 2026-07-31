@@ -166,9 +166,21 @@ test("client capabilities default generously and degrade on request", () => {
   const degraded = readClientCapabilities(new URLSearchParams("image_content=false"));
   assert.equal(degraded.image_content, false);
   assert.equal(negotiateCapabilities(degraded).image_resources, false);
-  // Stage 0 advertises no inbox and pushes nothing, whatever the client says.
-  assert.equal(negotiateCapabilities(defaults).review_inbox, false);
+  // The inbox tools are advertised, so the capability says so. Nothing is
+  // pushed, whatever the client says: an agent polls and acknowledges
+  // explicitly (`docs/MCP_SPEC.md` section 9).
+  assert.equal(negotiateCapabilities(defaults).review_inbox, true);
   assert.equal(negotiateCapabilities(defaults).managed_messages, false);
+  assert.equal(negotiateCapabilities(degraded).review_inbox, true);
+});
+
+test("the inbox capability is not degraded by a client that consumes no images", () => {
+  // Degradation is per capability. A client without image support still
+  // receives its work: the inbox carries titles and identifiers, not pixels.
+  const noImages = readClientCapabilities(new URLSearchParams("image_content=false&resources=false"));
+  const negotiated = negotiateCapabilities(noImages);
+  assert.equal(negotiated.image_resources, false);
+  assert.equal(negotiated.review_inbox, true);
 });
 
 test("a cursor round-trips and a forged one is refused", () => {

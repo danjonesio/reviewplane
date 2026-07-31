@@ -26,6 +26,7 @@ export const LIMITS = {
 export const CHANNELS = [
   "review",
   "finding",
+  "inbox",
   "evidence",
   "command",
   "refusal",
@@ -39,6 +40,7 @@ export type Channel = (typeof CHANNELS)[number];
 export const CHANNEL_DESCRIPTIONS: Readonly<Record<Channel, string>> = {
   "review": "Review lifecycle: creation, naming and status.",
   "finding": "Finding lifecycle, including annotation of a finding.",
+  "inbox": "Durable delivery of assigned work to a human or an agent session (docs/DOMAIN_MODEL.md section 21).",
   "evidence": "Artefact upload and screenshot capture.",
   "command": "Request bodies of the human and agent write API.",
   "refusal": "Stable refusals carried back to a caller.",
@@ -391,6 +393,11 @@ export const MESSAGE_TYPE_VALUES = [
   "finding.reopened",
   "review.status_change_denied",
   "finding.status_change_denied",
+  "inbox_item.created",
+  "inbox_item.acknowledged",
+  "inbox_item.completed",
+  "inbox_item.dismissed",
+  "inbox_item.expired",
   "artefact.upload_started",
   "artefact.upload_completed",
   "artefact.upload_failed",
@@ -420,6 +427,11 @@ export type MessageType =
   | "finding.reopened"
   | "review.status_change_denied"
   | "finding.status_change_denied"
+  | "inbox_item.created"
+  | "inbox_item.acknowledged"
+  | "inbox_item.completed"
+  | "inbox_item.dismissed"
+  | "inbox_item.expired"
   | "artefact.upload_started"
   | "artefact.upload_completed"
   | "artefact.upload_failed"
@@ -549,6 +561,52 @@ export type AnnotationCreateRequestStyleHint =
   | "informational";
 
 /**
+ * Inbox-item status (docs/DOMAIN_MODEL.md section 21). acknowledged and completed are
+ * separate values because receipt and completion are separate facts, and a single value
+ * covering both would make the audit question unanswerable.
+ */
+export const INBOX_ITEM_STATUS_VALUES = [
+  "pending",
+  "acknowledged",
+  "completed",
+  "dismissed",
+  "expired",
+] as const;
+
+export type InboxItemStatus =
+  | "pending"
+  | "acknowledged"
+  | "completed"
+  | "dismissed"
+  | "expired";
+
+/**
+ * Why an inbox item exists. review_assigned is created when a review is assigned;
+ * finding_reopened is created when a human reopens a finding.
+ */
+export const INBOX_ITEM_TYPE_VALUES = [
+  "review_assigned",
+  "finding_reopened",
+] as const;
+
+export type InboxItemType =
+  | "review_assigned"
+  | "finding_reopened";
+
+/**
+ * What kind of principal an inbox item was delivered to. It is the actor vocabulary
+ * narrowed to the two that can hold work: a system or an integration receives nothing.
+ */
+export const INBOX_ITEM_RECIPIENT_TYPE_VALUES = [
+  "human_user",
+  "agent_session",
+] as const;
+
+export type InboxItemRecipientType =
+  | "human_user"
+  | "agent_session";
+
+/**
  * Which side of the trust boundary sends each message type.
  */
 export const MESSAGE_DIRECTIONS: Readonly<Record<MessageType, "control_plane_to_client" | "client_to_control_plane">> = {
@@ -571,6 +629,11 @@ export const MESSAGE_DIRECTIONS: Readonly<Record<MessageType, "control_plane_to_
   "finding.reopened": "control_plane_to_client",
   "review.status_change_denied": "control_plane_to_client",
   "finding.status_change_denied": "control_plane_to_client",
+  "inbox_item.created": "control_plane_to_client",
+  "inbox_item.acknowledged": "control_plane_to_client",
+  "inbox_item.completed": "control_plane_to_client",
+  "inbox_item.dismissed": "control_plane_to_client",
+  "inbox_item.expired": "control_plane_to_client",
   "artefact.upload_started": "control_plane_to_client",
   "artefact.upload_completed": "control_plane_to_client",
   "artefact.upload_failed": "control_plane_to_client",
@@ -603,6 +666,11 @@ export const MESSAGE_CHANNELS: Readonly<Record<MessageType, Channel>> = {
   "finding.reopened": "finding",
   "review.status_change_denied": "review",
   "finding.status_change_denied": "finding",
+  "inbox_item.created": "inbox",
+  "inbox_item.acknowledged": "inbox",
+  "inbox_item.completed": "inbox",
+  "inbox_item.dismissed": "inbox",
+  "inbox_item.expired": "inbox",
   "artefact.upload_started": "evidence",
   "artefact.upload_completed": "evidence",
   "artefact.upload_failed": "evidence",
@@ -636,6 +704,11 @@ export const PAYLOAD_MAX_BYTES: Readonly<Record<MessageType, number>> = {
   "finding.reopened": 2048,
   "review.status_change_denied": 2048,
   "finding.status_change_denied": 2048,
+  "inbox_item.created": 2048,
+  "inbox_item.acknowledged": 2048,
+  "inbox_item.completed": 2048,
+  "inbox_item.dismissed": 2048,
+  "inbox_item.expired": 2048,
   "artefact.upload_started": 2048,
   "artefact.upload_completed": 2048,
   "artefact.upload_failed": 2048,
@@ -2427,6 +2500,208 @@ export interface Comment {
 }
 
 /**
+ * A durable work notification (docs/DOMAIN_MODEL.md section 21). It exists so an agent
+ * learns what a human wants changed by retrieving a record rather than by guessing, and so
+ * a human can see whether the delivery was received. It names the work and never carries
+ * it: a review reference and a count, not the review's contents.
+ */
+export interface InboxItem {
+  /**
+   * Inbox-item identifier, conventionally prefixed inb_.
+   */
+  readonly id: Identifier;
+  /**
+   * Owning organisation.
+   */
+  readonly organisation_id?: Identifier;
+  /**
+   * Owning project. An inbox item never crosses one.
+   */
+  readonly project_id: Identifier;
+  /**
+   * What kind of principal it was delivered to.
+   */
+  readonly recipient_type: InboxItemRecipientType;
+  /**
+   * The principal it was delivered to. Absent for an item addressed to whoever picks the
+   * project's work up next.
+   */
+  readonly recipient_id?: Identifier;
+  /**
+   * Why the item exists.
+   */
+  readonly type: InboxItemType;
+  /**
+   * What a human called the work.
+   */
+  readonly title: TitleText;
+  /**
+   * Delivery status.
+   */
+  readonly status: InboxItemStatus;
+  /**
+   * Review the item is about, where there is one.
+   */
+  readonly review_id?: Identifier;
+  /**
+   * Project-scoped name of that review.
+   */
+  readonly review_slug?: Slug;
+  /**
+   * Finding the item is about, for a reopened finding.
+   */
+  readonly finding_id?: Identifier;
+  /**
+   * Priority of the work. It orders a queue and gates nothing.
+   */
+  readonly priority?: ReviewPriority;
+  /**
+   * Findings in the referenced review when the item was created.
+   */
+  readonly finding_count?: number;
+  /**
+   * Who caused the item, derived from the authenticated actor.
+   */
+  readonly assigned_by?: Actor;
+  /**
+   * When the item was created.
+   */
+  readonly created_at: Timestamp;
+  /**
+   * When receipt was acknowledged.
+   */
+  readonly acknowledged_at?: Timestamp;
+  /**
+   * When the work was recorded complete.
+   */
+  readonly completed_at?: Timestamp;
+  /**
+   * When the item stops being current work, where an expiry was set.
+   */
+  readonly expires_at?: Timestamp;
+}
+
+/**
+ * Payload of inbox_item.created.
+ */
+export interface InboxItemCreated {
+  /**
+   * The item created.
+   */
+  readonly inbox_item_id: Identifier;
+  /**
+   * What kind of principal it was delivered to.
+   */
+  readonly recipient_type: InboxItemRecipientType;
+  /**
+   * The principal it was delivered to, where one was named.
+   */
+  readonly recipient_id?: Identifier;
+  /**
+   * Why the item exists.
+   */
+  readonly type: InboxItemType;
+  /**
+   * Status at creation, which is pending.
+   */
+  readonly status: InboxItemStatus;
+  /**
+   * Review the item is about, where there is one.
+   */
+  readonly review_id?: Identifier;
+  /**
+   * Finding the item is about, where there is one.
+   */
+  readonly finding_id?: Identifier;
+  /**
+   * Findings in the referenced review at creation.
+   */
+  readonly finding_count?: number;
+  /**
+   * Priority of the work.
+   */
+  readonly priority?: ReviewPriority;
+}
+
+/**
+ * Payload of inbox_item.acknowledged. It carries no completion member, because
+ * acknowledgement is not completion and a payload that could express both would invite a
+ * consumer to treat them as one.
+ */
+export interface InboxItemAcknowledged {
+  /**
+   * The item acknowledged.
+   */
+  readonly inbox_item_id: Identifier;
+  /**
+   * Status the item was actually in, read under the lock that changed it.
+   */
+  readonly previous_status: InboxItemStatus;
+  /**
+   * Review the item is about, where there is one.
+   */
+  readonly review_id?: Identifier;
+}
+
+/**
+ * Payload of inbox_item.completed.
+ */
+export interface InboxItemCompleted {
+  /**
+   * The item completed.
+   */
+  readonly inbox_item_id: Identifier;
+  /**
+   * Status the item was actually in.
+   */
+  readonly previous_status: InboxItemStatus;
+  /**
+   * Review the item is about, where there is one.
+   */
+  readonly review_id?: Identifier;
+}
+
+/**
+ * Payload of inbox_item.dismissed.
+ */
+export interface InboxItemDismissed {
+  /**
+   * The item dismissed.
+   */
+  readonly inbox_item_id: Identifier;
+  /**
+   * Status the item was actually in.
+   */
+  readonly previous_status: InboxItemStatus;
+  /**
+   * Review the item is about, where there is one.
+   */
+  readonly review_id?: Identifier;
+  /**
+   * Why it was dismissed, where the caller supplied one.
+   */
+  readonly reason?: ReasonText;
+}
+
+/**
+ * Payload of inbox_item.expired.
+ */
+export interface InboxItemExpired {
+  /**
+   * The item that expired.
+   */
+  readonly inbox_item_id: Identifier;
+  /**
+   * Status the item was actually in.
+   */
+  readonly previous_status: InboxItemStatus;
+  /**
+   * Review the item is about, where there is one.
+   */
+  readonly review_id?: Identifier;
+}
+
+/**
  * The checks a verification claims to have performed (docs/DOMAIN_MODEL.md section 19).
  * They are recorded as claims and are never proof on their own: the artefacts are the
  * evidence, and a human decides.
@@ -3094,6 +3369,31 @@ export type ReviewFrame =
       readonly envelope: Envelope;
       readonly type: "finding.status_change_denied";
       readonly payload: FindingStatusChangeDenied;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "inbox_item.created";
+      readonly payload: InboxItemCreated;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "inbox_item.acknowledged";
+      readonly payload: InboxItemAcknowledged;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "inbox_item.completed";
+      readonly payload: InboxItemCompleted;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "inbox_item.dismissed";
+      readonly payload: InboxItemDismissed;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "inbox_item.expired";
+      readonly payload: InboxItemExpired;
     }
   | {
       readonly envelope: Envelope;

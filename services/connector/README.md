@@ -145,12 +145,30 @@ all of this (`docs/DEVELOPMENT.md` §4): a control plane, the gateway role of th
 data channel, this connector and two loopback development services in one
 process, with the channels severed deterministically and no browser involved.
 
+## The local MCP bridge
+
+`reviewplane-connector mcp` is the local stdio bridge of
+`docs/CONNECTOR_PROTOCOL.md` §14. It resolves the workspace and project for the
+working directory, exchanges this connector's device identity for a short-lived
+agent credential bound to that one project (ADR-0023), reports newly assigned
+work as a local notification (§16), and then proxies newline-delimited JSON-RPC
+between the agent's stdin and stdout and the control plane's `/mcp/v1` endpoint.
+
+No agent token is written to disk. It lives in the bridge process's memory for
+the life of the command; a restart requests a fresh one.
+
+stdout carries JSON-RPC and nothing else. Diagnostics and notifications go to
+stderr — journald under the shipped unit — and, with `--status-file`, to a file
+written 0600 and replaced atomically. `--describe` prints what was resolved and
+exits without proxying, which is the form to run by hand.
+
 ## Not implemented at this stage
 
-Workspace discovery and Git context (so `workspaces[].id` is configured rather
-than discovered, and the reconnect payload's `workspace_head_state` is sent
-empty), agent-session association (so `known_agent_sessions` is sent empty), the
-local MCP bridge, local notifications, self-update — an `upgrade_required`
-classification is reported and the connector stops — and systemd unit packaging.
-WebSockets, server-sent events, HTTP streaming and hot reload over a route belong
-to the issue that owns tunnel compatibility.
+Workspace discovery beyond configured paths (so `workspaces[].id` is configured
+rather than discovered), agent-session **re-establishment** across a reconnect
+(so `known_agent_sessions` is sent empty), desktop notifications, self-update —
+an `upgrade_required` classification is reported and the connector stops. The
+systemd unit under `packaging/systemd/` is shipped but is not installed by any
+packaging step. WebSockets, server-sent
+events, HTTP streaming and hot reload over a route belong to the issue that owns
+tunnel compatibility.

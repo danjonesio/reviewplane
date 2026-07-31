@@ -22,6 +22,8 @@ import { registerHealthRoutes, type BuildInfo } from "./health.ts";
 import { JobRunner } from "./jobs/runner.ts";
 import { AgentCredentialStore } from "./modules/agents/credentials.ts";
 import { IdempotencyStore } from "./modules/agents/idempotency.ts";
+import { InboxStore } from "./modules/agents/inbox.ts";
+import { registerInboxRoutes } from "./modules/agents/inbox-routes.ts";
 import { registerAgentRoutes } from "./modules/agents/routes.ts";
 import { AgentSessionStore } from "./modules/agents/sessions.ts";
 import { WorkspaceStore } from "./modules/agents/workspaces.ts";
@@ -318,6 +320,7 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
 
   const agentCredentials = new AgentCredentialStore(pool);
   const workspaces = new WorkspaceStore(pool);
+  const inbox = new InboxStore(pool);
   const agentSessions = new AgentSessionStore(pool, workspaces);
   const idempotency = new IdempotencyStore(pool);
 
@@ -392,6 +395,7 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     agentAuth,
   });
   await registerReviewRoutes(app, { pool, reviews, viewerAuth });
+  await registerInboxRoutes(app, { pool, inbox, viewerAuth });
   await registerAgentRoutes(app, {
     pool,
     credentials: agentCredentials,

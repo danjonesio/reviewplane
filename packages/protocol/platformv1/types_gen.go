@@ -312,6 +312,45 @@ const (
 // WorkspaceObservationSourceValues lists every value in declaration order.
 var WorkspaceObservationSourceValues = []WorkspaceObservationSource{WorkspaceObservationSourceConnectorReport, WorkspaceObservationSourceAdministrativeRegistration}
 
+// AgentSessionStatus is defined by the connector protocol schema.
+//
+// Agent-session status (docs/DOMAIN_MODEL.md section 11).
+type AgentSessionStatus string
+
+const (
+	AgentSessionStatusStarting     AgentSessionStatus = "STARTING"
+	AgentSessionStatusActive       AgentSessionStatus = "ACTIVE"
+	AgentSessionStatusWaiting      AgentSessionStatus = "WAITING"
+	AgentSessionStatusBlocked      AgentSessionStatus = "BLOCKED"
+	AgentSessionStatusDisconnected AgentSessionStatus = "DISCONNECTED"
+	AgentSessionStatusCompleted    AgentSessionStatus = "COMPLETED"
+	AgentSessionStatusFailed       AgentSessionStatus = "FAILED"
+	AgentSessionStatusCancelled    AgentSessionStatus = "CANCELLED"
+)
+
+// AgentSessionStatusValues lists every value in declaration order.
+var AgentSessionStatusValues = []AgentSessionStatus{AgentSessionStatusStarting, AgentSessionStatusActive, AgentSessionStatusWaiting, AgentSessionStatusBlocked, AgentSessionStatusDisconnected, AgentSessionStatusCompleted, AgentSessionStatusFailed, AgentSessionStatusCancelled}
+
+// AgentCapability is defined by the connector protocol schema.
+//
+// A capability an agent credential may carry (docs/SECURITY.md section 6.3). It is the
+// same vocabulary the MCP schema declares, restated here because a control-plane
+// representation of a session must name what the session was permitted to do.
+type AgentCapability string
+
+const (
+	AgentCapabilityProjectRead        AgentCapability = "project:read"
+	AgentCapabilityReviewRead         AgentCapability = "review:read"
+	AgentCapabilityReviewWrite        AgentCapability = "review:write"
+	AgentCapabilityFindingRead        AgentCapability = "finding:read"
+	AgentCapabilityFindingWrite       AgentCapability = "finding:write"
+	AgentCapabilityVerificationSubmit AgentCapability = "verification:submit"
+	AgentCapabilityBrowserCapture     AgentCapability = "browser:capture"
+)
+
+// AgentCapabilityValues lists every value in declaration order.
+var AgentCapabilityValues = []AgentCapability{AgentCapabilityProjectRead, AgentCapabilityReviewRead, AgentCapabilityReviewWrite, AgentCapabilityFindingRead, AgentCapabilityFindingWrite, AgentCapabilityVerificationSubmit, AgentCapabilityBrowserCapture}
+
 // LoginMethod is defined by the connector protocol schema.
 //
 // How a human authenticated. bootstrap_token is the ADR-0016 exchange, install_token
@@ -587,7 +626,7 @@ type SchemaViolation struct {
 // schema version, which is why the envelope's type field bounds a name's shape rather
 // than enumerating it. A consumer that does not recognise a name MUST ignore the event
 // rather than fail.
-var EventTypes = []string{"organisation.created", "user.invited", "user.credentials_set", "authentication.login_succeeded", "authentication.login_failed", "session.revoked", "project.created", "project.updated", "project.repository_changed", "project.archived", "connector.enrolled", "connector.connected", "connector.degraded", "connector.disconnected", "connector.revoked", "workspace.observed", "workspace.head_changed", "published_service.requested", "published_service.ready", "published_service.failed", "published_service.expired", "published_service.revoked", "agent_credential.issued", "agent_session.started", "agent_session.waiting", "agent_session.blocked", "agent_session.completed", "agent_session.failed", "agent_session.disconnected", "browser_session.requested", "browser_session.allocated", "browser_session.ready", "browser_session.navigated", "browser_session.paused", "browser_session.resumed", "browser_session.degraded", "browser_session.terminated", "browser_session.failed", "browser.control_requested", "browser.control_transferred", "browser.control_released", "browser.command_rejected", "browser.command_executed", "browser.live_view_started", "browser.live_view_stopped", "screenshot.captured", "artefact.upload_started", "artefact.upload_completed", "artefact.upload_failed", "artefact.access_granted", "artefact.redacted", "artefact.expired", "review.created", "review.named", "review.assigned", "review.claimed", "review.status_changed", "review.accepted", "review.reopened", "review.archived", "finding.created", "finding.annotated", "finding.claimed", "finding.status_changed", "finding.comment_added", "finding.verification_submitted", "finding.verification_accepted", "finding.verification_rejected", "finding.resolved", "finding.reopened", "finding.status_change_denied", "review.comment_added", "review.status_change_denied", "job.enqueued", "job.succeeded", "job.failed"}
+var EventTypes = []string{"organisation.created", "user.invited", "user.credentials_set", "authentication.login_succeeded", "authentication.login_failed", "session.revoked", "project.created", "project.updated", "project.repository_changed", "project.archived", "connector.enrolled", "connector.connected", "connector.degraded", "connector.disconnected", "connector.revoked", "workspace.observed", "workspace.head_changed", "published_service.requested", "published_service.ready", "published_service.failed", "published_service.expired", "published_service.revoked", "agent_credential.issued", "agent_session.started", "agent_session.waiting", "agent_session.blocked", "agent_session.completed", "agent_session.failed", "agent_session.disconnected", "browser_session.requested", "browser_session.allocated", "browser_session.ready", "browser_session.navigated", "browser_session.paused", "browser_session.resumed", "browser_session.degraded", "browser_session.terminated", "browser_session.failed", "browser.control_requested", "browser.control_transferred", "browser.control_released", "browser.command_rejected", "browser.command_executed", "browser.live_view_started", "browser.live_view_stopped", "screenshot.captured", "artefact.upload_started", "artefact.upload_completed", "artefact.upload_failed", "artefact.access_granted", "artefact.redacted", "artefact.expired", "review.created", "review.named", "review.assigned", "review.claimed", "review.status_changed", "review.accepted", "review.reopened", "review.archived", "finding.created", "finding.annotated", "finding.claimed", "finding.status_changed", "finding.comment_added", "finding.verification_submitted", "finding.verification_accepted", "finding.verification_rejected", "finding.resolved", "finding.reopened", "finding.status_change_denied", "review.comment_added", "review.status_change_denied", "inbox_item.created", "inbox_item.acknowledged", "inbox_item.completed", "inbox_item.dismissed", "inbox_item.expired", "job.enqueued", "job.succeeded", "job.failed"}
 
 // StreamMessageTypes lists the discriminator values carried by the stream control
 // messages of docs/API.md section 18.1. An event envelope carries its own event type
@@ -633,6 +672,7 @@ var IdentifierPrefixes = map[string]string{
 	"annotation":        "ann_",
 	"artefact":          "art_",
 	"artefact_grant":    "agr_",
+	"inbox_item":        "inb_",
 	"verification":      "ver_",
 	"event":             "evt_",
 	"job":               "job_",
@@ -912,6 +952,49 @@ type HumanSession struct {
 	ProjectIDs []string `json:"project_ids,omitempty"`
 	// When the session stops being usable without revocation.
 	ExpiresAt string `json:"expires_at"`
+}
+
+// AgentSession is defined by the connector protocol schema.
+//
+// A bounded agent execution context (docs/DOMAIN_MODEL.md section 11), as a human
+// interface shows it. project_id is required because an agent session is bound to
+// exactly one project and a half-resolved one is not representable (ADR-0020).
+// capabilities is what the session was granted when it opened and not what its
+// credential carries now, so a record of what an agent was allowed to do survives a
+// later revocation. No member of this shape can carry a credential: the token is never
+// part of a session representation.
+type AgentSession struct {
+	// Agent-session identity, conventionally prefixed ags_.
+	ID string `json:"id"`
+	// Owning organisation.
+	OrganisationID *string `json:"organisation_id,omitempty"`
+	// Project the session is bound to. Exactly one, always.
+	ProjectID string `json:"project_id"`
+	// Connector the session reached the control plane through, where it came through the
+	// local bridge.
+	ConnectorID *string `json:"connector_id,omitempty"`
+	// Workspace the session resolved, where the project has one.
+	WorkspaceID *string `json:"workspace_id,omitempty"`
+	// Client's self-reported name. It is description and never an authorisation input:
+	// the credential decides what the session may do.
+	AgentType string `json:"agent_type"`
+	// Client's self-reported version.
+	AgentVersion *string `json:"agent_version,omitempty"`
+	// Capabilities the session holds. It cannot exceed the set its credential carried
+	// when it opened.
+	Capabilities []AgentCapability `json:"capabilities"`
+	// Branch the workspace was on when the session started.
+	Branch *string `json:"branch,omitempty"`
+	// Head commit at that moment.
+	HeadCommit *string `json:"head_commit,omitempty"`
+	// Session status.
+	Status AgentSessionStatus `json:"status"`
+	// When the session opened.
+	StartedAt string `json:"started_at"`
+	// When the control plane last handled a request from it.
+	LastSeenAt *string `json:"last_seen_at,omitempty"`
+	// When it ended, where it has.
+	EndedAt *string `json:"ended_at,omitempty"`
 }
 
 // Environment is defined by the connector protocol schema.

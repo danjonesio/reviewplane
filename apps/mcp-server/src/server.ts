@@ -45,6 +45,8 @@ const INSTRUCTIONS = [
   "",
   "Retrieve a review by the name a human gave it, for example review_get with {\"review\": \"bugs-on-homepage\"}. Names resolve inside the current project only.",
   "",
+  "Check agent_inbox_list at session start, before beginning a new task, after a coding phase, before you report completion, and after a human returns control. It is how you learn what has been assigned to you rather than guessing. Acknowledge each item with agent_inbox_acknowledge: that records that you received the work and never that you finished it.",
+  "",
   "Two rules hold for every finding you work on.",
   "You cannot accept a human-authored finding. Submit verification evidence with finding_submit_verification and move the finding to AWAITING_HUMAN_REVIEW; a human decides.",
   "Do not claim a fix without evidence. Capture an after screenshot with browser_take_screenshot and submit it with the branch, commit, viewports and checks.",

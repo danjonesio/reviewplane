@@ -87,7 +87,8 @@ When documents conflict, precedence is: newest accepted ADR → `SECURITY.md` �
 
 When asked to work on a named review such as `bugs-on-homepage` and the product's MCP tools are connected:
 
-1. Call `review_get` with the name (`{"review": "bugs-on-homepage"}`); it resolves inside the current project only. Confirm project, branch and commit — Stage 0 computes no staleness and omits the field rather than guessing it.
+0. Call `agent_inbox_list` first, and again before a new task, after a coding phase, before reporting completion and after a human returns control. Acknowledge each item with `agent_inbox_acknowledge`: that records receipt and never completion. Nothing is pushed to you.
+1. Call `review_get` with the name (`{"review": "bugs-on-homepage"}`); it resolves inside the current project only. Confirm project, branch and commit — `include: ["staleness"]` reports the captured branch and commit with `computed: false`, because no staleness verdict is calculated yet.
 2. Claim one finding at a time unless parallel work is explicitly safe.
 3. Reproduce each finding in its recorded viewport and state; make the smallest change that resolves it.
 4. Re-run browser, console and network checks; submit an after screenshot and concise resolution note.

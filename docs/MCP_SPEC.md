@@ -33,15 +33,34 @@ CLI agent
 
 The bridge may be installed with the connector or separately. It obtains short-lived agent credentials from the local connector.
 
+`reviewplane-connector mcp` implements it. The connector resolves the workspace
+and the project from the agent's working directory, exchanges its device
+identity for a short-lived agent credential over its mutually authenticated
+listener (ADR-0023), and proxies JSON-RPC between the agent's stdin and stdout
+and the section 3.2 endpoint. **It writes no credential to disk.** The token
+lives in the bridge process's memory for the life of the command, so a
+connector restart mid-session ends the bridge and the next one requests a fresh
+credential rather than replaying a stored one
+(`docs/CONNECTOR_PROTOCOL.md` section 14).
+
+The credential the bridge receives is bound to the single project the workspace
+resolved to, so the session it opens is unambiguous by construction and never
+meets `PROJECT_CONTEXT_AMBIGUOUS`. It carries the read and write capabilities of
+section 14.1 and nothing else: the bridge cannot grant the agent
+connector-administrator privileges, because the credential vocabulary contains
+no such capability.
+
 ### 3.2 Remote HTTP endpoint
 
 Used when an agent client supports authenticated remote MCP directly.
 
 The endpoint must require scoped credentials and must not accept human browser cookies as agent authentication.
 
-Stage 0 implements this form, and only this form (ADR-0020). It is served by
-`apps/mcp-server` at `/mcp/v1`, a separate process behind a separate gateway
-route (`docs/ARCHITECTURE.md` section 4.4, `docs/API.md` section 3).
+It is served by `apps/mcp-server` at `/mcp/v1`, a separate process behind a
+separate gateway route (`docs/ARCHITECTURE.md` section 4.4, `docs/API.md`
+section 3). The local bridge of section 3.1 authenticates to this same endpoint
+with the same credential kind; it is a transport in front of this interface and
+not a second one.
 
 The credential is an `Authorization: Bearer` header carrying an agent credential
 of `docs/SECURITY.md` section 6.3. No other credential is accepted: a viewer
@@ -258,11 +277,42 @@ Input:
 
 Returns project-scoped inbox items. Results are ordered oldest-first by default to preserve assignment order.
 
+The recipient is the **authenticated agent session** and is never an argument,
+so one session cannot read another's inbox; an item addressed to a session other
+than the caller's is not returned, and acknowledging it answers
+`RESOURCE_NOT_FOUND` rather than a distinct refusal that would confirm the
+identifier exists.
+
+An item may also be addressed to the project's agents with **no** recipient
+identifier, which is what a reopen produces when no session holds the review.
+Those are visible to every agent session of that project, so the work is picked
+up by the next session to look rather than waiting for one that never returns.
+It is still project scoped: an inbox item never crosses a project.
+
+Retrieval is idempotent and therefore carries no idempotency key: the call
+issues no write at all, so an agent may poll at every section 9 checkpoint
+without the act of looking changing what it is looking at. `status` defaults to
+`pending` and `acknowledged`, which is the work still in hand. The page is
+bounded and `pending_count` reports the total, which is not the number returned.
+
+An item names the work and never carries it: a review identifier, its
+project-scoped slug, the finding count at delivery and the priority. An inbox
+read that embedded the reviews it announced would be the unbounded response
+section 13 exists to prevent, and `review_get` is one call away.
+
 ### `agent_inbox_acknowledge`
 
 Acknowledges receipt. This does not complete the underlying work.
 
 Input requires `inbox_item_id` and an idempotency key.
+
+There is **no agent tool that completes an inbox item**. Completion is recorded
+through `POST /api/v1/inbox/:itemId/complete` when a human judges the work done,
+so "acknowledgement does not imply task completion"
+(`docs/DOMAIN_MODEL.md` section 21) is a property of the tool surface rather
+than a rule a handler applies. Acknowledging an item that is already
+acknowledged returns it unchanged and writes no second event, so a retry
+acknowledges once even before the idempotency key is consulted.
 
 ## 7.2 Published-service tools
 
@@ -482,9 +532,32 @@ Agent-authored findings must be labelled as such.
 
 Filters by status, assignment, slug prefix or update time.
 
+Every filter narrows within the session's project and none of them names a
+project, so no argument can widen the listing beyond the scope the credential
+was authenticated for. `assigned_to_me` resolves to the caller's own agent
+session. The page is bounded and cursored like every other listing.
+
 ### `review_search`
 
 Searches titles, slugs and finding text within the current project. Must not perform cross-project search.
+
+**The absence of a project argument is the enforcement.** The organisation and
+the project are the first two terms of the statement that reads the rows and
+come from the authenticated session, so a cross-project search is not something
+a caller can ask for and be refused — it is something there is no way to
+express. A filter applied after the rows were read would be one edit away from
+being forgotten, on the one operation whose whole job is to find rows the caller
+could not name.
+
+The query is matched **literally**: `%` and `_` are escaped before the match, so
+a single character cannot turn a search into a scan of the project.
+
+A match reports which parts matched — `title`, `slug`, `description` or
+`finding` — and never an excerpt. A finding's text can carry page-derived
+content, and a fragment of it in a list response would smuggle untrusted bytes
+into a response about control-plane records. An agent that wants the text calls
+`review_get`, where the finding arrives with its own trust label and its
+`untrusted_fields`.
 
 ### `review_get`
 
@@ -513,9 +586,22 @@ Findings are one bounded page, oldest first, so an agent works them in the order
 a human recorded them. `findings_next_cursor` is present only when more remain,
 with a `findings_truncated` warning beside it.
 
-`staleness` is deliberately absent from the Stage 0 `include` vocabulary.
-Staleness calculation is Stage 2 (`docs/DOMAIN_MODEL.md` section 24), and a field
-that would have to be guessed is omitted rather than falsely reported.
+The `include` vocabulary is `findings`, `comments`, `artefact_links` and
+`staleness`. `comments` returns one bounded page of the comments on the review
+itself; a finding's comments are read through `finding_get`. A `comment_view`
+always carries `review_id` and carries `finding_id` only when the comment is on
+a finding, which is the shape the control-plane record has
+(`docs/DOMAIN_MODEL.md` section 18): a comment on the review is a different fact
+from a comment on one of its findings, and an agent reading a timeline has to be
+able to tell them apart.
+
+`staleness` reports the branch and commit the review was **captured** at, the
+branch and head commit of the session's workspace where one is registered, and
+`computed: false`. The calculation is Stage 2
+(`docs/DOMAIN_MODEL.md` section 24), and `computed` is present rather than
+omitted so that an agent can tell "the capture still matches" from "nobody
+looked" — a distinction it cannot make from a missing field. The response also
+carries a `staleness_unavailable` warning. No verdict is guessed.
 
 ### `review_claim`
 
@@ -545,6 +631,11 @@ passes through `IN_PROGRESS`.
 ### `review_add_comment`
 
 Adds a clearly attributed agent comment.
+
+The author is derived from the authenticated agent session and is not an
+argument the tool accepts. A caller able to name an author could write in a
+human's name, and the comment would then read as human instruction to the next
+agent that retrieved the review.
 
 ## 7.7 Finding tools
 
@@ -647,6 +738,13 @@ beyond it is not available to an agent at all.
 ### `finding_mark_blocked`
 
 Requires a reason and optional requested human action.
+
+It is `finding_update_status` with the target fixed by the tool, which is what
+lets `reason` be **required by the schema** rather than checked by a handler: a
+block that says nothing is refused before any domain code runs. The optional
+`requested_human_action` is recorded with the reason on the transition, so the
+`finding.status_changed` event says both what stopped the agent and what it is
+asking a human to do.
 
 ## 7.8 Completion tools
 
@@ -797,6 +895,23 @@ Recommended agent checkpoints:
 
 The server may signal that inbox items exist, but agents must explicitly retrieve and acknowledge them unless a managed agent adapter provides reliable message delivery.
 
+No managed adapter exists, so `managed_messages` is negotiated `false` and the
+five checkpoints above are the contract: the server pushes nothing and an agent
+that never looks never learns. They are stated in the MCP server's
+initialisation instructions, so a client receives them before its first tool
+call rather than discovering the inbox by reading this document.
+
+`agent_session_status` reports `inbox_pending_count`, which is the cheap signal:
+an agent already calling it at a checkpoint learns whether looking is worth it
+without a second round trip. It is a count and never the items, so a status call
+cannot become a delivery.
+
+Items are created when a review is assigned to a recipient and when a human
+reopens a finding, in the **same transaction** as the act that caused them. An
+assignment that committed without a delivery would be work a human believes they
+handed over and an agent has no way to discover. A repeated assignment of the
+same review to the same recipient delivers one item, not two.
+
 ## 10. Idempotency
 
 State-changing tools require an `idempotency_key` when retries can occur.
@@ -906,10 +1021,10 @@ Clients and servers negotiate:
 
 Breaking tool changes require a new major protocol version or a parallel tool name.
 
-The product protocol version is `protocol_version` in the response envelope.
-Stage 0 pins `1`; any other value is refused rather than best-effort parsed.
+The product protocol version is `protocol_version` in the response envelope. It
+is pinned at `1`; any other value is refused rather than best-effort parsed.
 
-### 14.1 Stage 0 tool availability set
+### 14.1 Tool availability set
 
 A client relies on negotiated availability rather than discovering gaps at
 runtime, so the set is recorded here and is the same list the server advertises
@@ -922,39 +1037,43 @@ registered set and the schema's set are the same list.
 |---|---|---|
 | `project_current` | 7.1 | `project:read` |
 | `agent_session_status` | 7.1 | `project:read` |
+| `agent_inbox_list` | 7.1, 9 | `project:read` |
+| `agent_inbox_acknowledge` | 7.1, 9 | `project:read` |
+| `review_list` | 7.6 | `review:read` |
+| `review_search` | 7.6 | `review:read` |
 | `review_get` | 7.6 | `review:read` |
 | `review_claim` | 7.6 | `review:write` |
 | `review_update_status` | 7.6 | `review:write` |
+| `review_add_comment` | 7.6 | `review:write` |
 | `finding_get` | 7.7 | `finding:read` |
 | `finding_claim` | 7.7 | `finding:write` |
 | `finding_update_status` | 7.7 | `finding:write` |
+| `finding_mark_blocked` | 7.7 | `finding:write` |
 | `finding_add_comment` | 7.7 | `finding:write` |
 | `finding_submit_verification` | 7.7 | `verification:submit` |
 | `browser_take_screenshot` | 7.4 | `browser:capture` |
 
-Everything else in the section 7 catalogue is **absent** from Stage 0 rather
-than present and failing:
+Everything else in the section 7 catalogue is **absent** rather than present and
+failing:
 
 | Absent | Section | Arrives |
 |---|---|---|
-| `agent_inbox_list`, `agent_inbox_acknowledge` | 7.1, 9 | Stage 1 |
-| `development_services_list`, `development_service_publish`, `development_service_unpublish` | 7.2 | Stage 1 |
-| `browser_session_*` lifecycle, `browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_wait`, `browser_console_messages`, `browser_network_requests` | 7.3, 7.4 | Stage 1 |
-| `visual_inspect`, `finding_create_from_observation` | 7.5 | Stage 1 |
-| `review_list`, `review_search`, `review_add_comment` | 7.6 | Stage 1 |
-| `finding_mark_blocked` | 7.7 | `finding_update_status` with `BLOCKED` covers it in Stage 0 |
-| `task_validation_status`, `task_complete` | 7.8 | Stage 1 |
+| `development_services_list`, `development_service_publish`, `development_service_unpublish` | 7.2 | Stage 1, its own issue |
+| `browser_session_*` lifecycle, `browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_wait`, `browser_console_messages`, `browser_network_requests` | 7.3, 7.4 | Stage 1, its own issue |
+| `visual_inspect`, `finding_create_from_observation` | 7.5 | Later |
+| `task_validation_status`, `task_complete` | 7.8 | Stage 1, with the completion gate |
 | `secret_list_references`, `secret_inject_browser`, `secret_inject_header` | 7.9 | Stage 2 |
 
 The secret row is the important one. `docs/PROJECT.md` section 9 and
 `docs/SECURITY.md` section 12.1 require that no raw secret reaches an agent;
-Stage 0 exposes no secret tool at all, which is the strongest available form of
-that guarantee, and `project_current` reports
+there is no secret tool at all, which is the strongest available form of that
+guarantee, and `project_current` reports
 `policy.secret_tools_available: false` so an agent learns it without asking.
 
-The negotiated server capability set reports `review_inbox: false` and
-`managed_messages: false` for the same reason: a capability that is absent is
-stated, not left to be discovered.
+The negotiated server capability set reports `review_inbox: true`, because the
+two inbox tools above are advertised, and `managed_messages: false`, because
+nothing is pushed. A capability that is absent is stated, not left to be
+discovered.
 
 ### 14.2 Capability degradation
 

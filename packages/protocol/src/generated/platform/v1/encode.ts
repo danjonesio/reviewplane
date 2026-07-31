@@ -15,6 +15,7 @@ import {
 } from "../../../canonical.ts";
 import type {
   Actor,
+  AgentSession,
   ApiError,
   ApiErrorDetails,
   ApiErrorResponse,
@@ -166,6 +167,44 @@ export function encodeHumanSession(value: HumanSession): string {
     fields.push(`"project_ids":${`[${value.project_ids.map((item) => jsonString(item)).join(",")}]`}`);
   }
   fields.push(`"expires_at":${jsonString(value.expires_at)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a AgentSession.
+ */
+export function encodeAgentSession(value: AgentSession): string {
+  const fields: string[] = [];
+  fields.push(`"id":${jsonString(value.id)}`);
+  if (value.organisation_id !== undefined) {
+    fields.push(`"organisation_id":${jsonString(value.organisation_id)}`);
+  }
+  fields.push(`"project_id":${jsonString(value.project_id)}`);
+  if (value.connector_id !== undefined) {
+    fields.push(`"connector_id":${jsonString(value.connector_id)}`);
+  }
+  if (value.workspace_id !== undefined) {
+    fields.push(`"workspace_id":${jsonString(value.workspace_id)}`);
+  }
+  fields.push(`"agent_type":${jsonString(value.agent_type)}`);
+  if (value.agent_version !== undefined) {
+    fields.push(`"agent_version":${jsonString(value.agent_version)}`);
+  }
+  fields.push(`"capabilities":${`[${value.capabilities.map((item) => jsonString(item)).join(",")}]`}`);
+  if (value.branch !== undefined) {
+    fields.push(`"branch":${jsonString(value.branch)}`);
+  }
+  if (value.head_commit !== undefined) {
+    fields.push(`"head_commit":${jsonString(value.head_commit)}`);
+  }
+  fields.push(`"status":${jsonString(value.status)}`);
+  fields.push(`"started_at":${jsonString(value.started_at)}`);
+  if (value.last_seen_at !== undefined) {
+    fields.push(`"last_seen_at":${jsonString(value.last_seen_at)}`);
+  }
+  if (value.ended_at !== undefined) {
+    fields.push(`"ended_at":${jsonString(value.ended_at)}`);
+  }
   return `{${fields.join(",")}}`;
 }
 

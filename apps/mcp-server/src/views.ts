@@ -30,6 +30,7 @@ import type {
   ArtefactLink,
   CommentView,
   FindingView,
+  InboxItemView,
   ReviewView,
   TrustLabel,
   VerificationView,
@@ -37,6 +38,7 @@ import type {
 import type {
   ArtefactService,
   AgentSessionRecord,
+  InboxItemRecord,
   Verification,
 } from "@reviewplane/server/domain";
 
@@ -181,11 +183,14 @@ export function toAnnotationView(annotation: Annotation): AnnotationView {
 export function toCommentView(comment: Comment): CommentView {
   return {
     id: comment.id,
-    // A comment on the review itself carries no finding, and this view is only
-    // ever built for a finding's comments. Falling back to the review keeps the
-    // member present rather than emitting an empty string, which a client would
-    // have to special-case (`docs/DOMAIN_MODEL.md` section 18).
-    finding_id: comment.finding_id ?? comment.review_id,
+    review_id: comment.review_id,
+    // Absent for a comment on the review itself, which is the shape the
+    // control-plane record carries (`docs/DOMAIN_MODEL.md` section 18). It used
+    // to fall back to the review identifier so the member was always present;
+    // that made a review comment indistinguishable from a comment on a finding
+    // whose identifier happened to be the review's, which is a distinction an
+    // agent reading a timeline needs.
+    ...(comment.finding_id === undefined ? {} : { finding_id: comment.finding_id }),
     body: comment.body,
     author: {
       type: comment.created_by.type,
@@ -193,6 +198,48 @@ export function toCommentView(comment: Comment): CommentView {
       ...(comment.created_by.display === undefined ? {} : { display: comment.created_by.display }),
     },
     created_at: comment.created_at,
+  };
+}
+
+/**
+ * One inbox item as an agent sees it (`docs/DOMAIN_MODEL.md` section 21).
+ *
+ * The item names the work and never carries it: the review's slug, its finding
+ * count and its priority, and no finding text. An inbox read that embedded the
+ * reviews it announced would be the unbounded response `docs/MCP_SPEC.md`
+ * section 13 exists to prevent, and the agent has `review_get` for the rest.
+ *
+ * The title is human-authored, so it is truncated like every other free text
+ * rather than trusted to be short.
+ */
+export function toInboxItemView(item: InboxItemRecord, context: ViewContext): InboxItemView {
+  return {
+    id: item.id,
+    project_id: item.project_id,
+    type: item.type,
+    title: truncate(item.title, MAX_TITLE, context.warnings, "An inbox item title"),
+    status: item.status,
+    ...(item.review_id === null ? {} : { review_id: item.review_id }),
+    ...(item.review_slug === null ? {} : { review_slug: item.review_slug }),
+    ...(item.finding_id === null ? {} : { finding_id: item.finding_id }),
+    ...(item.priority === null
+      ? {}
+      : { priority: item.priority as NonNullable<InboxItemView["priority"]> }),
+    ...(item.finding_count === null ? {} : { finding_count: item.finding_count }),
+    ...(item.assigned_by === null
+      ? {}
+      : {
+          assigned_by: {
+            type: item.assigned_by.type as NonNullable<InboxItemView["assigned_by"]>["type"],
+            ...(item.assigned_by.id === undefined ? {} : { id: item.assigned_by.id }),
+            ...(item.assigned_by.display === undefined
+              ? {}
+              : { display: item.assigned_by.display }),
+          },
+        }),
+    created_at: item.created_at,
+    ...(item.acknowledged_at === null ? {} : { acknowledged_at: item.acknowledged_at }),
+    ...(item.completed_at === null ? {} : { completed_at: item.completed_at }),
   };
 }
 

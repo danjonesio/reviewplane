@@ -296,5 +296,9 @@ authenticated is the failure ADR-0018 names for routes.
   comparison is Stage 2 work and no field here asserts freshness in the
   meantime.
 - Agent-session observations were the other use the `events` channel was
-  reserved for. They arrive as a further message type with RVP-49, alongside the
-  local MCP bridge's credential exchange.
+  reserved for. RVP-49 delivered the local MCP bridge's credential exchange
+  without one: the exchange is an HTTP request on the connector listener rather
+  than a message on the control channel, because the bridge is a separate,
+  per-session process and one connector holds one control channel (ADR-0023).
+  The `events` channel still carries no agent-session message type, and
+  `known_agent_sessions` is still sent empty.

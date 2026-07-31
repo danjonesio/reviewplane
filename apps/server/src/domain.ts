@@ -74,6 +74,16 @@ export {
   type IdempotencyScope,
 } from "./modules/agents/idempotency.ts";
 export {
+  InboxStore,
+  LIVE_INBOX_STATUSES,
+  type InboxItemRecord,
+  type InboxItemStatus,
+  type InboxItemType,
+  type InboxPage,
+  type InboxRecipientType,
+  type InboxScope,
+} from "./modules/agents/inbox.ts";
+export {
   AgentSessionStore,
   agentActor,
   type AgentSessionRecord,
@@ -157,6 +167,8 @@ export {
   type AssignReviewInput,
   type DisposeFindingInput,
   type ReviewExport,
+  type ReviewListFilter,
+  type ReviewSearchField,
   type ReviewTransitionInput,
   type Scope,
   type SubmitVerificationInput,

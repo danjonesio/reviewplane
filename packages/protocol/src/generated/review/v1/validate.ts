@@ -326,7 +326,7 @@ export function validateVerificationStatus(value: unknown, path: string, out: Sc
  * equal the keys of x-protocol.messages.
  */
 export function validateMessageType(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["review.created","review.named","review.status_changed","finding.created","finding.annotated","finding.status_changed","review.claimed","finding.claimed","finding.comment_added","finding.verification_submitted","review.assigned","review.accepted","review.reopened","review.archived","review.comment_added","finding.resolved","finding.reopened","review.status_change_denied","finding.status_change_denied","artefact.upload_started","artefact.upload_completed","artefact.upload_failed","artefact.access_granted","artefact.deleted","artefact.thumbnail_generated","screenshot.captured"] });
+  checkString(value, path, out, { values: ["review.created","review.named","review.status_changed","finding.created","finding.annotated","finding.status_changed","review.claimed","finding.claimed","finding.comment_added","finding.verification_submitted","review.assigned","review.accepted","review.reopened","review.archived","review.comment_added","finding.resolved","finding.reopened","review.status_change_denied","finding.status_change_denied","inbox_item.created","inbox_item.acknowledged","inbox_item.completed","inbox_item.dismissed","inbox_item.expired","artefact.upload_started","artefact.upload_completed","artefact.upload_failed","artefact.access_granted","artefact.deleted","artefact.thumbnail_generated","screenshot.captured"] });
 }
 
 /**
@@ -358,6 +358,31 @@ export function validateEncryptionKeyReference(value: unknown, path: string, out
  */
 export function validateFilenameLabel(value: unknown, path: string, out: SchemaViolation[]): void {
   checkString(value, path, out, { minLength: 1, maxLength: 128, pattern: PATTERN_10 });
+}
+
+/**
+ * Inbox-item status (docs/DOMAIN_MODEL.md section 21). acknowledged and completed are
+ * separate values because receipt and completion are separate facts, and a single value
+ * covering both would make the audit question unanswerable.
+ */
+export function validateInboxItemStatus(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["pending","acknowledged","completed","dismissed","expired"] });
+}
+
+/**
+ * Why an inbox item exists. review_assigned is created when a review is assigned;
+ * finding_reopened is created when a human reopens a finding.
+ */
+export function validateInboxItemType(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["review_assigned","finding_reopened"] });
+}
+
+/**
+ * What kind of principal an inbox item was delivered to. It is the actor vocabulary
+ * narrowed to the two that can hold work: a system or an integration receives nothing.
+ */
+export function validateInboxItemRecipientType(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["human_user","agent_session"] });
 }
 
 /**
@@ -1763,6 +1788,193 @@ export function validateComment(value: unknown, path: string, out: SchemaViolati
   }
   if (source["created_at"] !== undefined) {
     validateTimestamp(source["created_at"], `${path}.created_at`, out);
+  }
+}
+
+/**
+ * Findings in the referenced review when the item was created.
+ */
+export function validateInboxItemFindingCount(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 0, maximum: 10000 });
+}
+
+/**
+ * A durable work notification (docs/DOMAIN_MODEL.md section 21). It exists so an agent
+ * learns what a human wants changed by retrieving a record rather than by guessing, and so
+ * a human can see whether the delivery was received. It names the work and never carries
+ * it: a review reference and a count, not the review's contents.
+ */
+export function validateInboxItem(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["id", "organisation_id", "project_id", "recipient_type", "recipient_id", "type", "title", "status", "review_id", "review_slug", "finding_id", "priority", "finding_count", "assigned_by", "created_at", "acknowledged_at", "completed_at", "expires_at"], ["id", "project_id", "recipient_type", "type", "title", "status", "created_at"]);
+  if (source === null) return;
+  if (source["id"] !== undefined) {
+    validateIdentifier(source["id"], `${path}.id`, out);
+  }
+  if (source["organisation_id"] !== undefined) {
+    validateIdentifier(source["organisation_id"], `${path}.organisation_id`, out);
+  }
+  if (source["project_id"] !== undefined) {
+    validateIdentifier(source["project_id"], `${path}.project_id`, out);
+  }
+  if (source["recipient_type"] !== undefined) {
+    validateInboxItemRecipientType(source["recipient_type"], `${path}.recipient_type`, out);
+  }
+  if (source["recipient_id"] !== undefined) {
+    validateIdentifier(source["recipient_id"], `${path}.recipient_id`, out);
+  }
+  if (source["type"] !== undefined) {
+    validateInboxItemType(source["type"], `${path}.type`, out);
+  }
+  if (source["title"] !== undefined) {
+    validateTitleText(source["title"], `${path}.title`, out);
+  }
+  if (source["status"] !== undefined) {
+    validateInboxItemStatus(source["status"], `${path}.status`, out);
+  }
+  if (source["review_id"] !== undefined) {
+    validateIdentifier(source["review_id"], `${path}.review_id`, out);
+  }
+  if (source["review_slug"] !== undefined) {
+    validateSlug(source["review_slug"], `${path}.review_slug`, out);
+  }
+  if (source["finding_id"] !== undefined) {
+    validateIdentifier(source["finding_id"], `${path}.finding_id`, out);
+  }
+  if (source["priority"] !== undefined) {
+    validateReviewPriority(source["priority"], `${path}.priority`, out);
+  }
+  if (source["finding_count"] !== undefined) {
+    validateInboxItemFindingCount(source["finding_count"], `${path}.finding_count`, out);
+  }
+  if (source["assigned_by"] !== undefined) {
+    validateActor(source["assigned_by"], `${path}.assigned_by`, out);
+  }
+  if (source["created_at"] !== undefined) {
+    validateTimestamp(source["created_at"], `${path}.created_at`, out);
+  }
+  if (source["acknowledged_at"] !== undefined) {
+    validateTimestamp(source["acknowledged_at"], `${path}.acknowledged_at`, out);
+  }
+  if (source["completed_at"] !== undefined) {
+    validateTimestamp(source["completed_at"], `${path}.completed_at`, out);
+  }
+  if (source["expires_at"] !== undefined) {
+    validateTimestamp(source["expires_at"], `${path}.expires_at`, out);
+  }
+}
+
+/**
+ * Findings in the referenced review at creation.
+ */
+export function validateInboxItemCreatedFindingCount(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 0, maximum: 10000 });
+}
+
+/**
+ * Payload of inbox_item.created.
+ */
+export function validateInboxItemCreated(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["inbox_item_id", "recipient_type", "recipient_id", "type", "status", "review_id", "finding_id", "finding_count", "priority"], ["inbox_item_id", "recipient_type", "type", "status"]);
+  if (source === null) return;
+  if (source["inbox_item_id"] !== undefined) {
+    validateIdentifier(source["inbox_item_id"], `${path}.inbox_item_id`, out);
+  }
+  if (source["recipient_type"] !== undefined) {
+    validateInboxItemRecipientType(source["recipient_type"], `${path}.recipient_type`, out);
+  }
+  if (source["recipient_id"] !== undefined) {
+    validateIdentifier(source["recipient_id"], `${path}.recipient_id`, out);
+  }
+  if (source["type"] !== undefined) {
+    validateInboxItemType(source["type"], `${path}.type`, out);
+  }
+  if (source["status"] !== undefined) {
+    validateInboxItemStatus(source["status"], `${path}.status`, out);
+  }
+  if (source["review_id"] !== undefined) {
+    validateIdentifier(source["review_id"], `${path}.review_id`, out);
+  }
+  if (source["finding_id"] !== undefined) {
+    validateIdentifier(source["finding_id"], `${path}.finding_id`, out);
+  }
+  if (source["finding_count"] !== undefined) {
+    validateInboxItemCreatedFindingCount(source["finding_count"], `${path}.finding_count`, out);
+  }
+  if (source["priority"] !== undefined) {
+    validateReviewPriority(source["priority"], `${path}.priority`, out);
+  }
+}
+
+/**
+ * Payload of inbox_item.acknowledged. It carries no completion member, because
+ * acknowledgement is not completion and a payload that could express both would invite a
+ * consumer to treat them as one.
+ */
+export function validateInboxItemAcknowledged(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["inbox_item_id", "previous_status", "review_id"], ["inbox_item_id", "previous_status"]);
+  if (source === null) return;
+  if (source["inbox_item_id"] !== undefined) {
+    validateIdentifier(source["inbox_item_id"], `${path}.inbox_item_id`, out);
+  }
+  if (source["previous_status"] !== undefined) {
+    validateInboxItemStatus(source["previous_status"], `${path}.previous_status`, out);
+  }
+  if (source["review_id"] !== undefined) {
+    validateIdentifier(source["review_id"], `${path}.review_id`, out);
+  }
+}
+
+/**
+ * Payload of inbox_item.completed.
+ */
+export function validateInboxItemCompleted(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["inbox_item_id", "previous_status", "review_id"], ["inbox_item_id", "previous_status"]);
+  if (source === null) return;
+  if (source["inbox_item_id"] !== undefined) {
+    validateIdentifier(source["inbox_item_id"], `${path}.inbox_item_id`, out);
+  }
+  if (source["previous_status"] !== undefined) {
+    validateInboxItemStatus(source["previous_status"], `${path}.previous_status`, out);
+  }
+  if (source["review_id"] !== undefined) {
+    validateIdentifier(source["review_id"], `${path}.review_id`, out);
+  }
+}
+
+/**
+ * Payload of inbox_item.dismissed.
+ */
+export function validateInboxItemDismissed(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["inbox_item_id", "previous_status", "review_id", "reason"], ["inbox_item_id", "previous_status"]);
+  if (source === null) return;
+  if (source["inbox_item_id"] !== undefined) {
+    validateIdentifier(source["inbox_item_id"], `${path}.inbox_item_id`, out);
+  }
+  if (source["previous_status"] !== undefined) {
+    validateInboxItemStatus(source["previous_status"], `${path}.previous_status`, out);
+  }
+  if (source["review_id"] !== undefined) {
+    validateIdentifier(source["review_id"], `${path}.review_id`, out);
+  }
+  if (source["reason"] !== undefined) {
+    validateReasonText(source["reason"], `${path}.reason`, out);
+  }
+}
+
+/**
+ * Payload of inbox_item.expired.
+ */
+export function validateInboxItemExpired(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["inbox_item_id", "previous_status", "review_id"], ["inbox_item_id", "previous_status"]);
+  if (source === null) return;
+  if (source["inbox_item_id"] !== undefined) {
+    validateIdentifier(source["inbox_item_id"], `${path}.inbox_item_id`, out);
+  }
+  if (source["previous_status"] !== undefined) {
+    validateInboxItemStatus(source["previous_status"], `${path}.previous_status`, out);
+  }
+  if (source["review_id"] !== undefined) {
+    validateIdentifier(source["review_id"], `${path}.review_id`, out);
   }
 }
 

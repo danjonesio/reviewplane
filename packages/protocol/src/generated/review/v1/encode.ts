@@ -55,6 +55,12 @@ import type {
   FindingTransitionRequest,
   FindingUpdateRequest,
   FindingVerificationSubmitted,
+  InboxItem,
+  InboxItemAcknowledged,
+  InboxItemCompleted,
+  InboxItemCreated,
+  InboxItemDismissed,
+  InboxItemExpired,
   Review,
   ReviewAccepted,
   ReviewArchived,
@@ -894,6 +900,136 @@ export function encodeComment(value: Comment): string {
     fields.push(`"superseded_at":${jsonString(value.superseded_at)}`);
   }
   fields.push(`"created_at":${jsonString(value.created_at)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a InboxItem.
+ */
+export function encodeInboxItem(value: InboxItem): string {
+  const fields: string[] = [];
+  fields.push(`"id":${jsonString(value.id)}`);
+  if (value.organisation_id !== undefined) {
+    fields.push(`"organisation_id":${jsonString(value.organisation_id)}`);
+  }
+  fields.push(`"project_id":${jsonString(value.project_id)}`);
+  fields.push(`"recipient_type":${jsonString(value.recipient_type)}`);
+  if (value.recipient_id !== undefined) {
+    fields.push(`"recipient_id":${jsonString(value.recipient_id)}`);
+  }
+  fields.push(`"type":${jsonString(value.type)}`);
+  fields.push(`"title":${jsonString(value.title)}`);
+  fields.push(`"status":${jsonString(value.status)}`);
+  if (value.review_id !== undefined) {
+    fields.push(`"review_id":${jsonString(value.review_id)}`);
+  }
+  if (value.review_slug !== undefined) {
+    fields.push(`"review_slug":${jsonString(value.review_slug)}`);
+  }
+  if (value.finding_id !== undefined) {
+    fields.push(`"finding_id":${jsonString(value.finding_id)}`);
+  }
+  if (value.priority !== undefined) {
+    fields.push(`"priority":${jsonString(value.priority)}`);
+  }
+  if (value.finding_count !== undefined) {
+    fields.push(`"finding_count":${jsonInteger(value.finding_count)}`);
+  }
+  if (value.assigned_by !== undefined) {
+    fields.push(`"assigned_by":${encodeActor(value.assigned_by)}`);
+  }
+  fields.push(`"created_at":${jsonString(value.created_at)}`);
+  if (value.acknowledged_at !== undefined) {
+    fields.push(`"acknowledged_at":${jsonString(value.acknowledged_at)}`);
+  }
+  if (value.completed_at !== undefined) {
+    fields.push(`"completed_at":${jsonString(value.completed_at)}`);
+  }
+  if (value.expires_at !== undefined) {
+    fields.push(`"expires_at":${jsonString(value.expires_at)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a InboxItemCreated.
+ */
+export function encodeInboxItemCreated(value: InboxItemCreated): string {
+  const fields: string[] = [];
+  fields.push(`"inbox_item_id":${jsonString(value.inbox_item_id)}`);
+  fields.push(`"recipient_type":${jsonString(value.recipient_type)}`);
+  if (value.recipient_id !== undefined) {
+    fields.push(`"recipient_id":${jsonString(value.recipient_id)}`);
+  }
+  fields.push(`"type":${jsonString(value.type)}`);
+  fields.push(`"status":${jsonString(value.status)}`);
+  if (value.review_id !== undefined) {
+    fields.push(`"review_id":${jsonString(value.review_id)}`);
+  }
+  if (value.finding_id !== undefined) {
+    fields.push(`"finding_id":${jsonString(value.finding_id)}`);
+  }
+  if (value.finding_count !== undefined) {
+    fields.push(`"finding_count":${jsonInteger(value.finding_count)}`);
+  }
+  if (value.priority !== undefined) {
+    fields.push(`"priority":${jsonString(value.priority)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a InboxItemAcknowledged.
+ */
+export function encodeInboxItemAcknowledged(value: InboxItemAcknowledged): string {
+  const fields: string[] = [];
+  fields.push(`"inbox_item_id":${jsonString(value.inbox_item_id)}`);
+  fields.push(`"previous_status":${jsonString(value.previous_status)}`);
+  if (value.review_id !== undefined) {
+    fields.push(`"review_id":${jsonString(value.review_id)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a InboxItemCompleted.
+ */
+export function encodeInboxItemCompleted(value: InboxItemCompleted): string {
+  const fields: string[] = [];
+  fields.push(`"inbox_item_id":${jsonString(value.inbox_item_id)}`);
+  fields.push(`"previous_status":${jsonString(value.previous_status)}`);
+  if (value.review_id !== undefined) {
+    fields.push(`"review_id":${jsonString(value.review_id)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a InboxItemDismissed.
+ */
+export function encodeInboxItemDismissed(value: InboxItemDismissed): string {
+  const fields: string[] = [];
+  fields.push(`"inbox_item_id":${jsonString(value.inbox_item_id)}`);
+  fields.push(`"previous_status":${jsonString(value.previous_status)}`);
+  if (value.review_id !== undefined) {
+    fields.push(`"review_id":${jsonString(value.review_id)}`);
+  }
+  if (value.reason !== undefined) {
+    fields.push(`"reason":${jsonString(value.reason)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a InboxItemExpired.
+ */
+export function encodeInboxItemExpired(value: InboxItemExpired): string {
+  const fields: string[] = [];
+  fields.push(`"inbox_item_id":${jsonString(value.inbox_item_id)}`);
+  fields.push(`"previous_status":${jsonString(value.previous_status)}`);
+  if (value.review_id !== undefined) {
+    fields.push(`"review_id":${jsonString(value.review_id)}`);
+  }
   return `{${fields.join(",")}}`;
 }
 
