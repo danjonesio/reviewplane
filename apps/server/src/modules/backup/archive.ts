@@ -10,11 +10,13 @@
  * path, a backslash, a symbolic link, a device node and a directory entry are
  * all refused; only regular files with a bounded relative path are accepted.
  *
- * The compressed frame is what makes truncation detectable for free: zstd
- * checks its own frame, so a copy that stopped halfway fails to decompress
- * rather than producing a short but well-formed tar. The manifest's per-member
- * digests then catch a member that decompressed cleanly and is not the member
- * that was written.
+ * Truncation is caught by whichever of three layers the cut lands in, and the
+ * point is that none of them can be missed: zstd checks its own frame, this
+ * reader refuses a stream that ends without the two zero blocks that end a tar
+ * or inside a member it was told the length of, and the manifest's per-member
+ * digests catch a member that decompressed cleanly and is not the member that
+ * was written. Which layer reports it depends on where the copy stopped; that
+ * it is reported does not.
  *
  * The writer never writes the destination path until it is complete. It writes
  * `<output>.partial`, closes it, and renames — so an interrupted backup leaves

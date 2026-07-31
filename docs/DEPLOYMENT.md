@@ -758,8 +758,12 @@ The two forms differ in one guarantee. `--output FILE` writes to
 `<output>.partial` and renames it only when the archive is complete, so an
 interrupted backup leaves nothing a restore would read. `--output -` writes to
 standard output, where the destination is the operator's own redirection: an
-interrupted stream leaves a **truncated file**, which a restore refuses — the
-`zstd` frame does not check out — but which is a file rather than an absence.
+interrupted stream leaves a **truncated file**, which a restore refuses but
+which is a file rather than an absence. Three layers catch the truncation and
+which one reports it depends on where the copy stopped — the `zstd` frame check,
+the archive's own end marker, or a member's digest — so `-` is safe against a
+half-copied archive being restored, and unsafe only against one being *mistaken
+for* a complete backup by a human reading a directory listing.
 `-` is nonetheless the form to use in the Compose deployment, because the
 alternative is an archive inside a container's volume that the operator then has
 to copy out; `deploy/compose/reviewplane` runs the command through
