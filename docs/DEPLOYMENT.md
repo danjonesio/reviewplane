@@ -739,7 +739,15 @@ net rather than a way to omit the statement.
 
 Stage 1 implements **no automated downgrade**. `not supported` therefore means
 what it says: the way back is restoring the archive taken at step 2 into an
-empty installation running the previous release.
+empty installation.
+
+Restore it with **this** release, not the previous one. `restore` brings an
+empty installation to the schema the archive records and stops there, so a
+Stage 1 build restores a Stage 0 archive to `0054` and reports the `0055`
+onwards as pending — which is the rollback. The previous release cannot do it:
+`backup` and `restore` ship in this one, so no earlier build has the commands at
+all. `apps/server/test/upgrade-stage0.test.ts` performs exactly this rollback,
+against the archive taken from the committed Stage 0 fixture.
 
 ## 16. Backups
 
@@ -772,7 +780,15 @@ to copy out; `deploy/compose/reviewplane` runs the command through
 
 Either way the command prints the archive's SHA-256: to standard output for the
 file form, to standard error for the streamed form, since standard output is
-carrying the archive.
+carrying the archive. For the same reason `--output -` and `--json` together are
+refused rather than interleaved — both want standard output, and a document with
+an archive in the middle of it is neither.
+
+`backup` exits `4` when it finished and the answer is bad: the archive was
+written, and the metadata referenced an artefact the store did not hold. The
+manifest records which (`artefacts_missing`), the restore will report the same
+absence, and the archive is still the best backup available — which is why it is
+written and reported rather than refused.
 
 Backup manifest contains:
 
@@ -891,10 +907,19 @@ Production restore SHOULD be tested periodically.
 | New hostname | `--hostname HOST` records the move and revokes the credentials issued for the previous host: sign-in sessions, unspent installation tokens and agent credentials. It reports which settings to change; see below |
 | Key-reference remapping | Not implemented, because envelope encryption is not (`docs/SECURITY.md` §15). The manifest's `key_references` is reported, and this release has nothing to remap |
 
-The load is one transaction with every foreign key deferred. A load that would
-leave a dangling reference therefore aborts and writes nothing, and an
-interrupted restore leaves an installation with a schema and no data — which the
-command says in as many words — rather than a half-populated one.
+The load is one transaction with every foreign key deferred, and **every step
+after the load is in that transaction too**: the hostname rotation, the artefact
+check and the audit event. A failure anywhere therefore writes nothing, and a
+restore that failed also removes the schema it created on the way in — so the
+installation is returned to the empty state the command found it in and the
+restore can simply be run again. Nothing is left half-applied, and nothing is
+left in a state the next attempt would refuse.
+
+Each of those post-load steps is guarded against the schema **the archive
+restores to**, not this build's. A Stage 0 archive restores to `0054`, where
+`event_outbox`, `install_tokens` and `viewer_sessions.revocation_reason` do not
+exist; the restore writes the audit record without an outbox row, rotates the
+credentials the schema does have, and reports what it did.
 
 After the load, restore checks every artefact the restored metadata references
 against the store. Application metadata is authoritative for availability

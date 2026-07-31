@@ -773,15 +773,21 @@ Three further properties are enforced rather than advised.
 **Restore is a privileged local operation and is exposed through no network
 interface.** It truncates and repopulates every table, and an HTTP route that
 could do that would be an authorisation bug with the blast radius of the whole
-installation. `apps/server/test/backup-security.test.ts` enumerates every route
-the control plane registers and fails if any names backup or restore, and
-asserts the same of the MCP tool table.
+installation. Two suites assert it against the surfaces themselves rather than
+against their source: `apps/server/test/backup-security.test.ts` enumerates
+every route the control plane has registered, and
+`apps/mcp-server/test/unit.test.ts` enumerates the tool table the MCP server
+registers. Neither is a search for a pattern in a file.
 
-**A credential never reaches the archive or the log.** The configuration member
-records the *name* of every `REVIEWPLANE_` setting and the value only of the
-ones that are not credentials; a credential-shaped name and any value carrying
-URL user information — which is what catches a database connection string — are
-recorded as present and redacted.
+**No credential reaches the configuration record or the log.** The
+configuration member of the archive records the *name* of every `REVIEWPLANE_`
+setting and the value only of the ones that are not credentials; a
+credential-shaped name and any value carrying URL user information — which is
+what catches a database connection string — are recorded as present and
+redacted. This is a statement about configuration, not about the archive as a
+whole: the archive carries the installation's data, and under
+`--include-key-material` it deliberately carries a private key as well. Treat
+every archive as credential-grade.
 
 **The archive's integrity is checked before a restore writes anything, and the
 check is not a signature.** The manifest carries a SHA-256 for every member and

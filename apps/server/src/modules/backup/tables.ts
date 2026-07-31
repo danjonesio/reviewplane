@@ -60,6 +60,46 @@ function assertTableName(name: string): string {
   return name;
 }
 
+/**
+ * Whether a table exists.
+ *
+ * Every step a restore performs after the load runs against **the archive's
+ * schema**, not this build's: a Stage 0 archive restores to `0054`, where
+ * `event_outbox` (`0056`) and `viewer_sessions.revocation_reason` (`0071`) do
+ * not exist. Writing those steps against the current schema is the defect this
+ * pair of helpers exists to make impossible — a post-load step guards on what
+ * the database it is about to write actually has.
+ */
+export async function hasTable(db: Pool | PoolClient, table: string): Promise<boolean> {
+  const { rows } = await db.query<{ present: boolean }>(
+    "select to_regclass($1) is not null as present",
+    [`public.${assertTableName(table)}`],
+  );
+  return rows[0]?.present === true;
+}
+
+/**
+ * Whether a column exists.
+ *
+ * A table-level guard is not enough and was not enough: `viewer_sessions` has
+ * existed since `0045` and its `revocation_reason` column since `0071`, so a
+ * check that the table was present passed and the `UPDATE` then failed against
+ * a `0054` schema — after the load had committed.
+ */
+export async function hasColumn(
+  db: Pool | PoolClient,
+  table: string,
+  column: string,
+): Promise<boolean> {
+  const { rows } = await db.query<{ present: boolean }>(
+    `select count(*) > 0 as present
+       from information_schema.columns
+      where table_schema = 'public' and table_name = $1 and column_name = $2`,
+    [table, column],
+  );
+  return rows[0]?.present === true;
+}
+
 /** Every base table in the `public` schema, in a stable order. */
 export async function listTables(pool: Pool | PoolClient): Promise<string[]> {
   const { rows } = await pool.query<{ table_name: string }>(
@@ -111,16 +151,27 @@ export async function exportTable(
   onLine: (line: string) => Promise<void> | void,
 ): Promise<number> {
   const name = assertTableName(table);
-  await client.query(`declare backup_cursor no scroll cursor for select row_to_json(t) as row from "${name}" t`);
+  // `::text` matters. Without it the column is OID 114 (`json`), which the
+  // driver parses with `JSON.parse` before this code sees it and this code then
+  // re-serialises — so every number in every row would make a round trip
+  // through a JavaScript double. `bigint` columns are unbounded in the schema,
+  // and a value above 2^53 would come back a different number. Casting keeps
+  // the text PostgreSQL rendered as text the whole way to the archive.
+  await client.query(
+    `declare backup_cursor no scroll cursor for select row_to_json(t)::text as row from "${name}" t`,
+  );
   let rows = 0;
   try {
     for (;;) {
-      const batch = await client.query<{ row: unknown }>(
+      const batch = await client.query<{ row: string }>(
         `fetch forward ${String(BATCH_ROWS)} from backup_cursor`,
       );
       if (batch.rows.length === 0) break;
       for (const record of batch.rows) {
-        await onLine(JSON.stringify(record.row));
+        // Already JSON text, rendered by PostgreSQL. It is passed through
+        // rather than parsed and re-serialised, so nothing in it is reshaped
+        // by a JavaScript type on the way to the archive.
+        await onLine(record.row);
         rows += 1;
       }
     }
@@ -130,12 +181,26 @@ export async function exportTable(
   return rows;
 }
 
-/** Every foreign key in the `public` schema, as `table` and `constraint`. */
-export async function foreignKeys(
-  client: PoolClient,
-): Promise<{ table: string; constraint: string }[]> {
-  const { rows } = await client.query<{ table_name: string; constraint_name: string }>(
-    `select con.conrelid::regclass::text as table_name, con.conname as constraint_name
+/** A foreign key, and the deferrability it was declared with. */
+export interface ForeignKey {
+  readonly table: string;
+  readonly constraint: string;
+  /** `DEFERRABLE` as declared. */
+  readonly deferrable: boolean;
+  /** `INITIALLY DEFERRED` as declared. */
+  readonly deferred: boolean;
+}
+
+/** Every foreign key in the `public` schema, with its declared deferrability. */
+export async function foreignKeys(client: PoolClient): Promise<ForeignKey[]> {
+  const { rows } = await client.query<{
+    table_name: string;
+    constraint_name: string;
+    condeferrable: boolean;
+    condeferred: boolean;
+  }>(
+    `select con.conrelid::regclass::text as table_name, con.conname as constraint_name,
+            con.condeferrable, con.condeferred
        from pg_constraint con
        join pg_class cls on cls.oid = con.conrelid
        join pg_namespace nsp on nsp.oid = cls.relnamespace
@@ -145,6 +210,8 @@ export async function foreignKeys(
   return rows.map((row) => ({
     table: assertTableName(row.table_name),
     constraint: row.constraint_name,
+    deferrable: row.condeferrable,
+    deferred: row.condeferred,
   }));
 }
 
@@ -173,8 +240,21 @@ export async function withDeferredForeignKeys<T>(
   // reference fails here rather than at commit and names the load rather than
   // the commit.
   await client.query("set constraints all immediate");
-  for (const { table, constraint } of constraints) {
-    await client.query(`alter table "${table}" alter constraint "${constraint}" not deferrable`);
+  // Each constraint goes back to what it was **declared** as, not to a blanket
+  // `NOT DEFERRABLE`. No foreign key in this schema is declared deferrable
+  // today, so the two are indistinguishable now — which is exactly why the
+  // right one has to be written now: the first migration to declare one would
+  // otherwise have had it silently stripped by every restore, and no test would
+  // have failed.
+  for (const entry of constraints) {
+    const mode = entry.deferrable
+      ? entry.deferred
+        ? "deferrable initially deferred"
+        : "deferrable initially immediate"
+      : "not deferrable";
+    await client.query(
+      `alter table "${entry.table}" alter constraint "${entry.constraint}" ${mode}`,
+    );
   }
   return result;
 }

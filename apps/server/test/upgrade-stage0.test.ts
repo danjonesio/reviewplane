@@ -362,10 +362,65 @@ describe("upgrading from the committed Stage 0 fixture", () => {
       );
       assert.ok((record.note ?? "").length > 0, `${record.filename} gives no reason`);
     }
-    // The documented limitation is therefore that the only way back is the
-    // archive taken at step 2b, and that archive is still readable.
+    // The documented limitation is that the only way back is the archive taken
+    // at step 2b — so that archive is *restored*, not stat-ed.
+    //
+    // The previous version of this asserted `size > 0`, which would have passed
+    // on a file of zeroes and never exercised the restore path below `0056` at
+    // all. That is exactly where the post-load steps failed: `event_outbox`
+    // (`0056`), `install_tokens` (`0070`) and
+    // `viewer_sessions.revocation_reason` (`0071`) do not exist at the Stage 0
+    // head, and a check on a file's length could not see it.
     const rollback = join(workspace, "pre-upgrade.tar.zst");
-    assert.ok((await stat(rollback)).size > 0);
+    const target = await startPostgres();
+    const targetPool = createPool(target.url);
+    const rollbackStore = join(workspace, "rollback-artefacts");
+    await mkdir(rollbackStore, { recursive: true });
+    try {
+      const result = await restoreBackup({
+        pool: targetPool,
+        archive: rollback,
+        artefactPath: rollbackStore,
+        hostname: "rolled-back.invalid",
+      });
+      assert.equal(result.applied, true, "the rollback archive did not restore");
+      assert.deepEqual(result.missingArtefacts, []);
+
+      // It comes back at the Stage 0 head, with the migrations the upgrade
+      // applied reported as pending rather than silently applied.
+      const state = await migrationState(targetPool);
+      assert.equal(state.schemaVersion, manifest.schema.migration_head);
+      assert.deepEqual(
+        result.plan.migrationsPendingAfter,
+        upgraded.map((record) => record.filename),
+      );
+
+      // The review is there, and so is the audit record — on a schema with no
+      // event outbox to deliver it through.
+      const review = await targetPool.query<{ slug: string; status: string }>(
+        "select slug, status from reviews where id = $1",
+        [manifest.contents.review.id],
+      );
+      assert.equal(review.rows[0]?.slug, "bugs-on-homepage");
+      assert.equal(review.rows[0]?.status, manifest.contents.review.status);
+      const events = await targetPool.query<{ payload: Record<string, unknown> }>(
+        "select payload from events where type = 'backup.restored'",
+      );
+      assert.equal(events.rows.length, 1, "the rollback restore wrote no audit event");
+      assert.equal(events.rows[0]?.payload["schema_version"], manifest.schema.migration_head);
+      assert.equal(events.rows[0]?.payload["hostname_changed"], true);
+
+      for (const object of manifest.artefact_store.objects) {
+        assert.equal(
+          await digestOf(join(rollbackStore, object.storage_key)),
+          object.sha256,
+          `${object.storage_key} did not survive the rollback`,
+        );
+      }
+    } finally {
+      await targetPool.end().catch(() => undefined);
+      await target.stop();
+    }
   });
 
   test("the upgraded installation backs up and restores whole", async () => {

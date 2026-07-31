@@ -388,12 +388,30 @@ export async function createBackup(options: BackupOptions): Promise<BackupResult
 
     await writer.addBuffer(MANIFEST_PATH, renderManifest(finalManifest));
     const expected = new Map(finalManifest.entries.map((entry) => [entry.path, entry]));
+    /**
+     * Checks a written member against the manifest, and names the *reason*.
+     *
+     * An artefact object's expected digest is its content-addressed key rather
+     * than something measured a moment earlier, so a mismatch there is almost
+     * never "the file changed": it is a stored object whose bytes no longer
+     * hash to the key the store filed them under — bit rot, or a store somebody
+     * has written into by hand. Reporting that as a race told an operator to
+     * look for a concurrent writer, and left them with no way to take any
+     * backup at all until they found the object themselves. It now names the
+     * object, the digest it should have and the digest it has.
+     */
     const check = (written: { path: string; bytes: number; sha256: string }): void => {
       const declared = expected.get(written.path);
       if (declared === undefined) throw new BackupError(`${written.path} is not in the manifest`);
-      if (declared.sha256 !== written.sha256 || declared.bytes !== written.bytes) {
-        throw new BackupError(`${written.path} changed while the archive was being written`);
+      if (declared.sha256 === written.sha256 && declared.bytes === written.bytes) return;
+      if (written.path.startsWith(ARTEFACT_PREFIX)) {
+        throw new BackupError(
+          `${written.path} does not hold the bytes its content-addressed key names: the store has ${written.sha256} (${String(written.bytes)} bytes) where it should have ${declared.sha256} (${String(declared.bytes)} bytes). The stored object is corrupt; the backup has been abandoned rather than recording the wrong bytes under the right digest. Remove or replace the object and run the backup again.`,
+        );
       }
+      throw new BackupError(
+        `${written.path} changed while the archive was being written (${String(declared.bytes)} bytes became ${String(written.bytes)})`,
+      );
     };
     check(await writer.addBuffer(CONFIGURATION_PATH, configuration));
     for (const entry of staged) {

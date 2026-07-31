@@ -57,6 +57,18 @@ const MAX_PATH_BYTES = 100;
 /** Bound on a single member, so a hostile size field cannot ask for unbounded memory. */
 const MAX_MEMBER_BYTES = 64 * 1024 * 1024 * 1024;
 
+/**
+ * Bound on how many members an archive may hold.
+ *
+ * Every other bound here is per member, and per-member bounds do not add up to
+ * a bound: an archive of millions of empty members is small, decompresses fast,
+ * and exhausts the reader's caller before any digest is compared, because the
+ * callers accumulate one map entry per member. The bound is far above any real
+ * installation — one member per table plus one per artefact object — and far
+ * below a number that costs anything.
+ */
+const MAX_MEMBERS = 5_000_000;
+
 /** Path shape a member must have. Enforced on write and on read. */
 const MEMBER_PATH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$/u;
 
@@ -372,6 +384,7 @@ export async function readArchive(path: string, sink: EntrySink): Promise<void> 
   const decompressed = createReadStream(path).pipe(createZstdDecompress());
   const reader = new ByteReader(decompressed as unknown as AsyncIterable<Buffer>);
   let zeroBlocks = 0;
+  let members = 0;
   try {
     for (;;) {
       const block = await reader.exact(BLOCK);
@@ -387,6 +400,12 @@ export async function readArchive(path: string, sink: EntrySink): Promise<void> 
         throw new ArchiveError("the archive has data after its end-of-archive marker");
       }
       verifyChecksum(block);
+      members += 1;
+      if (members > MAX_MEMBERS) {
+        throw new ArchiveError(
+          `the archive holds more than ${String(MAX_MEMBERS)} members; no installation produces one`,
+        );
+      }
       const type = block.subarray(156, 157).toString("ascii");
       if (type !== "0" && type !== "\0") {
         throw new ArchiveError(

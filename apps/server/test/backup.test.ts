@@ -27,7 +27,12 @@ import { createZstdDecompress } from "node:zlib";
 
 import { newEntityId } from "@reviewplane/protocol/platform";
 
-import { MIGRATION_LOCK_KEY, migrationState } from "../src/db/migrate.ts";
+import {
+  migrate,
+  MIGRATION_LOCK_KEY,
+  MIGRATIONS_DIRECTORY,
+  migrationState,
+} from "../src/db/migrate.ts";
 import { createPool, type Pool } from "../src/db/pool.ts";
 import { ArchiveWriter, digestFile, readArchive } from "../src/modules/backup/archive.ts";
 import {
@@ -643,6 +648,93 @@ describe("restore", () => {
     assert.equal(rows[0]?.payload["artefacts_missing"], 0);
   });
 
+  /**
+   * The round trip has to be byte-identical, and the case that breaks it is a
+   * multi-byte character landing on a decompressor chunk boundary.
+   *
+   * `chunk.toString("utf8")` decodes each chunk alone, so half a character at a
+   * boundary became U+FFFD before anything could join the halves — silently,
+   * with the row counts unchanged and the manifest digests already checked
+   * against the archive's *bytes*. A restore reported success and three rows in
+   * twenty-one came back mangled.
+   *
+   * The rows are padded so the table's export crosses several 16 KiB
+   * boundaries, and the text is compared as bytes rather than as strings so a
+   * replacement character cannot compare equal to what it replaced.
+   */
+  test("text survives the round trip byte for byte, across chunk boundaries", async () => {
+    const places = await scratch();
+    const seeded = await seedInstallation(postgres.pool, places.store);
+
+    // The content is deliberately adversarial rather than realistic-looking. A
+    // sprinkling of accents among ASCII only breaks when a boundary happens to
+    // land on one, which makes the test a coin toss: an earlier version of it
+    // passed against the unfixed code. A long run of four-byte characters makes
+    // the hit certain — three of every four byte positions are inside a
+    // character — so the test fails whenever the decoding is wrong and not
+    // merely when it is unlucky. The realistic marks are kept beside it because
+    // they are what a review title actually contains.
+    const marks = ["em—dash", "café", "naïve", "日本語", "🙂 emoji", "Ω≈ç√", "straße"];
+    const titles: string[] = [];
+    for (let index = 0; index < 96; index += 1) {
+      const mark = marks[index % marks.length] as string;
+      const title = `${"🙂".repeat(300)} ${mark} ${"é".repeat(200)} ${String(index)}`;
+      titles.push(title);
+      await postgres.pool.query(
+        `insert into reviews (id, organisation_id, project_id, slug, title, status,
+                              created_by_actor_type, captured_branch, captured_commit,
+                              captured_workspace_id)
+         values ($1, $2, $3, $4, $5, 'READY', 'human_user', 'main', 'c0ffee1', 'wsp_1')`,
+        [
+          newEntityId("review"),
+          seeded.organisationId,
+          seeded.projectId,
+          `unicode-${String(index)}`,
+          title,
+        ],
+      );
+    }
+
+    await createBackup({
+      pool: postgres.pool,
+      output: places.archive,
+      mode: "database",
+      artefactPath: places.store,
+      artefactDriver: "filesystem",
+      environment: {},
+    });
+    const member = await readMember(places.archive, "database/reviews.jsonl");
+    assert.ok(
+      member.length > 16 * 1024,
+      `the reviews member is ${String(member.length)} bytes, too small to cross a chunk boundary`,
+    );
+
+    const result = await restoreBackup({
+      pool: targetPool,
+      archive: places.archive,
+      artefactPath: places.restoreStore,
+    });
+    assert.equal(result.applied, true);
+
+    const restored = await targetPool.query<{ slug: string; title: string }>(
+      "select slug, title from reviews order by slug",
+    );
+    const byTitle = new Map(restored.rows.map((row) => [row.slug, row.title]));
+    for (const [index, title] of titles.entries()) {
+      const back = byTitle.get(`unicode-${String(index)}`);
+      assert.ok(back !== undefined, `review unicode-${String(index)} did not come back`);
+      assert.deepEqual(
+        Buffer.from(back, "utf8"),
+        Buffer.from(title, "utf8"),
+        `review unicode-${String(index)} changed in the round trip`,
+      );
+    }
+    assert.ok(
+      !restored.rows.some((row) => row.title.includes("�")),
+      "a replacement character reached the restored data",
+    );
+  });
+
   test("refuses an installation that is not empty", async () => {
     const places = await scratch();
     await seedInstallation(postgres.pool, places.store);
@@ -895,10 +987,223 @@ describe("restore", () => {
         artefactPath: places.restoreStore,
       }),
     );
-    const reviews = await targetPool.query<{ count: string }>(
-      "select count(*)::text as count from reviews",
+    // Not "no rows" but "no schema": the load rolls back, and the schema the
+    // restore created on the way in goes with it, so the target is exactly as
+    // the command found it and the operator can run it again.
+    const tables = await targetPool.query<{ count: string }>(
+      "select count(*)::text as count from information_schema.tables where table_schema = 'public'",
     );
-    assert.equal(reviews.rows[0]?.count, "0", "a failed load left rows behind");
+    assert.equal(tables.rows[0]?.count, "0", "a failed load left a schema behind");
+  });
+});
+
+/**
+ * Restoring an archive taken at an **older** schema than this build.
+ *
+ * This is the rollback path `docs/DEPLOYMENT.md` §15 documents and the shape
+ * the Stage 0 upgrade begins with, and it was the one path nothing exercised:
+ * every other restore test uses an archive at the current head, where every
+ * table and every column the post-load steps touch happens to exist. Against a
+ * `0054` archive they do not — `event_outbox` arrives at `0056`,
+ * `install_tokens` at `0070` and `viewer_sessions.revocation_reason` at
+ * `0071` — and the steps that used to run after the commit failed there, having
+ * already committed the data, written no audit event and rotated nothing.
+ */
+describe("restoring an archive from an older schema", () => {
+  /** The Stage 0 head: before the event outbox, the install tokens and the CSRF columns. */
+  const OLD_SCHEMA = "0054_idempotency_keys.sql";
+
+  /** A database migrated only as far as `OLD_SCHEMA`, with one live session. */
+  async function oldInstallation(): Promise<{
+    database: TestDatabase;
+    pool: Pool;
+    organisationId: string;
+    sessionId: string;
+  }> {
+    const database = await startPostgres();
+    const pool = createPool(database.url);
+    await migrate(pool, MIGRATIONS_DIRECTORY, { through: OLD_SCHEMA });
+    const organisationId = newEntityId("organisation");
+    const sessionId = newEntityId("human_session");
+    await pool.query("insert into organisations (id, name, slug) values ($1, 'Old', 'old-org')", [
+      organisationId,
+    ]);
+    await pool.query(
+      `insert into viewer_sessions (id, organisation_id, project_ids, token_sha256, display, expires_at)
+       values ($1, $2, null, $3, 'Administrator', now() + interval '1 day')`,
+      [sessionId, organisationId, createHash("sha256").update("old").digest("hex")],
+    );
+    return { database, pool, organisationId, sessionId };
+  }
+
+  test("restores to completion, with the audit event the schema can hold", async () => {
+    const places = await scratch();
+    const source = await oldInstallation();
+    const restored = await startPostgres();
+    const restoredPool = createPool(restored.url);
+    try {
+      const backup = await createBackup({
+        pool: source.pool,
+        output: places.archive,
+        mode: "database",
+        artefactPath: places.store,
+        artefactDriver: "filesystem",
+        environment: {},
+      });
+      assert.equal(backup.manifest.schema_version, OLD_SCHEMA);
+
+      const result = await restoreBackup({
+        pool: restoredPool,
+        archive: places.archive,
+        artefactPath: places.restoreStore,
+      });
+      assert.equal(result.applied, true);
+      // The restore stops at the archive's schema and says what is left.
+      assert.ok(result.plan.migrationsPendingAfter.length > 0);
+      assert.equal(result.plan.migrationsPendingAfter[0], "0055_users_and_stage_1_seed.sql");
+
+      const state = await migrationState(restoredPool);
+      assert.equal(state.schemaVersion, OLD_SCHEMA);
+
+      // The acceptance criterion: backup and restore emit audit events. The
+      // event is written even though `event_outbox` does not exist at this
+      // schema — only the delivery obligation is skipped.
+      const events = await restoredPool.query<{ payload: Record<string, unknown> }>(
+        "select payload from events where type = $1",
+        [BACKUP_RESTORED_EVENT],
+      );
+      assert.equal(events.rows.length, 1, "the restore wrote no backup.restored event");
+      assert.equal(events.rows[0]?.payload["schema_version"], OLD_SCHEMA);
+
+      const organisations = await restoredPool.query<{ count: string }>(
+        "select count(*)::text as count from organisations",
+      );
+      assert.equal(organisations.rows[0]?.count, "1");
+    } finally {
+      await restoredPool.end().catch(() => undefined);
+      await restored.stop();
+      await source.pool.end().catch(() => undefined);
+      await source.database.stop();
+    }
+  });
+
+  test("a new hostname rotates the credentials the old schema does have", async () => {
+    const places = await scratch();
+    const source = await oldInstallation();
+    const restored = await startPostgres();
+    const restoredPool = createPool(restored.url);
+    try {
+      await createBackup({
+        pool: source.pool,
+        output: places.archive,
+        mode: "database",
+        artefactPath: places.store,
+        artefactDriver: "filesystem",
+        environment: { REVIEWPLANE_GATEWAY_DOMAIN: "old.example" },
+      });
+
+      const result = await restoreBackup({
+        pool: restoredPool,
+        archive: places.archive,
+        artefactPath: places.restoreStore,
+        hostname: "new.example",
+      });
+      assert.equal(result.applied, true);
+      assert.equal(result.invalidated.humanSessions, 1);
+      // `install_tokens` does not exist at this schema, so the step reports
+      // nothing rather than failing on a table it cannot see.
+      assert.equal(result.invalidated.installTokens, 0);
+
+      const live = await restoredPool.query<{ count: string }>(
+        "select count(*)::text as count from viewer_sessions where revoked_at is null",
+      );
+      assert.equal(live.rows[0]?.count, "0", "a session issued for the old host survived");
+      // The column that does not exist at this schema was not written, and the
+      // one that does was.
+      const columns = await restoredPool.query<{ count: string }>(
+        `select count(*)::text as count from information_schema.columns
+          where table_schema = 'public' and table_name = 'viewer_sessions'
+            and column_name = 'revocation_reason'`,
+      );
+      assert.equal(columns.rows[0]?.count, "0");
+
+      const events = await restoredPool.query<{ payload: Record<string, unknown> }>(
+        "select payload from events where type = $1",
+        [BACKUP_RESTORED_EVENT],
+      );
+      assert.equal(events.rows[0]?.payload["hostname_changed"], true);
+    } finally {
+      await restoredPool.end().catch(() => undefined);
+      await restored.stop();
+      await source.pool.end().catch(() => undefined);
+      await source.database.stop();
+    }
+  });
+
+  /**
+   * The wedge the post-commit phase created: a failure after the load left the
+   * data committed, so the operator's retry was refused with "the target
+   * installation already has N table(s)" and there was no way forward.
+   */
+  test("a failure leaves the installation restorable again", async () => {
+    const places = await scratch();
+    const source = await oldInstallation();
+    const restored = await startPostgres();
+    const restoredPool = createPool(restored.url);
+    try {
+      await createBackup({
+        pool: source.pool,
+        output: places.archive,
+        mode: "database",
+        artefactPath: places.store,
+        artefactDriver: "filesystem",
+        environment: {},
+      });
+      // An archive that loads and then fails its row-count check, which is the
+      // last thing the load transaction does before the post-load steps.
+      const broken = await rebuildArchive(places.archive, (_path, data) => data, {
+        editManifest: (manifest) => ({
+          ...manifest,
+          tables: manifest.tables.map((table) =>
+            table.name === "organisations" ? { ...table, rows: table.rows + 5 } : table,
+          ),
+        }),
+      });
+
+      await assert.rejects(() =>
+        restoreBackup({
+          pool: restoredPool,
+          archive: broken,
+          artefactPath: places.restoreStore,
+        }),
+      );
+      // The load rolled back *and* the schema the restore itself created was
+      // removed with it, so the target is back to the state the command found
+      // it in. A rollback alone was not enough: the migrations run outside the
+      // transaction, and a surviving schema is what made the next attempt fail
+      // the empty-installation check and left the operator stuck.
+      const tables = await restoredPool.query<{ count: string }>(
+        "select count(*)::text as count from information_schema.tables where table_schema = 'public'",
+      );
+      assert.equal(tables.rows[0]?.count, "0", "a failed restore left a schema behind");
+
+      // And the retry works, which is the property that matters.
+      const retry = await restoreBackup({
+        pool: restoredPool,
+        archive: places.archive,
+        artefactPath: places.restoreStore,
+      });
+      assert.equal(retry.applied, true);
+      const after = await restoredPool.query<{ count: string }>(
+        "select count(*)::text as count from organisations",
+      );
+      assert.equal(after.rows[0]?.count, "1");
+    } finally {
+      await restoredPool.end().catch(() => undefined);
+      await restored.stop();
+      await source.pool.end().catch(() => undefined);
+      await source.database.stop();
+    }
   });
 });
 

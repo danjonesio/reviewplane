@@ -776,6 +776,8 @@ export const EVENT_TYPES = [
   "job.enqueued",
   "job.succeeded",
   "job.failed",
+  "backup.created",
+  "backup.restored",
 ] as const;
 
 /**

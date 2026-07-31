@@ -441,10 +441,18 @@ backed up (`docs/OPERATIONS.md` sections 3 and 12). That is the reason it is an
 event rather than a row somewhere: the audit trail is the evidence, and a second
 copy of it would be a second thing to keep true.
 
-A backup taken against a schema older than `0056` — which is what upgrading from
-Stage 0 begins with — writes the event without enqueuing an outbox row, because
-that schema has no outbox to enqueue into and no subscriber to deliver to. It is
-the only case in which an event is written without a delivery obligation.
+Both events are written without enqueuing an outbox row when the schema they are
+written against predates `event_outbox` (`0056`). That is what upgrading from
+Stage 0 begins with — a backup of a `0054` database — and what rolling back to it
+ends with, since a restore brings an installation to the archive's schema and
+`backup.restored` is written there. The schema has no outbox to enqueue into and
+no subscriber to deliver to; the audit record is written either way, because
+`docs/SECURITY.md` §16 requires it and the moment a backup matters most is the
+moment the schema is old. These are the only cases in which an event is written
+without a delivery obligation.
+
+`backup.restored` is written on the load's own transaction, so it commits with
+the rows it describes (§9). A restore that failed writes no event and no rows.
 
 ## 8. Payload rules
 

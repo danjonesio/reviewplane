@@ -541,7 +541,7 @@ fixture, in order, on every `pnpm test`:
 | Apply migration | `migrate` applies exactly the pending set, `0055` to the head |
 | Verify reviews and artefacts | `bugs-on-homepage` and its identifier, both findings with their statuses and severities, every annotation still normalised to 0–1, the agent's verification and its `after` artefact, and the bytes of all three screenshots digested against what the rows record. The review is also built into the portable document of `docs/REVIEW_FORMAT.md`, which is the same code the export and the UI read |
 | Verify connector compatibility | `classifyUpgrade` against a Stage 0 connector version, in both directions: inside the shipped policy it is `compatible`; under a tightened minimum it is `upgrade_required`. The preflight's own check reads the same function |
-| Verify rollback limitations | Every migration the upgrade applied is asserted to declare `not_supported` with a reason, and the pre-upgrade archive is asserted to still be readable — because it is the only way back |
+| Verify rollback limitations | Every migration the upgrade applied is asserted to declare `not_supported` with a reason, and the pre-upgrade archive is then **restored** — into an empty database, with `--hostname` — and checked: the schema comes back at the Stage 0 head, the migrations the upgrade applied are reported pending, the review and all three artefacts are intact, and the `backup.restored` audit event is present. An earlier version asserted the archive's file size was greater than zero, which would have passed on a file of noise and never exercised the restore path below `0056` at all |
 
 The upgraded installation is then backed up and restored into a third database,
 with a new hostname, and its review, annotations and artefact bytes are checked
@@ -567,17 +567,29 @@ absence of a success:
 |---|---|
 | Full backup and restore | An installation with a review, an annotated finding and a stored screenshot is archived and restored into an empty database; every table's row count matches the manifest, the annotation geometry is unchanged, and the evidence bytes are byte-for-byte identical |
 | Database-only plus external storage | A `database` archive from an `s3` installation restores, reports the referenced artefacts as absent, and names the external store the manifest records rather than reporting corruption |
-| Missing key failure | `connector_tls_material` is searched for in the archive's bytes: absent by default, present only under `--include-key-material`, and the warning and the audit event are asserted on both paths |
+| Missing key failure | A canary private key is planted in `connector_tls_material` and every member of the archive is searched for it: absent by default, present only under `--include-key-material`. The exact warning text and the `key_material_included` value in the `backup.created` event are asserted on both paths. "Missing key" is the archive's disposition, not a restore failure — a restore without key material completes and reports the connector identities the missing authority invalidated |
 | Corrupt archive detection | An archive rebuilt with one member's bytes altered, and one member added that the manifest does not declare: each is refused. Truncation is asserted as the invariant rather than as an error — a truncated archive is refused or read whole and never read short — at five cut points, because Node's `zstd` decompressor ends cleanly on an incomplete frame and the guarantee is the archive reader's alone. A truncated archive is refused **before** the target gains a schema |
 | Restore to new hostname | `--hostname` revokes the sign-in sessions issued for the previous host, reports the settings to change, and records `hostname_changed` in the audit event |
 | Integrity hash verification | Every member is checked against the manifest's digest and size in a pass that writes nothing; a size or digest disagreement is an `ArchiveIntegrityError` |
 
-The fault-injection rows of §11 are covered in the same file: an interrupted
-write leaves neither the destination nor the `.partial` file behind; a load that
-would leave a dangling reference aborts and leaves no row; a migration lock held
-by another process is reported rather than waited on; and an artefact referenced
-by metadata but absent from the store is reported by both the backup and the
-restore instead of being passed over.
+The fault-injection cases RVP-56 requires are covered in the same file, and are
+additional to §11's matrix rather than rows of it: an interrupted write leaves
+neither the destination nor the `.partial` file behind; a load that would leave
+a dangling reference aborts and leaves no row; a migration lock held by another
+process is reported rather than waited on; an artefact referenced by metadata
+but absent from the store is reported by both the backup and the restore instead
+of being passed over; and a restore that fails after its migrations have run
+removes the schema it created, so the next attempt is not refused as a non-empty
+installation.
+
+Two cases exist because they were defects rather than because they were
+foreseen. **Text is round-tripped byte for byte** through content chosen so that
+multi-byte characters straddle decompressor chunk boundaries — decoding each
+chunk alone replaced them with U+FFFD, silently, with row counts unchanged.
+**An archive from an older schema is restored to completion**, with and without
+`--hostname`: every step after the load runs against the archive's schema, not
+this build's, and against a `0054` archive `event_outbox`, `install_tokens` and
+`viewer_sessions.revocation_reason` do not exist.
 
 The negative security tests are separate on purpose: restore is reachable
 through no route the control plane registers, and the assertion enumerates

@@ -329,7 +329,9 @@
           "review.status_change_denied",
           "job.enqueued",
           "job.succeeded",
-          "job.failed"
+          "job.failed",
+          "backup.created",
+          "backup.restored"
         ]
       },
       "stream_message_types": {

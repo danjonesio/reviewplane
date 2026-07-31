@@ -78,9 +78,11 @@ no network interface.** Restore truncates and repopulates every table.
   with the product, which is what makes an operator-managed external PostgreSQL
   upgradeable independently of the application image.
 - The whole path is testable at the `pnpm test` layer against a real database,
-  which is why `docs/TESTING.md` §14's six required cases and §11's
-  fault-injection rows are unit-and-component tests rather than a container
-  harness that runs nightly.
+  which is why `docs/TESTING.md` §14's six required cases are unit-and-component
+  tests rather than a container harness that runs nightly, and why the
+  fault-injection cases RVP-56 lists — an interrupted write, an interrupted
+  load, a held migration lock, an artefact referenced and absent — are asserted
+  beside them.
 - A new table is backed up the day its migration lands, without anyone
   remembering.
 - Deferred foreign keys make the load atomic: a load that would leave a dangling
@@ -104,9 +106,13 @@ no network interface.** Restore truncates and repopulates every table.
   says so rather than implying tamper-resistance.
 - **`--output -` gives up the atomic rename.** The file form writes
   `<output>.partial` and renames; the streamed form's destination is the
-  operator's redirection, so an interrupted stream leaves a truncated file. It
-  is refused on restore — the `zstd` frame does not check out — but it is a file
-  rather than an absence, and §16 states the difference.
+  operator's redirection, so an interrupted stream leaves a truncated file
+  rather than no file. It is not restorable — a truncated archive is refused or
+  read whole and never read short — but it is there to be mistaken for a
+  finished backup by a human reading a directory listing, and §16 states the
+  difference. The refusal is the archive reader's own: Node's `zstd`
+  decompressor ends cleanly on an incomplete frame rather than erroring, so
+  nothing below that reader objects to a half-copied file.
 - **The restore spool needs room for the archive on the artefact volume**, in
   addition to room for its contents.
 
