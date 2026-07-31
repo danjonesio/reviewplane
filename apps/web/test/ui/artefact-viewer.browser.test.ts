@@ -214,12 +214,14 @@ for (const [name, viewport] of [
       );
 
       // The handle is a real range input, so the keyboard drives it without a
-      // handler of the component's own.
-      await slider.focus();
-      const focusedTag = await session.page.evaluate(
-        () => document.activeElement?.getAttribute("data-testid") ?? "",
-      );
-      assert.equal(focusedTag, "artefact-compare-slider", "the slider takes keyboard focus");
+      // handler of the component's own. It is reached **by tabbing** rather
+      // than by `focus()`: `:focus-visible` is what draws the focus ring, and
+      // Chromium matches it on the interaction a keyboard user actually
+      // performs. A programmatic `focus()` after a click matches `:focus`
+      // alone, so asserting the ring after one would assert nothing about
+      // keyboard use.
+      const reached = await tabTo(session.page, "artefact-compare-slider");
+      assert.ok(reached, "the comparison slider is reachable by Tab");
       const outline = await session.page.evaluate(() => {
         const element = document.activeElement as HTMLElement | null;
         if (element === null) return "";
@@ -227,6 +229,7 @@ for (const [name, viewport] of [
         return `${style.outlineStyle} ${style.outlineWidth}`;
       });
       assert.notEqual(outline.split(" ")[0], "none", `focus is visible: ${outline}`);
+      evidence.push(`${name} slider focus ring: ${outline}`);
 
       const before = await clipOf(session.page);
       await session.page.keyboard.press("Home");
@@ -349,6 +352,24 @@ test("every control in the viewer is reachable by keyboard alone", async () => {
     await session.close();
   }
 });
+
+/**
+ * Tabs until the element carrying `testId` has focus.
+ *
+ * Tabbing rather than calling `focus()` is what makes a focus-ring assertion
+ * mean anything: `:focus-visible` is the selector the ring is on, and a browser
+ * matches it for keyboard interaction rather than for every focus.
+ */
+async function tabTo(page: Page, testId: string, limit = 80): Promise<boolean> {
+  for (let step = 0; step < limit; step += 1) {
+    await page.keyboard.press("Tab");
+    const active = await page.evaluate(
+      () => document.activeElement?.getAttribute("data-testid") ?? "",
+    );
+    if (active === testId) return true;
+  }
+  return false;
+}
 
 /** The comparison image's clip inset, which is what the slider moves. */
 async function clipOf(page: Page): Promise<string> {
