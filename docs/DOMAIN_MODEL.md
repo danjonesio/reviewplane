@@ -605,8 +605,10 @@ Like the review table, this one is data in
 - Agent-created findings may be auto-resolved by policy if configured. **Stage 1
   configures no such policy**, so a final disposition is a human decision
   whoever authored the finding, and an agent requesting one is refused with
-  `AUTHORISATION_DENIED`. An agent requesting any other transition outside its
-  six is refused with `POLICY_DENIED` and `details.allowed_transitions`
+  `AUTHORISATION_DENIED` **from any status** — the rule is about the decision,
+  not about the move, so it is checked before the lifecycle is consulted. An
+  agent requesting any other transition outside its six is refused with
+  `POLICY_DENIED` and `details.allowed_transitions`
 - `WONT_FIX` requires a human decision or explicit project policy, and a reason.
   Waiving a reported problem without one is not a decision anybody can review
   later
@@ -620,11 +622,14 @@ Like the review table, this one is data in
   to set it could forge a human-authored finding, or relabel its own to escape
   the rule that a human decides. Everything that is not an `agent_session`
   records `human`, which is the conservative direction
-- A refused authority request is itself audited, as
-  `finding.status_change_denied` or `review.status_change_denied`. The
+- A refused transition is itself audited, as `finding.status_change_denied` or
+  `review.status_change_denied` — **every** refusal, not only the authority
+  ones, because a refused request is an attempt whichever check refused it. The
   transaction the refusal happened in rolls back, so the record is written
   outside it: an attempt with no record is indistinguishable from one that never
-  happened, and the Stage 1 exit criterion is that the attempt leaves a trail
+  happened, and the Stage 1 exit criterion is that the attempt leaves a trail.
+  Where the audit write itself fails, the refusal still stands and the loss is
+  logged rather than discarded
 
 ## 16. Annotation
 

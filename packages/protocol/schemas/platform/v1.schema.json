@@ -280,9 +280,9 @@
           "finding.verification_rejected",
           "finding.resolved",
           "finding.reopened",
-      "finding.status_change_denied",
-      "review.comment_added",
-      "review.status_change_denied",
+          "finding.status_change_denied",
+          "review.comment_added",
+          "review.status_change_denied",
           "job.enqueued",
           "job.succeeded",
           "job.failed"

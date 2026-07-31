@@ -56,11 +56,13 @@ import {
 import { ApiError, notFound } from "../../errors.ts";
 import type { EventActor } from "../../events/append.ts";
 import { buildPage, pageMeta, readPageRequest } from "../../http/pagination.ts";
-import { actorOf, requireCsrfToken, scopeParameter } from "../identity/authorisation.ts";
 import {
-  authorisedForProject,
-  type ViewerPrincipal,
-} from "../live/viewer-sessions.ts";
+  actorOf,
+  requireCsrfToken,
+  resolveProject,
+  scopeParameter,
+} from "../identity/authorisation.ts";
+import type { ViewerPrincipal } from "../live/viewer-sessions.ts";
 import type { CreateAnnotationInput, Scope } from "./service.ts";
 import type { ReviewService } from "./service.ts";
 
@@ -155,7 +157,18 @@ export async function registerReviewRoutes(
     );
   };
 
-  /** The scope a viewer may act in for one project. */
+  /**
+   * The scope a viewer may act in for one project.
+   *
+   * `resolveProject` is the shared predicate of
+   * `modules/identity/authorisation.ts`: the identifier, the session's project
+   * scope and the session's **organisation** in one `WHERE` clause. This handler
+   * used to read `SELECT organisation_id FROM projects WHERE id = $1` and build
+   * the scope from whatever came back, which meant the organisation term existed
+   * on the row and was never compared to the caller's — an organisation-wide
+   * session, which is what every real sign-in issues, reached another
+   * organisation's project.
+   */
   const scopeForProject = async (
     request: FastifyRequest,
     projectId: string,
@@ -166,54 +179,9 @@ export async function registerReviewRoutes(
     // Before the project is resolved and before the body is decoded, so a
     // forged request is refused rather than answered with a validation error.
     if (intent === "write") requireCsrfToken(request, principal);
-    if (!authorisedForProject(principal, projectId)) {
-      throw new ApiError(
-        "PROJECT_CONTEXT_MISMATCH",
-        "This viewer session is not authorised for that project.",
-      );
-    }
-    const rows = await pool.query<{ organisation_id: string }>(
-      "SELECT organisation_id FROM projects WHERE id = $1",
-      [projectId],
-    );
-    const row = rows.rows[0];
-    if (row === undefined) throw notFound("The project");
+    const project = await resolveProject(pool, principal, projectId);
     return {
-      scope: { organisationId: row.organisation_id, projectId },
-      actor: humanActor(principal),
-    };
-  };
-
-  /**
-   * The scope for a record reached by its own identifier.
-   *
-   * The owning project is read first and the viewer is authorised against it
-   * before any field of the record is returned, so a cross-project identifier
-   * yields a refusal rather than data.
-   */
-  const scopeForRecord = async (
-    request: FastifyRequest,
-    table: "reviews" | "findings",
-    id: string,
-    intent: Intent,
-  ): Promise<{ scope: Scope; actor: EventActor }> => {
-    refuseMachineCredentials(request);
-    const rows = await pool.query<{ organisation_id: string; project_id: string }>(
-      `SELECT organisation_id, project_id FROM ${table} WHERE id = $1`,
-      [id],
-    );
-    const row = rows.rows[0];
-    if (row === undefined) throw notFound(table === "reviews" ? "The review" : "The finding");
-    const principal = await options.viewerAuth(request);
-    if (intent === "write") requireCsrfToken(request, principal);
-    if (!authorisedForProject(principal, row.project_id)) {
-      throw new ApiError(
-        "PROJECT_CONTEXT_MISMATCH",
-        "This viewer session is not authorised for the project that owns this record.",
-      );
-    }
-    return {
-      scope: { organisationId: row.organisation_id, projectId: row.project_id },
+      scope: { organisationId: project.organisationId, projectId: project.id },
       actor: humanActor(principal),
     };
   };
@@ -223,14 +191,27 @@ export async function registerReviewRoutes(
    * query that carries the identifier, the session's project scope and the
    * session's organisation together.
    *
-   * This is the pattern `docs/SECURITY.md` section 7 requires and the one every
-   * route added here uses. The difference from `scopeForRecord` above is not
-   * cosmetic: that helper reads the row first and compares the project
-   * afterwards, so a foreign identifier is answered `PROJECT_CONTEXT_MISMATCH`
-   * where an unknown one is answered `RESOURCE_NOT_FOUND` — and the pair is an
-   * existence oracle for another tenant's identifiers. Here a row that fails any
-   * part of the predicate is simply not returned, and the refusal is byte for
-   * byte the same one an unknown identifier gets.
+   * This is the pattern `docs/SECURITY.md` section 7 requires, and it is now the
+   * **only** way a route here reaches a record by identifier. There used to be a
+   * second helper that read the row first and compared the project afterwards,
+   * and it had two defects that a second helper will always eventually have:
+   *
+   *   * it answered `PROJECT_CONTEXT_MISMATCH` for a foreign identifier where an
+   *     unknown one got `RESOURCE_NOT_FOUND`, which is an existence oracle for
+   *     another tenant's identifiers (RVP-67); and
+   *   * it built the scope from **the row's own** `organisation_id` rather than
+   *     the caller's, so the organisation term was present and vacuous. Every
+   *     real sign-in issues an organisation-wide session (`projectIds: null`),
+   *     for which the project check also passes unconditionally — so a signed-in
+   *     user of one organisation could read *and write* another's reviews,
+   *     findings and annotations. That was proved live against two
+   *     organisations (RVP-66 criterion 4).
+   *
+   * The organisation comes from the authenticated principal and never from the
+   * record. A null organisation means the ADR-0016 bootstrap administrator,
+   * which is deployment-wide by construction; every account session carries a
+   * real one. A row that fails any part of the predicate is simply not returned,
+   * so foreign and unknown produce the same refusal byte for byte.
    *
    * The CSRF guard runs before the lookup and before any body is decoded, so a
    * forged request is refused without touching the record it named.
@@ -321,13 +302,13 @@ export async function registerReviewRoutes(
 
   app.get("/api/v1/reviews/:reviewId", async (request, reply) => {
     const { reviewId } = request.params as { reviewId: string };
-    const { scope } = await scopeForRecord(request, "reviews", reviewId, "read");
+    const { scope } = await scopedRecord(request, "reviews", reviewId, "read");
     return send(reply, request, await reviews.getReview(scope, reviewId));
   });
 
   app.patch("/api/v1/reviews/:reviewId", async (request, reply) => {
     const { reviewId } = request.params as { reviewId: string };
-    const { scope, actor } = await scopeForRecord(request, "reviews", reviewId, "write");
+    const { scope, actor } = await scopedRecord(request, "reviews", reviewId, "write");
     const body = decode<ReviewUpdateRequest>(
       validateReviewUpdateRequest,
       request.body,
@@ -500,7 +481,7 @@ export async function registerReviewRoutes(
 
   app.post("/api/v1/reviews/:reviewId/findings", async (request, reply) => {
     const { reviewId } = request.params as { reviewId: string };
-    const { scope, actor } = await scopeForRecord(request, "reviews", reviewId, "write");
+    const { scope, actor } = await scopedRecord(request, "reviews", reviewId, "write");
     const body = decode<FindingCreateRequest>(
       validateFindingCreateRequest,
       request.body,
@@ -540,19 +521,19 @@ export async function registerReviewRoutes(
 
   app.get("/api/v1/reviews/:reviewId/findings", async (request, reply) => {
     const { reviewId } = request.params as { reviewId: string };
-    const { scope } = await scopeForRecord(request, "reviews", reviewId, "read");
+    const { scope } = await scopedRecord(request, "reviews", reviewId, "read");
     return send(reply, request, await reviews.listFindings(scope, reviewId));
   });
 
   app.get("/api/v1/findings/:findingId", async (request, reply) => {
     const { findingId } = request.params as { findingId: string };
-    const { scope } = await scopeForRecord(request, "findings", findingId, "read");
+    const { scope } = await scopedRecord(request, "findings", findingId, "read");
     return send(reply, request, await reviews.getFinding(scope, findingId));
   });
 
   app.patch("/api/v1/findings/:findingId", async (request, reply) => {
     const { findingId } = request.params as { findingId: string };
-    const { scope, actor } = await scopeForRecord(request, "findings", findingId, "write");
+    const { scope, actor } = await scopedRecord(request, "findings", findingId, "write");
     const body = decode<FindingUpdateRequest>(
       validateFindingUpdateRequest,
       request.body,
@@ -710,7 +691,7 @@ export async function registerReviewRoutes(
 
   app.post("/api/v1/findings/:findingId/annotations", async (request, reply) => {
     const { findingId } = request.params as { findingId: string };
-    const { scope, actor } = await scopeForRecord(request, "findings", findingId, "write");
+    const { scope, actor } = await scopedRecord(request, "findings", findingId, "write");
     const body = decode<AnnotationCreateRequest>(
       validateAnnotationCreateRequest,
       request.body,
@@ -727,7 +708,7 @@ export async function registerReviewRoutes(
 
   app.get("/api/v1/findings/:findingId/annotations", async (request, reply) => {
     const { findingId } = request.params as { findingId: string };
-    const { scope } = await scopeForRecord(request, "findings", findingId, "read");
+    const { scope } = await scopedRecord(request, "findings", findingId, "read");
     const query = request.query as { revisions?: string };
     const list =
       query.revisions === "all"

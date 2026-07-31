@@ -14,6 +14,8 @@ import { ApiError } from "../src/errors.ts";
 import {
   AGENT_REVIEW_STATUSES,
   AGENT_TRANSITION_LABELS,
+  assertActorMayCloseReview,
+  assertActorMayDispose,
   assertActorMayMoveFinding,
   assertActorMayMoveReview,
   assertCompletionEvidence,
@@ -356,6 +358,44 @@ test("a finding's source is derived from the actor and cannot be chosen", () => 
   assert.equal(sourceForActor("browser_worker"), "human");
   assert.equal(sourceForActor("connector"), "human");
   assert.equal(sourceForActor("integration"), "human");
+});
+
+test("a final disposition is refused for an agent from every status, legal or not", () => {
+  // The rule is about the decision, not about the move, so it does not consult
+  // the lifecycle (docs/API.md section 13). Checking legality first would make
+  // an agent asking to resolve a finding it had claimed hear that the move was
+  // impossible rather than that the decision was not its to make — and would
+  // record the attempt under the wrong class, which is how 21 of 33 refusals
+  // came to leave no trail at all.
+  for (const to of ["RESOLVED", "WONT_FIX", "DUPLICATE"] as const) {
+    for (const source of ["human", "agent"] as const) {
+      const denial = refusal(() => {
+        assertActorMayDispose("agent_session", source, to);
+      });
+      assert.equal(
+        denial.code,
+        "AUTHORISATION_DENIED",
+        `an agent disposed of a ${source}-authored finding as ${to}`,
+      );
+    }
+  }
+  // A human may, and a transition that is not a disposition is not this guard's
+  // business — it belongs to the lifecycle check that follows.
+  assertActorMayDispose("human_user", "human", "RESOLVED");
+  assertActorMayDispose("agent_session", "human", "IN_PROGRESS");
+  assertActorMayDispose("agent_session", "agent", "FIXED_UNVERIFIED");
+});
+
+test("closing a review is refused for an agent whatever status it starts from", () => {
+  for (const to of ["ACCEPTED", "CANCELLED", "ARCHIVED"] as const) {
+    const denial = refusal(() => {
+      assertActorMayCloseReview("agent_session", to);
+    });
+    assert.equal(denial.code, "AUTHORISATION_DENIED", `an agent moved a review to ${to}`);
+  }
+  assertActorMayCloseReview("human_user", "ACCEPTED");
+  assertActorMayCloseReview("agent_session", "IN_PROGRESS");
+  assertActorMayCloseReview("agent_session", "AWAITING_HUMAN_REVIEW");
 });
 
 test("a finding claim is an ordinary optimistic-concurrency write", () => {

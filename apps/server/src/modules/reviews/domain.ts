@@ -163,6 +163,73 @@ export function assertActorMayMoveReview(
   );
 }
 
+/**
+ * A final disposition is a human decision, from **any** status
+ * (`docs/DOMAIN_MODEL.md` section 15, `docs/API.md` section 13).
+ *
+ * This runs before the legality check, and that order is the rule rather than
+ * an optimisation. The documents say a final disposition requested by an agent
+ * is `AUTHORISATION_DENIED` unconditionally; checking legality first would make
+ * the answer depend on where the finding happened to be, so an agent asking to
+ * resolve a finding it had actually claimed — from `CLAIMED`, `IN_PROGRESS` or
+ * `FIXED_UNVERIFIED` — would be told the *move* was impossible rather than that
+ * the *decision* was not its to make. The second answer is the true one, and it
+ * is the one an auditor asking "did an agent try to accept this?" needs.
+ *
+ * It applies to an agent's own finding too. Section 15 permits auto-resolution
+ * "by policy if configured", and Stage 1 configures none.
+ */
+export function assertActorMayDispose(
+  actorType: ActorType,
+  source: FindingSource,
+  to: FindingStatus,
+): void {
+  if (!isFinalDisposition(to)) return;
+  if (isHumanActor(actorType)) return;
+  if (actorType === "agent_session" && source === "human") {
+    throw new ApiError(
+      "AUTHORISATION_DENIED",
+      `A human-authored finding cannot be set to ${to} by an agent. Submit verification and mark it AWAITING_HUMAN_REVIEW instead.`,
+      { field: "status" },
+    );
+  }
+  throw new ApiError(
+    "AUTHORISATION_DENIED",
+    `A finding cannot be set to ${to} by a ${actorType} principal. A final disposition is a human decision, and no project policy permits otherwise.`,
+    { field: "status" },
+  );
+}
+
+/**
+ * Closing a review is a human decision, from any status
+ * (`docs/API.md` section 12: "Only a `human_user` actor may move a review to
+ * `ACCEPTED`, `CANCELLED` or `ARCHIVED`").
+ *
+ * The same reasoning as {@link assertActorMayDispose}, and it runs in the same
+ * place: an agent asking to accept a review from a status the lifecycle would
+ * not allow anyway should still be told it may not accept reviews, because that
+ * is the fact worth auditing.
+ */
+export function assertActorMayCloseReview(actorType: ActorType, to: ReviewStatus): void {
+  if (!CLOSING_REVIEW_STATUSES.includes(to)) return;
+  if (isHumanActor(actorType)) return;
+  if (to === "ACCEPTED") {
+    throw new ApiError(
+      "AUTHORISATION_DENIED",
+      "Only a human may accept a review. An agent submits work for review and a human decides.",
+      { field: "status" },
+    );
+  }
+  throw new ApiError(
+    "AUTHORISATION_DENIED",
+    `A ${actorType} principal may not move a review to ${to}. Withdrawing or archiving a review disposes of the feedback it carries, which is a human decision.`,
+    { field: "status" },
+  );
+}
+
+/** The review statuses that close a review to further work. */
+const CLOSING_REVIEW_STATUSES: readonly ReviewStatus[] = ["ACCEPTED", "CANCELLED", "ARCHIVED"];
+
 export function assertFindingTransition(from: FindingStatus, to: FindingStatus): void {
   if (from === to) return;
   if (!isFindingTransitionLegal(from, to)) {

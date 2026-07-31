@@ -800,22 +800,36 @@ actor and is immutable thereafter (`docs/DOMAIN_MODEL.md` section 15); a body
 that supplies one is refused as an unknown property by the generated validator,
 before any handler runs.
 
-Status transitions are checked in this order: version, transition legality,
-actor authority, completion evidence.
+Status transitions are checked in this order: version, **disposition
+authority**, transition legality, remaining actor authority, completion
+evidence.
+
+Disposition authority comes before legality deliberately. An earlier draft of
+this section put legality first, which contradicted the rule in the next
+paragraph: a final disposition would then be `AUTHORISATION_DENIED` only from a
+status the lifecycle already allowed it from, and `POLICY_DENIED` everywhere
+else. That made the answer depend on where the finding happened to be — so an
+agent asking to resolve a finding it had actually claimed was told the *move*
+was impossible rather than that the *decision* was not its to make, and the
+attempt was recorded under the wrong class. The rule is unconditional, so the
+check that enforces it runs unconditionally.
 
 - A finding cannot be set to `RESOLVED`, `WONT_FIX` or `DUPLICATE` by an agent —
-  `AUTHORISATION_DENIED`, whoever authored the finding. For a human-authored
-  finding that is the authority rule of `docs/DOMAIN_MODEL.md` section 15; for an
-  agent's own it is the absence of any Stage 1 policy that would permit
-  auto-resolution.
+  `AUTHORISATION_DENIED`, whoever authored the finding and **from any status**.
+  For a human-authored finding that is the authority rule of
+  `docs/DOMAIN_MODEL.md` section 15; for an agent's own it is the absence of any
+  Stage 1 policy that would permit auto-resolution.
 - Any other transition an agent requests outside the `docs/MCP_SPEC.md` section
   7.7 list is refused with `POLICY_DENIED` and `details.allowed_transitions`, so
   the refusal says what is possible from here rather than only what is not.
 - A move to `FIXED_UNVERIFIED` without a resolution note is refused with
   `EVIDENCE_REQUIRED`.
 
-Both refusals are audited as `finding.status_change_denied`, written outside the
-transaction the refusal rolled back. These are domain rules, enforced below the
+**Every** refusal of a requested transition is audited as
+`finding.status_change_denied`, written outside the transaction the refusal
+rolled back — not only the authority ones. A refused transition is an attempt
+whichever check refused it, and the event carries the stable code so its class is
+readable without one event type per class. These are domain rules, enforced below the
 transport, so they hold for the MCP surface as well as for this one — and an
 agent credential presented to these routes is additionally refused at the
 transport with `AUTHORISATION_DENIED`, by token shape, because the review API is

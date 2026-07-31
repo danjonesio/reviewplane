@@ -250,7 +250,10 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
 
   const store = options.artefactStore ?? new FilesystemArtefactStore(config.artefactPath);
   const artefacts = new ArtefactService(pool, store, config.artefactMaxBytes);
-  const reviews = new ReviewService(pool, artefacts);
+  // The logger is what makes a lost audit write visible. A denied transition is
+  // recorded outside the transaction that refused it, so a database failure at
+  // that moment loses the record silently unless somebody is told.
+  const reviews = new ReviewService(pool, artefacts, app.log);
   const workers = new WorkerRegistry(pool, config.workerCredential);
   const workerClient = new BrowserWorkerClient({
     endpoint: config.workerEndpoint,

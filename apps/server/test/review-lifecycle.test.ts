@@ -22,6 +22,7 @@ import { after, before, beforeEach, test } from "node:test";
 import { decodeReviewEvent } from "@reviewplane/protocol/review";
 
 import { main } from "../src/cli.ts";
+import { ReviewService } from "../src/modules/reviews/service.ts";
 
 import {
   BOOTSTRAP_TOKEN,
@@ -30,6 +31,7 @@ import {
   startHarness,
   type Harness,
 } from "./support/worker-harness.ts";
+import { seedAccount } from "./support/identity.ts";
 import { encodePng, sha256 } from "./support/png.ts";
 import { startMigratedDatabase, truncateAll, type MigratedDatabase } from "./support/postgres.ts";
 
@@ -793,6 +795,181 @@ test("an agent actor is refused in the domain layer and the attempt is audited",
   assert.equal(reviewDenials[0]?.payload["requested"], "ACCEPTED");
 });
 
+test("an agent asking to resolve a finding it has claimed is denied and audited from every status", async () => {
+  // The RVP-37 review found that the denial was captured *after* the legality
+  // check, so only a request from AWAITING_HUMAN_REVIEW left a trail — and the
+  // test above sat precisely over that one working case. These are the statuses
+  // an agent actually holds a finding in, which is where the attempt matters
+  // most, and each must be both refused as an authority failure and recorded.
+  const fixture = await seedFixture();
+  const review = await createReview(fixture);
+  const scope = scopeOf(fixture);
+  const reviews = harness.built.reviews;
+  const agent = { type: "agent_session" as const, id: "ags_claude", display: "Claude Code" };
+
+  for (const from of ["CLAIMED", "IN_PROGRESS", "FIXED_UNVERIFIED"] as const) {
+    const finding = await createFinding(fixture, review.id, { title: `Finding at ${from}` });
+    // Walk it there through transitions the agent is genuinely allowed.
+    let version = finding.version;
+    await reviews.claimFinding(scope, finding.id, version, agent);
+    version += 1;
+    if (from !== "CLAIMED") {
+      await reviews.updateFinding(
+        scope,
+        finding.id,
+        { expectedVersion: version, status: "IN_PROGRESS" },
+        agent,
+      );
+      version += 1;
+    }
+    if (from === "FIXED_UNVERIFIED") {
+      await reviews.updateFinding(
+        scope,
+        finding.id,
+        { expectedVersion: version, status: "FIXED_UNVERIFIED", resolutionNote: "Fixed." },
+        agent,
+      );
+      version += 1;
+    }
+    assert.equal((await reviews.getFinding(scope, finding.id)).status, from);
+
+    const denial = await reviews
+      .updateFinding(scope, finding.id, { expectedVersion: version, status: "RESOLVED" }, agent)
+      .then(() => null)
+      .catch((error: unknown) => error as { code: string });
+    // The decision is not the agent's to make, whatever the lifecycle would
+    // otherwise say about the move: OPEN/CLAIMED/IN_PROGRESS -> RESOLVED is not
+    // even a legal transition, and the answer is still about authority.
+    assert.equal(denial?.code, "AUTHORISATION_DENIED", `from ${from}`);
+
+    const audited = (await eventsOfType(fixture.projectId, "finding.status_change_denied")).filter(
+      (event) => event.payload["finding_id"] === finding.id,
+    );
+    assert.equal(audited.length, 1, `no audit event for a refusal from ${from}`);
+    assert.equal(audited[0]?.payload["from"], from);
+    assert.equal(audited[0]?.payload["requested"], "RESOLVED");
+    assert.equal(audited[0]?.payload["code"], "AUTHORISATION_DENIED");
+    assert.equal(audited[0]?.actor_type, "agent_session");
+    process.stdout.write(
+      `EVIDENCE denial audited from ${from}: code=${String(audited[0]?.payload["code"])}\n`,
+    );
+
+    assert.equal((await reviews.getFinding(scope, finding.id)).status, from);
+  }
+});
+
+test("a refusal raised by the legality check is audited too", async () => {
+  // The other refusal class. It is not an authority failure — nobody may make
+  // this move — but it is still an attempt, and an audit trail that recorded
+  // only the authority ones would answer "did anything try?" with silence.
+  const fixture = await seedFixture();
+  const review = await createReview(fixture);
+  const finding = await createFinding(fixture, review.id);
+  const scope = scopeOf(fixture);
+  const reviews = harness.built.reviews;
+
+  const denial = await reviews
+    .updateFinding(
+      scope,
+      finding.id,
+      { expectedVersion: finding.version, status: "AWAITING_HUMAN_REVIEW" },
+      HUMAN,
+    )
+    .then(() => null)
+    .catch((error: unknown) => error as { code: string });
+  assert.equal(denial?.code, "POLICY_DENIED");
+
+  const audited = await eventsOfType(fixture.projectId, "finding.status_change_denied");
+  assert.equal(audited.length, 1);
+  assert.equal(audited[0]?.payload["code"], "POLICY_DENIED");
+  assert.equal(audited[0]?.payload["from"], "OPEN");
+  assert.equal(audited[0]?.actor_type, "human_user");
+});
+
+test("an agent accepting a review is denied and audited from a status the lifecycle would refuse", async () => {
+  const fixture = await seedFixture();
+  const review = await createReview(fixture);
+  const scope = scopeOf(fixture);
+  const reviews = harness.built.reviews;
+  const agent = { type: "agent_session" as const, id: "ags_claude" };
+
+  await reviews.updateReview(scope, review.id, { expectedVersion: 1, status: "READY" }, HUMAN);
+  await reviews.updateReview(scope, review.id, { expectedVersion: 2, status: "ASSIGNED" }, HUMAN);
+  await reviews.updateReview(scope, review.id, { expectedVersion: 3, status: "IN_PROGRESS" }, HUMAN);
+
+  // IN_PROGRESS -> ACCEPTED is not a legal transition for anybody, and it is
+  // still an agent trying to accept a review.
+  const denial = await reviews
+    .acceptReview(scope, review.id, { expectedVersion: 4 }, agent)
+    .then(() => null)
+    .catch((error: unknown) => error as { code: string });
+  assert.equal(denial?.code, "AUTHORISATION_DENIED");
+
+  const audited = await eventsOfType(fixture.projectId, "review.status_change_denied");
+  assert.equal(audited.length, 1, "an agent's accept from IN_PROGRESS left no trail");
+  assert.equal(audited[0]?.payload["from"], "IN_PROGRESS");
+  assert.equal(audited[0]?.payload["requested"], "ACCEPTED");
+  assert.equal(audited[0]?.payload["code"], "AUTHORISATION_DENIED");
+});
+
+test("an audit write that fails is reported rather than discarded", async () => {
+  // The denial is recorded outside the transaction that refused it, so a
+  // database failure at that moment loses the record. The refusal must still
+  // stand — but the loss must not be silent, or an operator asking whether an
+  // agent tried to accept a finding reads an empty result and concludes that
+  // nothing happened.
+  const fixture = await seedFixture();
+  const review = await createReview(fixture);
+  const finding = await createFinding(fixture, review.id);
+  const scope = scopeOf(fixture);
+
+  const logged: { fields: Record<string, unknown>; message: string }[] = [];
+  let connects = 0;
+  // Only `connect` is substituted, and only its promise form: `updateFinding`
+  // opens one transaction for the refused write and `#recordDenial` opens a
+  // second for the audit record, so failing the second is exactly the injury
+  // being tested. Everything else delegates to the real pool.
+  const failingPool = Object.create(postgres.pool) as typeof postgres.pool;
+  failingPool.connect = (async () => {
+    connects += 1;
+    if (connects === 2) throw new Error("connection pool exhausted");
+    return postgres.pool.connect();
+  }) as typeof postgres.pool.connect;
+
+  const service = new ReviewService(failingPool, harness.built.artefacts, {
+    error: (fields, message) => logged.push({ fields, message }),
+  });
+
+  const denial = await service
+    .updateFinding(
+      scope,
+      finding.id,
+      { expectedVersion: finding.version, status: "RESOLVED" },
+      { type: "agent_session", id: "ags_claude" },
+    )
+    .then(() => null)
+    .catch((error: unknown) => error as { code: string });
+
+  // The refusal is unaffected: losing the audit line never admits the request.
+  assert.equal(denial?.code, "AUTHORISATION_DENIED");
+  assert.equal(connects, 2, "the audit write did not attempt its own transaction");
+  // Read back through the unmodified service, so the assertion is about the
+  // database rather than about the substitute.
+  assert.equal((await harness.built.reviews.getFinding(scope, finding.id)).status, "OPEN");
+  // No event was written, which is the failure being simulated...
+  assert.equal((await eventsOfType(fixture.projectId, "finding.status_change_denied")).length, 0);
+  // ...and it is visible.
+  assert.equal(logged.length, 1, "a lost audit write was discarded silently");
+  assert.match(String(logged[0]?.message), /audit record .* could not be written/u);
+  assert.equal(logged[0]?.fields["event_type"], "finding.status_change_denied");
+  assert.equal(logged[0]?.fields["actor_type"], "agent_session");
+  assert.equal(logged[0]?.fields["requested"], "RESOLVED");
+  assert.equal(logged[0]?.fields["refusal_code"], "AUTHORISATION_DENIED");
+  process.stdout.write(
+    `EVIDENCE lost audit write logged: ${String(logged[0]?.message)} requested=${String(logged[0]?.fields["requested"])}\n`,
+  );
+});
+
 test("a client-supplied source is refused rather than honoured", async () => {
   const fixture = await seedFixture();
   const review = await createReview(fixture);
@@ -904,6 +1081,121 @@ test("a foreign review is not found, by identifier and by slug, exactly as an un
     headers,
   });
   assert.equal(bySlug.statusCode, 404, bySlug.body);
+});
+
+test("a signed-in user of one organisation can neither read nor write another's review", async () => {
+  // The breach this closes was live and proved against two organisations:
+  //   GET   /api/v1/reviews/<B's review>  -> 200, description disclosed
+  //   PATCH /api/v1/reviews/<B's review>  -> 200, version 1 -> 2, title changed
+  // The route built its scope from the *record's* organisation_id rather than
+  // the caller's, and every real sign-in issues an organisation-wide session
+  // (`projectIds: null`) for which the project check passes unconditionally —
+  // so the organisation term was present and vacuous (RVP-66 criterion 4).
+  const theirs = await seedFixture();
+  const review = await createReview(theirs, { description: "SECRET" });
+  const finding = await createFinding(theirs, review.id);
+
+  // A second organisation with its own signed-in account, exactly as a real
+  // deployment holding two organisation rows would have (RVP-63).
+  const mine = await seedAccount(postgres.pool, {
+    email: "outsider@localhost",
+    slug: `org-outsider-${review.id.slice(4, 12)}`,
+  });
+  const session = await harness.built.viewers.issue({
+    organisationId: mine.organisationId,
+    // Organisation-wide, which is what both real sign-in paths issue.
+    projectIds: null,
+    display: "outsider",
+    userId: mine.userId,
+    withCsrfToken: true,
+  });
+  const read = { cookie: `reviewplane_viewer=${session.token}` };
+  const write = { ...read, "x-csrf-token": session.csrfToken ?? "" };
+
+  const app = harness.built.app;
+  const unknownReview = `rev_${"0".repeat(20)}`;
+  const unknownFinding = `fin_${"0".repeat(20)}`;
+  const withoutRequestId = (body: string): string => body.replace(/req_[a-z0-9]+/gu, "req_x");
+
+  const probes: readonly [string, string, string, Record<string, unknown> | undefined][] = [
+    ["GET", `/api/v1/reviews/${review.id}`, `/api/v1/reviews/${unknownReview}`, undefined],
+    [
+      "GET",
+      `/api/v1/reviews/${review.id}/findings`,
+      `/api/v1/reviews/${unknownReview}/findings`,
+      undefined,
+    ],
+    ["GET", `/api/v1/findings/${finding.id}`, `/api/v1/findings/${unknownFinding}`, undefined],
+    [
+      "GET",
+      `/api/v1/findings/${finding.id}/annotations`,
+      `/api/v1/findings/${unknownFinding}/annotations`,
+      undefined,
+    ],
+    [
+      "PATCH",
+      `/api/v1/reviews/${review.id}`,
+      `/api/v1/reviews/${unknownReview}`,
+      { expected_version: 1, title: "Owned" },
+    ],
+    [
+      "PATCH",
+      `/api/v1/findings/${finding.id}`,
+      `/api/v1/findings/${unknownFinding}`,
+      { expected_version: 1, title: "Owned" },
+    ],
+    [
+      "POST",
+      `/api/v1/reviews/${review.id}/accept`,
+      `/api/v1/reviews/${unknownReview}/accept`,
+      { expected_version: 1 },
+    ],
+  ];
+
+  for (const [method, foreignUrl, unknownUrl, payload] of probes) {
+    const headers = payload === undefined ? read : write;
+    const foreign = await app.inject({
+      method: method as "GET",
+      url: foreignUrl,
+      headers,
+      ...(payload === undefined ? {} : { payload }),
+    });
+    const unknown = await app.inject({
+      method: method as "GET",
+      url: unknownUrl,
+      headers,
+      ...(payload === undefined ? {} : { payload }),
+    });
+    assert.equal(foreign.statusCode, 404, `${method} ${foreignUrl}: ${foreign.body}`);
+    // Byte-identical to an unknown identifier, or the pair says the record is
+    // real and simply belongs to somebody else.
+    assert.equal(
+      withoutRequestId(foreign.body),
+      withoutRequestId(unknown.body),
+      `${method} ${foreignUrl} is distinguishable from an unknown identifier`,
+    );
+  }
+
+  // The project routes are closed to the outsider too, and by the same code.
+  const listed = await app.inject({
+    method: "GET",
+    url: `/api/v1/projects/${theirs.projectId}/reviews`,
+    headers: read,
+  });
+  assert.equal(listed.statusCode, 404, listed.body);
+
+  // Nothing was written. This is the half that matters most: the original
+  // report showed version 1 -> 2 and a changed title in the database.
+  const row = await postgres.pool.query<{ title: string; version: number; description: string }>(
+    "SELECT title, version, description FROM reviews WHERE id = $1",
+    [review.id],
+  );
+  assert.equal(row.rows[0]?.title, "Bugs on homepage");
+  assert.equal(Number(row.rows[0]?.version), 1);
+  assert.equal(row.rows[0]?.description, "SECRET");
+  process.stdout.write(
+    `EVIDENCE cross-organisation: GET/PATCH both 404 RESOURCE_NOT_FOUND, review still version ${String(row.rows[0]?.version)} titled "${String(row.rows[0]?.title)}"\n`,
+  );
 });
 
 test("every new state-changing review route requires the CSRF token", async () => {

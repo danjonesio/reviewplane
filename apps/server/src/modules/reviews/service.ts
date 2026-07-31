@@ -36,6 +36,7 @@ import {
   type VerificationReference,
   type Viewport,
   isFinalDisposition,
+  mayActorMoveFinding,
 } from "@reviewplane/protocol/review";
 
 import { inTransaction } from "../../db/pool.ts";
@@ -55,6 +56,8 @@ import {
   assertGeometry,
   assertReviewAcceptable,
   assertReviewMutable,
+  assertActorMayCloseReview,
+  assertActorMayDispose,
   assertReviewTransition,
   assertVerificationCommitContext,
 } from "./domain.ts";
@@ -414,13 +417,25 @@ export function sourceForActor(actorType: EventActor["type"]): FindingSource {
   return actorType === "agent_session" ? "agent" : "human";
 }
 
+/**
+ * Somewhere to report an audit write this service could not complete.
+ *
+ * It is the minimum surface Fastify's logger already satisfies, so the server
+ * passes `app.log` and nothing has to learn a second logging interface.
+ */
+export interface ReviewServiceLogger {
+  error(fields: Record<string, unknown>, message: string): void;
+}
+
 export class ReviewService {
   readonly #pool: Pool;
   readonly #artefacts: ArtefactService;
+  readonly #logger: ReviewServiceLogger | undefined;
 
-  constructor(pool: Pool, artefacts: ArtefactService) {
+  constructor(pool: Pool, artefacts: ArtefactService, logger?: ReviewServiceLogger) {
     this.#pool = pool;
     this.#artefacts = artefacts;
+    this.#logger = logger;
   }
 
   // -----------------------------------------------------------------------
@@ -605,11 +620,11 @@ export class ReviewService {
         const nextStatus = input.status ?? current.status;
         const changing = nextStatus !== current.status;
         if (changing) {
-          assertReviewTransition(current.status, nextStatus);
-          // The denial is remembered before it is raised, because a rolled-back
-          // transaction records nothing and the refusal is exactly the fact an
-          // auditor needs (`AGENTS.md`: an agent may not finally accept a
-          // human's finding, and the attempt must leave a trail).
+          // Remembered before any check is raised, for the reason
+          // `updateFinding` states: a rolled-back transaction records nothing,
+          // and a refusal captured only after the legality check leaves the
+          // majority of refusals — `IN_PROGRESS -> ACCEPTED` by an agent among
+          // them — with no trail at all.
           denied = {
             type: "review.status_change_denied",
             correlation: { review_id: reviewId },
@@ -619,6 +634,10 @@ export class ReviewService {
               requested: nextStatus,
             },
           };
+          // Closing a review is a human decision from any status, so it is
+          // refused before the lifecycle is consulted (`docs/API.md` section 12).
+          assertActorMayCloseReview(actor.type, nextStatus);
+          assertReviewTransition(current.status, nextStatus);
           assertActorMayMoveReview(actor.type, current.status, nextStatus);
           denied = null;
         }
@@ -1110,10 +1129,14 @@ export class ReviewService {
       assertExpectedVersion(current.version, input.expectedVersion, "finding");
       const nextStatus = input.status ?? current.status;
       if (nextStatus !== current.status) {
-        assertFindingTransition(current.status, nextStatus);
-        // Remembered before it is raised: the transaction that would have
-        // carried the event is about to roll back, and the Stage 1 exit
-        // criterion is that a refused agent acceptance is audited.
+        // Remembered before **any** check is raised, because every refusal of a
+        // requested transition is a fact worth auditing and the transaction
+        // that would have carried the event is about to roll back. Capturing it
+        // after the legality check — as this did until the RVP-37 review — left
+        // the majority of refusals unrecorded, including the one that matters
+        // most: an agent that had actually claimed the work asking to resolve
+        // it. The payload carries the refusal's own code, so it says which
+        // class of refusal it was rather than needing one flag per class.
         denied = {
           type: "finding.status_change_denied",
           correlation: { review_id: current.review_id, finding_id: findingId },
@@ -1125,6 +1148,14 @@ export class ReviewService {
             source: current.source,
           },
         };
+        // The order is the rule (`docs/API.md` section 13). A final disposition
+        // is a human decision from any status, so it is refused before the
+        // lifecycle is consulted: otherwise the answer would depend on where the
+        // finding happened to be, and an agent asking to resolve a finding it
+        // had claimed would be told the move was impossible rather than that the
+        // decision was not its to make.
+        assertActorMayDispose(actor.type, current.source, nextStatus);
+        assertFindingTransition(current.status, nextStatus);
         assertActorMayMoveFinding(actor.type, current.source, current.status, nextStatus);
         denied = null;
         assertCompletionEvidence(nextStatus, {
@@ -1382,7 +1413,15 @@ export class ReviewService {
       assertExpectedVersion(current.version, expectedVersion, "review");
       assertReviewMutable(current.status, { fields: ["claimed_by"] });
       const nextStatus = current.status === "READY" ? "ASSIGNED" : current.status;
-      if (nextStatus !== current.status) assertReviewTransition(current.status, nextStatus);
+      if (nextStatus !== current.status) {
+        assertReviewTransition(current.status, nextStatus);
+        // Authority as well as legality. A claim moves the review, and a move
+        // an actor may not make is not made lawful by the route it arrived on
+        // (ADR-0024). It is permitted today only because `READY -> ASSIGNED`
+        // names `agent_session` in the table, which is exactly the fact this
+        // call checks rather than assumes.
+        assertActorMayMoveReview(actor.type, current.status, nextStatus);
+      }
 
       const updated = await client.query(
         `UPDATE reviews
@@ -1794,18 +1833,28 @@ export class ReviewService {
         position += 1;
       }
 
+      // Where the submission may advance the finding, derived from the
+      // transition table rather than restated (ADR-0024). Writing
+      // `CASE WHEN status = 'IN_PROGRESS' THEN 'FIXED_UNVERIFIED'` in SQL, as
+      // this did until the RVP-37 review, is a second copy of a rule the
+      // protocol already holds — and a copy in a dialect nothing typechecks.
+      const advances =
+        mayActorMoveFinding(actor.type, finding.status, "FIXED_UNVERIFIED") &&
+        !isFinalDisposition(finding.status);
+      const advanced: FindingStatus = advances ? "FIXED_UNVERIFIED" : finding.status;
+
       // The summary is the resolution note. Recording it on the finding is what
       // lets assertCompletionEvidence pass for FIXED_UNVERIFIED without the
       // agent having to say the same thing twice.
       const updated = await client.query(
         `UPDATE findings
             SET resolution_note = $4,
-                status = CASE WHEN status = 'IN_PROGRESS' THEN 'FIXED_UNVERIFIED' ELSE status END,
+                status = $5,
                 version = version + 1,
                 updated_at = now()
           WHERE id = $1 AND organisation_id = $2 AND project_id = $3
           RETURNING *`,
-        [findingId, scope.organisationId, scope.projectId, input.summary],
+        [findingId, scope.organisationId, scope.projectId, input.summary, advanced],
       );
       const moved = toFinding(updated.rows[0] as Record<string, unknown>);
       const verification = toVerification(
@@ -2196,10 +2245,14 @@ export class ReviewService {
    * afterwards is the only way it survives, and it is safe to write: nothing
    * about it depends on the state the refused write would have produced.
    *
-   * A failure to record the denial never masks the denial. The caller is
+   * A failure to record the denial never masks the denial: the caller is
    * refused either way, and turning "we could not write the audit line" into a
    * different refusal would tell an attacker something about the audit trail
-   * rather than about their request.
+   * rather than about their request. But it is **logged**, with enough context
+   * to reconstruct the attempt. A discarded failure would make a lost audit
+   * record invisible, which is the one outcome worse than a noisy one: an
+   * operator asking whether an agent tried to accept a finding would read an
+   * empty result and conclude that nothing happened.
    */
   async #recordDenial(
     scope: Scope,
@@ -2225,8 +2278,23 @@ export class ReviewService {
           },
         });
       });
-    } catch {
-      // Deliberately swallowed. See the note above.
+    } catch (failure) {
+      // The refusal still stands; what is lost is the record of it, and that
+      // loss is itself an operational fact. The fields are the attempt, not the
+      // request: no body, no credential (`docs/SECURITY.md` section 18).
+      this.#logger?.error(
+        {
+          event_type: denied.type,
+          organisation_id: scope.organisationId,
+          project_id: scope.projectId,
+          actor_type: actor.type,
+          actor_id: actor.id ?? null,
+          refusal_code: error.code,
+          ...denied.payload,
+          err: failure instanceof Error ? failure.message : String(failure),
+        },
+        "the audit record for a refused transition could not be written",
+      );
     }
   }
 
@@ -2439,27 +2507,27 @@ export class ReviewService {
       id: string;
       kind: string;
       state: string;
-      organisation_id: string;
-      project_id: string;
       browser_session_id: string | null;
       session_project_id: string | null;
     }>(
-      `SELECT a.id, a.kind, a.state, a.organisation_id, a.project_id, a.browser_session_id,
+      // The tenant terms are in the predicate rather than compared afterwards.
+      // Comparing after the read is the shape that produced a live
+      // cross-organisation breach on the review routes (RVP-66): it leaves a
+      // foreign row loaded and relies on every later branch remembering to
+      // reject it. Here a row from another project or organisation is simply
+      // not returned, so it cannot be reached by forgetting a comparison.
+      `SELECT a.id, a.kind, a.state, a.browser_session_id,
               b.project_id AS session_project_id
          FROM artefacts a
          LEFT JOIN browser_sessions b ON b.id = a.browser_session_id
-        WHERE a.id = ANY($1)`,
-      [unique],
+        WHERE a.id = ANY($1) AND a.project_id = $2 AND a.organisation_id = $3`,
+      [unique, scope.projectId, scope.organisationId],
     );
     const found = new Map(rows.rows.map((row) => [row.id, row]));
     const evidence: { id: string; kind: string }[] = [];
     for (const artefactId of unique) {
       const row = found.get(artefactId);
-      if (
-        row === undefined ||
-        row.project_id !== scope.projectId ||
-        row.organisation_id !== scope.organisationId
-      ) {
+      if (row === undefined) {
         throw notFound(`The evidence artefact ${artefactId}`);
       }
       if (row.browser_session_id !== null && row.session_project_id !== scope.projectId) {
