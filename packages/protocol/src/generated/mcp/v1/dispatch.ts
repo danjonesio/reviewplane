@@ -8,6 +8,8 @@
 
 import type { SchemaViolation } from "./types.ts";
 import type {
+  AgentInboxAcknowledgeResult,
+  AgentInboxListResult,
   AgentSessionStatusResult,
   BrowserTakeScreenshotResult,
   Envelope,
@@ -18,10 +20,15 @@ import type {
   McpFrame,
   MessageType,
   ProjectCurrentResult,
+  ReviewAddCommentResult,
   ReviewGetResult,
+  ReviewListResult,
   ReviewMutationResult,
+  ReviewSearchResult,
 } from "./types.ts";
 import {
+  decodeAgentInboxAcknowledgeResult,
+  decodeAgentInboxListResult,
   decodeAgentSessionStatusResult,
   decodeBrowserTakeScreenshotResult,
   decodeFindingAddCommentResult,
@@ -29,10 +36,15 @@ import {
   decodeFindingMutationResult,
   decodeFindingSubmitVerificationResult,
   decodeProjectCurrentResult,
+  decodeReviewAddCommentResult,
   decodeReviewGetResult,
+  decodeReviewListResult,
   decodeReviewMutationResult,
+  decodeReviewSearchResult,
 } from "./decode.ts";
 import {
+  encodeAgentInboxAcknowledgeResult,
+  encodeAgentInboxListResult,
   encodeAgentSessionStatusResult,
   encodeBrowserTakeScreenshotResult,
   encodeFindingAddCommentResult,
@@ -40,10 +52,15 @@ import {
   encodeFindingMutationResult,
   encodeFindingSubmitVerificationResult,
   encodeProjectCurrentResult,
+  encodeReviewAddCommentResult,
   encodeReviewGetResult,
+  encodeReviewListResult,
   encodeReviewMutationResult,
+  encodeReviewSearchResult,
 } from "./encode.ts";
 import {
+  validateAgentInboxAcknowledgeResult,
+  validateAgentInboxListResult,
   validateAgentSessionStatusResult,
   validateBrowserTakeScreenshotResult,
   validateFindingAddCommentResult,
@@ -51,8 +68,11 @@ import {
   validateFindingMutationResult,
   validateFindingSubmitVerificationResult,
   validateProjectCurrentResult,
+  validateReviewAddCommentResult,
   validateReviewGetResult,
+  validateReviewListResult,
   validateReviewMutationResult,
+  validateReviewSearchResult,
 } from "./validate.ts";
 
 /**
@@ -61,8 +81,13 @@ import {
 export type McpPayload =
   | ProjectCurrentResult
   | AgentSessionStatusResult
+  | AgentInboxListResult
+  | AgentInboxAcknowledgeResult
+  | ReviewListResult
+  | ReviewSearchResult
   | ReviewGetResult
   | ReviewMutationResult
+  | ReviewAddCommentResult
   | FindingGetResult
   | FindingMutationResult
   | FindingAddCommentResult
@@ -80,6 +105,18 @@ export function validatePayload(type: MessageType, value: unknown, path: string,
     case "agent_session_status":
       validateAgentSessionStatusResult(value, path, out);
       return;
+    case "agent_inbox_list":
+      validateAgentInboxListResult(value, path, out);
+      return;
+    case "agent_inbox_acknowledge":
+      validateAgentInboxAcknowledgeResult(value, path, out);
+      return;
+    case "review_list":
+      validateReviewListResult(value, path, out);
+      return;
+    case "review_search":
+      validateReviewSearchResult(value, path, out);
+      return;
     case "review_get":
       validateReviewGetResult(value, path, out);
       return;
@@ -89,6 +126,9 @@ export function validatePayload(type: MessageType, value: unknown, path: string,
     case "review_update_status":
       validateReviewMutationResult(value, path, out);
       return;
+    case "review_add_comment":
+      validateReviewAddCommentResult(value, path, out);
+      return;
     case "finding_get":
       validateFindingGetResult(value, path, out);
       return;
@@ -96,6 +136,9 @@ export function validatePayload(type: MessageType, value: unknown, path: string,
       validateFindingMutationResult(value, path, out);
       return;
     case "finding_update_status":
+      validateFindingMutationResult(value, path, out);
+      return;
+    case "finding_mark_blocked":
       validateFindingMutationResult(value, path, out);
       return;
     case "finding_add_comment":
@@ -119,18 +162,30 @@ export function decodeFrame(envelope: Envelope, value: unknown): McpFrame {
       return { envelope, type: "project_current", payload: decodeProjectCurrentResult(value) };
     case "agent_session_status":
       return { envelope, type: "agent_session_status", payload: decodeAgentSessionStatusResult(value) };
+    case "agent_inbox_list":
+      return { envelope, type: "agent_inbox_list", payload: decodeAgentInboxListResult(value) };
+    case "agent_inbox_acknowledge":
+      return { envelope, type: "agent_inbox_acknowledge", payload: decodeAgentInboxAcknowledgeResult(value) };
+    case "review_list":
+      return { envelope, type: "review_list", payload: decodeReviewListResult(value) };
+    case "review_search":
+      return { envelope, type: "review_search", payload: decodeReviewSearchResult(value) };
     case "review_get":
       return { envelope, type: "review_get", payload: decodeReviewGetResult(value) };
     case "review_claim":
       return { envelope, type: "review_claim", payload: decodeReviewMutationResult(value) };
     case "review_update_status":
       return { envelope, type: "review_update_status", payload: decodeReviewMutationResult(value) };
+    case "review_add_comment":
+      return { envelope, type: "review_add_comment", payload: decodeReviewAddCommentResult(value) };
     case "finding_get":
       return { envelope, type: "finding_get", payload: decodeFindingGetResult(value) };
     case "finding_claim":
       return { envelope, type: "finding_claim", payload: decodeFindingMutationResult(value) };
     case "finding_update_status":
       return { envelope, type: "finding_update_status", payload: decodeFindingMutationResult(value) };
+    case "finding_mark_blocked":
+      return { envelope, type: "finding_mark_blocked", payload: decodeFindingMutationResult(value) };
     case "finding_add_comment":
       return { envelope, type: "finding_add_comment", payload: decodeFindingAddCommentResult(value) };
     case "finding_submit_verification":
@@ -149,17 +204,29 @@ export function encodeFramePayload(frame: McpFrame): string {
       return encodeProjectCurrentResult(frame.payload);
     case "agent_session_status":
       return encodeAgentSessionStatusResult(frame.payload);
+    case "agent_inbox_list":
+      return encodeAgentInboxListResult(frame.payload);
+    case "agent_inbox_acknowledge":
+      return encodeAgentInboxAcknowledgeResult(frame.payload);
+    case "review_list":
+      return encodeReviewListResult(frame.payload);
+    case "review_search":
+      return encodeReviewSearchResult(frame.payload);
     case "review_get":
       return encodeReviewGetResult(frame.payload);
     case "review_claim":
       return encodeReviewMutationResult(frame.payload);
     case "review_update_status":
       return encodeReviewMutationResult(frame.payload);
+    case "review_add_comment":
+      return encodeReviewAddCommentResult(frame.payload);
     case "finding_get":
       return encodeFindingGetResult(frame.payload);
     case "finding_claim":
       return encodeFindingMutationResult(frame.payload);
     case "finding_update_status":
+      return encodeFindingMutationResult(frame.payload);
+    case "finding_mark_blocked":
       return encodeFindingMutationResult(frame.payload);
     case "finding_add_comment":
       return encodeFindingAddCommentResult(frame.payload);

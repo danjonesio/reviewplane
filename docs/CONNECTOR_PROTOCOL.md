@@ -184,6 +184,8 @@ The certificate binds the connector's locally generated public key to its connec
 
 Post-enrolment channels are the `control_url` and `data_url` of the registration response, by default `wss://<control-plane>/connector/v1/control` and `.../connector/v1/data`.
 
+One endpoint on that same listener is an ordinary HTTPS request rather than a channel: `POST /connector/v1/agent-credentials`, the local MCP bridge's credential exchange of §14 (ADR-0023). It is authenticated by the same verified client certificate the control channel is, and the bridge derives its URL from `control_url` so that the two cannot be pointed at different hosts. It is not a message type: the bridge is a separate, per-session process, and one connector holds one control channel.
+
 A verifier — the control plane on the control channel, the tunnel gateway on the data channel — MUST:
 
 1. require a client certificate whose chain verifies against the control-plane certificate authority;
@@ -669,17 +671,25 @@ Responsibilities:
 
 It must not grant the agent connector-administrator privileges.
 
-Stage 1 implements the first responsibility and refuses the rest. `reviewplane-connector mcp` resolves the workspace and project for the agent's working directory and prints what it resolved — connector identity, workspace, project and checkout — before refusing, so that an operator can tell "the bridge does not exist yet" from "the bridge cannot see my project", which are two quite different problems. The short-lived agent-session credential exchange and the MCP proxying are RVP-49, and until they land the command refuses rather than pretending.
+`reviewplane-connector mcp` implements all four.
 
-The resolution matches configured paths only. Nothing is discovered: a directory inside no configured workspace is reported as such rather than registered on the spot, because a publication names a workspace the operator authorised (§11). Where workspaces nest, the longest matching path wins, so an agent in a nested checkout resolves to the nearer one. A workspace may also be named explicitly with `--workspace`.
+**Resolve local workspace and project.** The resolution matches configured paths only. Nothing is discovered: a directory inside no configured workspace is reported as such rather than registered on the spot, because a publication names a workspace the operator authorised (§11). Where workspaces nest, the longest matching path wins, so an agent in a nested checkout resolves to the nearer one. A workspace may also be named explicitly with `--workspace`. `--describe` prints what was resolved — connector identity, workspace, project and checkout — and exits without proxying, which is the form an operator runs by hand.
 
-The connector advertises `local-mcp-bridge` in its capabilities because the command surface exists. A capability describes what a build implements; this one describes the command, not a credential path.
+**Request short-lived agent-session credentials.** The connector presents its device identity to `POST /connector/v1/agent-credentials` on the control plane's mutually authenticated listener and names the workspace by its path hash. The control plane resolves that workspace inside the connector's own environment and issues a credential bound to **that workspace's project and no other**, living one hour and carrying the workflow capabilities of `docs/MCP_SPEC.md` §14.1 (ADR-0023). A workspace belonging to another environment answers exactly as an unknown one does.
+
+**Proxy MCP traffic to the control plane.** The command reads newline-delimited JSON-RPC from stdin, forwards each message to `/mcp/v1` with the credential in an `Authorization` header, and writes each response back to stdout. The MCP session identifier the endpoint mints is captured and echoed, so the exchange is one session. **stdout carries JSON-RPC and nothing else**: everything an operator reads goes to stderr, because a diagnostic on stdout would corrupt the stream the client is parsing. A control plane that becomes unreachable mid-session is reported to the agent as a JSON-RPC error naming neither a host nor a credential, rather than by the pipe closing under it.
+
+**Avoid storing long-lived agent tokens.** The credential lives in the bridge process's memory and is written nowhere — not to the identity directory, not to a cache, not to a log line. A connector restart ends the bridge, and the next one requests a fresh credential; there is no stored token for it to replay.
+
+It cannot grant the agent connector-administrator privileges, because the agent capability vocabulary of `docs/SECURITY.md` §6.3 contains no administrative capability for one to be granted. The bridge holds no listening socket: it speaks over stdin and stdout, so no port is opened on the development machine.
+
+The connector advertises `local-mcp-bridge` in its capabilities.
 
 ## 15. Agent-session association
 
 Association methods, in priority order:
 
-1. Local MCP bridge creates the session
+1. Local MCP bridge creates the session (implemented: the bridge's credential is bound to one project, so the session it opens resolves that project unambiguously)
 2. Explicit CLI wrapper supplies process and workspace identity
 3. User selects an active session in the UI
 4. Heuristic process association, only as an optional degraded mode
@@ -701,6 +711,14 @@ Delivery may be through:
 - Optional terminal status file or shell hook
 
 The connector must not inject text into an active terminal or pseudo-terminal in the initial release.
+
+`reviewplane-connector mcp` emits it. The credential exchange of §14 answers with the project's pending agent work — the review's slug, its finding count and its priority, bounded at five with a count of the remainder — so the bridge learns what is waiting without a second round trip and without opening an MCP session first. Nothing carrying page-derived content reaches that shape: no finding text, no captured URL.
+
+Delivery is to the connector's log, which is journald under the shipped systemd unit, to the command's own **stderr**, and to the file named by `--status-file` when one is given. The status file is written 0600 and replaced atomically, because a shell prompt may read it at any moment and a half-written file is a prompt showing a truncated line.
+
+Nothing is written to a terminal the command does not own. Its stderr is its own; there is no `write(2)` to another process's pseudo-terminal and no shell injection, and the rendered line is stripped of control characters and of the product marker so that a value cannot forge a second line in an operator's log.
+
+A desktop notification is not implemented. A notification that could not be delivered is logged and does not stop the session: the work is still retrievable through `agent_inbox_list`.
 
 ## 17. Reconnection and reconciliation
 

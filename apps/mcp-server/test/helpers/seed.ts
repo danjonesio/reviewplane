@@ -258,6 +258,25 @@ export async function issueAgentCredential(
   return { token: data.token, credentialId: data.credential_id };
 }
 
+/**
+ * Assigns a review to an agent session, as a human would, which is what
+ * creates the inbox item (`docs/DOMAIN_MODEL.md` section 21).
+ */
+export async function assignReviewToAgent(
+  harness: McpHarness,
+  reviewId: string,
+  agentSessionId: string,
+  expectedVersion = 1,
+): Promise<{ status: number; body: unknown }> {
+  const response = await harness.control.app.inject({
+    method: "POST",
+    url: `/api/v1/reviews/${reviewId}/assign`,
+    headers: ADMIN,
+    payload: { expected_version: expectedVersion, assigned_agent_session_id: agentSessionId },
+  });
+  return { status: response.statusCode, body: response.json() };
+}
+
 /** Associates a browser session with an agent session, as a human would. */
 export async function startBrowserSessionForAgent(
   harness: McpHarness,

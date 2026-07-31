@@ -34,16 +34,22 @@ import {
   type TrustLabel,
 } from "@reviewplane/protocol/mcp";
 import {
+  validateAgentInboxAcknowledgeInput,
+  validateAgentInboxListInput,
   validateAgentSessionStatusInput,
   validateBrowserTakeScreenshotInput,
   validateFindingAddCommentInput,
   validateFindingClaimInput,
   validateFindingGetInput,
+  validateFindingMarkBlockedInput,
   validateFindingSubmitVerificationInput,
   validateFindingUpdateStatusInput,
   validateProjectCurrentInput,
+  validateReviewAddCommentInput,
   validateReviewClaimInput,
   validateReviewGetInput,
+  validateReviewListInput,
+  validateReviewSearchInput,
   validateReviewUpdateStatusInput,
 } from "@reviewplane/protocol/mcp";
 import {
@@ -51,6 +57,8 @@ import {
   agentActor,
   agentTransitionsFrom,
   requestDigest,
+  type InboxItemStatus,
+  type ReviewListFilter,
 } from "@reviewplane/server/domain";
 
 import { STAGE_0_POLICY, type McpConnection, type McpServices } from "./context.ts";
@@ -63,6 +71,7 @@ import {
   toArtefactLink,
   toCommentView,
   toFindingView,
+  toInboxItemView,
   toReviewView,
   toVerificationView,
   trustFor,
@@ -198,14 +207,14 @@ const TOOLS: readonly ToolDefinition[] = [
             )
             .slice(0, 16)
         : [];
-      context.warnings.add(
-        "inbox_unavailable",
-        "Stage 0 exposes no agent inbox, so there is no pending count to report.",
-        "Retrieve reviews by name with review_get.",
-      );
+      const pending = await services.inbox.pendingCount(connection.scope, {
+        type: "agent_session",
+        id: connection.session.id,
+      });
       return {
         trust: "trusted_control_plane",
         data: {
+          inbox_pending_count: pending,
           agent_session_id: connection.session.id,
           status: connection.session.status,
           client: { name: connection.client.name, version: connection.client.version },
@@ -250,6 +259,180 @@ const TOOLS: readonly ToolDefinition[] = [
                 })),
               }),
           expires_at: connection.credential.expiresAt.toISOString(),
+        },
+      };
+    },
+  },
+  {
+    name: "agent_inbox_list",
+    title: "List assigned work delivered to this agent session",
+    capability: "project:read",
+    // Retrieval is idempotent, so it is not state-changing and carries no key:
+    // reading an inbox twice reads the same inbox
+    // (`docs/DOMAIN_MODEL.md` section 21).
+    stateChanging: false,
+    validate: validateAgentInboxListInput,
+    async run(args, context) {
+      const { connection, services } = context;
+      const rawCursor = args["cursor"] as string | undefined;
+      const cursor = rawCursor === undefined ? null : decodeCursor(rawCursor);
+      if (rawCursor !== undefined && cursor === null) {
+        throw new ApiError("UNSUPPORTED_CAPABILITY", "cursor is not a cursor this server issued.", {
+          field: "cursor",
+        });
+      }
+      const page = await services.inbox.list(connection.scope, {
+        ...(args["status"] === undefined
+          ? {}
+          : { statuses: args["status"] as readonly InboxItemStatus[] }),
+        // The recipient is the session, taken from the authenticated
+        // connection. There is no argument that could name another recipient,
+        // so one agent session cannot read another's inbox.
+        recipient: { type: "agent_session", id: connection.session.id },
+        limit: (args["limit"] as number | undefined) ?? 20,
+        ...(cursor === null ? {} : { after: { sortKey: cursor.createdAt, id: cursor.id } }),
+      });
+      if (page.nextCursor !== null) {
+        context.warnings.add(
+          "results_truncated",
+          "More inbox items remain than fit in one page. Continue with cursor.",
+        );
+      }
+      return {
+        // The item names human-authored work: a title a human wrote and a
+        // review slug. No page-derived member reaches this shape, which is why
+        // it is the one review-adjacent response that is not mixed.
+        trust: "trusted_human_instruction",
+        data: {
+          items: page.items.map((item) => toInboxItemView(item, context.views)),
+          pending_count: page.pendingCount,
+          ...(page.nextCursor === null
+            ? {}
+            : {
+                next_cursor: encodeCursor({
+                  createdAt: page.nextCursor.sortKey,
+                  id: page.nextCursor.id,
+                }),
+              }),
+        },
+      };
+    },
+  },
+  {
+    name: "agent_inbox_acknowledge",
+    title: "Acknowledge receipt of one inbox item",
+    capability: "project:read",
+    stateChanging: true,
+    validate: validateAgentInboxAcknowledgeInput,
+    async run(args, context) {
+      const { connection, services } = context;
+      const result = await services.inbox.transition(
+        connection.scope,
+        args["inbox_item_id"] as string,
+        // The target is fixed by the tool. There is no argument an agent could
+        // set to `completed`: acknowledgement is receipt, and completing the
+        // work is a different act with different evidence
+        // (`docs/DOMAIN_MODEL.md` section 21).
+        "acknowledged",
+        agentActor(connection.session, connection.client.name),
+        { recipient: { type: "agent_session", id: connection.session.id } },
+      );
+      return {
+        trust: "trusted_human_instruction",
+        data: {
+          item: toInboxItemView(result.item, context.views),
+          ...(result.previousStatus === result.item.status
+            ? {}
+            : { previous_status: result.previousStatus }),
+        },
+      };
+    },
+  },
+  {
+    name: "review_list",
+    title: "List this project's reviews",
+    capability: "review:read",
+    stateChanging: false,
+    validate: validateReviewListInput,
+    async run(args, context) {
+      const { connection, services } = context;
+      const rawCursor = args["cursor"] as string | undefined;
+      const cursor = rawCursor === undefined ? null : decodeCursor(rawCursor);
+      if (rawCursor !== undefined && cursor === null) {
+        throw new ApiError("UNSUPPORTED_CAPABILITY", "cursor is not a cursor this server issued.", {
+          field: "cursor",
+        });
+      }
+      const limit = (args["limit"] as number | undefined) ?? 20;
+      const filter: ReviewListFilter = {
+        ...(args["status"] === undefined
+          ? {}
+          : { statuses: args["status"] as NonNullable<ReviewListFilter["statuses"]> }),
+        ...(args["assigned_to_me"] === true
+          ? { assignedAgentSessionId: connection.session.id }
+          : {}),
+        ...(args["slug_prefix"] === undefined
+          ? {}
+          : { slugPrefix: args["slug_prefix"] as string }),
+        ...(args["updated_since"] === undefined
+          ? {}
+          : { updatedSince: args["updated_since"] as string }),
+      };
+      const page = await services.reviews.listReviewsPage(
+        connection.scope,
+        {
+          limit: limit + 1,
+          after: cursor === null ? null : { sortKey: cursor.createdAt, id: cursor.id },
+        },
+        filter,
+      );
+      const items = page.items.slice(0, limit);
+      const last = items[items.length - 1];
+      const more = page.items.length > limit;
+      if (more) {
+        context.warnings.add(
+          "results_truncated",
+          "More reviews remain than fit in one page. Continue with cursor.",
+        );
+      }
+      return {
+        trust: "trusted_human_instruction",
+        data: {
+          reviews: items.map((review) => toReviewView(review, context.views)),
+          ...(more && last !== undefined
+            ? { next_cursor: encodeCursor({ createdAt: last.created_at, id: last.id }) }
+            : {}),
+        },
+      };
+    },
+  },
+  {
+    name: "review_search",
+    title: "Search this project's reviews",
+    capability: "review:read",
+    stateChanging: false,
+    validate: validateReviewSearchInput,
+    async run(args, context) {
+      const { connection, services } = context;
+      // `connection.scope` is the session's organisation and project, decided
+      // when the connection authenticated. The tool takes no project argument
+      // and passes none, so there is no code path here that could search
+      // another project (`docs/MCP_SPEC.md` section 7.6).
+      const matches = await services.reviews.searchReviews(
+        connection.scope,
+        args["query"] as string,
+        (args["limit"] as number | undefined) ?? 10,
+      );
+      return {
+        // Which part matched is control-plane fact and the review's own title
+        // is human-authored. The matching finding text is deliberately not
+        // returned: an excerpt would carry page-derived bytes into a list.
+        trust: "trusted_human_instruction",
+        data: {
+          matches: matches.map((match) => ({
+            review: toReviewView(match.review, context.views),
+            matched: [...match.matched],
+          })),
         },
       };
     },
@@ -304,6 +487,40 @@ const TOOLS: readonly ToolDefinition[] = [
             pageDerived = true;
           }
         }
+      }
+
+      if (include.includes("comments")) {
+        const comments = await context.services.reviews.listCommentsFor(
+          context.connection.scope,
+          { reviewId: review.id },
+          { limit: 20 },
+        );
+        if (comments.length > 0) data["comments"] = comments.map(toCommentView);
+      }
+
+      if (include.includes("staleness")) {
+        // The captured context and nothing else. `docs/DOMAIN_MODEL.md`
+        // section 24 puts the calculation in Stage 2, so `computed: false` is
+        // stated rather than left to be inferred from a missing verdict: an
+        // agent must be able to tell "the capture still matches" from "nobody
+        // looked", and only one of those is true here.
+        const workspace = context.connection.workspace;
+        data["staleness"] = {
+          computed: false,
+          captured_branch: review.captured_branch,
+          captured_commit: review.captured_commit,
+          ...(workspace === null || workspace.branch === null
+            ? {}
+            : { workspace_branch: workspace.branch }),
+          ...(workspace === null || workspace.head_commit === null
+            ? {}
+            : { workspace_head_commit: workspace.head_commit }),
+        };
+        context.warnings.add(
+          "staleness_unavailable",
+          "This build records the captured branch and commit and computes no staleness verdict.",
+          "Reproduce the finding against the current code before changing anything.",
+        );
       }
 
       return {
@@ -363,6 +580,25 @@ const TOOLS: readonly ToolDefinition[] = [
           ...(review.status === before.status ? {} : { previous_status: before.status }),
         },
       };
+    },
+  },
+  {
+    name: "review_add_comment",
+    title: "Add an attributed agent comment to a review",
+    capability: "review:write",
+    stateChanging: true,
+    validate: validateReviewAddCommentInput,
+    async run(args, context) {
+      const comment = await context.services.reviews.addReviewComment(
+        context.connection.scope,
+        args["review_id"] as string,
+        args["body"] as string,
+        // The author is the agent session and is derived here, never taken from
+        // the arguments: a caller able to name an author could write in a
+        // human's name and the comment would read as human instruction.
+        agentActor(context.connection.session, context.connection.client.name),
+      );
+      return { trust: "trusted_control_plane", data: { comment: toCommentView(comment) } };
     },
   },
   {
@@ -468,6 +704,53 @@ const TOOLS: readonly ToolDefinition[] = [
           // A refused transition says what *is* possible from here. The domain
           // layer does not know the caller is an agent; this layer does, so the
           // agent-permitted list is added here rather than guessed there.
+          if (error instanceof ApiError && error.code === "POLICY_DENIED") {
+            throw new ApiError(error.code, error.message, {
+              ...error.details,
+              allowed_transitions: agentTransitionsFrom(before.status),
+            });
+          }
+          throw error;
+        });
+      return {
+        trust: trustFor({ pageDerived: true, humanAuthored: true }),
+        data: {
+          finding: toFindingView(finding, context.views),
+          ...(finding.status === before.status ? {} : { previous_status: before.status }),
+        },
+      };
+    },
+  },
+  {
+    name: "finding_mark_blocked",
+    title: "Mark a finding blocked, with the reason a human must act on",
+    capability: "finding:write",
+    stateChanging: true,
+    validate: validateFindingMarkBlockedInput,
+    async run(args, context) {
+      const findingId = args["finding_id"] as string;
+      const before = await context.services.reviews.getFinding(context.connection.scope, findingId);
+      // `reason` is required by the schema, so the refusal for a block that
+      // says nothing happens before any domain code runs. The requested human
+      // action rides on the same reason field, because the domain records one
+      // string and inventing a second column for a sentence would be a
+      // migration in place of a sentence.
+      const reason =
+        args["requested_human_action"] === undefined
+          ? (args["reason"] as string)
+          : `${args["reason"] as string} Requested of a human: ${args["requested_human_action"] as string}`;
+      const finding = await context.services.reviews
+        .updateFinding(
+          context.connection.scope,
+          findingId,
+          {
+            expectedVersion: args["expected_version"] as number,
+            status: "BLOCKED",
+            reason: reason.slice(0, 512),
+          },
+          agentActor(context.connection.session, context.connection.client.name),
+        )
+        .catch((error: unknown) => {
           if (error instanceof ApiError && error.code === "POLICY_DENIED") {
             throw new ApiError(error.code, error.message, {
               ...error.details,

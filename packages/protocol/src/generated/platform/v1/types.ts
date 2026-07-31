@@ -347,6 +347,54 @@ export type WorkspaceObservationSource =
   | "administrative_registration";
 
 /**
+ * Agent-session status (docs/DOMAIN_MODEL.md section 11).
+ */
+export const AGENT_SESSION_STATUS_VALUES = [
+  "STARTING",
+  "ACTIVE",
+  "WAITING",
+  "BLOCKED",
+  "DISCONNECTED",
+  "COMPLETED",
+  "FAILED",
+  "CANCELLED",
+] as const;
+
+export type AgentSessionStatus =
+  | "STARTING"
+  | "ACTIVE"
+  | "WAITING"
+  | "BLOCKED"
+  | "DISCONNECTED"
+  | "COMPLETED"
+  | "FAILED"
+  | "CANCELLED";
+
+/**
+ * A capability an agent credential may carry (docs/SECURITY.md section 6.3). It is the
+ * same vocabulary the MCP schema declares, restated here because a control-plane
+ * representation of a session must name what the session was permitted to do.
+ */
+export const AGENT_CAPABILITY_VALUES = [
+  "project:read",
+  "review:read",
+  "review:write",
+  "finding:read",
+  "finding:write",
+  "verification:submit",
+  "browser:capture",
+] as const;
+
+export type AgentCapability =
+  | "project:read"
+  | "review:read"
+  | "review:write"
+  | "finding:read"
+  | "finding:write"
+  | "verification:submit"
+  | "browser:capture";
+
+/**
  * How a human authenticated. bootstrap_token is the ADR-0016 exchange, install_token is
  * the one-time administrator bootstrap, and password is a local account.
  */
@@ -684,6 +732,11 @@ export const EVENT_TYPES = [
   "finding.status_change_denied",
   "review.comment_added",
   "review.status_change_denied",
+  "inbox_item.created",
+  "inbox_item.acknowledged",
+  "inbox_item.completed",
+  "inbox_item.dismissed",
+  "inbox_item.expired",
   "job.enqueued",
   "job.succeeded",
   "job.failed",
@@ -755,6 +808,7 @@ export const IDENTIFIER_PREFIXES: Readonly<Record<string, string>> = {
   "annotation": "ann_",
   "artefact": "art_",
   "artefact_grant": "agr_",
+  "inbox_item": "inb_",
   "verification": "ver_",
   "event": "evt_",
   "job": "job_",
@@ -1107,6 +1161,76 @@ export interface HumanSession {
    * When the session stops being usable without revocation.
    */
   readonly expires_at: Timestamp;
+}
+
+/**
+ * A bounded agent execution context (docs/DOMAIN_MODEL.md section 11), as a human
+ * interface shows it. project_id is required because an agent session is bound to exactly
+ * one project and a half-resolved one is not representable (ADR-0020). capabilities is
+ * what the session was granted when it opened and not what its credential carries now, so
+ * a record of what an agent was allowed to do survives a later revocation. No member of
+ * this shape can carry a credential: the token is never part of a session representation.
+ */
+export interface AgentSession {
+  /**
+   * Agent-session identity, conventionally prefixed ags_.
+   */
+  readonly id: Identifier;
+  /**
+   * Owning organisation.
+   */
+  readonly organisation_id?: Identifier;
+  /**
+   * Project the session is bound to. Exactly one, always.
+   */
+  readonly project_id: Identifier;
+  /**
+   * Connector the session reached the control plane through, where it came through the
+   * local bridge.
+   */
+  readonly connector_id?: Identifier;
+  /**
+   * Workspace the session resolved, where the project has one.
+   */
+  readonly workspace_id?: Identifier;
+  /**
+   * Client's self-reported name. It is description and never an authorisation input: the
+   * credential decides what the session may do.
+   */
+  readonly agent_type: DisplayName;
+  /**
+   * Client's self-reported version.
+   */
+  readonly agent_version?: DisplayName;
+  /**
+   * Capabilities the session holds. It cannot exceed the set its credential carried when
+   * it opened.
+   */
+  readonly capabilities: readonly AgentCapability[];
+  /**
+   * Branch the workspace was on when the session started.
+   */
+  readonly branch?: GitRefName;
+  /**
+   * Head commit at that moment.
+   */
+  readonly head_commit?: GitCommit;
+  /**
+   * Session status.
+   */
+  readonly status: AgentSessionStatus;
+  /**
+   * When the session opened.
+   */
+  readonly started_at: Timestamp;
+  /**
+   * When the control plane last handled a request from it.
+   */
+  readonly last_seen_at?: Timestamp;
+  /**
+   * When it ended, where it has.
+   */
+  readonly ended_at?: Timestamp;
 }
 
 /**

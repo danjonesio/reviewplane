@@ -48,6 +48,226 @@
       }
     }
   },
+  "agent_inbox_list": {
+    "title": "List assigned work delivered to this agent session",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "Arguments of agent_inbox_list. There is no idempotency key because retrieval changes nothing: reading an inbox twice reads the same inbox (docs/DOMAIN_MODEL.md section 21).",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "status": {
+          "type": "array",
+          "description": "Statuses to include. Defaults to pending and acknowledged, which is the work an agent still has in hand.",
+          "minItems": 1,
+          "maxItems": 5,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/inbox_item_status",
+            "description": "One status."
+          }
+        },
+        "limit": {
+          "$ref": "#/$defs/page_limit",
+          "description": "Maximum items in this page. Defaults to 20 and is capped at the schema maximum."
+        },
+        "cursor": {
+          "$ref": "#/$defs/cursor",
+          "description": "Cursor from a previous page."
+        }
+      },
+      "$defs": {
+        "cursor": {
+          "type": "string",
+          "description": "Opaque pagination cursor (docs/API.md section 6). Its contents are an implementation detail and MUST NOT be parsed by a client.",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "inbox_item_status": {
+          "type": "string",
+          "description": "Inbox-item status (docs/DOMAIN_MODEL.md section 21). acknowledged means the recipient has seen the item and never that the work is done; completed is the separate later fact.",
+          "enum": [
+            "pending",
+            "acknowledged",
+            "completed",
+            "dismissed",
+            "expired"
+          ]
+        },
+        "page_limit": {
+          "type": "integer",
+          "description": "Maximum records in one page. Bounded here rather than by the caller's optimism, because an unbounded response is the failure mode docs/MCP_SPEC.md section 13 exists to prevent.",
+          "minimum": 1,
+          "maximum": 50
+        }
+      }
+    }
+  },
+  "agent_inbox_acknowledge": {
+    "title": "Acknowledge receipt of one inbox item",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "Arguments of agent_inbox_acknowledge. Acknowledging records receipt; there is no argument that could record completion, because completing the work is a different act with different evidence.",
+      "additionalProperties": false,
+      "required": [
+        "inbox_item_id",
+        "idempotency_key"
+      ],
+      "properties": {
+        "inbox_item_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Item to acknowledge."
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/idempotency_key",
+          "description": "Key for this acknowledgement, so a retry acknowledges once."
+        }
+      },
+      "$defs": {
+        "idempotency_key": {
+          "type": "string",
+          "description": "Caller-chosen key for a state-changing tool (docs/MCP_SPEC.md section 10). It is scoped to actor, tool and project: reuse with the same arguments returns the first result and creates no second record, and reuse with different arguments is refused with IDEMPOTENCY_CONFLICT.",
+          "minLength": 8,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:-]+$"
+        },
+        "identifier": {
+          "type": "string",
+          "description": "Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the value as opaque: the schema bounds only its length and character class and never its documented prefix.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        }
+      }
+    }
+  },
+  "review_list": {
+    "title": "List this project's reviews",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "Arguments of review_list. Every member narrows within the session's project; none of them names a project, so none of them can widen beyond it.",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "status": {
+          "type": "array",
+          "description": "Statuses to include. Defaults to every active status.",
+          "minItems": 1,
+          "maxItems": 9,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/review_status",
+            "description": "One status."
+          }
+        },
+        "assigned_to_me": {
+          "type": "boolean",
+          "description": "Only reviews assigned to or claimed by this agent session."
+        },
+        "slug_prefix": {
+          "$ref": "#/$defs/slug",
+          "description": "Only reviews whose slug starts with this prefix."
+        },
+        "updated_since": {
+          "$ref": "#/$defs/timestamp",
+          "description": "Only reviews updated at or after this time."
+        },
+        "limit": {
+          "$ref": "#/$defs/page_limit",
+          "description": "Maximum reviews in this page. Defaults to 20 and is capped at the schema maximum."
+        },
+        "cursor": {
+          "$ref": "#/$defs/cursor",
+          "description": "Cursor from a previous page."
+        }
+      },
+      "$defs": {
+        "cursor": {
+          "type": "string",
+          "description": "Opaque pagination cursor (docs/API.md section 6). Its contents are an implementation detail and MUST NOT be parsed by a client.",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "page_limit": {
+          "type": "integer",
+          "description": "Maximum records in one page. Bounded here rather than by the caller's optimism, because an unbounded response is the failure mode docs/MCP_SPEC.md section 13 exists to prevent.",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "review_status": {
+          "type": "string",
+          "description": "Review lifecycle status (docs/DOMAIN_MODEL.md section 14).",
+          "enum": [
+            "DRAFT",
+            "READY",
+            "ASSIGNED",
+            "IN_PROGRESS",
+            "AWAITING_HUMAN_REVIEW",
+            "CHANGES_REQUESTED",
+            "ACCEPTED",
+            "CANCELLED",
+            "ARCHIVED"
+          ]
+        },
+        "slug": {
+          "type": "string",
+          "description": "Project-scoped human alias, for example bugs-on-homepage. It is unique among active reviews of one project and not across projects, so the same slug in another project MUST resolve as not found rather than as somebody else's review (docs/MCP_SPEC.md section 7.6).",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$"
+        },
+        "timestamp": {
+          "type": "string",
+          "description": "RFC 3339 timestamp in UTC, with a mandatory trailing Z.",
+          "minLength": 20,
+          "maxLength": 30,
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$"
+        }
+      }
+    }
+  },
+  "review_search": {
+    "title": "Search this project's reviews",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "Arguments of review_search. The absence of a project argument is the security property: the statement that reads the rows is bound to this session's project, so a cross-project search is not something a caller can ask for and be refused — it is something there is no way to express (docs/MCP_SPEC.md section 7.6).",
+      "additionalProperties": false,
+      "required": [
+        "query"
+      ],
+      "properties": {
+        "query": {
+          "$ref": "#/$defs/search_query",
+          "description": "Term to match against titles, slugs, descriptions and finding text of this project."
+        },
+        "limit": {
+          "$ref": "#/$defs/page_limit",
+          "description": "Maximum matches. Defaults to 10 and is capped at 25."
+        }
+      },
+      "$defs": {
+        "page_limit": {
+          "type": "integer",
+          "description": "Maximum records in one page. Bounded here rather than by the caller's optimism, because an unbounded response is the failure mode docs/MCP_SPEC.md section 13 exists to prevent.",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "search_query": {
+          "type": "string",
+          "description": "A search term. It is matched literally against the current project's review titles, slugs, descriptions and finding text; it is never interpreted as a pattern, and it carries no project of its own because the project is the session's.",
+          "minLength": 2,
+          "maxLength": 128,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        }
+      }
+    }
+  },
   "review_get": {
     "title": "Retrieve a review by name or identifier",
     "inputSchema": {
@@ -99,10 +319,12 @@
         },
         "review_include": {
           "type": "string",
-          "description": "Optional sections of a review response. staleness is deliberately absent: staleness calculation is Stage 2, and a field that would have to be guessed is omitted rather than falsely reported (docs/DOMAIN_MODEL.md section 24).",
+          "description": "Optional sections of a review response. staleness reports the branch and commit the review was captured at and nothing else: the calculation of docs/DOMAIN_MODEL.md section 24 is Stage 2, so the section reports what was recorded and states that no verdict was computed rather than guessing one.",
           "enum": [
             "findings",
-            "artefact_links"
+            "comments",
+            "artefact_links",
+            "staleness"
           ]
         },
         "review_selector": {
@@ -235,6 +457,57 @@
           "description": "Optimistic-concurrency version. A caller presenting a stale value is refused with VERSION_CONFLICT and the current version in the details (docs/MCP_SPEC.md section 11).",
           "minimum": 1,
           "maximum": 2147483647
+        }
+      }
+    }
+  },
+  "review_add_comment": {
+    "title": "Add an attributed agent comment to a review",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "Arguments of review_add_comment. The author is the agent session and is never a field: a caller able to name an author could write in a human's name.",
+      "additionalProperties": false,
+      "required": [
+        "review_id",
+        "body",
+        "idempotency_key"
+      ],
+      "properties": {
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review to comment on."
+        },
+        "body": {
+          "$ref": "#/$defs/body_text",
+          "description": "Comment text. It is stored and rendered as text."
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/idempotency_key",
+          "description": "Key for this comment, so a retried call does not produce two."
+        }
+      },
+      "$defs": {
+        "body_text": {
+          "type": "string",
+          "description": "Human-authored or agent-authored prose: a description, instruction, comment, resolution note or verification summary.",
+          "minLength": 1,
+          "maxLength": 4000,
+          "pattern": "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f]+$"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "description": "Caller-chosen key for a state-changing tool (docs/MCP_SPEC.md section 10). It is scoped to actor, tool and project: reuse with the same arguments returns the first result and creates no second record, and reuse with different arguments is refused with IDEMPOTENCY_CONFLICT.",
+          "minLength": 8,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:-]+$"
+        },
+        "identifier": {
+          "type": "string",
+          "description": "Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the value as opaque: the schema bounds only its length and character class and never its documented prefix.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_-]+$"
         }
       }
     }
@@ -395,6 +668,72 @@
           "maxLength": 4000,
           "pattern": "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f]+$"
         },
+        "idempotency_key": {
+          "type": "string",
+          "description": "Caller-chosen key for a state-changing tool (docs/MCP_SPEC.md section 10). It is scoped to actor, tool and project: reuse with the same arguments returns the first result and creates no second record, and reuse with different arguments is refused with IDEMPOTENCY_CONFLICT.",
+          "minLength": 8,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:-]+$"
+        },
+        "identifier": {
+          "type": "string",
+          "description": "Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the value as opaque: the schema bounds only its length and character class and never its documented prefix.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "reason_text": {
+          "type": "string",
+          "description": "Short operator-facing explanation. Never carries credentials (docs/SECURITY.md section 18).",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "version_number": {
+          "type": "integer",
+          "description": "Optimistic-concurrency version. A caller presenting a stale value is refused with VERSION_CONFLICT and the current version in the details (docs/MCP_SPEC.md section 11).",
+          "minimum": 1,
+          "maximum": 2147483647
+        }
+      }
+    }
+  },
+  "finding_mark_blocked": {
+    "title": "Mark a finding blocked, with the reason a human must act on",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "Arguments of finding_mark_blocked. There is no status argument: the tool is the status, which is why reason can be required by the schema rather than checked afterwards. requested_human_action is what a human is being asked to do about it, and is optional because an agent does not always know.",
+      "additionalProperties": false,
+      "required": [
+        "finding_id",
+        "expected_version",
+        "reason",
+        "idempotency_key"
+      ],
+      "properties": {
+        "finding_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Finding to block."
+        },
+        "expected_version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version the agent last read."
+        },
+        "reason": {
+          "$ref": "#/$defs/reason_text",
+          "description": "What is blocking the work. Required, because a block a human cannot act on is a status change and not a request."
+        },
+        "requested_human_action": {
+          "$ref": "#/$defs/reason_text",
+          "description": "What the agent is asking a human to do."
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/idempotency_key",
+          "description": "Key for this transition."
+        }
+      },
+      "$defs": {
         "idempotency_key": {
           "type": "string",
           "description": "Caller-chosen key for a state-changing tool (docs/MCP_SPEC.md section 10). It is scoped to actor, tool and project: reuse with the same arguments returns the first result and creates no second record, and reuse with different arguments is refused with IDEMPOTENCY_CONFLICT.",

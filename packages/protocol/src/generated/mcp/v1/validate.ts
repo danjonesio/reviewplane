@@ -329,7 +329,7 @@ export function validateUntrustedFieldPath(value: unknown, path: string, out: Sc
  * that cannot consume image content still completes the workflow.
  */
 export function validateWarningCode(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["image_content_unsupported","resource_content_unsupported","findings_truncated","text_truncated","workspace_unresolved","verification_branch_uncorroborated","staleness_unavailable","inbox_unavailable","idempotent_replay"] });
+  checkString(value, path, out, { values: ["image_content_unsupported","resource_content_unsupported","findings_truncated","text_truncated","workspace_unresolved","verification_branch_uncorroborated","staleness_unavailable","inbox_unavailable","results_truncated","idempotent_replay"] });
 }
 
 /**
@@ -342,12 +342,12 @@ export function validateErrorClass(value: unknown, path: string, out: SchemaViol
 }
 
 /**
- * A Stage 0 tool. This enumeration is the tool availability set of docs/MCP_SPEC.md
+ * An available tool. This enumeration is the tool availability set of docs/MCP_SPEC.md
  * section 14 and MUST equal the keys of x-protocol.messages, so a tool the server
  * advertises always has a result schema and a bound.
  */
 export function validateMessageType(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["project_current","agent_session_status","review_get","review_claim","review_update_status","finding_get","finding_claim","finding_update_status","finding_add_comment","finding_submit_verification","browser_take_screenshot"] });
+  checkString(value, path, out, { values: ["project_current","agent_session_status","agent_inbox_list","agent_inbox_acknowledge","review_list","review_search","review_get","review_claim","review_update_status","review_add_comment","finding_get","finding_claim","finding_update_status","finding_mark_blocked","finding_add_comment","finding_submit_verification","browser_take_screenshot"] });
 }
 
 /**
@@ -365,6 +365,42 @@ export function validateAgentCapability(value: unknown, path: string, out: Schem
  */
 export function validateAgentSessionState(value: unknown, path: string, out: SchemaViolation[]): void {
   checkString(value, path, out, { values: ["STARTING","ACTIVE","WAITING","BLOCKED","DISCONNECTED","COMPLETED","FAILED","CANCELLED"] });
+}
+
+/**
+ * How a review is ordered in a queue (docs/DOMAIN_MODEL.md section 14). It orders and
+ * gates nothing: an urgent review and a routine one obey the same lifecycle and the same
+ * authority rules.
+ */
+export function validateReviewPriority(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["critical","high","medium","low"] });
+}
+
+/**
+ * A search term. It is matched literally against the current project's review titles,
+ * slugs, descriptions and finding text; it is never interpreted as a pattern, and it
+ * carries no project of its own because the project is the session's.
+ */
+export function validateSearchQuery(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 2, maxLength: 128, pattern: PATTERN_5 });
+}
+
+/**
+ * Inbox-item status (docs/DOMAIN_MODEL.md section 21). acknowledged means the recipient
+ * has seen the item and never that the work is done; completed is the separate later fact.
+ */
+export function validateInboxItemStatus(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["pending","acknowledged","completed","dismissed","expired"] });
+}
+
+/**
+ * Why an inbox item exists. review_assigned is created when a review is assigned to a
+ * recipient; finding_reopened is created when a human reopens a finding the recipient
+ * worked on. Both are durable: an agent learns what a human wants changed by retrieving
+ * them rather than by guessing (docs/MCP_SPEC.md section 9).
+ */
+export function validateInboxItemType(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["review_assigned","finding_reopened"] });
 }
 
 /**
@@ -456,12 +492,21 @@ export function validateScreenshotPurpose(value: unknown, path: string, out: Sch
 }
 
 /**
- * Optional sections of a review response. staleness is deliberately absent: staleness
- * calculation is Stage 2, and a field that would have to be guessed is omitted rather than
- * falsely reported (docs/DOMAIN_MODEL.md section 24).
+ * Optional sections of a review response. staleness reports the branch and commit the
+ * review was captured at and nothing else: the calculation of docs/DOMAIN_MODEL.md section
+ * 24 is Stage 2, so the section reports what was recorded and states that no verdict was
+ * computed rather than guessing one.
  */
 export function validateReviewInclude(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["findings","artefact_links"] });
+  checkString(value, path, out, { values: ["findings","comments","artefact_links","staleness"] });
+}
+
+/**
+ * Which part of a review a search query matched. It is reported so an agent can tell a
+ * title match from a match inside a finding a page supplied text for.
+ */
+export function validateReviewSearchField(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["title","slug","description","finding"] });
 }
 
 /**
@@ -717,8 +762,9 @@ export function validateServerCapabilitiesHumanTakeover(value: unknown, path: st
 }
 
 /**
- * Whether inbox tools are available. False in Stage 0: the inbox workflow of section 9 is
- * Stage 1, and the tools are absent rather than present and empty.
+ * Whether the inbox workflow of section 9 is available. True where agent_inbox_list and
+ * agent_inbox_acknowledge are advertised; a deployment that withdrew them would report
+ * false rather than advertise a tool that refuses.
  */
 export function validateServerCapabilitiesReviewInbox(value: unknown, path: string, out: SchemaViolation[]): void {
   checkBoolean(value, path, out);
@@ -1003,14 +1049,19 @@ export function validateAnnotationView(value: unknown, path: string, out: Schema
 }
 
 /**
- * One comment on a finding (docs/DOMAIN_MODEL.md section 18). Comments are append-only and
- * the author type is always explicit.
+ * One comment on a review or on one of its findings (docs/DOMAIN_MODEL.md section 18).
+ * Comments are append-only and the author type is always explicit. review_id is always
+ * present and finding_id is absent for a comment on the review itself, which is the same
+ * shape the control-plane record carries.
  */
 export function validateCommentView(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["id", "finding_id", "body", "author", "created_at"], ["id", "finding_id", "body", "author", "created_at"]);
+  const source = checkObject(value, path, out, ["id", "review_id", "finding_id", "body", "author", "created_at"], ["id", "review_id", "body", "author", "created_at"]);
   if (source === null) return;
   if (source["id"] !== undefined) {
     validateIdentifier(source["id"], `${path}.id`, out);
+  }
+  if (source["review_id"] !== undefined) {
+    validateIdentifier(source["review_id"], `${path}.review_id`, out);
   }
   if (source["finding_id"] !== undefined) {
     validateIdentifier(source["finding_id"], `${path}.finding_id`, out);
@@ -1023,6 +1074,120 @@ export function validateCommentView(value: unknown, path: string, out: SchemaVio
   }
   if (source["created_at"] !== undefined) {
     validateTimestamp(source["created_at"], `${path}.created_at`, out);
+  }
+}
+
+/**
+ * One durable work notification (docs/DOMAIN_MODEL.md section 21). It names the work
+ * rather than carrying it: a review reference and a count, not the review's findings, so
+ * an inbox read cannot become an unbounded delivery. status distinguishes receipt from
+ * completion, which is the whole reason the record is durable.
+ */
+export function validateInboxItemView(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["id", "project_id", "type", "title", "status", "review_id", "review_slug", "finding_id", "priority", "finding_count", "assigned_by", "created_at", "acknowledged_at", "completed_at"], ["id", "project_id", "type", "title", "status", "created_at"]);
+  if (source === null) return;
+  if (source["id"] !== undefined) {
+    validateIdentifier(source["id"], `${path}.id`, out);
+  }
+  if (source["project_id"] !== undefined) {
+    validateIdentifier(source["project_id"], `${path}.project_id`, out);
+  }
+  if (source["type"] !== undefined) {
+    validateInboxItemType(source["type"], `${path}.type`, out);
+  }
+  if (source["title"] !== undefined) {
+    validateTitleText(source["title"], `${path}.title`, out);
+  }
+  if (source["status"] !== undefined) {
+    validateInboxItemStatus(source["status"], `${path}.status`, out);
+  }
+  if (source["review_id"] !== undefined) {
+    validateIdentifier(source["review_id"], `${path}.review_id`, out);
+  }
+  if (source["review_slug"] !== undefined) {
+    validateSlug(source["review_slug"], `${path}.review_slug`, out);
+  }
+  if (source["finding_id"] !== undefined) {
+    validateIdentifier(source["finding_id"], `${path}.finding_id`, out);
+  }
+  if (source["priority"] !== undefined) {
+    validateReviewPriority(source["priority"], `${path}.priority`, out);
+  }
+  if (source["finding_count"] !== undefined) {
+    validateRecordCount(source["finding_count"], `${path}.finding_count`, out);
+  }
+  if (source["assigned_by"] !== undefined) {
+    validateActorReference(source["assigned_by"], `${path}.assigned_by`, out);
+  }
+  if (source["created_at"] !== undefined) {
+    validateTimestamp(source["created_at"], `${path}.created_at`, out);
+  }
+  if (source["acknowledged_at"] !== undefined) {
+    validateTimestamp(source["acknowledged_at"], `${path}.acknowledged_at`, out);
+  }
+  if (source["completed_at"] !== undefined) {
+    validateTimestamp(source["completed_at"], `${path}.completed_at`, out);
+  }
+}
+
+/**
+ * Whether a staleness comparison was performed. False here.
+ */
+export function validateReviewStalenessComputed(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * The source context a review was captured at (docs/DOMAIN_MODEL.md section 24). computed
+ * is always false in this stage and is present rather than omitted, so a reader is told
+ * that no comparison was made instead of being left to infer it from a missing field. A
+ * verdict that had to be guessed would be worse than none: it would either close feedback
+ * nobody decided to close, or send an agent to reproduce against the wrong revision.
+ */
+export function validateReviewStaleness(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["computed", "captured_branch", "captured_commit", "workspace_branch", "workspace_head_commit"], ["computed", "captured_branch", "captured_commit"]);
+  if (source === null) return;
+  if (source["computed"] !== undefined) {
+    validateReviewStalenessComputed(source["computed"], `${path}.computed`, out);
+  }
+  if (source["captured_branch"] !== undefined) {
+    validateBranchName(source["captured_branch"], `${path}.captured_branch`, out);
+  }
+  if (source["captured_commit"] !== undefined) {
+    validateCommitSha(source["captured_commit"], `${path}.captured_commit`, out);
+  }
+  if (source["workspace_branch"] !== undefined) {
+    validateBranchName(source["workspace_branch"], `${path}.workspace_branch`, out);
+  }
+  if (source["workspace_head_commit"] !== undefined) {
+    validateCommitSha(source["workspace_head_commit"], `${path}.workspace_head_commit`, out);
+  }
+}
+
+/**
+ * Which parts of the review matched the query.
+ */
+export function validateReviewSearchMatchMatched(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 1, maxItems: 4, uniqueItems: true })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateReviewSearchField(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * One review a search matched, with which part of it matched. The excerpt is deliberately
+ * absent: a finding's text can carry page-derived content, and returning a fragment of it
+ * here would smuggle untrusted bytes into a list response. An agent that wants the text
+ * reads the review.
+ */
+export function validateReviewSearchMatch(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["review", "matched"], ["review", "matched"]);
+  if (source === null) return;
+  if (source["review"] !== undefined) {
+    validateReviewView(source["review"], `${path}.review`, out);
+  }
+  if (source["matched"] !== undefined) {
+    validateReviewSearchMatchMatched(source["matched"], `${path}.matched`, out);
   }
 }
 
@@ -1415,6 +1580,112 @@ export function validateAgentSessionStatusInput(value: unknown, path: string, ou
 }
 
 /**
+ * Statuses to include. Defaults to pending and acknowledged, which is the work an agent
+ * still has in hand.
+ */
+export function validateAgentInboxListInputStatus(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 1, maxItems: 5, uniqueItems: true })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateInboxItemStatus(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Arguments of agent_inbox_list. There is no idempotency key because retrieval changes
+ * nothing: reading an inbox twice reads the same inbox (docs/DOMAIN_MODEL.md section 21).
+ */
+export function validateAgentInboxListInput(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["status", "limit", "cursor"], []);
+  if (source === null) return;
+  if (source["status"] !== undefined) {
+    validateAgentInboxListInputStatus(source["status"], `${path}.status`, out);
+  }
+  if (source["limit"] !== undefined) {
+    validatePageLimit(source["limit"], `${path}.limit`, out);
+  }
+  if (source["cursor"] !== undefined) {
+    validateCursor(source["cursor"], `${path}.cursor`, out);
+  }
+}
+
+/**
+ * Arguments of agent_inbox_acknowledge. Acknowledging records receipt; there is no
+ * argument that could record completion, because completing the work is a different act
+ * with different evidence.
+ */
+export function validateAgentInboxAcknowledgeInput(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["inbox_item_id", "idempotency_key"], ["inbox_item_id", "idempotency_key"]);
+  if (source === null) return;
+  if (source["inbox_item_id"] !== undefined) {
+    validateIdentifier(source["inbox_item_id"], `${path}.inbox_item_id`, out);
+  }
+  if (source["idempotency_key"] !== undefined) {
+    validateIdempotencyKey(source["idempotency_key"], `${path}.idempotency_key`, out);
+  }
+}
+
+/**
+ * Statuses to include. Defaults to every active status.
+ */
+export function validateReviewListInputStatus(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 1, maxItems: 9, uniqueItems: true })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateReviewStatus(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Only reviews assigned to or claimed by this agent session.
+ */
+export function validateReviewListInputAssignedToMe(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * Arguments of review_list. Every member narrows within the session's project; none of
+ * them names a project, so none of them can widen beyond it.
+ */
+export function validateReviewListInput(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["status", "assigned_to_me", "slug_prefix", "updated_since", "limit", "cursor"], []);
+  if (source === null) return;
+  if (source["status"] !== undefined) {
+    validateReviewListInputStatus(source["status"], `${path}.status`, out);
+  }
+  if (source["assigned_to_me"] !== undefined) {
+    validateReviewListInputAssignedToMe(source["assigned_to_me"], `${path}.assigned_to_me`, out);
+  }
+  if (source["slug_prefix"] !== undefined) {
+    validateSlug(source["slug_prefix"], `${path}.slug_prefix`, out);
+  }
+  if (source["updated_since"] !== undefined) {
+    validateTimestamp(source["updated_since"], `${path}.updated_since`, out);
+  }
+  if (source["limit"] !== undefined) {
+    validatePageLimit(source["limit"], `${path}.limit`, out);
+  }
+  if (source["cursor"] !== undefined) {
+    validateCursor(source["cursor"], `${path}.cursor`, out);
+  }
+}
+
+/**
+ * Arguments of review_search. The absence of a project argument is the security property:
+ * the statement that reads the rows is bound to this session's project, so a cross-project
+ * search is not something a caller can ask for and be refused — it is something there is
+ * no way to express (docs/MCP_SPEC.md section 7.6).
+ */
+export function validateReviewSearchInput(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["query", "limit"], ["query"]);
+  if (source === null) return;
+  if (source["query"] !== undefined) {
+    validateSearchQuery(source["query"], `${path}.query`, out);
+  }
+  if (source["limit"] !== undefined) {
+    validatePageLimit(source["limit"], `${path}.limit`, out);
+  }
+}
+
+/**
  * Optional sections to include.
  */
 export function validateReviewGetInputInclude(value: unknown, path: string, out: SchemaViolation[]): void {
@@ -1480,6 +1751,24 @@ export function validateReviewUpdateStatusInput(value: unknown, path: string, ou
   }
   if (source["reason"] !== undefined) {
     validateReasonText(source["reason"], `${path}.reason`, out);
+  }
+  if (source["idempotency_key"] !== undefined) {
+    validateIdempotencyKey(source["idempotency_key"], `${path}.idempotency_key`, out);
+  }
+}
+
+/**
+ * Arguments of review_add_comment. The author is the agent session and is never a field: a
+ * caller able to name an author could write in a human's name.
+ */
+export function validateReviewAddCommentInput(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["review_id", "body", "idempotency_key"], ["review_id", "body", "idempotency_key"]);
+  if (source === null) return;
+  if (source["review_id"] !== undefined) {
+    validateIdentifier(source["review_id"], `${path}.review_id`, out);
+  }
+  if (source["body"] !== undefined) {
+    validateBodyText(source["body"], `${path}.body`, out);
   }
   if (source["idempotency_key"] !== undefined) {
     validateIdempotencyKey(source["idempotency_key"], `${path}.idempotency_key`, out);
@@ -1554,6 +1843,32 @@ export function validateFindingUpdateStatusInput(value: unknown, path: string, o
   }
   if (matchesCondition(source["status"], ["BLOCKED"])) {
     requireProperty(source, path, "reason", "A blocked finding must say what is blocking it, because a human has to act on it.", out);
+  }
+}
+
+/**
+ * Arguments of finding_mark_blocked. There is no status argument: the tool is the status,
+ * which is why reason can be required by the schema rather than checked afterwards.
+ * requested_human_action is what a human is being asked to do about it, and is optional
+ * because an agent does not always know.
+ */
+export function validateFindingMarkBlockedInput(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["finding_id", "expected_version", "reason", "requested_human_action", "idempotency_key"], ["finding_id", "expected_version", "reason", "idempotency_key"]);
+  if (source === null) return;
+  if (source["finding_id"] !== undefined) {
+    validateIdentifier(source["finding_id"], `${path}.finding_id`, out);
+  }
+  if (source["expected_version"] !== undefined) {
+    validateVersionNumber(source["expected_version"], `${path}.expected_version`, out);
+  }
+  if (source["reason"] !== undefined) {
+    validateReasonText(source["reason"], `${path}.reason`, out);
+  }
+  if (source["requested_human_action"] !== undefined) {
+    validateReasonText(source["requested_human_action"], `${path}.requested_human_action`, out);
+  }
+  if (source["idempotency_key"] !== undefined) {
+    validateIdempotencyKey(source["idempotency_key"], `${path}.idempotency_key`, out);
   }
 }
 
@@ -1706,7 +2021,7 @@ export function validateAgentSessionStatusResultBrowserSessions(value: unknown, 
  * Payload of agent_session_status.
  */
 export function validateAgentSessionStatusResult(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["agent_session_id", "status", "client", "project", "workspace", "capabilities", "granted_capabilities", "browser_sessions", "expires_at"], ["agent_session_id", "status", "project", "capabilities", "granted_capabilities"]);
+  const source = checkObject(value, path, out, ["agent_session_id", "status", "client", "project", "workspace", "capabilities", "granted_capabilities", "browser_sessions", "inbox_pending_count", "expires_at"], ["agent_session_id", "status", "project", "capabilities", "granted_capabilities"]);
   if (source === null) return;
   if (source["agent_session_id"] !== undefined) {
     validateIdentifier(source["agent_session_id"], `${path}.agent_session_id`, out);
@@ -1731,6 +2046,9 @@ export function validateAgentSessionStatusResult(value: unknown, path: string, o
   }
   if (source["browser_sessions"] !== undefined) {
     validateAgentSessionStatusResultBrowserSessions(source["browser_sessions"], `${path}.browser_sessions`, out);
+  }
+  if (source["inbox_pending_count"] !== undefined) {
+    validateRecordCount(source["inbox_pending_count"], `${path}.inbox_pending_count`, out);
   }
   if (source["expires_at"] !== undefined) {
     validateTimestamp(source["expires_at"], `${path}.expires_at`, out);
@@ -1759,11 +2077,22 @@ export function validateReviewGetResultArtefactLinks(value: unknown, path: strin
 }
 
 /**
+ * One bounded page of comments on the review itself, oldest first. Comments on a finding
+ * are read through finding_get.
+ */
+export function validateReviewGetResultComments(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 1, maxItems: 20, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateCommentView(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
  * Payload of review_get. findings is one bounded page; findings_next_cursor is present
  * only when more remain.
  */
 export function validateReviewGetResult(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["review", "findings", "findings_next_cursor", "artefact_links"], ["review"]);
+  const source = checkObject(value, path, out, ["review", "findings", "findings_next_cursor", "artefact_links", "comments", "staleness"], ["review"]);
   if (source === null) return;
   if (source["review"] !== undefined) {
     validateReviewView(source["review"], `${path}.review`, out);
@@ -1776,6 +2105,114 @@ export function validateReviewGetResult(value: unknown, path: string, out: Schem
   }
   if (source["artefact_links"] !== undefined) {
     validateReviewGetResultArtefactLinks(source["artefact_links"], `${path}.artefact_links`, out);
+  }
+  if (source["comments"] !== undefined) {
+    validateReviewGetResultComments(source["comments"], `${path}.comments`, out);
+  }
+  if (source["staleness"] !== undefined) {
+    validateReviewStaleness(source["staleness"], `${path}.staleness`, out);
+  }
+}
+
+/**
+ * The page, newest first. An empty project answers with an empty array rather than a
+ * refusal.
+ */
+export function validateReviewListResultReviews(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 50, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateReviewView(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Payload of review_list: one bounded page of the current project's reviews.
+ */
+export function validateReviewListResult(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["reviews", "next_cursor"], ["reviews"]);
+  if (source === null) return;
+  if (source["reviews"] !== undefined) {
+    validateReviewListResultReviews(source["reviews"], `${path}.reviews`, out);
+  }
+  if (source["next_cursor"] !== undefined) {
+    validateCursor(source["next_cursor"], `${path}.next_cursor`, out);
+  }
+}
+
+/**
+ * Matching reviews, most recently updated first.
+ */
+export function validateReviewSearchResultMatches(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 25, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateReviewSearchMatch(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Payload of review_search: reviews of the current project that matched. The project is
+ * never a member of this shape, because it is never a choice the caller had.
+ */
+export function validateReviewSearchResult(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["matches"], ["matches"]);
+  if (source === null) return;
+  if (source["matches"] !== undefined) {
+    validateReviewSearchResultMatches(source["matches"], `${path}.matches`, out);
+  }
+}
+
+/**
+ * Payload of review_add_comment.
+ */
+export function validateReviewAddCommentResult(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["comment"], ["comment"]);
+  if (source === null) return;
+  if (source["comment"] !== undefined) {
+    validateCommentView(source["comment"], `${path}.comment`, out);
+  }
+}
+
+/**
+ * The page, oldest first.
+ */
+export function validateAgentInboxListResultItems(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 50, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateInboxItemView(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Payload of agent_inbox_list. Items are oldest first so that assignment order is
+ * preserved, and the page is bounded like every other response (docs/MCP_SPEC.md section
+ * 13).
+ */
+export function validateAgentInboxListResult(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["items", "pending_count", "next_cursor"], ["items", "pending_count"]);
+  if (source === null) return;
+  if (source["items"] !== undefined) {
+    validateAgentInboxListResultItems(source["items"], `${path}.items`, out);
+  }
+  if (source["pending_count"] !== undefined) {
+    validateRecordCount(source["pending_count"], `${path}.pending_count`, out);
+  }
+  if (source["next_cursor"] !== undefined) {
+    validateCursor(source["next_cursor"], `${path}.next_cursor`, out);
+  }
+}
+
+/**
+ * Payload of agent_inbox_acknowledge. The item is returned as it now stands, still naming
+ * the work it delivered: acknowledgement is receipt and never completion.
+ */
+export function validateAgentInboxAcknowledgeResult(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["item", "previous_status"], ["item"]);
+  if (source === null) return;
+  if (source["item"] !== undefined) {
+    validateInboxItemView(source["item"], `${path}.item`, out);
+  }
+  if (source["previous_status"] !== undefined) {
+    validateInboxItemStatus(source["previous_status"], `${path}.previous_status`, out);
   }
 }
 

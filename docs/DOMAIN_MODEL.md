@@ -369,11 +369,23 @@ CANCELLED
 - Session completion does not accept reviews automatically
 - An agent session is bound to exactly one project
 
-Stage 0 stores the session in `agent_sessions` when an MCP connection is
-initialised (ADR-0020). `project_id` is `NOT NULL`, which is the last invariant
-expressed as a column: the ambiguous binding of `docs/MCP_SPEC.md` section 4 is
-refused before a row exists, so no later code has to defend against a session
-that never resolved a project.
+The session is stored in `agent_sessions` when an MCP connection is initialised
+(ADR-0020). `project_id` is `NOT NULL`, which is the last invariant expressed as
+a column: the ambiguous binding of `docs/MCP_SPEC.md` section 4 is refused
+before a row exists, so no later code has to defend against a session that never
+resolved a project.
+
+The shape a human interface reads is `agent_session` in
+`packages/protocol/schemas/platform/v1.schema.json`. It has no member capable of
+carrying a credential: a session representation names what the session may do
+and never how it authenticated.
+
+"Session completion does not accept reviews automatically" has a companion the
+statuses make available and code has to use correctly. A session that ends
+because the client closed it is `COMPLETED`; a session that ends because the
+control plane stopped serving is `DISCONNECTED`. Recording the first for the
+second would tell a human reading a timeline that an agent walked away
+satisfied.
 
 `capabilities` is copied from the credential when the session opens and read
 from the session afterwards. A capability added to the credential later cannot
@@ -946,6 +958,40 @@ A durable work notification.
 - `expired`
 
 Inbox retrieval must be idempotent. Acknowledgement does not imply task completion.
+
+Both sentences are structural rather than conventions somebody applies.
+
+**Retrieval issues no write.** `agent_inbox_list` and
+`GET /api/v1/projects/:projectId/inbox` stamp nothing and record no event, so an
+agent may poll at every checkpoint of `docs/MCP_SPEC.md` section 9 without the
+act of looking changing what it is looking at.
+
+**Acknowledgement and completion are different columns, different events and
+different callers.** `acknowledged_at` and `completed_at` are separate
+timestamps, `inbox_item.acknowledged` and `inbox_item.completed` are separate
+events, and **no agent-facing tool can reach `completed`**: completion is
+recorded through `POST /api/v1/inbox/:itemId/complete` by a human. A single
+"seen" flag would have made the distinction unrepresentable rather than merely
+unenforced.
+
+Items are created in the **same transaction** as the act that caused them: a
+review assignment (`review_assigned`) and a human reopening a finding
+(`finding_reopened`). An assignment that committed without a delivery would be
+work a human believes they handed over and an agent has no way to discover.
+
+A repeated delivery of the same work to the same recipient is one item, not two.
+A partial unique index over `pending` and `acknowledged` items enforces it, so a
+human who clicks assign twice has assigned once; once an item is completed,
+dismissed or expired the same review can be delivered again.
+
+`recipient_type` is `human_user` or `agent_session`. `recipient_id` is not a
+foreign key: an agent session is a short-lived row and a delivery that happened
+must stay recorded after the session that received it has gone. Both are checked
+on write and neither cascades.
+
+`expired` is a status a sweep sets; no sweep runs yet, and the column that would
+drive one (`expires_at`) exists so the status is reachable rather than
+decorative. The sweep arrives with the retention work of Stage 2.
 
 ## 22. Policy
 

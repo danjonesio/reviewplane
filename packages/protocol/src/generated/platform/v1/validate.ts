@@ -329,6 +329,22 @@ export function validateWorkspaceObservationSource(value: unknown, path: string,
 }
 
 /**
+ * Agent-session status (docs/DOMAIN_MODEL.md section 11).
+ */
+export function validateAgentSessionStatus(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["STARTING","ACTIVE","WAITING","BLOCKED","DISCONNECTED","COMPLETED","FAILED","CANCELLED"] });
+}
+
+/**
+ * A capability an agent credential may carry (docs/SECURITY.md section 6.3). It is the
+ * same vocabulary the MCP schema declares, restated here because a control-plane
+ * representation of a session must name what the session was permitted to do.
+ */
+export function validateAgentCapability(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["project:read","review:read","review:write","finding:read","finding:write","verification:submit","browser:capture"] });
+}
+
+/**
  * How a human authenticated. bootstrap_token is the ADR-0016 exchange, install_token is
  * the one-time administrator bootstrap, and password is a local account.
  */
@@ -617,6 +633,72 @@ export function validateHumanSession(value: unknown, path: string, out: SchemaVi
   }
   if (source["expires_at"] !== undefined) {
     validateTimestamp(source["expires_at"], `${path}.expires_at`, out);
+  }
+}
+
+/**
+ * Capabilities the session holds. It cannot exceed the set its credential carried when it
+ * opened.
+ */
+export function validateAgentSessionCapabilities(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 1, maxItems: 16, uniqueItems: true })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateAgentCapability(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * A bounded agent execution context (docs/DOMAIN_MODEL.md section 11), as a human
+ * interface shows it. project_id is required because an agent session is bound to exactly
+ * one project and a half-resolved one is not representable (ADR-0020). capabilities is
+ * what the session was granted when it opened and not what its credential carries now, so
+ * a record of what an agent was allowed to do survives a later revocation. No member of
+ * this shape can carry a credential: the token is never part of a session representation.
+ */
+export function validateAgentSession(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["id", "organisation_id", "project_id", "connector_id", "workspace_id", "agent_type", "agent_version", "capabilities", "branch", "head_commit", "status", "started_at", "last_seen_at", "ended_at"], ["id", "project_id", "agent_type", "capabilities", "status", "started_at"]);
+  if (source === null) return;
+  if (source["id"] !== undefined) {
+    validateIdentifier(source["id"], `${path}.id`, out);
+  }
+  if (source["organisation_id"] !== undefined) {
+    validateIdentifier(source["organisation_id"], `${path}.organisation_id`, out);
+  }
+  if (source["project_id"] !== undefined) {
+    validateIdentifier(source["project_id"], `${path}.project_id`, out);
+  }
+  if (source["connector_id"] !== undefined) {
+    validateIdentifier(source["connector_id"], `${path}.connector_id`, out);
+  }
+  if (source["workspace_id"] !== undefined) {
+    validateIdentifier(source["workspace_id"], `${path}.workspace_id`, out);
+  }
+  if (source["agent_type"] !== undefined) {
+    validateDisplayName(source["agent_type"], `${path}.agent_type`, out);
+  }
+  if (source["agent_version"] !== undefined) {
+    validateDisplayName(source["agent_version"], `${path}.agent_version`, out);
+  }
+  if (source["capabilities"] !== undefined) {
+    validateAgentSessionCapabilities(source["capabilities"], `${path}.capabilities`, out);
+  }
+  if (source["branch"] !== undefined) {
+    validateGitRefName(source["branch"], `${path}.branch`, out);
+  }
+  if (source["head_commit"] !== undefined) {
+    validateGitCommit(source["head_commit"], `${path}.head_commit`, out);
+  }
+  if (source["status"] !== undefined) {
+    validateAgentSessionStatus(source["status"], `${path}.status`, out);
+  }
+  if (source["started_at"] !== undefined) {
+    validateTimestamp(source["started_at"], `${path}.started_at`, out);
+  }
+  if (source["last_seen_at"] !== undefined) {
+    validateTimestamp(source["last_seen_at"], `${path}.last_seen_at`, out);
+  }
+  if (source["ended_at"] !== undefined) {
+    validateTimestamp(source["ended_at"], `${path}.ended_at`, out);
   }
 }
 

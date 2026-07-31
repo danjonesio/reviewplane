@@ -44,6 +44,7 @@ import { ApiError, notFound } from "../../errors.ts";
 import { appendEvent, type EventActor } from "../../events/append.ts";
 import { newId } from "../../ids.ts";
 import { enqueueJob } from "../../jobs/runner.ts";
+import { InboxStore } from "../agents/inbox.ts";
 import type { ArtefactService } from "../artefacts/service.ts";
 import {
   ACTIVE_REVIEW_STATUSES,
@@ -138,6 +139,23 @@ export interface RepositoryPage<T> {
 }
 
 /** The position after the last row a caller has seen. */
+/** Which part of a review a search matched (`docs/MCP_SPEC.md` section 7.6). */
+export type ReviewSearchField = "title" | "slug" | "description" | "finding";
+
+/**
+ * Narrowing applied to a review listing.
+ *
+ * Every member narrows within the scope the caller already holds. None of them
+ * names a project or an organisation, so no filter can widen a listing beyond
+ * the scope its caller was authenticated for.
+ */
+export interface ReviewListFilter {
+  readonly statuses?: readonly ReviewStatus[];
+  readonly assignedAgentSessionId?: string;
+  readonly slugPrefix?: string;
+  readonly updatedSince?: string;
+}
+
 export interface PageCursor {
   readonly limit: number;
   readonly after: { readonly sortKey: string; readonly id: string } | null;
@@ -566,12 +584,20 @@ export class ReviewService {
    * appears at the front rather than shifting the page boundaries and losing a
    * row, which is what an offset would do.
    */
-  async listReviewsPage(scope: Scope, page: PageCursor): Promise<RepositoryPage<Review>> {
+  async listReviewsPage(
+    scope: Scope,
+    page: PageCursor,
+    filter: ReviewListFilter = {},
+  ): Promise<RepositoryPage<Review>> {
     const rows = await this.#pool.query(
       `SELECT r.*, (SELECT count(*) FROM findings f WHERE f.review_id = r.id) AS finding_count
          FROM reviews r
         WHERE r.organisation_id = $1 AND r.project_id = $2
           AND ($3::timestamptz IS NULL OR (r.created_at, r.id) < ($3::timestamptz, $4::text))
+          AND ($6::text[] IS NULL OR r.status = ANY($6))
+          AND ($7::text IS NULL OR r.assigned_agent_session_id = $7)
+          AND ($8::text IS NULL OR r.slug LIKE $8 || '%')
+          AND ($9::timestamptz IS NULL OR r.updated_at >= $9::timestamptz)
         ORDER BY r.created_at DESC, r.id DESC
         LIMIT $5`,
       [
@@ -580,6 +606,10 @@ export class ReviewService {
         page.after?.sortKey ?? null,
         page.after?.id ?? null,
         page.limit + 1,
+        filter.statuses === undefined ? null : [...filter.statuses],
+        filter.assignedAgentSessionId ?? null,
+        filter.slugPrefix ?? null,
+        filter.updatedSince ?? null,
       ],
     );
     const all = rows.rows.map((row) =>
@@ -597,6 +627,75 @@ export class ReviewService {
           ? { sortKey: last.created_at, id: last.id }
           : null,
     };
+  }
+
+  /**
+   * Reviews of **one project** whose title, slug, description or finding text
+   * contains a term (`docs/MCP_SPEC.md` section 7.6, `docs/UX_FLOWS.md`
+   * section 16).
+   *
+   * The organisation and the project are the first two terms of the `WHERE`
+   * clause and are not derived from anything the caller sent. There is no
+   * parameter that could widen the search, which is the form
+   * "`review_search` MUST NOT perform cross-project search" has to take: a
+   * filter applied after the rows are read is one edit away from being
+   * forgotten, and a search is precisely the operation whose whole job is to
+   * find rows the caller could not name.
+   *
+   * The term is matched literally. `%` and `_` in the query are escaped, so a
+   * caller cannot turn a search into a scan of everything by sending one
+   * character — which would be an unbounded response as well as a surprise.
+   *
+   * The finding text is matched but never returned: an excerpt would carry
+   * page-derived bytes into a list response, and `review_search` answers with
+   * which part matched rather than with the matching text.
+   */
+  async searchReviews(
+    scope: Scope,
+    query: string,
+    limit = 10,
+  ): Promise<readonly { review: Review; matched: readonly ReviewSearchField[] }[]> {
+    const pattern = `%${query.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
+    const rows = await this.#pool.query(
+      `SELECT r.*,
+              (SELECT count(*) FROM findings f WHERE f.review_id = r.id) AS finding_count,
+              (r.title ILIKE $3) AS matched_title,
+              (r.slug ILIKE $3) AS matched_slug,
+              (r.description IS NOT NULL AND r.description ILIKE $3) AS matched_description,
+              EXISTS (
+                SELECT 1 FROM findings f
+                 WHERE f.review_id = r.id
+                   AND (f.title ILIKE $3 OR f.description ILIKE $3)
+              ) AS matched_finding
+         FROM reviews r
+        WHERE r.organisation_id = $1 AND r.project_id = $2
+          AND (
+            r.title ILIKE $3 OR r.slug ILIKE $3 OR r.description ILIKE $3
+            OR EXISTS (
+              SELECT 1 FROM findings f
+               WHERE f.review_id = r.id
+                 AND (f.title ILIKE $3 OR f.description ILIKE $3)
+            )
+          )
+        ORDER BY r.updated_at DESC, r.id DESC
+        LIMIT $4`,
+      [scope.organisationId, scope.projectId, pattern, Math.min(Math.max(limit, 1), 25)],
+    );
+    return rows.rows.map((raw) => {
+      const row = raw as Record<string, unknown>;
+      const matched: ReviewSearchField[] = [];
+      if (row["matched_title"] === true) matched.push("title");
+      if (row["matched_slug"] === true) matched.push("slug");
+      if (row["matched_description"] === true) matched.push("description");
+      if (row["matched_finding"] === true) matched.push("finding");
+      return {
+        review: toReview(row, Number(row["finding_count"])),
+        // The predicate above guarantees at least one match, but a row that
+        // somehow reported none would violate the result schema's minItems
+        // rather than be quietly returned with an empty list.
+        matched: matched.length === 0 ? (["title"] as ReviewSearchField[]) : matched,
+      };
+    });
   }
 
   async updateReview(
@@ -895,6 +994,40 @@ export class ReviewService {
             reason: "assigned",
           },
         });
+      }
+
+      // The delivery, in the same transaction as the assignment. An assignment
+      // that committed without one would be work a human believes they handed
+      // over and an agent has no way to discover (`docs/DOMAIN_MODEL.md`
+      // section 21). Assigning to nobody delivers nothing: there is no
+      // recipient to deliver to.
+      const recipient =
+        input.assignedAgentSessionId !== undefined
+          ? ({ type: "agent_session" as const, id: input.assignedAgentSessionId })
+          : input.assignedUserId !== undefined
+            ? ({ type: "human_user" as const, id: input.assignedUserId })
+            : null;
+      if (recipient !== null) {
+        const findingCount = await client.query<{ count: string }>(
+          "SELECT count(*) AS count FROM findings WHERE review_id = $1",
+          [reviewId],
+        );
+        await InboxStore.create(
+          client,
+          {
+            organisationId: scope.organisationId,
+            projectId: scope.projectId,
+            recipientType: recipient.type,
+            recipientId: recipient.id,
+            type: "review_assigned",
+            title: review.title,
+            reviewId,
+            reviewSlug: review.slug,
+            priority: review.priority ?? null,
+            findingCount: Number(findingCount.rows[0]?.count ?? 0),
+          },
+          actor,
+        );
       }
       return review;
     });
@@ -1301,6 +1434,46 @@ export class ReviewService {
             ...(input.reason === undefined ? {} : { reason: input.reason }),
           },
         });
+        // A reopen is new work for whoever holds the review, and it is
+        // delivered in the same transaction as the reopen itself
+        // (`docs/UX_FLOWS.md` section 13, `docs/DOMAIN_MODEL.md` section 21).
+        // Where nobody holds it the item is addressed to the project's agents
+        // with no recipient identifier, so the next session to look finds it
+        // rather than the work waiting for a session that never returns.
+        const review = await client.query<{
+          title: string;
+          slug: string;
+          priority: string | null;
+          assigned_user_id: string | null;
+          assigned_agent_session_id: string | null;
+        }>(
+          `SELECT title, slug, priority, assigned_user_id, assigned_agent_session_id
+             FROM reviews WHERE id = $1 AND organisation_id = $2 AND project_id = $3`,
+          [finding.review_id, scope.organisationId, scope.projectId],
+        );
+        const holder = review.rows[0];
+        if (holder !== undefined) {
+          await InboxStore.create(
+            client,
+            {
+              organisationId: scope.organisationId,
+              projectId: scope.projectId,
+              recipientType:
+                holder.assigned_user_id !== null && holder.assigned_agent_session_id === null
+                  ? "human_user"
+                  : "agent_session",
+              recipientId:
+                holder.assigned_agent_session_id ?? holder.assigned_user_id ?? null,
+              type: "finding_reopened",
+              title: finding.title,
+              reviewId: finding.review_id,
+              findingId,
+              reviewSlug: holder.slug,
+              priority: holder.priority,
+            },
+            actor,
+          );
+        }
       }
       return finding;
       });

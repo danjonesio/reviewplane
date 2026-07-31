@@ -29,8 +29,10 @@ import (
 	"github.com/danjonesio/reviewplane/services/connector/internal/channel"
 	"github.com/danjonesio/reviewplane/services/connector/internal/config"
 	"github.com/danjonesio/reviewplane/services/connector/internal/enrol"
+	"github.com/danjonesio/reviewplane/services/connector/internal/gitcontext"
 	"github.com/danjonesio/reviewplane/services/connector/internal/identity"
 	"github.com/danjonesio/reviewplane/services/connector/internal/logging"
+	"github.com/danjonesio/reviewplane/services/connector/internal/mcpbridge"
 	"github.com/danjonesio/reviewplane/services/connector/internal/routes"
 	"github.com/danjonesio/reviewplane/services/connector/internal/transport"
 	"github.com/danjonesio/reviewplane/services/connector/internal/workspaces"
@@ -92,8 +94,10 @@ Commands:
   run      Hold the outbound authenticated channel open, publish authorised
            routes and report workspace Git context.
   mcp      Local MCP bridge for an agent in this environment. It resolves the
-           workspace and project for the working directory; the short-lived
-           agent-session credential exchange is not available in this build.
+           workspace and project for the working directory, exchanges this
+           connector's device identity for a short-lived agent credential, and
+           proxies MCP over stdin and stdout. No agent token is written to disk.
+           Add --describe to print what it resolved without proxying.
   version  Print the connector version.
 
 Configuration is read from %s unless --config names another file.
@@ -323,27 +327,27 @@ func runChannel(args []string, _, stderr *os.File) int {
 	return exitOK
 }
 
-// bridgeUnavailable is the stable message the local MCP bridge reports until
-// the agent-session credential exchange lands. It is a constant so that an
-// operator, a shell wrapper and a test all read the same sentence.
-const bridgeUnavailable = "the local MCP bridge credential exchange is not available in this build (RVP-49)"
-
-// runMCPBridge is the local MCP bridge command surface of
-// docs/CONNECTOR_PROTOCOL.md section 14.
+// runMCPBridge is the local MCP bridge of docs/CONNECTOR_PROTOCOL.md
+// section 14 and docs/MCP_SPEC.md section 3.1.
 //
-// Section 14 gives the bridge four responsibilities: resolve the local
-// workspace and project, request short-lived agent-session credentials, proxy
-// MCP traffic to the control plane, and avoid storing long-lived agent tokens.
-// This build implements the first and refuses rather than inventing the rest.
+// Section 14 gives the bridge four responsibilities and this implements all
+// four: it resolves the local workspace and project from the agent's working
+// directory, exchanges the connector's device identity for a short-lived
+// agent credential (ADR-0023), proxies MCP traffic to the control plane over
+// stdin and stdout, and stores no long-lived agent token — the credential lives
+// in this process's memory and is written nowhere.
 //
-// Refusing is the point. A bridge that invented a credential exchange would be
-// inventing an authentication path, which docs/SECURITY.md section 6.3 fixes and
-// AGENTS.md "Architecture changes" puts behind an ADR; and one that proxied
-// without a credential would hand an agent whatever authority the connector
-// holds, which section 14 forbids in terms ("It must not grant the agent
-// connector-administrator privileges"). So the command validates everything it
-// can validate locally, tells the operator exactly what it found, and exits with
-// the refusal code rather than with success.
+// Two output rules hold throughout. **stdout is the agent's JSON-RPC channel**
+// and carries nothing else, because a diagnostic on it would corrupt the stream
+// the client is parsing. Everything an operator reads goes to stderr, which
+// under the shipped systemd unit is journald (section 16). With `--describe`
+// nothing is proxied and the resolution is printed to stdout instead, which is
+// the form an operator runs by hand.
+//
+// It must not grant the agent connector-administrator privileges. It cannot:
+// the credential it receives carries the workflow capabilities of
+// docs/MCP_SPEC.md section 14.1, and the capability vocabulary contains no
+// administrative capability for one to be granted.
 func runMCPBridge(args []string, stdout, stderr *os.File) int {
 	flags := flag.NewFlagSet("mcp", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -352,6 +356,8 @@ func runMCPBridge(args []string, stdout, stderr *os.File) int {
 		dataDir     = flags.String("data-dir", "", "identity data directory (default "+config.DefaultDataDir+")")
 		workspaceID = flags.String("workspace", "", "workspace to resolve (default: the one containing the working directory)")
 		directory   = flags.String("directory", "", "working directory to resolve (default: the current one)")
+		statusFile  = flags.String("status-file", "", "optional file to write the local work notification to")
+		describe    = flags.Bool("describe", false, "print what would be resolved and exit without proxying")
 		logLevel    = flags.String("log-level", "", "debug, info, warn or error")
 	)
 	if err := flags.Parse(args); err != nil {
@@ -365,8 +371,8 @@ func runMCPBridge(args []string, stdout, stderr *os.File) int {
 	}
 	logger := logging.New(stderr, cfg.Logging.Level)
 
-	// An environment with no identity has nothing to bridge to: the session the
-	// agent would use is issued against this connector, and there is no
+	// An environment with no identity has nothing to bridge to: the credential
+	// the agent would use is issued against this connector, and there is no
 	// connector yet.
 	store := identity.NewStore(cfg.Identity.DataDir)
 	// Enrolment is checked before the key file, unlike the channel's own start:
@@ -391,21 +397,80 @@ func runMCPBridge(args []string, stdout, stderr *os.File) int {
 		return exitRefused
 	}
 
-	// What was resolved is printed before the refusal, so that an operator can
-	// tell "the bridge does not exist yet" from "the bridge cannot see my
-	// project", which are two quite different problems with the same exit code.
-	fmt.Fprintf(stdout, "Connector:  %s\n", record.ConnectorID)
-	fmt.Fprintf(stdout, "Workspace:  %s\n", workspace.ID)
-	fmt.Fprintf(stdout, "Project:    %s\n", workspace.Project)
-	fmt.Fprintf(stdout, "Checkout:   %s\n", workspace.Path)
+	if *describe {
+		// Printed to stdout only in this mode, where stdout is an operator's
+		// terminal rather than an agent's JSON-RPC channel.
+		fmt.Fprintf(stdout, "Connector:  %s\n", record.ConnectorID)
+		fmt.Fprintf(stdout, "Workspace:  %s\n", workspace.ID)
+		fmt.Fprintf(stdout, "Project:    %s\n", workspace.Project)
+		fmt.Fprintf(stdout, "Checkout:   %s\n", workspace.Path)
+		return exitOK
+	}
 
-	logger.Error("refusing to start the local MCP bridge",
-		slog.String("reason", bridgeUnavailable),
+	certificate, _, err := store.ClientCertificate()
+	if err != nil {
+		return reportFailure(stderr, logger, err)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	credential, err := mcpbridge.Exchange(ctx, mcpbridge.ExchangeOptions{
+		ControlURL:        record.ControlURL,
+		WorkspacePathHash: gitcontext.PathHash(workspace.Path),
+		CAFile:            cfg.ControlPlane.TLS.CAFile,
+		ClientCertificate: &certificate,
+		UserAgent:         buildinfo.UserAgent,
+	})
+	if err != nil {
+		logger.Error("the local MCP bridge could not obtain an agent credential",
+			slog.String("connector_id", record.ConnectorID),
+			slog.String("workspace_id", workspace.ID),
+			slog.String("error", err.Error()),
+		)
+		fmt.Fprintln(stderr, err)
+		return exitRefused
+	}
+	// The credential is never logged, never printed and never written to a
+	// file. What is recorded is that one was issued and when it expires
+	// (docs/SECURITY.md section 18).
+	logger.Info("local MCP bridge started",
 		slog.String("connector_id", record.ConnectorID),
 		slog.String("workspace_id", workspace.ID),
+		slog.String("project", credential.ProjectSlug),
+		slog.String("credential", credential.String()),
 	)
-	fmt.Fprintln(stderr, bridgeUnavailable)
-	return exitRefused
+
+	if err := mcpbridge.Notify(credential.PendingWork, mcpbridge.NotifyOptions{
+		Logger:     logger,
+		Stderr:     stderr,
+		StatusFile: *statusFile,
+	}); err != nil {
+		// A notification that could not be written is worth reporting and is
+		// not worth refusing the session over: the work is still retrievable
+		// through agent_inbox_list.
+		logger.Warn("the local work notification could not be delivered",
+			slog.String("error", err.Error()))
+	}
+
+	endpoint, err := mcpbridge.MCPEndpoint(record.ControlPlaneURL, credential.ProjectSlug, workspace.Path)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitRefused
+	}
+	if err := mcpbridge.Proxy(ctx, mcpbridge.ProxyOptions{
+		Endpoint:  endpoint,
+		Token:     credential.Token,
+		CAFile:    cfg.ControlPlane.TLS.CAFile,
+		In:        os.Stdin,
+		Out:       stdout,
+		UserAgent: buildinfo.UserAgent,
+		Logger:    logger,
+	}); err != nil && !errors.Is(err, context.Canceled) {
+		return reportFailure(stderr, logger, err)
+	}
+	logger.Info("local MCP bridge stopped")
+	return exitOK
 }
 
 // resolveWorkspace finds the configured workspace an agent in directory belongs

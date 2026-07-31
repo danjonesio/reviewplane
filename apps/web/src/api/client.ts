@@ -365,6 +365,43 @@ export interface EnrolmentToken {
   readonly connector_command: string;
 }
 
+/**
+ * One delivered piece of work (`docs/API.md` section 16,
+ * `docs/DOMAIN_MODEL.md` section 21).
+ *
+ * Acknowledgement and completion are separate members because they are separate
+ * facts: an agent that has seen the work has not done it. A surface that read
+ * one from the other would report a review as finished the moment it was
+ * collected.
+ *
+ * Every member the control plane may not know arrives as `null` rather than
+ * absent, which is why none of them is optional here.
+ */
+export interface InboxItem {
+  readonly id: string;
+  readonly organisation_id: string;
+  readonly project_id: string;
+  readonly recipient_type: "human_user" | "agent_session";
+  readonly recipient_id: string | null;
+  readonly type: string;
+  readonly title: string;
+  readonly status: "pending" | "acknowledged" | "completed" | "dismissed" | "expired";
+  readonly review_id: string | null;
+  readonly review_slug: string | null;
+  readonly finding_id: string | null;
+  readonly priority: string | null;
+  readonly finding_count: number | null;
+  readonly assigned_by: {
+    readonly type: string;
+    readonly id?: string;
+    readonly display?: string;
+  } | null;
+  readonly created_at: string;
+  readonly acknowledged_at: string | null;
+  readonly completed_at: string | null;
+  readonly expires_at: string | null;
+}
+
 /** What revocation did, so the page can report it rather than imply it. */
 export interface ConnectorRevocation {
   readonly id: string;
@@ -501,6 +538,23 @@ export const api = {
 
   async findings(reviewId: string): Promise<Finding[]> {
     return request<Finding[]>(`/api/v1/reviews/${encodeURIComponent(reviewId)}/findings`);
+  },
+
+  /**
+   * The project's inbox, in every status.
+   *
+   * The endpoint answers with the live statuses alone when none is named, and a
+   * review whose delivery was completed or dismissed would then be
+   * indistinguishable from one that was never delivered at all. The statuses
+   * are therefore listed explicitly, so an absent item means an absent item.
+   */
+  async inbox(projectId: string): Promise<InboxItem[]> {
+    const statuses = ["pending", "acknowledged", "completed", "dismissed", "expired"]
+      .map((status) => `status=${status}`)
+      .join("&");
+    return request<InboxItem[]>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/inbox?${statuses}`,
+    );
   },
 
   async annotations(findingId: string): Promise<Annotation[]> {

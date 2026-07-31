@@ -315,19 +315,40 @@ published come from the suite rather than from a separate benchmark.
 - Inbox acknowledgement semantics
 - Completion-gate missing evidence response
 
-Every item on this list except the last two is covered by
+Every item on this list except the last is covered by
 `apps/mcp-server/test/mcp.test.ts`, which drives the endpoint with the official
-MCP TypeScript SDK client against a real database. Inbox semantics and
-completion gates arrive with the tools they test, in Stage 1.
+MCP TypeScript SDK client against a real database. The completion gate arrives
+with the tools it tests.
 
-The suite also holds the properties that are specific to the Stage 0 agent
-surface: the advertised tool set equals the schema's availability set; no
-advertised status enumeration can express a final disposition; a slug from
-another project resolves as not found; an agent credential is refused by the
+The suite also holds the properties that are specific to the agent surface: the
+advertised tool set equals the schema's availability set; no advertised status
+enumeration can express a final disposition; a slug from another project
+resolves as not found; `review_search` cannot match another project's content
+and has no project argument to widen it with; a wildcard in a search query is
+matched literally rather than as a scan; an agent credential is refused by the
 administrative API; a human session cookie is refused as agent authentication; a
 credential that expires mid-session refuses the next call rather than executing
 part of it; a transport session identifier is not a credential; and no tool
 response carries a credential.
+
+Inbox semantics are asserted at both ends. `apps/mcp-server/test/mcp.test.ts`
+covers the agent's: an assignment delivers one item and a repeated assignment
+delivers one; items are ordered oldest first; acknowledgement records receipt,
+replays under one idempotency key and never sets a completion time; an item
+delivered to another agent session answers `RESOURCE_NOT_FOUND`; and a reopened
+finding delivers new work. `apps/server/test/inbox.test.ts` covers the human's:
+acknowledgement and completion write different events, a cookie request with no
+CSRF token changes nothing, an agent credential reaches none of the four routes,
+and another project's item answers byte for byte as an unknown one does.
+
+`apps/server/test/connector-agent-credentials.test.ts` covers the credential
+exchange of ADR-0023 over real mutual TLS — `app.inject` cannot be used, because
+the route's whole authentication is the verified client certificate on the
+socket. `services/connector/internal/mcpbridge` covers the bridge's own half:
+the notification's documented form, its refusal to carry a control character,
+the status file's permissions and bound, the endpoint derivation, the proxy's
+session capture, its JSON-RPC answer to an unreachable control plane, and its
+refusal of an oversized message.
 
 `apps/mcp-server/test/unit.test.ts` holds the contract snapshot of the
 advertised tool schemas, so a breaking tool change cannot land silently
@@ -352,10 +373,12 @@ advertised tool schemas, so a breaking tool change cannot land silently
 
 - Organisation A cannot enumerate organisation B IDs
 - Project A agent cannot access project B review
+- Project A agent cannot **search** project B's reviews or findings
 - Worker session credentials cannot call admin API
 - Connector token cannot become human session
 - A connector cannot report a workspace into a project it was not enrolled for
 - A connector cannot claim a workspace identifier another project holds
+- A connector cannot exchange its identity for a credential to another environment's workspace
 
 `apps/server/test/connector-lifecycle.test.ts` covers the connector surface's
 share of this: a foreign connector identifier and an unknown one produce
@@ -480,6 +503,10 @@ Setting `REVIEWPLANE_TEST_S3_ENDPOINT`, `_BUCKET`, `_ACCESS_KEY` and
 | Filesystem artefact volume full or read-only | Driver reports it; nothing recorded available; upload retryable |
 | Human takeover during agent click | Ordered lease transition, no concurrent input |
 | Duplicate verification request | One verification record through idempotency |
+| Control plane unavailable mid-agent-session | The call is refused with a stable code below the envelope rather than reported as a rejected credential; nothing is half-written; the same call succeeds once the database returns; the session ends `DISCONNECTED` rather than `COMPLETED` |
+| Connector restart during a bridge session | The bridge ends with it and the next one requests a fresh credential; no token was stored to replay |
+| Duplicate `agent_inbox_acknowledge` under one key | One acknowledgement and one event |
+| Two agent sessions claiming one finding | One claim and one `VERSION_CONFLICT` |
 | Retention deletion partial failure | Retry, metadata not falsely tombstoned |
 | Development service closes a WebSocket | Closure reaches the browser with the service's close code and reason |
 | Connector disconnect during an open WebSocket | Connection closed, route answers `CONNECTOR_OFFLINE` |
@@ -580,6 +607,26 @@ browser declined would be a page a keyboard user could not finish
 (`UX_FLOWS.md` §5). Two further cases assert that a session room states the
 workspace's branch, commit and dirty state, and names the absence of a workspace
 rather than showing nothing.
+
+Agent delivery state is proved in `apps/web/test/ui/agent-delivery.browser.test.ts`,
+which owns the review page's Agent delivery section (`UX_FLOWS.md` §11 and §15).
+Its three delivery-state cases run at both required viewports and it is built
+around the three ways that section can lie. A
+delivered review must state the agent-session identifier it was assigned to, its
+inbox status as a word beside the badge, and "not yet received" while the item is
+pending — an assignment is not a collection, and asserting the third alongside
+the first is what keeps them apart. An acknowledged item must state the time it
+was collected, which is why the browser context pins both locale and time zone:
+an unpinned zone would make the assertion depend on where the container thinks
+it is. An undelivered review must render its named empty state and must state
+none of the five inbox statuses anywhere in the section, so a status invented out
+of an absence fails rather than passing quietly. One further case proves the
+command block and its copy control are reachable by keyboard with visible focus
+and that the announced outcome is one of the two honest ones, and another proves
+that a browser with no clipboard gets a disabled control and the keyboard route
+rather than a thrown error. Every case also asserts that the page states
+ReviewPlane does not type into an agent's terminal, because §11's prohibition is
+on a claim and only an affirmative sentence can be tested for.
 
 These live in `apps/web/test/ui/` and run with `pnpm test:ui`, which builds the
 bundle and drives it in a real Chromium against a stub control plane that

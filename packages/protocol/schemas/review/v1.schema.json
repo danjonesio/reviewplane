@@ -15,6 +15,7 @@
     "channels": {
       "review": "Review lifecycle: creation, naming and status.",
       "finding": "Finding lifecycle, including annotation of a finding.",
+      "inbox": "Durable delivery of assigned work to a human or an agent session (docs/DOMAIN_MODEL.md section 21).",
       "evidence": "Artefact upload and screenshot capture.",
       "command": "Request bodies of the human and agent write API.",
       "refusal": "Stable refusals carried back to a caller."
@@ -134,6 +135,36 @@
         "direction": "control_plane_to_client",
         "payload": "finding_status_change_denied",
         "description": "A principal asked for a finding transition it may not make, and was refused. The Stage 1 exit criterion is that an agent cannot finally accept a human-authored finding and that the attempt is audited; this is the audit half, and it is written outside the refused transaction because that transaction never commits."
+      },
+      "inbox_item.created": {
+        "channel": "inbox",
+        "direction": "control_plane_to_client",
+        "payload": "inbox_item_created",
+        "description": "Work was delivered to a recipient's inbox (docs/DOMAIN_MODEL.md section 21). It is written in the same transaction as the assignment or the reopen that caused it, so a delivery that was recorded is a delivery that happened."
+      },
+      "inbox_item.acknowledged": {
+        "channel": "inbox",
+        "direction": "control_plane_to_client",
+        "payload": "inbox_item_acknowledged",
+        "description": "A recipient acknowledged receipt. It is deliberately a different event from inbox_item.completed: acknowledgement says the work was seen and never that it was done, and an auditor asking which of the two happened must not have to infer it."
+      },
+      "inbox_item.completed": {
+        "channel": "inbox",
+        "direction": "control_plane_to_client",
+        "payload": "inbox_item_completed",
+        "description": "The work an inbox item delivered was recorded complete."
+      },
+      "inbox_item.dismissed": {
+        "channel": "inbox",
+        "direction": "control_plane_to_client",
+        "payload": "inbox_item_dismissed",
+        "description": "A human dismissed an inbox item without completing the work. It is audited because dismissing delivered feedback is a decision somebody made, and docs/DOMAIN_MODEL.md section 21 lists dismissed as a status a record can hold."
+      },
+      "inbox_item.expired": {
+        "channel": "inbox",
+        "direction": "control_plane_to_client",
+        "payload": "inbox_item_expired",
+        "description": "An inbox item passed its expiry without being acted on. It is a conclusion the control plane draws rather than an act a recipient performed."
       },
       "artefact.upload_started": {
         "channel": "evidence",
@@ -746,6 +777,11 @@
         "finding.reopened",
         "review.status_change_denied",
         "finding.status_change_denied",
+        "inbox_item.created",
+        "inbox_item.acknowledged",
+        "inbox_item.completed",
+        "inbox_item.dismissed",
+        "inbox_item.expired",
         "artefact.upload_started",
         "artefact.upload_completed",
         "artefact.upload_failed",
@@ -2290,6 +2326,247 @@
         "created_at": {
           "$ref": "#/$defs/timestamp",
           "description": "When it was written."
+        }
+      }
+    },
+    "inbox_item_status": {
+      "type": "string",
+      "description": "Inbox-item status (docs/DOMAIN_MODEL.md section 21). acknowledged and completed are separate values because receipt and completion are separate facts, and a single value covering both would make the audit question unanswerable.",
+      "enum": ["pending", "acknowledged", "completed", "dismissed", "expired"]
+    },
+    "inbox_item_type": {
+      "type": "string",
+      "description": "Why an inbox item exists. review_assigned is created when a review is assigned; finding_reopened is created when a human reopens a finding.",
+      "enum": ["review_assigned", "finding_reopened"]
+    },
+    "inbox_item_recipient_type": {
+      "type": "string",
+      "description": "What kind of principal an inbox item was delivered to. It is the actor vocabulary narrowed to the two that can hold work: a system or an integration receives nothing.",
+      "enum": ["human_user", "agent_session"]
+    },
+    "inbox_item": {
+      "type": "object",
+      "description": "A durable work notification (docs/DOMAIN_MODEL.md section 21). It exists so an agent learns what a human wants changed by retrieving a record rather than by guessing, and so a human can see whether the delivery was received. It names the work and never carries it: a review reference and a count, not the review's contents.",
+      "additionalProperties": false,
+      "x-max-bytes": 4096,
+      "required": [
+        "id",
+        "project_id",
+        "recipient_type",
+        "type",
+        "title",
+        "status",
+        "created_at"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Inbox-item identifier, conventionally prefixed inb_."
+        },
+        "organisation_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Owning organisation."
+        },
+        "project_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Owning project. An inbox item never crosses one."
+        },
+        "recipient_type": {
+          "$ref": "#/$defs/inbox_item_recipient_type",
+          "description": "What kind of principal it was delivered to."
+        },
+        "recipient_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "The principal it was delivered to. Absent for an item addressed to whoever picks the project's work up next."
+        },
+        "type": {
+          "$ref": "#/$defs/inbox_item_type",
+          "description": "Why the item exists."
+        },
+        "title": {
+          "$ref": "#/$defs/title_text",
+          "description": "What a human called the work."
+        },
+        "status": {
+          "$ref": "#/$defs/inbox_item_status",
+          "description": "Delivery status."
+        },
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review the item is about, where there is one."
+        },
+        "review_slug": {
+          "$ref": "#/$defs/slug",
+          "description": "Project-scoped name of that review."
+        },
+        "finding_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Finding the item is about, for a reopened finding."
+        },
+        "priority": {
+          "$ref": "#/$defs/review_priority",
+          "description": "Priority of the work. It orders a queue and gates nothing."
+        },
+        "finding_count": {
+          "type": "integer",
+          "description": "Findings in the referenced review when the item was created.",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "assigned_by": {
+          "$ref": "#/$defs/actor",
+          "description": "Who caused the item, derived from the authenticated actor."
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the item was created."
+        },
+        "acknowledged_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When receipt was acknowledged."
+        },
+        "completed_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the work was recorded complete."
+        },
+        "expires_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the item stops being current work, where an expiry was set."
+        }
+      }
+    },
+    "inbox_item_created": {
+      "type": "object",
+      "description": "Payload of inbox_item.created.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["inbox_item_id", "recipient_type", "type", "status"],
+      "properties": {
+        "inbox_item_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "The item created."
+        },
+        "recipient_type": {
+          "$ref": "#/$defs/inbox_item_recipient_type",
+          "description": "What kind of principal it was delivered to."
+        },
+        "recipient_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "The principal it was delivered to, where one was named."
+        },
+        "type": {
+          "$ref": "#/$defs/inbox_item_type",
+          "description": "Why the item exists."
+        },
+        "status": {
+          "$ref": "#/$defs/inbox_item_status",
+          "description": "Status at creation, which is pending."
+        },
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review the item is about, where there is one."
+        },
+        "finding_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Finding the item is about, where there is one."
+        },
+        "finding_count": {
+          "type": "integer",
+          "description": "Findings in the referenced review at creation.",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "priority": {
+          "$ref": "#/$defs/review_priority",
+          "description": "Priority of the work."
+        }
+      }
+    },
+    "inbox_item_acknowledged": {
+      "type": "object",
+      "description": "Payload of inbox_item.acknowledged. It carries no completion member, because acknowledgement is not completion and a payload that could express both would invite a consumer to treat them as one.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["inbox_item_id", "previous_status"],
+      "properties": {
+        "inbox_item_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "The item acknowledged."
+        },
+        "previous_status": {
+          "$ref": "#/$defs/inbox_item_status",
+          "description": "Status the item was actually in, read under the lock that changed it."
+        },
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review the item is about, where there is one."
+        }
+      }
+    },
+    "inbox_item_completed": {
+      "type": "object",
+      "description": "Payload of inbox_item.completed.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["inbox_item_id", "previous_status"],
+      "properties": {
+        "inbox_item_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "The item completed."
+        },
+        "previous_status": {
+          "$ref": "#/$defs/inbox_item_status",
+          "description": "Status the item was actually in."
+        },
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review the item is about, where there is one."
+        }
+      }
+    },
+    "inbox_item_dismissed": {
+      "type": "object",
+      "description": "Payload of inbox_item.dismissed.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["inbox_item_id", "previous_status"],
+      "properties": {
+        "inbox_item_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "The item dismissed."
+        },
+        "previous_status": {
+          "$ref": "#/$defs/inbox_item_status",
+          "description": "Status the item was actually in."
+        },
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review the item is about, where there is one."
+        },
+        "reason": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Why it was dismissed, where the caller supplied one."
+        }
+      }
+    },
+    "inbox_item_expired": {
+      "type": "object",
+      "description": "Payload of inbox_item.expired.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["inbox_item_id", "previous_status"],
+      "properties": {
+        "inbox_item_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "The item that expired."
+        },
+        "previous_status": {
+          "$ref": "#/$defs/inbox_item_status",
+          "description": "Status the item was actually in."
+        },
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review the item is about, where there is one."
         }
       }
     },
