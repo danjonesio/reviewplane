@@ -264,9 +264,15 @@ calls do, and each names the rule it enforces.
 - Project-scoped reads carry the identifier, the session's project scope and the
   session's organisation in the same `WHERE` clause, so a row that satisfies one
   and not the others is never returned and then rejected by a later branch.
-- A foreign identifier is answered `RESOURCE_NOT_FOUND`, byte for byte as an
-  unknown one is. `AUTHORISATION_DENIED` would confirm that the resource exists,
-  which is the enumeration a cross-project attacker wants.
+- On the project routes a foreign identifier is answered `RESOURCE_NOT_FOUND`,
+  byte for byte as an unknown one is. `AUTHORISATION_DENIED` would confirm that
+  the resource exists, which is the enumeration a cross-project attacker wants.
+  The review and artefact routes do not yet meet this rule: they look the row up
+  before applying scope, so a foreign identifier is answered
+  `PROJECT_CONTEXT_MISMATCH` where an unknown one is answered
+  `RESOURCE_NOT_FOUND`, and the pair is an existence oracle. That is a defect
+  against this section rather than an exemption from it, and it is tracked
+  separately; new routes MUST follow the project routes.
 
 ### Live-view authorisation
 
