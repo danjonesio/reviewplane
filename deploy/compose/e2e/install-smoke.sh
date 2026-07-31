@@ -35,7 +35,9 @@
 #   8. `reviewplane status` reports the documented fields, and `--json` is the
 #      shape automation was promised.
 #   9. Fault injection: PostgreSQL stopped leaves the API not ready and still
-#      running; a missing secret file fails closed with a message naming it.
+#      running; the browser worker stopped leaves `reviewplane status` reporting
+#      zero capacity; a missing secret file fails closed with a message naming
+#      it.
 #
 # Usage: pnpm test:install
 #        REVIEWPLANE_INSTALL_KEEP_UP=1 pnpm test:install   # leave it running
@@ -587,6 +589,57 @@ else
   fail "liveness failed during a database outage: ${LIVE}"
 fi
 "${COMPOSE[@]}" start postgres > /dev/null 2>&1
+
+# The browser worker stopped: `reviewplane status` must stop counting its slots.
+#
+# Nothing reaps a stopped worker's row — it stays `active` in `browser_workers`
+# — so this is the case where a status command most easily lies: it would go on
+# reporting four free slots on a host with no browser at all, and an operator
+# asking why a session will not start would look at the scheduler. The real
+# threshold is waited out rather than shortened, because what is under test is
+# the shipped default.
+"${COMPOSE[@]}" stop browser-worker > /dev/null 2>&1
+WORKER_GONE=""
+for _ in $(seq 1 30); do
+  WORKER_GONE="$(./reviewplane status --json 2> /dev/null || true)"
+  if python3 -c '
+import json, sys
+report = json.load(sys.stdin)
+sys.exit(0 if report["browser_capacity"]["capacity"] == 0 else 1)
+  ' <<< "${WORKER_GONE}" 2> /dev/null; then
+    break
+  fi
+  sleep 5
+done
+printf '%s\n' "${WORKER_GONE}" > "${EVIDENCE}/status-worker-absent.json"
+./reviewplane status > "${EVIDENCE}/status-worker-absent.txt" 2>&1 || true
+if python3 - "${EVIDENCE}/status-worker-absent.json" << 'PY'
+import json, sys
+
+report = json.load(open(sys.argv[1]))
+capacity = report["browser_capacity"]
+problems = []
+if capacity["capacity"] != 0:
+    problems.append(f"capacity is {capacity['capacity']}, expected 0")
+if capacity["available"] != 0:
+    problems.append(f"available is {capacity['available']}, expected 0")
+if capacity["workers"] != 0:
+    problems.append(f"{capacity['workers']} worker(s) counted as live")
+if capacity["stale_workers"] < 1:
+    problems.append("the stopped worker is not reported as stale")
+if not any("heard from" in warning for warning in report["warnings"]):
+    problems.append(f"no stale-worker warning: {report['warnings']}")
+if problems:
+    print("; ".join(problems))
+    sys.exit(1)
+print(f"capacity 0, {capacity['stale_workers']} stale, warning present")
+PY
+then
+  pass "with the browser worker stopped, status reports zero capacity and names the fault"
+else
+  fail "status still reported browser capacity with the worker stopped"
+fi
+"${COMPOSE[@]}" start browser-worker > /dev/null 2>&1
 
 # `reviewplane status` with the artefact store gone. The volume cannot be
 # unmounted under a running container, so the fault is injected where the store

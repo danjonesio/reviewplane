@@ -343,6 +343,7 @@ Verify persisted artefacts and logs are redacted according to policy.
 | Artefact write probe that never returns | The probe is bounded and reported as unavailability, rather than hanging the status command |
 | Missing secret file | Compose refuses to start the service, naming the file |
 | No browser worker registered | `reviewplane status` reports zero capacity as a warning, not a failure |
+| Browser worker stopped after registering | Its slots stop being counted once it has been silent past the staleness threshold; `reviewplane status` reports zero capacity and names the silence rather than the absence |
 
 ## 12. Performance tests
 

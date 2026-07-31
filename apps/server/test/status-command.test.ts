@@ -230,6 +230,54 @@ describe("reviewplane status", () => {
     assert.deepEqual(report.warnings, []);
   });
 
+  test("a worker that has stopped heartbeating is not counted as capacity", async () => {
+    // The fault this exists for: the container is stopped, so the slots it
+    // advertises do not exist, but nothing reaps its row — it stays `active` in
+    // `browser_workers` indefinitely. Reporting "4 of 4 slots free" about a
+    // container that is gone sends an operator asking why a session will not
+    // start to look at the scheduler.
+    await postgres.pool.query(
+      `insert into browser_workers (id, name, credential_sha256, worker_version, browser_type,
+                                    browser_version, capacity, sandbox_enabled, active_sessions,
+                                    registered_at, last_heartbeat_at)
+       values ('bwk_gone', 'worker-01', 'digest', '0.1.0', 'chromium', '140', 4, true, 0,
+               now() - interval '10 minutes', now() - interval '5 minutes')`,
+    );
+
+    const report = await gatherStatus({ pool: postgres.pool, artefactPath: artefactRoot });
+
+    assert.equal(report.browser_capacity.workers, 0, "a silent worker is not a live worker");
+    assert.equal(report.browser_capacity.stale_workers, 1);
+    assert.equal(report.browser_capacity.capacity, 0);
+    assert.equal(report.browser_capacity.available, 0);
+    // The row is still reported, because "a worker registered and went quiet"
+    // and "no worker ever registered" are different faults with different fixes.
+    assert.ok(
+      report.warnings.some((warning) => warning.includes("have not been heard from")),
+      `expected a stale-worker warning, got ${JSON.stringify(report.warnings)}`,
+    );
+    assert.match(renderStatus(report), /not heard from in \d+s/u);
+  });
+
+  test("a worker that has registered but not yet heartbeated still counts", async () => {
+    // The first heartbeat is one interval away, so a worker that has just
+    // registered has no `last_heartbeat_at` at all. Counting only heartbeats
+    // would report no capacity for the first fifteen seconds of every
+    // installation — a false alarm in the one minute an operator is watching.
+    await postgres.pool.query(
+      `insert into browser_workers (id, name, credential_sha256, worker_version, browser_type,
+                                    browser_version, capacity, sandbox_enabled, registered_at)
+       values ('bwk_new', 'worker-01', 'digest', '0.1.0', 'chromium', '140', 4, true, now())`,
+    );
+
+    const report = await gatherStatus({ pool: postgres.pool, artefactPath: artefactRoot });
+
+    assert.equal(report.browser_capacity.workers, 1);
+    assert.equal(report.browser_capacity.stale_workers, 0);
+    assert.equal(report.browser_capacity.available, 4);
+    assert.deepEqual(report.warnings, []);
+  });
+
   test("a worker with the Chromium sandbox disabled is a warning", async () => {
     await postgres.pool.query(
       `insert into browser_workers (id, name, credential_sha256, worker_version, browser_type,

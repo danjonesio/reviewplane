@@ -583,15 +583,24 @@ Kubernetes must not become the only supported deployment.
 - Running Chromium with sandbox disabled by default
 - Using the connector as a general VPN
 
-These are properties of the shipped default, not advice, and `pnpm test:install`
-asserts each of them against a running installation rather than against the
-file. `docs/SECURITY.md` §4 names administrator misconfiguration as a threat, so
-a default that is only safe after an edit has already failed:
+These are properties of the shipped default, not advice. `docs/SECURITY.md` §4
+names administrator misconfiguration as a threat, so a default that is only safe
+after an edit has already failed.
 
-| Pattern | How the gate proves it is absent |
-|---|---|
-| Exposed CDP or PostgreSQL | Enumerates every published port in the project and connects from the host to 5432, 9222, 8090, 8444 and 8445. The gateway's own port is probed alongside them, so a probe that cannot connect to anything is not mistaken for proof. |
-| Docker socket in `api`, `mcp` or `jobs` | Inspects the mounts of every container. |
-| Chromium sandbox disabled | Reads `browser_workers.sandbox_enabled` for the registered worker — what the worker reported about the Chromium it launched, not what a variable claims. |
-| Browser worker credentials | Lists `/run/secrets` inside the worker and asserts no database, artefact or bootstrap credential, and that no artefact volume is mounted (ADR-0012). |
-| UI asset from another host | Fetches the served document through the gateway and asserts every `src` and `href` is same-origin. |
+Four of the six are asserted by `pnpm test:install` against a **running**
+installation. The other two are asserted, but by the gates that own the
+behaviour rather than by the installation gate — the table says which, because
+"a gate covers this" is a claim that has to be checkable:
+
+| Pattern | Asserted by | How |
+|---|---|---|
+| Exposing browser CDP ports publicly | `pnpm test:install` | Enumerates every published port in the project and connects from the host to 5432, 9222, 8090, 8444 and 8445. The gateway's own port is probed alongside them, so a probe that cannot connect to anything is not mistaken for proof. |
+| Mounting the Docker socket into the API service | `pnpm test:install` | Inspects the mounts of every container, not only `api`. |
+| Sharing one unrestricted browser profile across projects | `pnpm test:browser` | "a session launches Chromium with the sandbox enabled and an ephemeral profile" asserts that each session gets its own profile directory and that termination removes it (`docs/SECURITY.md` §10.1). The installation gate does not allocate a session, so it cannot see this. |
+| Publishing PostgreSQL or artefact storage publicly | `pnpm test:install` | PostgreSQL is port-scanned as above. Artefact storage publishes nothing because there is no artefact service to publish: ADR-0012 makes it a volume the control plane owns, and the gate asserts the browser worker holds no artefact volume and no storage credential. |
+| Running Chromium with the sandbox disabled by default | `pnpm test:install` | Reads `browser_workers.sandbox_enabled` for the registered worker — what the worker reported about the Chromium it launched, not what a variable claims. |
+| Using the connector as a general VPN | `pnpm test` (`destination-policy.test.ts`) | The destination policy of `docs/SECURITY.md` §9 is run as one corpus against the control plane, the tunnel gateway and the connector, so a destination only one of them refuses fails the build. A published service is a route to one destination, not network reach. |
+
+`pnpm test:install` additionally asserts that no UI asset is loaded from another
+host: it fetches the served document through the gateway and checks that every
+`src` and `href` is same-origin.

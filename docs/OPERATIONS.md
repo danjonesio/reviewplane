@@ -86,7 +86,7 @@ Output includes, and the `--json` object carries a key for each:
 | Database connectivity and schema | `database` | Reachability, schema version and pending migration count |
 | Artefact store availability | `artefact_store` | Driver, path, and whether a **write** succeeds |
 | Active connectors | `connectors` | Active, degraded, disconnected and total enrolled |
-| Browser worker capacity | `browser_capacity` | Workers, total slots, slots in use, slots free, sandboxed workers |
+| Browser worker capacity | `browser_capacity` | Live workers, workers gone quiet, total slots, slots in use, slots free, sandboxed workers |
 | Active sessions | `sessions` | Sessions that have not ended |
 | Queue depth | `queue` | Pending, running and failed durable jobs |
 | Storage use | `storage` | Available artefact count and bytes, database size, volume free and total |
@@ -100,11 +100,30 @@ read succeeds against both. The probe is also raced against a timer, because a
 wedged network mount blocks in the kernel and a status command that hung on the
 store it was asked about would be useless in exactly the outage it exists for.
 
+**Capacity is what a worker has been heard from about.** A browser worker
+heartbeats every 15 seconds, and one that has been silent for **45 seconds** —
+three missed heartbeats, the margin
+`REVIEWPLANE_CONNECTOR_DEGRADED_AFTER_SECONDS` gives a connector — has its slots
+excluded from `capacity`, `available` and `in_use`, and is counted in
+`stale_workers` instead. A worker that has registered and not yet reached its
+first heartbeat counts from its registration, so a stack coming up does not
+report a false shortage for fifteen seconds.
+
+This is a reporting rule and nothing more. No process reaps a stopped worker's
+row: it stays `active` in `browser_workers` until something marks it otherwise,
+which is worker-lifecycle work `status` does not do. What `status` must not do
+is answer "four slots free" about a container that is gone, because an operator
+asking why a session will not start would read that as the scheduler's problem
+and look in the wrong place. The stale row is still reported, because "a worker
+registered and went quiet" is a container to restart while "no worker ever
+registered" is a stack that never came up.
+
 **Zero is not a failure.** A fresh installation has no connectors, no sessions
 and no queued work, and reporting that as unhealthy would train an operator to
 ignore the command. Only the database, the schema and the artefact store make
-the report `degraded`; no browser capacity, a worker reporting the Chromium
-sandbox disabled and a certificate near expiry are `warnings`.
+the report `degraded`; no browser capacity, a worker gone quiet, a worker
+reporting the Chromium sandbox disabled and a certificate near expiry are
+`warnings`.
 
 The exit code is the automation interface: `0` when every check passes, `4` when
 one that the deployment cannot work without has failed. `4` rather than `1`

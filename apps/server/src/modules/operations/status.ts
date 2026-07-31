@@ -34,6 +34,25 @@ import { describeFailure, readBuildInfo, type BuildInfo } from "../../health.ts"
 /** Days before expiry at which a certificate becomes a warning. */
 export const CERTIFICATE_WARNING_DAYS = 30;
 
+/**
+ * Silence after which a browser worker's capacity stops being counted.
+ *
+ * A worker heartbeats every fifteen seconds — the interval the control plane
+ * advertises in its registration acknowledgement — so this is three missed
+ * heartbeats, the same margin `REVIEWPLANE_CONNECTOR_DEGRADED_AFTER_SECONDS`
+ * gives a connector.
+ *
+ * It is applied here, in the reporting, and nowhere else. Nothing reaps a
+ * stopped worker's row: it stays `active` in `browser_workers` until something
+ * marks it otherwise, which is worker-lifecycle work this command does not do.
+ * What this command must not do is answer "four slots free" about a container
+ * that is gone — an operator asking why a session will not start would read
+ * that as the scheduler's problem and look in the wrong place. The row is still
+ * reported, as `stale_workers`, because "a worker registered and went quiet" and
+ * "no worker ever registered" are different faults with different fixes.
+ */
+export const WORKER_STALE_AFTER_SECONDS = 45;
+
 export interface DatabaseStatus {
   readonly reachable: boolean;
   readonly schema_version: string | null;
@@ -57,7 +76,13 @@ export interface ConnectorStatus {
 }
 
 export interface BrowserCapacityStatus {
+  /** Workers heard from within {@link WORKER_STALE_AFTER_SECONDS}. */
   readonly workers: number;
+  /**
+   * Workers still marked active in the database that have not been heard from
+   * inside that window. Their capacity is not counted.
+   */
+  readonly stale_workers: number;
   readonly capacity: number;
   readonly in_use: number;
   readonly available: number;
@@ -148,6 +173,8 @@ export interface StatusOptions {
   readonly now?: Date;
   /** Bound on the artefact-store write probe. Tests set it to prove the bound. */
   readonly artefactProbeTimeoutMs?: number;
+  /** Overrides {@link WORKER_STALE_AFTER_SECONDS}, so a test need not wait it out. */
+  readonly workerStaleAfterSeconds?: number;
 }
 
 /** Milliseconds the certificate probe waits before giving up. */
@@ -162,7 +189,7 @@ export async function gatherStatus(options: StatusOptions): Promise<StatusReport
     await Promise.all([
       artefactStoreStatus(options.artefactPath, options.artefactProbeTimeoutMs),
       connectorStatus(options.pool),
-      browserCapacityStatus(options.pool),
+      browserCapacityStatus(options.pool, options.workerStaleAfterSeconds),
       sessionStatus(options.pool),
       queueStatus(options.pool),
       storageStatus(options.pool, options.artefactPath),
@@ -177,9 +204,14 @@ export async function gatherStatus(options: StatusOptions): Promise<StatusReport
   }
   if (database.reachable && browserCapacity.available === 0) {
     warnings.push(
-      browserCapacity.workers === 0
-        ? "no browser worker has registered; browser sessions cannot be allocated"
-        : "browser capacity is exhausted; new sessions will queue or be refused",
+      browserCapacity.workers > 0
+        ? "browser capacity is exhausted; new sessions will queue or be refused"
+        : browserCapacity.stale_workers > 0
+          ? // Two different faults with two different fixes: a worker that
+            // registered and stopped answering is a container to restart; no
+            // worker at all is a stack that was never brought up completely.
+            `${String(browserCapacity.stale_workers)} registered browser worker(s) have not been heard from in ${String(WORKER_STALE_AFTER_SECONDS)}s; browser sessions cannot be allocated`
+          : "no browser worker has registered; browser sessions cannot be allocated",
     );
   }
   if (
@@ -322,26 +354,46 @@ async function connectorStatus(pool: Pool): Promise<ConnectorStatus> {
   }
 }
 
-async function browserCapacityStatus(pool: Pool): Promise<BrowserCapacityStatus> {
+async function browserCapacityStatus(
+  pool: Pool,
+  staleAfterSeconds: number | undefined = WORKER_STALE_AFTER_SECONDS,
+): Promise<BrowserCapacityStatus> {
+  staleAfterSeconds ??= WORKER_STALE_AFTER_SECONDS;
   try {
+    // `greatest(last_heartbeat_at, registered_at)`: `greatest` ignores nulls, so
+    // a worker that has registered and not yet reached its first heartbeat
+    // counts from its registration. Without that a freshly started stack would
+    // report no capacity for the first fifteen seconds, which is a false alarm
+    // in exactly the minute an operator is watching the installation come up.
     const result = await pool.query<{
       workers: string;
+      stale: string;
       capacity: string;
       in_use: string;
       sandboxed: string;
     }>(
-      `select count(*)::text                                          as workers,
-              coalesce(sum(capacity), 0)::text                        as capacity,
-              coalesce(sum(active_sessions), 0)::text                 as in_use,
-              count(*) filter (where sandbox_enabled)::text           as sandboxed
-         from browser_workers
-        where status in ('active', 'degraded')`,
+      `select count(*) filter (where live)::text                              as workers,
+              count(*) filter (where not live)::text                          as stale,
+              coalesce(sum(capacity) filter (where live), 0)::text            as capacity,
+              coalesce(sum(active_sessions) filter (where live), 0)::text     as in_use,
+              count(*) filter (where live and sandbox_enabled)::text          as sandboxed
+         from (
+           select capacity,
+                  active_sessions,
+                  sandbox_enabled,
+                  greatest(last_heartbeat_at, registered_at)
+                    > now() - make_interval(secs => $1::double precision) as live
+             from browser_workers
+            where status in ('active', 'degraded')
+         ) as worker`,
+      [staleAfterSeconds],
     );
     const row = result.rows[0];
     const capacity = Number(row?.capacity ?? 0);
     const inUse = Number(row?.in_use ?? 0);
     return {
       workers: Number(row?.workers ?? 0),
+      stale_workers: Number(row?.stale ?? 0),
       capacity,
       in_use: inUse,
       available: Math.max(capacity - inUse, 0),
@@ -351,6 +403,7 @@ async function browserCapacityStatus(pool: Pool): Promise<BrowserCapacityStatus>
   } catch (error) {
     return {
       workers: 0,
+      stale_workers: 0,
       capacity: 0,
       in_use: 0,
       available: 0,
@@ -630,7 +683,10 @@ export function renderStatus(report: StatusReport): string {
   row(
     "browser capacity",
     report.browser_capacity.detail === null
-      ? `${String(report.browser_capacity.workers)} worker(s), ${String(report.browser_capacity.available)} of ${String(report.browser_capacity.capacity)} slot(s) free, ${String(report.browser_capacity.sandboxed_workers)} sandboxed`
+      ? `${String(report.browser_capacity.workers)} worker(s), ${String(report.browser_capacity.available)} of ${String(report.browser_capacity.capacity)} slot(s) free, ${String(report.browser_capacity.sandboxed_workers)} sandboxed` +
+        (report.browser_capacity.stale_workers > 0
+          ? `, ${String(report.browser_capacity.stale_workers)} not heard from in ${String(WORKER_STALE_AFTER_SECONDS)}s`
+          : "")
       : `unavailable: ${report.browser_capacity.detail}`,
   );
   row(

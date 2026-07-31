@@ -7,7 +7,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -132,6 +132,28 @@ function main(): void {
   );
 }
 
-if (process.argv[1] !== undefined && resolvePath(process.argv[1]) === fileURLToPath(import.meta.url)) {
+/**
+ * Whether this module was invoked as the process entry point.
+ *
+ * The comparison is between **real** paths. Node resolves symlinks when it
+ * loads a module, so `import.meta.url` is the target while `process.argv[1]` is
+ * whatever path the caller typed: a repository checked out under a symlinked
+ * directory — or invoked through a symlinked bin, which is how the deployed
+ * image installs `reviewplane` — makes the two unequal, and an unresolved guard
+ * then runs nothing and exits 0. `pnpm protocol:generate` would report success
+ * and write no file. The same shape did exactly that in `apps/server/src/cli.ts`
+ * (RVP-15), where it meant `reviewplane migrate` applied no migration.
+ */
+function invokedAsEntryPoint(): boolean {
+  const entry = process.argv[1];
+  if (entry === undefined) return false;
+  try {
+    return realpathSync(resolvePath(entry)) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
+
+if (invokedAsEntryPoint()) {
   main();
 }
