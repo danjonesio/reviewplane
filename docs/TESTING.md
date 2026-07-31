@@ -338,6 +338,11 @@ Verify persisted artefacts and logs are redacted according to policy.
 | Route revoked during an open WebSocket | Connection closed promptly, not at the next request |
 | Exceeding the stream limit with upgraded connections | `STREAM_LIMIT_EXCEEDED` |
 | Long editing pause with no traffic | Connection survives the configured idle window and closes past it |
+| PostgreSQL not yet ready at start-up | The API reports itself not ready, keeps answering liveness, and does not exit into a restart loop |
+| Artefact volume unwritable | `reviewplane status` reports the artefact store unavailable and exits 4 |
+| Artefact write probe that never returns | The probe is bounded and reported as unavailability, rather than hanging the status command |
+| Missing secret file | Compose refuses to start the service, naming the file |
+| No browser worker registered | `reviewplane status` reports zero capacity as a warning, not a failure |
 
 ## 12. Performance tests
 
@@ -450,7 +455,14 @@ A release cannot ship when:
 No release pipeline enforces this list yet. `.github/workflows/ci.yml` runs the
 root gates of `docs/DEVELOPMENT.md` section 5 on every pull request, which
 covers the protocol compatibility check, and
-`.github/workflows/container-harnesses.yml` runs the end-to-end and browser
-harnesses nightly; the remaining conditions have no automated owner. RVP-57
+`.github/workflows/container-harnesses.yml` runs the end-to-end, browser and
+installation harnesses nightly. `pnpm test:install` owns two of the conditions
+above: it runs `docs/DEPLOYMENT.md` section 8 verbatim from a clean checkout to a
+rendered login page, which is the Stage 1 exit criterion "fresh installation from
+release artefacts in one documented flow", and it asserts that the browser worker
+is not running with unsupported insecure defaults — non-root, sandbox enabled as
+the worker itself reported it at registration, no Docker socket, no database or
+artefact credential, and no published debugging port. The remaining conditions
+have no automated owner. RVP-57
 builds the release pipeline that makes every condition above blocking, and the
 list here is its specification rather than a description of what runs today.

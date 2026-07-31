@@ -11,9 +11,9 @@ throwaway authorities that exist for the duration of a test.
 
 | File | Written by | Read by |
 |---|---|---|
-| `tunnel-ca.pem` | `e2e/generate-secrets.sh` | nothing directly; signs `gateway.crt` and is bundled into `connector-trust.pem` |
-| `gateway.crt` | `e2e/generate-secrets.sh` | `REVIEWPLANE_TUNNEL_TLS_CERT_FILE` |
-| `gateway.key` | `e2e/generate-secrets.sh` | `REVIEWPLANE_TUNNEL_TLS_KEY_FILE` |
+| `tunnel-ca.pem` | `./configure` | nothing directly; signs `gateway.crt` and is bundled into `connector-trust.pem` |
+| `gateway.crt` | `./configure` | `REVIEWPLANE_TUNNEL_TLS_CERT_FILE` |
+| `gateway.key` | `./configure` | `REVIEWPLANE_TUNNEL_TLS_KEY_FILE` |
 | `connector-ca.pem` | `e2e/run.sh` | `REVIEWPLANE_TUNNEL_CONNECTOR_CA_FILE` |
 | `connector-trust.pem` | `e2e/run.sh` | `REVIEWPLANE_CONTROL_PLANE_CA_FILE` |
 
@@ -25,7 +25,7 @@ There are **two** authorities here, and keeping them apart is the point.
   anchor — `x509: certificate signed by unknown authority` — which is what the
   connector's data channel hits otherwise. The browser worker does not use this
   chain at all: it pins the leaf's public key (ADR-0015), and
-  `generate-secrets.sh` writes that pin to `.env` as
+  `./configure` writes that pin to `.env` as
   `REVIEWPLANE_TUNNEL_CERTIFICATE_SPKI`.
 - **The connector CA** (`connector-ca.pem`) is **exported from the running
   control plane**, which owns the authority that issues connector identities. It
@@ -87,11 +87,11 @@ single caller needs.
 ## Generating it
 
 ```bash
-deploy/compose/e2e/generate-secrets.sh    # tunnel-ca.*, gateway.crt, gateway.key
+deploy/compose/configure                 # tunnel-ca.*, gateway.crt, gateway.key
 deploy/compose/e2e/run.sh                 # connector-ca.pem, connector-trust.pem
 ```
 
-`generate-secrets.sh` leaves an existing certificate alone; pass `--force` to
+`./configure` leaves an existing certificate alone; pass `--force` to
 replace the whole set. Regenerate rather than reuse across machines: these are
 test certificates, and a long-lived private key sitting in a working tree is the
 thing this directory is set up to prevent.

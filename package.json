@@ -21,6 +21,7 @@
     "test:integration": "pnpm -r --if-present run test:integration",
     "test:e2e": "bash deploy/compose/e2e/run.sh",
     "test:edge": "bash deploy/compose/e2e/edge-smoke.sh",
+    "test:install": "bash deploy/compose/e2e/install-smoke.sh",
     "protocol:generate": "pnpm --filter @reviewplane/protocol run generate",
     "protocol:check": "pnpm --filter @reviewplane/protocol run check"
   },

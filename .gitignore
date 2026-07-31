@@ -36,6 +36,7 @@ deploy/compose/connector-config.generated.yaml
 # Evidence from an end-to-end run. It is attached to a pull request, not
 # committed: it names generated identifiers that mean nothing on another run.
 deploy/compose/e2e/evidence/
+deploy/compose/e2e/evidence-install/
 
 # Logs
 *.log

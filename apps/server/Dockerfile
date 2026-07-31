@@ -34,8 +34,16 @@ COPY --from=builder --chown=root:root /app /app
 # Migrations are read at startup and are not part of the compiled output.
 COPY --from=builder --chown=root:root /src/apps/server/migrations /app/migrations
 
-RUN mkdir -p /var/lib/reviewplane/artefacts \
-    && chown reviewplane:reviewplane /var/lib/reviewplane/artefacts
+# Both directories exist in the image, owned by the service user, because a
+# fresh Docker named volume takes its ownership from the image path it is
+# mounted over. Without them the volume arrives owned by root and this process,
+# which runs as uid 10001, cannot write to it.
+#
+# `connector-ca` is where the connector authority's certificate is published for
+# the tunnel gateway to read (ADR-0014). The private key is never written there.
+RUN mkdir -p /var/lib/reviewplane/artefacts /var/lib/reviewplane/connector-ca \
+    && chown reviewplane:reviewplane \
+       /var/lib/reviewplane/artefacts /var/lib/reviewplane/connector-ca
 
 # The operator command line of docs/DEPLOYMENT.md section 11. It ships in this
 # image so that `reviewplane migrate` applies exactly the schema the code in

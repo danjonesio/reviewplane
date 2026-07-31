@@ -1,0 +1,114 @@
+name: Release images
+
+# Publishes the versioned OCI images `docs/DEPLOYMENT.md` section 2 names, from
+# a tag, so that an installation can pull `${REVIEWPLANE_VERSION}` rather than
+# build it.
+#
+# The version is the tag with its leading `v` removed, and it is the same value
+# `deploy/compose/.env` pins, `/version` reports and `reviewplane status`
+# prints. There is no `latest`: `docs/DEPLOYMENT.md` section 2 requires
+# production files to pin an exact version or an immutable digest, and a
+# floating tag is the thing that requirement exists to forbid.
+#
+# What this workflow deliberately does not do yet, because it is Stage 2 in
+# `docs/ROADMAP.md`: image signing, SBOM publication and multi-architecture
+# builds. `docs/SECURITY.md` section 19 lists all three as release requirements,
+# and until they exist an installation that cannot verify a signature is better
+# served by building from a checkout — which is what `./configure` falls back to
+# and says out loud.
+#
+# No third-party action is used. Every step is `docker` on the runner, so the
+# supply chain of this workflow is the runner image and `actions/checkout`,
+# pinned to a commit for the reason `ci.yml` gives.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build and push, without the leading v"
+        required: true
+
+concurrency:
+  group: release-images-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  # The only write this workflow needs, and it writes to the package registry
+  # rather than to the repository.
+  packages: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  publish:
+    name: ${{ matrix.image.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      # One image failing should not hide the state of the others.
+      fail-fast: false
+      matrix:
+        image:
+          - { name: reviewplane-server, dockerfile: apps/server/Dockerfile }
+          - { name: reviewplane-mcp-server, dockerfile: apps/mcp-server/Dockerfile }
+          - { name: reviewplane-browser-worker, dockerfile: apps/browser-worker/Dockerfile }
+          - { name: reviewplane-tunnel-gateway, dockerfile: services/tunnel-gateway/Dockerfile }
+          - { name: reviewplane-connector, dockerfile: services/connector/Dockerfile }
+          - { name: reviewplane-gateway, dockerfile: deploy/compose/gateway/Dockerfile }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Resolve the version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="${{ inputs.version }}"
+          fi
+          # The tag is the product version and is written into the image, so a
+          # malformed one must stop the release rather than produce an image
+          # nothing can pin.
+          [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.+-][0-9A-Za-z.+-]+)?$ ]] ||
+            { echo "::error::${version} is not a release version"; exit 1; }
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Sign in to the registry
+        run: |
+          printf '%s' "${{ secrets.GITHUB_TOKEN }}" \
+            | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+
+      - name: Build and push
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.image.name }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # The build stamps that `/version` and `reviewplane status` report.
+          # They are arguments rather than computed values, because only the
+          # build knows them.
+          docker build \
+            --file "${{ matrix.image.dockerfile }}" \
+            --build-arg "REVIEWPLANE_VERSION=${VERSION}" \
+            --build-arg "REVIEWPLANE_REVISION=${GITHUB_SHA::12}" \
+            --build-arg "REVIEWPLANE_BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.version=${VERSION}" \
+            --tag "${IMAGE}:${VERSION}" \
+            .
+          docker push "${IMAGE}:${VERSION}"
+
+      - name: Record the digest
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.image.name }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # The immutable reference an operator may pin instead of the tag
+          # (`docs/DEPLOYMENT.md` section 2).
+          digest="$(docker image inspect "${IMAGE}:${VERSION}" --format '{{index .RepoDigests 0}}')"
+          echo "${digest}" >> "${GITHUB_STEP_SUMMARY}"

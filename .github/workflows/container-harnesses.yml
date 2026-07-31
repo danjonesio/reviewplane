@@ -1,9 +1,10 @@
 name: Container harnesses
 
 # The suites `docs/DEVELOPMENT.md` section 5 lists as container harnesses:
-# `pnpm test:browser`, `test:ui`, `test:integration`, `test:e2e` and
-# `test:edge`. Each one builds at least one image and runs Chromium or the whole
-# Compose stack, so they cost minutes where the gates in `ci.yml` cost seconds.
+# `pnpm test:browser`, `test:ui`, `test:integration`, `test:e2e`, `test:edge`
+# and `test:install`. Each one builds at least one image and runs Chromium or
+# the whole Compose stack, so they cost minutes where the gates in `ci.yml` cost
+# seconds.
 #
 # They therefore do not block every pull request yet. They run nightly, on
 # demand, and on a pull request that carries the `ci:harnesses` label — which is
@@ -126,3 +127,31 @@ jobs:
       # Every other suite runs behind the gateway rather than through it, so
       # nothing else fails when the gateway itself does.
       - run: pnpm test:edge
+
+  install:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:harnesses')
+    name: pnpm test:install
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      # `docs/DEPLOYMENT.md` section 8, run verbatim from a clean checkout, plus
+      # the negative checks section 20 says must hold in a shipped default: only
+      # the gateway publishes a host port, PostgreSQL and the Chromium debugging
+      # port are unreachable from the host, no service mounts the Docker socket,
+      # and the browser worker runs non-root with the sandbox enabled.
+      - run: pnpm test:install
+
+      - if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v6.0.0
+        with:
+          name: install-evidence
+          path: deploy/compose/e2e/evidence-install
+          if-no-files-found: ignore

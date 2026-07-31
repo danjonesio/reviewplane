@@ -6,8 +6,9 @@
 #     single-host install is HTTPS from the first boot; an operator who
 #     terminates TLS elsewhere points `REVIEWPLANE_GATEWAY_TLS` at their own
 #     certificate or puts their own proxy in front.
-#   * Host and path routing: `/api` and `/internal`-free surface to the control
-#     plane, everything else to the web application's static assets.
+#   * Host and path routing: `/api` and `/internal`-free surface to the `api`
+#     service, `/mcp` to the `mcp` service, everything else to the web
+#     application's static assets.
 #   * WebSocket upgrades for `/ws`.
 #   * Request-size and connection limits.
 #   * Security headers.
@@ -101,14 +102,14 @@
 			# section 15); everything else is metadata.
 			max_size 24MB
 		}
-		reverse_proxy server:8080
+		reverse_proxy api:8080
 	}
 
 	# WebSocket upgrades. Caddy proxies the upgrade transparently; the size
 	# bound belongs to the control plane, which applies the protocol's own
 	# message limit (docs/API.md section 19).
 	handle /ws/* {
-		reverse_proxy server:8080
+		reverse_proxy api:8080
 	}
 
 	# The agent endpoint (docs/API.md section 3, docs/MCP_SPEC.md section 3.2).
@@ -122,7 +123,7 @@
 			# large: evidence travels the other way, as a link.
 			max_size 1MB
 		}
-		reverse_proxy mcp-server:8081
+		reverse_proxy mcp:8081
 	}
 
 	# Everything else is the single-page application. Unknown paths fall back to

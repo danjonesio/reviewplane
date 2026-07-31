@@ -108,6 +108,9 @@ credential:
 | `REVIEWPLANE_WORKER_REQUEST_TIMEOUT_MS` | `150000` | Bound on one worker request |
 | `REVIEWPLANE_ALLOWED_ORIGINS` | empty | Comma-separated origins a browser may use. See below: the two surfaces that read it read it differently |
 | `REVIEWPLANE_SECURE_COOKIES` | `true` | Whether the session and CSRF cookies are marked `Secure`. Set to `false` only for plain-HTTP local development |
+| `REVIEWPLANE_SERVE_RUNS_JOBS` | `true` | Whether `reviewplane serve` runs the jobs role beside the API. A deployment with its own `jobs` container sets `false` (`docs/ARCHITECTURE.md` section 4.2) |
+| `REVIEWPLANE_STATUS_TLS_ENDPOINT` | none | `host:port` whose certificate expiry `reviewplane status` reports. Unset means the section reports "not configured" rather than a failure (`docs/OPERATIONS.md` section 3) |
+| `REVIEWPLANE_CONNECTOR_CA_EXPORT_FILE` | none | Where the connector authority's **certificate** is written at startup, for the tunnel gateway to read (ADR-0014). The private key is never written |
 
 #### What `REVIEWPLANE_ALLOWED_ORIGINS` actually does
 
@@ -170,7 +173,7 @@ The worker reads environment variables, with a `*_FILE` variant for every creden
 | `REVIEWPLANE_WORKER_LABELS` | `chromium` | Comma-separated scheduling labels |
 | `REVIEWPLANE_WORKER_SANDBOX` | `required` | `required`, or `disabled_high_risk` to accept the section 10 warning |
 | `REVIEWPLANE_WORKER_SESSION_ROOT` | `/var/lib/reviewplane/browser-sessions` | Parent of the per-session ephemeral profile directories |
-| `REVIEWPLANE_CONTROL_PLANE_URL` | `http://server:8080` | Control-plane API base URL |
+| `REVIEWPLANE_CONTROL_PLANE_URL` | `http://api:8080` | Control-plane API base URL |
 | `REVIEWPLANE_WORKER_CREDENTIAL` | none | Credential the worker presents to the control plane |
 | `REVIEWPLANE_WORKER_COMMAND_CREDENTIAL` | none | Credential the control plane must present to the worker |
 | `REVIEWPLANE_WORKER_DEFAULT_TIMEOUT_MS` | `30000` | Timeout for a command that states none |
