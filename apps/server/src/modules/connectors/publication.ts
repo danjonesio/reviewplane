@@ -92,7 +92,29 @@ export class ControlChannelRegistry {
   }
 
   /**
-   * Closes a connector's channel and reports how many were closed.
+   * Takes a connector's channel out of the registry and hands it back, without
+   * closing it.
+   *
+   * Detaching and closing are separate steps because revocation needs the count
+   * **before** it writes its audit event and the close **after** it has marked
+   * the record (`docs/CONNECTOR_PROTOCOL.md` §18). Doing both at once forced
+   * revocation to predict the count from `connected()` and then report a
+   * different one to its caller, so the event and the response could disagree
+   * about the same fact.
+   *
+   * Detaching first is safe on its own: a detached channel can no longer receive
+   * a publication, and the connector has no reason to reconnect until its socket
+   * actually closes.
+   */
+  detachChannel(connectorId: string): ControlSocket | null {
+    const socket = this.#channels.get(connectorId);
+    if (socket === undefined) return null;
+    this.#channels.delete(connectorId);
+    return socket;
+  }
+
+  /**
+   * Closes a detached channel.
    *
    * The reason is a `docs/CONNECTOR_PROTOCOL.md` §21 error class, because §5.3
    * makes a close code and a class the whole of the refusal vocabulary at
@@ -100,18 +122,13 @@ export class ControlChannelRegistry {
    * the class and stops rather than reconnecting with a credential this control
    * plane has just refused (§18).
    */
-  closeChannel(connectorId: string, code: number, reason: string): number {
-    const socket = this.#channels.get(connectorId);
-    if (socket === undefined) return 0;
-    this.#channels.delete(connectorId);
+  static closeDetached(socket: ControlSocket, code: number, reason: string): void {
     try {
       socket.close(code, reason);
     } catch {
-      // A socket that is already gone needed no closing. The count still
-      // reports one, because the channel this connector held is now not one it
-      // holds.
+      // A socket the peer had already dropped needed no closing. It is still a
+      // channel this connector held and now does not.
     }
-    return 1;
   }
 
   /** Delivers an acknowledgement to whoever is waiting for it. */

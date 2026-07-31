@@ -569,24 +569,25 @@ export async function revokeConnector(
   connectorId: string,
   actor: { readonly type: "human_user" | "system"; readonly id?: string },
 ): Promise<AppendedEvent | null> {
-  return inTransaction(pool, async (client) => {
-    const updated = await client.query<ConnectorRow>(
-      `update connectors
-          set status = 'REVOKED', revoked_at = now()
-        where id = $1 and status <> 'REVOKED'
-        returning ${CONNECTOR_COLUMNS}`,
-      [connectorId],
-    );
-    const row = updated.rows[0];
-    if (row === undefined) return null;
-    const connector = toConnector(row);
-    return appendEvent(client, {
-      type: "connector.revoked",
-      organisationId: connector.organisationId,
-      projectId: connector.projectId,
-      actor: actor.id === undefined ? { type: actor.type } : { type: actor.type, id: actor.id },
-      correlation: { connector_id: connector.id, environment_id: connector.environmentId },
-      payload: { previous_status: connector.status, new_status: "REVOKED" },
-    });
+  // Delegated rather than reimplemented. This function had the same audit
+  // defect `transitionConnector` was repaired for, and worse: it read
+  // `previous_status` off the row its own `UPDATE ... RETURNING` produced, which
+  // is the row *after* the update, so every event it wrote said
+  // `{"previous_status": "REVOKED", "new_status": "REVOKED"}` — a transition
+  // from a state to itself, which never happened. Two implementations of one
+  // transition is how the second one drifts, so there is now one.
+  return transitionConnector(pool, {
+    connectorId,
+    from: ["PENDING_ENROLMENT", "ACTIVE", "DEGRADED", "DISCONNECTED"],
+    to: "REVOKED",
+    eventType: "connector.revoked",
+    touchRevokedAt: true,
+    actor,
+    // `routes_revoked` and `sessions_disconnected` are what revocation reached
+    // beyond the identity, and reaching them is `modules/connectors/revocation.ts`.
+    // This entry point changes the record alone, so it reports zero rather than
+    // omitting the counts and leaving a reader to guess whether the routes were
+    // closed or merely unrecorded.
+    payload: { routes_revoked: 0, sessions_disconnected: 0, channels_closed: 0 },
   });
 }

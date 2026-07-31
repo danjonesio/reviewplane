@@ -98,13 +98,31 @@ carrying `PROJECT_NOT_AUTHORISED` in its payload refuses one publication, not
 the channel, and the connector keeps serving everything else it was authorised
 for.
 
-**8. The connector supplies the workspace identifier, and a taken one is
-refused.** The identifier is inserted as the connector reported it, because it
-is the value a publication names; the insert is `on conflict do nothing`, so an
-identifier already held elsewhere writes no row and is refused with the same
-class a foreign project gets. Claiming another project's workspace and naming a
-project outside the enrolled scope are therefore one outcome rather than two
-code paths.
+**8. A workspace record is owned by the environment that reported it, and the
+connector supplies the identifier.** The identifier is stored as the connector
+reported it, because it is the value a publication names. Ownership is what
+bounds that: a connector may create or update only a record belonging to its own
+environment, or one belonging to no environment at all — a workspace an operator
+registered through `docs/API.md` §4.3, which it adopts because an operator named
+that exact path and this connector observes that exact path. A record owned by
+another environment is refused with the same class a foreign project gets, so
+claiming another environment's workspace and naming a project outside the
+enrolled scope are one outcome rather than two.
+
+Ownership has to be checked on the update path and not only on the insert. An
+earlier draft of this decision relied on `on conflict do nothing` alone, which
+guards only an insert — and an observation naming a workspace that already
+exists never reaches one. A connector could therefore take over another
+environment's record inside the same project and rewrite its branch and head
+commit, which is precisely the value `docs/MCP_SPEC.md` §7.7 checks a
+verification against. The check is now a locked read followed by an explicit
+refusal, with the ownership repeated in the update's own predicate.
+
+A workspace's identity is `(project_id, environment_id, path_hash)` for a
+reported record and `(project_id, path_hash)` for a registered one. The
+environment belongs in the key because `/home/dev/app` on two development
+machines is two checkouts: without it they collide into one record and rewrite
+each other every observation interval.
 
 **9. An unchanged repeat writes no event.** A first observation writes
 `workspace.observed`; a change to branch, head commit or dirty state writes
@@ -136,9 +154,14 @@ sent had changed.
 - A connector that names a project it may not act for stops with a named cause
   instead of writing into that project or retrying forever.
 - Two workspaces cannot collide into one record and one workspace cannot become
-  two: `(project_id, path_hash)` is unique, so the same directory reported twice
-  is one row, and a checkout registered administratively and later observed by a
-  connector resolves to that same row because both sides hash the same bytes.
+  two. The same directory reported twice by one environment is one row; the same
+  path on two development machines is two, because the environment is part of
+  the key; and a checkout registered administratively and later observed by a
+  connector resolves to the registered row, because both sides hash the same
+  bytes and an unowned record is adopted rather than duplicated.
+- A connector cannot reach another environment's record at all, so the branch
+  and head commit a verification is checked against can only be written by the
+  machine the checkout is on.
 - The `events` channel now has a defined shape, so the agent-session
   observations it was reserved for arrive as a second message type rather than
   as a first design.

@@ -150,21 +150,59 @@ export async function recordObservation(
   return inTransaction(pool, async (client) => {
     await assertProjectAuthorised(client, context, observation.project_id);
 
+    // What this connector may act on, and what merely exists.
+    //
+    // A workspace **identifier** is global, so a row carrying the reported one
+    // is a candidate wherever it lives: if it turns out to belong to another
+    // environment, that is the collision ADR-0022 point 8 refuses, and it has to
+    // be seen in order to be refused.
+    //
+    // A **path hash** is not global. `/home/dev/app` on two development machines
+    // is two checkouts, not one, so a path match is a candidate only when the
+    // row belongs to this environment or to no environment at all. Matching one
+    // across environments is what made two machines with the same layout fight
+    // over a single row.
     const existing = await client.query<WorkspaceRow>(
       `select ${WORKSPACE_COLUMNS}
          from workspaces
         where organisation_id = $1
           and project_id = $2
-          and (id = $3 or path_hash = $4)
+          and (
+                id = $3
+             or (path_hash = $4 and (environment_id = $5 or environment_id is null))
+          )
         order by (id = $3) desc
         limit 1
           for update`,
-      [context.organisationId, observation.project_id, observation.workspace_id, observation.path_hash],
+      [
+        context.organisationId,
+        observation.project_id,
+        observation.workspace_id,
+        observation.path_hash,
+        context.environmentId,
+      ],
     );
     const previous = existing.rows[0];
 
     if (previous === undefined) {
       return insertObserved(client, context, observation);
+    }
+    // The ownership check is here rather than folded into the predicate above,
+    // because a row owned by another environment must be **refused** rather than
+    // skipped. Skipping it would insert a second row under a primary key that is
+    // already taken, and the caller would learn about the collision as a
+    // constraint violation rather than as the authorisation failure it is.
+    //
+    // A row with no environment was registered administratively
+    // (`docs/API.md` §4.3) and is adopted: an operator named that exact path and
+    // this connector observes that exact path, so they are the same checkout and
+    // two records for it would make "which workspace is this agent in"
+    // ambiguous for the wrong reason.
+    if (previous.environment_id !== null && previous.environment_id !== context.environmentId) {
+      throw new WorkspaceObservationRefused(
+        "project_not_authorised",
+        "the reported workspace identifier belongs to another environment",
+      );
     }
     return updateObserved(client, context, observation, previous);
   });
@@ -288,6 +326,10 @@ async function updateObserved(
     previous.head_commit !== observation.head_commit ||
     previous.dirty !== observation.dirty;
 
+  // The predicate repeats the ownership the caller established, so that this
+  // statement cannot write outside it even if it is ever reached another way. A
+  // row that changed hands between the locked read and here updates nothing and
+  // is refused rather than silently rewritten.
   const updated = await client.query<WorkspaceRow>(
     `update workspaces
         set environment_id      = $2,
@@ -303,6 +345,9 @@ async function updateObserved(
             last_observed_at    = now(),
             last_seen_at        = now()
       where id = $1
+        and organisation_id = $10
+        and project_id = $11
+        and (environment_id is null or environment_id = $2)
       returning ${WORKSPACE_COLUMNS}`,
     [
       previous.id,
@@ -314,6 +359,8 @@ async function updateObserved(
       observation.branch,
       observation.head_commit,
       observation.dirty,
+      context.organisationId,
+      observation.project_id,
     ],
   );
   const row = updated.rows[0];

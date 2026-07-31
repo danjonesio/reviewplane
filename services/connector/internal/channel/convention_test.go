@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -20,9 +21,13 @@ import (
 // hangs rather than timing out. Neither shows up as a clock bug — the first
 // looks like a flaky network and the second like a hung test.
 //
-// The rule is therefore mechanical: every deadline in this package is derived
-// from time.Now(). This package deliberately has no injected clock at all; the
-// assertion exists so that adding one later cannot silently reach a deadline.
+// The rule is therefore mechanical: every deadline is derived from time.Now().
+//
+// It covers the sibling packages as well as this one, and that scope is the
+// point. This package has no injected clock; `internal/workspaces` does — it
+// schedules re-observation on an interval and its tests drive that interval
+// directly — so it is the package where the hazard is now live. A guard that
+// only watched the package without a clock would have watched the wrong one.
 func TestDeadlinesAreDerivedFromRealTime(t *testing.T) {
 	deadlineSetters := map[string]bool{
 		"SetReadDeadline":  true,
@@ -32,49 +37,80 @@ func TestDeadlinesAreDerivedFromRealTime(t *testing.T) {
 		"SetPolicyDeadline": true,
 	}
 
-	fileSet := token.NewFileSet()
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatalf("reading the package directory: %v", err)
-	}
+	// Every package that *computes* a deadline, which is where the hazard lives.
+	//
+	// `internal/ws` is deliberately absent. It is the transport wrapper, and its
+	// whole job is to forward a deadline its caller worked out — `SetReadDeadline`
+	// there is a one-line pass-through of its own parameter, and the handshake
+	// forwards `ctx.Deadline()` and clears with the zero time. Holding it to this
+	// rule would flag the forwarding rather than the decision, and the decisions
+	// are all in the packages below.
+	packages := []string{".", "../workspaces", "../gitcontext", "../routes", "../transport"}
+
+	// Two forms that are real time without saying `time.Now()`. A context's
+	// deadline is wall-clock — it came from `context.WithTimeout`, which used the
+	// real clock — and the zero time clears a deadline rather than setting one.
+	realTimeForms := []string{"time.Now()", "ctx.Deadline()", "time.Time{}"}
+
 	checked := 0
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		source, err := os.ReadFile(name) // #nosec G304 -- this package's own source
+	for _, directory := range packages {
+		entries, err := os.ReadDir(directory)
 		if err != nil {
-			t.Fatalf("reading %s: %v", name, err)
+			t.Fatalf("reading %s: %v", directory, err)
 		}
-		parsed, err := parser.ParseFile(fileSet, name, source, 0)
-		if err != nil {
-			t.Fatalf("parsing %s: %v", name, err)
-		}
-		ast.Inspect(parsed, func(node ast.Node) bool {
-			call, ok := node.(*ast.CallExpr)
-			if !ok {
-				return true
+		for _, entry := range entries {
+			name := entry.Name()
+			if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+				continue
 			}
-			selector, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok || !deadlineSetters[selector.Sel.Name] {
-				return true
+			path := filepath.Join(directory, name)
+			source, err := os.ReadFile(path) // #nosec G304 -- this module's own source
+			if err != nil {
+				t.Fatalf("reading %s: %v", path, err)
 			}
-			checked++
-			for _, argument := range call.Args {
-				text := string(source[argument.Pos()-1 : argument.End()-1])
-				if !strings.Contains(text, "time.Now()") {
-					t.Errorf("%s:%d passes %q to %s; a deadline must be derived from time.Now(), "+
-						"never from an injected clock (RVP-61)",
-						name, fileSet.Position(argument.Pos()).Line, text, selector.Sel.Name)
+			// One FileSet per file. A position is an offset into the *set*, not
+			// into the file, so a shared set makes the second file's positions
+			// run past the end of its own source — which this test then slices
+			// with, and panicked on as soon as it read more than one package.
+			fileSet := token.NewFileSet()
+			parsed, err := parser.ParseFile(fileSet, path, source, 0)
+			if err != nil {
+				t.Fatalf("parsing %s: %v", path, err)
+			}
+			ast.Inspect(parsed, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
 				}
-			}
-			return true
-		})
+				selector, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok || !deadlineSetters[selector.Sel.Name] {
+					return true
+				}
+				checked++
+				for _, argument := range call.Args {
+					text := string(source[argument.Pos()-1 : argument.End()-1])
+					real := false
+					for _, form := range realTimeForms {
+						if strings.Contains(text, form) {
+							real = true
+							break
+						}
+					}
+					if !real {
+						t.Errorf("%s:%d passes %q to %s; a deadline must be derived from real time "+
+							"(%s), never from an injected clock (RVP-61)",
+							path, fileSet.Position(argument.Pos()).Line, text, selector.Sel.Name,
+							strings.Join(realTimeForms, ", "))
+					}
+				}
+				return true
+			})
+		}
 	}
 	if checked == 0 {
 		t.Fatal("no deadline was inspected; this test no longer guards anything")
 	}
+	t.Logf("inspected %d deadline call(s) across %d packages", checked, len(packages))
 }
 
 // The connector must not hand-maintain a type packages/protocol generates

@@ -214,7 +214,7 @@ export function registerConnectorRoutes(app: FastifyInstance, context: Connector
     { preHandler: administratorWrite },
     async (request, reply) => {
       const principal = requireOrganisationAdministrator(request);
-      const organisationId = organisationOf(principal);
+      const scopedOrganisation = organisationOf(principal);
       const body = request.body ?? {};
       const rawProjectId = body.project_id === undefined || body.project_id === null ? null : body.project_id;
       if (rawProjectId !== null && typeof rawProjectId !== "string") {
@@ -223,7 +223,20 @@ export function registerConnectorRoutes(app: FastifyInstance, context: Connector
       // A token scoped to a project the caller cannot reach is refused as an
       // absent project rather than as a forbidden one, and the resolution is a
       // single scoped query rather than a lookup followed by a comparison.
-      const projectId = rawProjectId === null ? null : (await resolveProject(context.pool, principal, rawProjectId)).id;
+      //
+      // The organisation comes from the **resolved project** whenever one is
+      // named, rather than from the caller's own scope. The two can differ: the
+      // bootstrap principal carries no organisation, so `resolveProject` applies
+      // no organisation filter for it, and deriving the organisation from the
+      // deployment default instead would store a token whose `organisation_id`
+      // and `project_id` name different organisations. Nothing downstream would
+      // honour it — enrolment refuses a token scoped to another organisation —
+      // but it is a row no reader can interpret, and it is the shape RVP-66
+      // records: an organisation taken from somewhere other than the record it
+      // is stored beside.
+      const project = rawProjectId === null ? null : await resolveProject(context.pool, principal, rawProjectId);
+      const projectId = project?.id ?? null;
+      const organisationId = project?.organisationId ?? scopedOrganisation;
 
       const maxUses = readBoundedInteger(body.max_uses, "max_uses", 1, 1, MAX_USES_LIMIT);
       const ttlSeconds = readBoundedInteger(

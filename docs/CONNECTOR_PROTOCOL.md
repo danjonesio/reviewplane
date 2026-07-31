@@ -404,7 +404,9 @@ Observing runs `git`, on somebody's working machine, against directories the con
 
 `project_id` is what the connector believes. The control plane re-derives whether this identity may act for that project — the identifier, the organisation the client certificate resolved to and the project the identity was enrolled for are one predicate — and refuses a project outside that scope with `PROJECT_NOT_AUTHORISED`, closing the channel per §5.3. The refusal is terminal.
 
-The connector also chooses `workspace_id`, because it is the value a publication names. An identifier already held elsewhere is refused with the same class, so claiming another project's workspace and naming a project outside the enrolled scope are one outcome rather than two.
+The connector also chooses `workspace_id`, because it is the value a publication names. What bounds that is ownership: a workspace record belongs to the environment that reported it, and a connector may create or update only its own records, or one belonging to no environment — a workspace an operator registered (`API.md` §4.3), which it adopts because both sides name the same path. A record owned by **another environment** is refused with the same class, so claiming another environment's workspace, claiming another project's, and naming a project outside the enrolled scope are one outcome rather than three.
+
+A record's identity is `(project_id, environment_id, path_hash)`. The environment is part of it because the same path on two development machines is two checkouts: without it, two machines with the same layout share one record and overwrite each other's branch and head commit every interval.
 
 An environment may hold at most 32 workspaces in one project. Without a bound, an environment that chooses its own identifiers could fill the table with identifiers nothing will ever use.
 

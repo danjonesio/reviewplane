@@ -25,6 +25,7 @@ import { main } from "../src/cli.ts";
 import { HeartbeatFloor } from "../src/modules/connectors/channel.ts";
 import { sweepConnectorHealth } from "../src/modules/connectors/monitor.ts";
 import { displayLabel, pathHash } from "../src/modules/connectors/workspaces.ts";
+import { revokeConnector } from "../src/modules/connectors/repository.ts";
 import { enrolmentCommand } from "../src/modules/connectors/routes.ts";
 import { BOOTSTRAP_TOKEN, startHarness, type Harness } from "./support/harness.ts";
 import { enrolOverWebSocket, generateDeviceKey, identityFrom, openControlChannel, waitFor } from "./support/connector-client.ts";
@@ -204,6 +205,43 @@ describe("enrolment-token issuance from a human session", () => {
     assert.equal(strip(foreign.body), strip(unknown.body), "a foreign project is distinguishable from an unknown one");
   });
 
+  test("a minted token's organisation is the one its project belongs to", async () => {
+    // The bootstrap principal carries no organisation, so `resolveProject`
+    // applies no organisation filter for it. Deriving the stored organisation
+    // from the deployment default instead produced a row whose organisation and
+    // project named different organisations — nothing honours it, because
+    // enrolment refuses a token scoped elsewhere, but it is a row no reader can
+    // interpret, and it is the RVP-66 shape.
+    await seedProject();
+    await harness.pool.query(
+      `insert into organisations (id, name, slug) values ('org_elsewhere', 'Elsewhere', 'elsewhere')
+       on conflict (id) do nothing`,
+    );
+    await harness.pool.query(
+      `insert into projects (id, organisation_id, name, slug, default_branch)
+       values ('prj_elsewhere', 'org_elsewhere', 'Elsewhere', 'elsewhere', 'main')
+       on conflict (id) do nothing`,
+    );
+    const response = await harness.built.app.inject({
+      method: "POST",
+      url: "/api/v1/connectors/enrolment-tokens",
+      headers: ADMIN,
+      payload: { project_id: "prj_elsewhere" },
+    });
+    assert.equal(response.statusCode, 201, response.body);
+    const data = (response.json() as { data: { id: string; organisation_id: string; project_id: string } }).data;
+    assert.equal(data.project_id, "prj_elsewhere");
+    assert.equal(data.organisation_id, "org_elsewhere", "the token's organisation is not its project's");
+
+    const stored = await harness.pool.query<{ organisation_id: string; project_id: string }>(
+      `select t.organisation_id, t.project_id from connector_enrolment_tokens t
+         join projects p on p.id = t.project_id
+        where t.id = $1 and p.organisation_id = t.organisation_id`,
+      [data.id],
+    );
+    assert.equal(stored.rows.length, 1, "the stored token's organisation and project disagree");
+  });
+
   test("a machine credential cannot mint an enrolment token", async () => {
     await seedProject();
     for (const authorization of [
@@ -358,6 +396,41 @@ describe("revocation", () => {
     void organisationId;
   });
 
+  test("the repository's own revocation records the status it replaced", async () => {
+    // `revokeConnector` is not on the API path — `revocation.ts` is — but it is
+    // exported, three suites use it, and it wrote
+    // `{"previous_status":"REVOKED","new_status":"REVOKED"}` because it read the
+    // row its own UPDATE returned. A transition from a state to itself never
+    // happened, and the decoder-replay guard cannot catch it: the value is
+    // wrong but schema-valid.
+    const { projectId } = await seedProject();
+    const enrolled = await enrol({ projectId });
+    const channel = await openControlChannel(harness, enrolled.identity);
+    await waitFor(async () => {
+      const rows = await harness.pool.query<{ status: string }>(
+        "select status from connectors where id = $1",
+        [enrolled.connectorId],
+      );
+      return rows.rows[0]?.status === "ACTIVE" ? true : null;
+    }, "the connector to become ACTIVE");
+    channel.close();
+    await channel.closed();
+
+    const event = await revokeConnector(harness.pool, enrolled.connectorId, { type: "system" });
+    assert.ok(event !== null);
+    const stored = await harness.pool.query<{ payload: Record<string, unknown> }>(
+      "select payload from events where id = $1",
+      [event.id],
+    );
+    const payload = stored.rows[0]?.payload ?? {};
+    assert.notEqual(payload["previous_status"], "REVOKED", "it recorded the status it set, not the one it replaced");
+    assert.ok(
+      payload["previous_status"] === "ACTIVE" || payload["previous_status"] === "DISCONNECTED",
+      `previous_status was ${String(payload["previous_status"])}`,
+    );
+    assert.equal(payload["new_status"], "REVOKED");
+  });
+
   test("a forged revocation is refused", async () => {
     const { projectId } = await seedProject();
     const enrolled = await enrol({ projectId });
@@ -507,6 +580,163 @@ describe("workspace observations", () => {
       ["wsp_contested"],
     );
     assert.equal(row.rows[0]?.project_id, other.projectId, "the contested workspace changed hands");
+  });
+
+  test("a second environment cannot take over another environment's workspace record", async () => {
+    // The cross-*project* case takes the insert path and was always refused.
+    // This is the same-project, different-environment case, which reaches the
+    // update path — where ADR-0022 point 8 was a claim rather than a check.
+    const { projectId } = await seedProject();
+    const first = await enrol({ projectId });
+    const firstChannel = await openControlChannel(harness, first.identity);
+    firstChannel.sendWorkspaceObservation({
+      workspace_id: "wsp_contested",
+      project_id: projectId,
+      path_hash: `sha256:${"a".repeat(64)}`,
+      display_label: "checkout-a",
+      branch: "main",
+      head_commit: "1111111111111111111111111111111111111111",
+      dirty: false,
+    });
+    const before = await waitFor(async () => {
+      const rows = await harness.pool.query<{
+        environment_id: string;
+        connector_id: string;
+        path_hash: string;
+        display_path: string;
+        branch: string;
+        head_commit: string;
+      }>(
+        `select environment_id, connector_id, path_hash, display_path, branch, head_commit
+           from workspaces where id = $1`,
+        ["wsp_contested"],
+      );
+      return rows.rows[0] ?? null;
+    }, "the first environment's workspace");
+    assert.equal(before.environment_id, first.environmentId);
+
+    const second = await enrol({ projectId });
+    assert.notEqual(second.environmentId, first.environmentId, "the two connectors shared an environment");
+    const secondChannel = await openControlChannel(harness, second.identity);
+    secondChannel.sendWorkspaceObservation({
+      workspace_id: "wsp_contested",
+      project_id: projectId,
+      path_hash: `sha256:${"b".repeat(64)}`,
+      display_label: "checkout-b",
+      branch: "attacker-branch",
+      head_commit: "2222222222222222222222222222222222222222",
+      dirty: true,
+    });
+
+    const closed = await secondChannel.closed();
+    assert.equal(closed.code, 1008);
+    assert.equal(closed.reason, "PROJECT_NOT_AUTHORISED");
+
+    const after = await harness.pool.query<typeof before>(
+      `select environment_id, connector_id, path_hash, display_path, branch, head_commit
+         from workspaces where id = $1`,
+      ["wsp_contested"],
+    );
+    // Not one field of the first environment's record moved. Branch and head
+    // commit especially: `docs/MCP_SPEC.md` §7.7 checks a verification's branch
+    // against this row, so rewriting it is how an agent would come to claim a
+    // fix against code nobody looked at.
+    assert.deepEqual(after.rows[0], before, "another environment's workspace record was rewritten");
+    const rows = await harness.pool.query<{ n: number }>("select count(*)::int as n from workspaces");
+    assert.equal((rows.rows[0] as { n: number }).n, 1);
+    firstChannel.close();
+  });
+
+  test("two environments with the same checkout path keep separate records", async () => {
+    // `/home/dev/app` on two development machines is two checkouts. Migration
+    // 0080 made `(project_id, path_hash)` unique, so they collided into one row
+    // and rewrote each other every observation interval; 0081 puts the
+    // environment in the key.
+    const { projectId } = await seedProject();
+    const samePath = `sha256:${"c".repeat(64)}`;
+    const first = await enrol({ projectId });
+    const second = await enrol({ projectId });
+    const firstChannel = await openControlChannel(harness, first.identity);
+    const secondChannel = await openControlChannel(harness, second.identity);
+
+    firstChannel.sendWorkspaceObservation({
+      workspace_id: "wsp_on_machine_one",
+      project_id: projectId,
+      path_hash: samePath,
+      display_label: "app",
+      branch: "main",
+      head_commit: "1111111111111111111111111111111111111111",
+      dirty: false,
+    });
+    secondChannel.sendWorkspaceObservation({
+      workspace_id: "wsp_on_machine_two",
+      project_id: projectId,
+      path_hash: samePath,
+      display_label: "app",
+      branch: "feat/other",
+      head_commit: "2222222222222222222222222222222222222222",
+      dirty: true,
+    });
+
+    const both = await waitFor(async () => {
+      const rows = await harness.pool.query<{ id: string; environment_id: string; branch: string }>(
+        "select id, environment_id, branch from workspaces order by id",
+      );
+      return rows.rows.length === 2 ? rows.rows : null;
+    }, "both environments to hold their own record");
+    assert.deepEqual(
+      both.map((row) => row.branch).sort(),
+      ["feat/other", "main"],
+      "the two machines overwrote each other",
+    );
+    assert.notEqual(both[0]?.environment_id, both[1]?.environment_id);
+    firstChannel.close();
+    secondChannel.close();
+  });
+
+  test("a workspace an operator registered is adopted rather than duplicated", async () => {
+    // The documented behaviour of `docs/API.md` §4.3: an operator named a path,
+    // a connector observes that same path, and they are one checkout. Adoption
+    // is bounded to a row that belongs to no environment.
+    const { projectId, organisationId } = await seedProject();
+    const registered = await harness.built.workspaces.register({
+      organisationId,
+      projectId,
+      rootPath: "/home/dev/refresh-surplus",
+      branch: "main",
+      headCommit: "1111111111111111111111111111111111111111",
+    });
+    const enrolled = await enrol({ projectId });
+    const channel = await openControlChannel(harness, enrolled.identity);
+    channel.sendWorkspaceObservation({
+      workspace_id: "wsp_reported",
+      project_id: projectId,
+      path_hash: pathHash("/home/dev/refresh-surplus"),
+      display_label: "refresh-surplus",
+      branch: "feat/checkout-tidy",
+      head_commit: "2222222222222222222222222222222222222222",
+      dirty: true,
+    });
+    const adopted = await waitFor<{
+      id: string;
+      environment_id: string;
+      source: string;
+      branch: string;
+    }>(async () => {
+      const rows = await harness.pool.query<{
+        id: string;
+        environment_id: string;
+        source: string;
+        branch: string;
+      }>("select id, environment_id, source, branch from workspaces");
+      const row = rows.rows[0];
+      return rows.rows.length === 1 && row !== undefined && row.environment_id !== null ? row : null;
+    }, "the registered workspace to be adopted");
+    assert.equal(adopted.id, registered.id, "adoption created a second record instead");
+    assert.equal(adopted.environment_id, enrolled.environmentId);
+    assert.equal(adopted.source, "connector_report");
+    assert.equal(adopted.branch, "feat/checkout-tidy");
+    channel.close();
   });
 
   test("the observed workspace reaches the project's environment view", async () => {

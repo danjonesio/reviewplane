@@ -63,10 +63,12 @@ ALTER TABLE workspaces
         CHECK (display_path <> '' AND display_path !~ '[/\\]' AND display_path !~ '[\x00-\x1f\x7f]'),
     ADD CONSTRAINT workspaces_source_known
         CHECK (source IN ('connector_report', 'administrative_registration')),
-    -- One row per checkout per project. This is the key a connector observation
-    -- upserts on: the same directory reported twice is one workspace, and two
-    -- rows for it would make "which workspace is this agent in" ambiguous for
-    -- the wrong reason.
+    -- One row per checkout per project. Superseded by migration 0081, which
+    -- puts the environment in the key: this constraint made two development
+    -- machines with the same checkout path share one row and overwrite each
+    -- other. It is created here and dropped there rather than being rewritten
+    -- in place, because a deployment that has already applied this file will
+    -- never re-read it.
     ADD CONSTRAINT workspaces_path_hash_unique_per_project UNIQUE (project_id, path_hash);
 
 -- The connector reference was an unconstrained text column. A connector record

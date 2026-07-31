@@ -213,13 +213,21 @@ GET /api/v1/projects/:projectId/workspaces
 ```
 
 `PUT` takes `root_path`, `branch`, `head_commit` and optional `dirty`. It
-upserts on `(project_id, path_hash)`, not on the path: a connector-reported
-workspace stores no path at all, so a conflict target naming one could never
-match its row. Both sides hash the same bytes, so a checkout registered here and
-later observed by a connector resolves to one record rather than two, and the
-record's `source` moves to `connector_report` when the connector takes it over.
-The recorded branch is what `finding_submit_verification` checks a claimed fix
-against.
+upserts on `(project_id, path_hash)` among the workspaces that belong to no
+environment, which is what a workspace registered here is. The target is the
+path hash rather than the path, because a connector-reported workspace stores no
+path at all and a conflict target naming one could never match its row; and it
+is qualified by the absent environment because a checkout at the same path on a
+development machine is a different record, owned by the environment that
+reported it (`DOMAIN_MODEL.md` §9).
+
+Both sides hash the same bytes, so a checkout registered here and later observed
+by a connector resolves to one record rather than two: the connector adopts the
+registered row and its `source` moves to `connector_report`. Adoption reaches
+only a record with no environment. A record another environment already owns is
+refused, so registering a workspace is not a way to hand one machine's checkout
+to another. The recorded branch is what `finding_submit_verification` checks a
+claimed fix against.
 
 A workspace registered here retains its `root_path`, because `workspace_hint`
 resolves against it (`MCP_SPEC.md` §4). A connector-reported one does not: the

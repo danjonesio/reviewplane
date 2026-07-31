@@ -28,7 +28,7 @@ import type { FastifyBaseLogger } from "fastify";
 
 import type { Pool } from "../../db/pool.ts";
 import { ApiError } from "../../errors.ts";
-import type { ControlChannelRegistry } from "./publication.ts";
+import { ControlChannelRegistry } from "./publication.ts";
 import { findConnectorInScope, transitionConnector, type ConnectorRecord } from "./repository.ts";
 
 /** WebSocket close code for a policy refusal (RFC 6455 §7.4.1). */
@@ -104,6 +104,16 @@ export async function revokeConnectorIdentity(
     actor: input.actor,
   })) ?? { routesRevoked: 0, sessionsDisconnected: 0 };
 
+  // Detach, then record, then close. The channel leaves the registry first so
+  // that the count in the audit event is the number of channels this revocation
+  // actually took — not a prediction from `connected()` that the close could
+  // then contradict, which would leave the event and the response disagreeing
+  // about the same fact. The socket is closed only after the record says
+  // `REVOKED`, so a connector that races the close and reconnects meets a
+  // record that already refuses it.
+  const detached = context.channels.detachChannel(connector.id);
+  const channelsClosed = detached === null ? 0 : 1;
+
   const event = await transitionConnector(context.pool, {
     connectorId: connector.id,
     from: ["PENDING_ENROLMENT", "ACTIVE", "DEGRADED", "DISCONNECTED"],
@@ -114,17 +124,13 @@ export async function revokeConnectorIdentity(
     payload: {
       routes_revoked: effects.routesRevoked,
       sessions_disconnected: effects.sessionsDisconnected,
-      channels_closed: context.channels.connected(connector.id) ? 1 : 0,
+      channels_closed: channelsClosed,
     },
   });
 
-  // The channel is closed after the row says REVOKED, so a connector that races
-  // the close and reconnects meets a record that already refuses it.
-  const channelsClosed = context.channels.closeChannel(
-    connector.id,
-    CLOSE_POLICY_VIOLATION,
-    "IDENTITY_REVOKED",
-  );
+  if (detached !== null) {
+    ControlChannelRegistry.closeDetached(detached, CLOSE_POLICY_VIOLATION, "IDENTITY_REVOKED");
+  }
 
   context.log.warn(
     {

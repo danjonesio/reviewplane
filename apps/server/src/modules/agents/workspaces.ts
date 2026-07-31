@@ -80,12 +80,18 @@ export class WorkspaceStore {
     // target is the path hash rather than the path: a connector-reported
     // workspace stores no path at all, and `(project_id, root_path)` cannot
     // match a row whose `root_path` is null.
+    //
+    // The target is qualified by `environment_id IS NULL` because that is the
+    // index it names (migration 0081). A workspace registered here belongs to no
+    // environment — nothing observed it — and it must not collide with a
+    // checkout at the same path on a development machine, which is a different
+    // record owned by the environment that reported it.
     const rows = await this.#pool.query<WorkspaceRow>(
       `INSERT INTO workspaces
          (id, organisation_id, project_id, connector_id, root_path, path_hash, display_path,
           branch, head_commit, dirty, source, last_seen_at, last_observed_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'administrative_registration', now(), now())
-       ON CONFLICT (project_id, path_hash) DO UPDATE
+       ON CONFLICT (project_id, path_hash) WHERE environment_id IS NULL DO UPDATE
           SET branch = EXCLUDED.branch,
               head_commit = EXCLUDED.head_commit,
               dirty = EXCLUDED.dirty,
