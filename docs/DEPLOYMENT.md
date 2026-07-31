@@ -692,11 +692,10 @@ docker compose pull
 ./reviewplane migrate --status
 ./reviewplane migrate
 
-# 7. Restart in order: data, then control plane, then the surfaces in front of
-#    it. `api` runs the schema the migration just applied.
-docker compose up -d postgres
-docker compose up -d api jobs
-docker compose up -d mcp tunnel-gateway browser-worker gateway
+# 7. Restart. The order is the one `depends_on` in compose.yaml already
+#    expresses — PostgreSQL healthy before `api`, `api` before the surfaces in
+#    front of it — so this is the same command §8 installs with.
+docker compose up -d
 
 # 8. Verify.
 ./reviewplane migrate --status   # exit 0 with nothing pending
@@ -882,7 +881,7 @@ Production restore SHOULD be tested periodically.
 |---|---|
 | Empty installation | The target must have no table in the `public` schema. Restore is not a merge, and a restore over existing data would silently be one. A non-empty target is refused |
 | Compatibility validation | The archive's `schema_version` must be a migration file this build has. An archive from a newer release is refused, naming the version. The migration list the archive recorded must also be this product's |
-| Integrity check | The archive is read once **before anything is written**, and every member is checked against the manifest's digest and size. A missing member, an extra member, a member declared twice and a manifest that is not the first member are all refused |
+| Integrity check | The archive is read once **before anything is written**, and every member is checked against the manifest's digest and size. A missing member, a member the manifest does not declare, a member that appears twice and a manifest that is not the first member are all refused |
 | Dry run | `--dry-run` runs the same integrity pass, reports the plan — rows, artefact objects, migrations to apply, migrations still pending afterwards — and writes nothing, in the database or in the artefact store |
 | New hostname | `--hostname HOST` records the move and revokes the credentials issued for the previous host: sign-in sessions, unspent installation tokens and agent credentials. It reports which settings to change; see below |
 | Key-reference remapping | Not implemented, because envelope encryption is not (`docs/SECURITY.md` §15). The manifest's `key_references` is reported, and this release has nothing to remap |
@@ -894,8 +893,8 @@ command says in as many words — rather than a half-populated one.
 
 After the load, restore checks every artefact the restored metadata references
 against the store. Application metadata is authoritative for availability
-(ADR-0012), so a row without bytes is missing evidence: it is reported and the
-command exits `4`. A `database` archive reports the same absence differently,
+(ADR-0012), so a row without bytes is missing evidence: it is reported, and for a
+`full` archive the command exits `4`. A `database` archive reports the same absence differently,
 naming the external store the manifest records, because the objects were never
 supposed to be in the file.
 
