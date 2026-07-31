@@ -118,7 +118,8 @@ const FIXTURE_TABLES = `idempotency_keys, jobs, verification_artefacts, verifica
               browser_workers, agent_sessions, agent_credentials, workspaces,
               viewer_sessions, route_capabilities, published_services, connectors,
               connector_enrolment_tokens, environments, event_streams, events,
-              event_outbox, users, projects, organisations`;
+              event_outbox, authentication_attempt_limits, install_tokens,
+              users, projects, organisations`;
 
 // PostgreSQL error codes for the two ways a reset can lose a race for its locks.
 const DEADLOCK_DETECTED = "40P01";

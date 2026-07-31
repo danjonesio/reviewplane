@@ -25,11 +25,53 @@
       "note": "Names the fields that changed rather than restating the record: current state is queryable, and the audit question is what moved."
     },
     {
+      "name": "project-repository-changed",
+      "kind": "platform_event",
+      "file": "valid/project-repository-changed.json",
+      "message_type": "project.repository_changed",
+      "note": "Both sides of a repository move, in the provider-agnostic canonical form of docs/DOMAIN_MODEL.md section 6. The new value carries a non-default port, which is what a self-hosted forge looks like and what a normaliser that only understands github.com would get wrong."
+    },
+    {
       "name": "project-archived",
       "kind": "platform_event",
       "file": "valid/project-archived.json",
       "message_type": "project.archived",
       "note": "Previous and new state, which docs/EVENTS.md section 8 requires of a state change."
+    },
+    {
+      "name": "user-invited",
+      "kind": "platform_event",
+      "file": "valid/user-invited.json",
+      "message_type": "user.invited",
+      "note": "The install token an operator mints at first run. The actor is the command line rather than a human, because no human has authenticated yet; the payload states when the way in closes and never what it is."
+    },
+    {
+      "name": "user-credentials-set",
+      "kind": "platform_event",
+      "file": "valid/user-credentials-set.json",
+      "message_type": "user.credentials_set",
+      "note": "The administrator bootstrap of docs/SECURITY.md section 6.1, recorded on the organisation stream because no project exists yet. It names the user and the route the credential arrived by, and carries nothing derived from the credential."
+    },
+    {
+      "name": "authentication-login-succeeded",
+      "kind": "platform_event",
+      "file": "valid/authentication-login-succeeded.json",
+      "message_type": "authentication.login_succeeded",
+      "note": "A password login. It names the session it issued, so a later session.revoked can be matched to it."
+    },
+    {
+      "name": "authentication-login-failed",
+      "kind": "platform_event",
+      "file": "valid/authentication-login-failed.json",
+      "message_type": "authentication.login_failed",
+      "note": "A refused attempt. The actor is system rather than the user, because an unauthenticated attempt has not established who made it; the payload names the user only because this attempt reached an existing account."
+    },
+    {
+      "name": "session-revoked",
+      "kind": "platform_event",
+      "file": "valid/session-revoked.json",
+      "message_type": "session.revoked",
+      "note": "Sign-out. Rotation and administrative revocation are the same event with a different reason, which is what lets an operator read a session's whole life from one stream."
     },
     {
       "name": "job-enqueued",
@@ -149,6 +191,14 @@
       "expect_reason": "schema_violation",
       "expect_error_class": "VALIDATION_FAILED",
       "note": "docs/EVENTS.md section 8 forbids raw secrets and authorisation headers in a payload. A closed payload schema is what makes that a property of the audit trail rather than of a code review."
+    },
+    {
+      "name": "event-login-failed-carries-identifier",
+      "kind": "platform_event",
+      "file": "invalid/event-login-failed-carries-identifier.json",
+      "expect_reason": "schema_violation",
+      "expect_error_class": "VALIDATION_FAILED",
+      "note": "A failed login must not record what was submitted. People type passwords into email fields, and an append-only table is the worst place to find out; the closed payload schema is what makes that impossible rather than merely discouraged."
     },
     {
       "name": "event-identifier-out-of-class",

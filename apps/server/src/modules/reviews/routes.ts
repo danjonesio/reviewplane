@@ -8,9 +8,20 @@
  * enforced by the same artefact that documents it, in the same way for the
  * HTTP API today and for the MCP tools that will call this domain next.
  *
- * Authorisation is the viewer session of ADR-0016. Every route resolves the
- * owning project before it reads anything, and every query below it carries
- * both the organisation and the project (`docs/DOMAIN_MODEL.md` section 3).
+ * Authorisation is the human session of ADR-0016, extended by RVP-12. Every
+ * route resolves the owning project before it reads anything, and every query
+ * below it carries both the organisation and the project
+ * (`docs/DOMAIN_MODEL.md` section 3).
+ *
+ * A route that changes state says so, by asking for a write scope rather than a
+ * read one. That is not decoration: a cookie is attached by the browser to a
+ * request another origin caused, so a state-changing request arriving on one
+ * must also echo the session's CSRF token (`docs/API.md` section 4.0). The
+ * review is the system of record, and a forged retitling or a forged
+ * `DRAFT -> READY` is indistinguishable in the audit trail from a genuine one —
+ * which is exactly what the RVP-12 review demonstrated against these routes
+ * before the guard existed. Making the intent an argument means a new route
+ * cannot acquire a scope without stating which kind it needs.
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -32,6 +43,7 @@ import {
 
 import { ApiError, notFound } from "../../errors.ts";
 import type { EventActor } from "../../events/append.ts";
+import { requireCsrfToken } from "../identity/authorisation.ts";
 import {
   authorisedForProject,
   type ViewerPrincipal,
@@ -46,6 +58,15 @@ export interface ReviewRoutesOptions {
 }
 
 type Validator = (value: unknown, path: string, out: SchemaViolation[]) => void;
+
+/**
+ * What a handler intends to do with the scope it is asking for.
+ *
+ * `write` additionally requires the CSRF token when the request authenticated
+ * by cookie, and it is required at every call site so that adding a route is a
+ * decision about which it is rather than a silent default.
+ */
+type Intent = "read" | "write";
 
 /**
  * Runs a generated validator over a request body.
@@ -76,8 +97,12 @@ export async function registerReviewRoutes(
   const scopeForProject = async (
     request: FastifyRequest,
     projectId: string,
+    intent: Intent,
   ): Promise<{ scope: Scope; actor: EventActor }> => {
     const principal = await options.viewerAuth(request);
+    // Before the project is resolved and before the body is decoded, so a
+    // forged request is refused rather than answered with a validation error.
+    if (intent === "write") requireCsrfToken(request, principal);
     if (!authorisedForProject(principal, projectId)) {
       throw new ApiError(
         "PROJECT_CONTEXT_MISMATCH",
@@ -107,6 +132,7 @@ export async function registerReviewRoutes(
     request: FastifyRequest,
     table: "reviews" | "findings",
     id: string,
+    intent: Intent,
   ): Promise<{ scope: Scope; actor: EventActor }> => {
     const rows = await pool.query<{ organisation_id: string; project_id: string }>(
       `SELECT organisation_id, project_id FROM ${table} WHERE id = $1`,
@@ -115,6 +141,7 @@ export async function registerReviewRoutes(
     const row = rows.rows[0];
     if (row === undefined) throw notFound(table === "reviews" ? "The review" : "The finding");
     const principal = await options.viewerAuth(request);
+    if (intent === "write") requireCsrfToken(request, principal);
     if (!authorisedForProject(principal, row.project_id)) {
       throw new ApiError(
         "PROJECT_CONTEXT_MISMATCH",
@@ -134,7 +161,7 @@ export async function registerReviewRoutes(
 
   app.post("/api/v1/projects/:projectId/reviews", async (request, reply) => {
     const { projectId } = request.params as { projectId: string };
-    const { scope, actor } = await scopeForProject(request, projectId);
+    const { scope, actor } = await scopeForProject(request, projectId, "write");
     const body = decode<ReviewCreateRequest>(
       validateReviewCreateRequest,
       request.body,
@@ -159,7 +186,7 @@ export async function registerReviewRoutes(
 
   app.get("/api/v1/projects/:projectId/reviews", async (request, reply) => {
     const { projectId } = request.params as { projectId: string };
-    const { scope } = await scopeForProject(request, projectId);
+    const { scope } = await scopeForProject(request, projectId, "read");
     const query = request.query as { slug?: string };
     if (query.slug !== undefined) {
       return send(reply, request, [await reviews.getReviewBySlug(scope, query.slug)]);
@@ -169,13 +196,13 @@ export async function registerReviewRoutes(
 
   app.get("/api/v1/reviews/:reviewId", async (request, reply) => {
     const { reviewId } = request.params as { reviewId: string };
-    const { scope } = await scopeForRecord(request, "reviews", reviewId);
+    const { scope } = await scopeForRecord(request, "reviews", reviewId, "read");
     return send(reply, request, await reviews.getReview(scope, reviewId));
   });
 
   app.patch("/api/v1/reviews/:reviewId", async (request, reply) => {
     const { reviewId } = request.params as { reviewId: string };
-    const { scope, actor } = await scopeForRecord(request, "reviews", reviewId);
+    const { scope, actor } = await scopeForRecord(request, "reviews", reviewId, "write");
     const body = decode<ReviewUpdateRequest>(
       validateReviewUpdateRequest,
       request.body,
@@ -200,7 +227,7 @@ export async function registerReviewRoutes(
 
   app.post("/api/v1/reviews/:reviewId/findings", async (request, reply) => {
     const { reviewId } = request.params as { reviewId: string };
-    const { scope, actor } = await scopeForRecord(request, "reviews", reviewId);
+    const { scope, actor } = await scopeForRecord(request, "reviews", reviewId, "write");
     const body = decode<FindingCreateRequest>(
       validateFindingCreateRequest,
       request.body,
@@ -236,19 +263,19 @@ export async function registerReviewRoutes(
 
   app.get("/api/v1/reviews/:reviewId/findings", async (request, reply) => {
     const { reviewId } = request.params as { reviewId: string };
-    const { scope } = await scopeForRecord(request, "reviews", reviewId);
+    const { scope } = await scopeForRecord(request, "reviews", reviewId, "read");
     return send(reply, request, await reviews.listFindings(scope, reviewId));
   });
 
   app.get("/api/v1/findings/:findingId", async (request, reply) => {
     const { findingId } = request.params as { findingId: string };
-    const { scope } = await scopeForRecord(request, "findings", findingId);
+    const { scope } = await scopeForRecord(request, "findings", findingId, "read");
     return send(reply, request, await reviews.getFinding(scope, findingId));
   });
 
   app.patch("/api/v1/findings/:findingId", async (request, reply) => {
     const { findingId } = request.params as { findingId: string };
-    const { scope, actor } = await scopeForRecord(request, "findings", findingId);
+    const { scope, actor } = await scopeForRecord(request, "findings", findingId, "write");
     const body = decode<FindingUpdateRequest>(
       validateFindingUpdateRequest,
       request.body,
@@ -279,7 +306,7 @@ export async function registerReviewRoutes(
 
   app.post("/api/v1/findings/:findingId/annotations", async (request, reply) => {
     const { findingId } = request.params as { findingId: string };
-    const { scope, actor } = await scopeForRecord(request, "findings", findingId);
+    const { scope, actor } = await scopeForRecord(request, "findings", findingId, "write");
     const body = decode<AnnotationCreateRequest>(
       validateAnnotationCreateRequest,
       request.body,
@@ -296,7 +323,7 @@ export async function registerReviewRoutes(
 
   app.get("/api/v1/findings/:findingId/annotations", async (request, reply) => {
     const { findingId } = request.params as { findingId: string };
-    const { scope } = await scopeForRecord(request, "findings", findingId);
+    const { scope } = await scopeForRecord(request, "findings", findingId, "read");
     const query = request.query as { revisions?: string };
     const list =
       query.revisions === "all"

@@ -38,6 +38,97 @@ Human API:
 
 Connector, worker and agent authentication use separate endpoints and credentials.
 
+### 4.0 Local accounts
+
+Stage 1 implements the human half of `docs/SECURITY.md` section 6.1: a local
+account, established once from a one-time installation token, authenticating
+with a password.
+
+```text
+GET    /api/v1/auth/bootstrap          is this installation still unclaimed?
+POST   /api/v1/auth/bootstrap          consume the install token, set the account
+POST   /api/v1/auth/sessions           sign in with email and password
+GET    /api/v1/auth/sessions/current   the current session and its user
+DELETE /api/v1/auth/sessions/current   sign out
+DELETE /api/v1/auth/sessions           revoke every session this account holds
+```
+
+`GET /api/v1/auth/bootstrap` is unauthenticated by necessity — it is what the
+first screen asks before anybody can sign in — and answers
+`{"bootstrap_required": bool, "install_token_outstanding": bool,
+"organisation": {…}}`. It MUST NOT disclose who the administrator is.
+
+`POST /api/v1/auth/bootstrap` takes `token`, `email` and `password`. The token
+is the one an operator minted with `reviewplane install-token`
+(`docs/DEPLOYMENT.md` section 11). It is single-use and expiring: consumption
+and the credential change commit in one transaction, so a token marked used
+beside a password that was never set cannot occur. A token that is unknown,
+expired or already consumed is answered `AUTHENTICATION_REQUIRED` with
+`details.reason` of `install_token_invalid`, `install_token_expired` or
+`install_token_consumed`.
+
+`POST /api/v1/auth/sessions` takes `email` and `password` and answers `201` with
+`{"session": …, "user": …}` plus two cookies:
+
+```text
+Set-Cookie: reviewplane_viewer=…; Path=/; HttpOnly; SameSite=Strict; Secure
+Set-Cookie: reviewplane_csrf=…;   Path=/; SameSite=Strict; Secure
+```
+
+The session cookie is `HttpOnly` so no script can read it. The CSRF cookie is
+deliberately readable, because the application has to echo it in the
+`X-CSRF-Token` header; on its own it authenticates nothing. The control plane
+stores only the SHA-256 digest of each.
+
+Every refusal of a sign-in is the same code and the same message whatever went
+wrong, and the same work is done for an unknown address as for a known one:
+telling the two apart is an account-enumeration oracle (`docs/SECURITY.md`
+section 5). Which it was is recorded in `authentication.login_failed`, where it
+informs an operator rather than an attacker. The event never carries the
+submitted password, and never the address submitted beside it.
+
+Sign-in is rate limited per subject. Once the limit engages, the refusal is
+`RATE_LIMITED` with `details.retry_after_ms`, and a correct password is refused
+for the duration too.
+
+Sessions rotate: signing in revokes the session the request arrived with, and
+claiming the installation revokes every session the account held. Both record
+`session.revoked` with reason `rotated`. Signing out revokes with reason
+`sign_out`; `DELETE /api/v1/auth/sessions` revokes every session the account
+holds, including the one that asked.
+
+#### CSRF
+
+A state-changing request authenticated by cookie MUST carry the session's CSRF
+token in `X-CSRF-Token`. A missing, malformed or foreign token is refused with
+`AUTHORISATION_DENIED` and `details.reason: "csrf_token_invalid"`, before the
+request body is validated, so a forged request is refused rather than answered
+with a validation error.
+
+A request authenticated by a bearer token does not carry one and does not need
+one: a browser does not attach an `Authorization` header to a cross-site
+request.
+
+A session with no CSRF token — the ADR-0016 exchange of section 4.1 — cannot
+satisfy the check. No route that authenticates it by cookie therefore changes
+state for it, with exactly one exception: `DELETE
+/api/v1/auth/viewer-sessions/current`, which ends the calling session and
+applies the rule conditionally, by what the session carries (section 4.1).
+Everything that changes a project, a review, a finding, an annotation or an
+artefact grant applies the rule unconditionally, so the exchange remains the
+read-only credential that ADR-0016 describes: it can end itself, and it can
+change nothing else.
+
+Two state-changing routes here authenticate by neither cookie nor bearer:
+`POST /api/v1/auth/bootstrap` and `POST /api/v1/auth/sessions` carry their own
+credential in the body, so there is no session for a CSRF token to belong to.
+They are guarded instead by `REVIEWPLANE_ALLOWED_ORIGINS`: where a deployment
+configures the list, a request whose `Origin` is not on it is refused with
+`AUTHORISATION_DENIED`, which is what stops another site signing somebody in or
+claiming an unclaimed installation. Where it configures none, these two routes
+apply no origin check and rely on `SameSite=Strict` alone
+(`docs/CONFIGURATION.md` section 2.1).
+
 ### 4.1 Viewer sessions
 
 Stage 0 implements the session cookie above through the exchange of ADR-0016:
@@ -62,6 +153,19 @@ it before the WebSocket upgrade completes.
 
 State-changing browser-session routes — start, command, terminate — remain
 administrative and are not reachable with a viewer session.
+
+`DELETE /api/v1/auth/viewer-sessions/current` ends the session the cookie names,
+and it ends **whatever kind** that session is: the exchange of this section and
+a local account of section 4.0 share one record. So it applies the CSRF rule by
+what the session carries. A session with a CSRF token — every account session —
+MUST present it, or the route answers `AUTHORISATION_DENIED` and revokes
+nothing. A session issued by this exchange carries none and may still end
+itself: a session that cannot be ended is worse than one whose sign-out can be
+forged. What that costs is bounded by the unconditional rule everywhere else,
+and only by it: a session with no CSRF token can reach no other state-changing
+route, so the whole of what a forged request achieves against one is ending it,
+after which an operator obtains another by presenting the bootstrap token again.
+Either way the revocation records `session.revoked`.
 
 ### 4.2 Agent credentials
 
@@ -226,6 +330,27 @@ DELETE /api/v1/members/:membershipId
 
 Team endpoints may be staged after the single-user release, but route structure should remain reserved.
 
+`GET /api/v1/organisation` is implemented and answers the organisation the
+caller's session belongs to. The `/api/v1/members*` routes remain reserved and
+unimplemented: memberships, invitations and roles are Stage 3
+(`docs/DOMAIN_MODEL.md` section 5).
+
+`PATCH /api/v1/organisation` is not implemented yet. Stage 1 seeds exactly one
+organisation, and renaming it is not a capability any flow needs before
+memberships exist.
+
+Two administrative provisioning routes exist outside this list and are reachable
+only with the bootstrap administrator token:
+
+```text
+POST /api/v1/organisations
+POST /api/v1/organisations/:organisationId/projects
+```
+
+They are how a test harness, the fixture capture and the Compose end-to-end
+scenario seed a deployment without a browser. They are not part of the human
+API, and a human session cannot reach them.
+
 ## 8. Project endpoints
 
 ```text
@@ -244,6 +369,84 @@ paginated per section 6. The activity endpoint is the project event timeline:
 the same envelopes the WebSocket channel of section 18.1 delivers live, newest
 first. Both resolve the project inside the caller's scope, so a project the
 caller may not see answers exactly as an unknown identifier does.
+
+### 8.1 The project representation
+
+A project answers with the record of `docs/DOMAIN_MODEL.md` section 6, whose
+shape is defined once in `packages/protocol/schemas/platform/v1.schema.json`:
+
+```json
+{
+  "id": "prj_...",
+  "organisation_id": "org_...",
+  "name": "Refresh Surplus",
+  "slug": "refresh-surplus",
+  "repository_identity": {
+    "canonical": "github.com/example/refresh-surplus",
+    "clone_urls": ["git@github.com:example/refresh-surplus.git"]
+  },
+  "default_branch": "main",
+  "status": "active",
+  "settings": {
+    "default_validation_viewports": [
+      { "width": 390, "height": 844 },
+      { "width": 1440, "height": 900 }
+    ]
+  },
+  "version": 3,
+  "created_at": "2026-07-30T09:00:00Z",
+  "updated_at": "2026-07-30T09:12:44Z"
+}
+```
+
+- **Reads** are available to any human session, filtered by its scope.
+- **Writes** are organisation administration: an organisation-wide session
+  performs them; a session scoped to a project does not, and no machine
+  credential does. A cookie-authenticated write also carries the CSRF token of
+  section 4.0.
+- `POST` takes `name` and optionally `slug`, `repository_identity`,
+  `default_branch` and `settings`. The slug is derived from the name when it is
+  not supplied.
+- `repository_identity` accepts a clone URL as a string, or an object holding
+  `clone_urls`. Four schemes are accepted — `https`, `http`, `ssh` and `git` —
+  along with Git's scp-like `user@host:path` and the bare `host/path` a person
+  types. It is normalised to the provider-agnostic canonical form before
+  storage: the scheme, any `userinfo`, a default port, a `.git` suffix and
+  trailing slashes are removed and the host is lowercased. Credential material
+  in a stored clone URL is dropped rather than kept — over `ssh` a bare username
+  is kept, because it names the account and the secret is a key on disk, while a
+  `user:password` pair is dropped; under every other scheme the whole `userinfo`
+  component goes, because over `https` and `http` a bare userinfo is a personal
+  access token in every forge's documented clone command, and `git` is the
+  unauthenticated daemon protocol, which has no credential mechanism for a
+  userinfo to belong to. Clone URLs that reduce to different repositories are
+  refused with `VALIDATION_FAILED` and `details.reason: "inconsistent_urls"`.
+- `settings.default_validation_viewports` defaults to 390x844 and 1440x900 and
+  is bounded by the browser protocol's viewport bounds: a viewport a browser
+  session could not adopt cannot be stored.
+- A slug already used in the organisation is refused with `VALIDATION_FAILED`
+  and `details.reason: "slug_not_unique"`. The uniqueness is the database's, so
+  two concurrent creations of one slug produce exactly one project and one
+  refusal.
+- `PATCH` accepts `expected_version` (section 5.2) and answers a mismatch with
+  `VERSION_CONFLICT` carrying both `current_version` and `expected_version`.
+  `DELETE` accepts it as a query parameter.
+- `DELETE` archives: `status` becomes `archived` and the record, its reviews,
+  its evidence and its audit trail all survive. Archiving an archived project
+  changes nothing and records nothing. `GET /api/v1/projects` omits archived
+  projects unless `include_archived=true`.
+
+Events: `project.created`, `project.updated`, `project.repository_changed` and
+`project.archived`.
+
+`project.updated` names every attribute whose **stored value** moved, compared
+against the row rather than against which members the request carried:
+`repository_identity` appears there like any other. A `PATCH` that names
+attributes but moves none writes no event and does not bump the version, so
+repeating a request cannot manufacture history.
+`project.repository_changed` is written only when the canonical identity moves —
+adding a clone URL for the repository a project already points at is an update,
+not a change of repository.
 
 ## 9. Environment and connector endpoints
 
@@ -306,9 +509,18 @@ The response is the only place the token value appears; the control plane stores
 }
 ```
 
-### Stage 0 authentication on this surface
+### Administrative authentication on this surface
 
-Human authentication is not yet built, so these endpoints require the bootstrap administrator token of `ARCHITECTURE.md` §11 as `Authorization: Bearer <token>`, compared in constant time and never logged. A connector credential — its identity, certificate, fingerprint or enrolment token — MUST NOT be accepted here (`TESTING.md` §10). Local accounts and sessions replace the bootstrap token when they land.
+These endpoints require the bootstrap administrator token of `ARCHITECTURE.md`
+§11 as `Authorization: Bearer <token>`, compared in constant time and never
+logged. A connector credential — its identity, certificate, fingerprint or
+enrolment token — MUST NOT be accepted here (`TESTING.md` §10).
+
+Local accounts arrived with section 4.0 and have not yet replaced the token on
+these connector routes: enrolling an environment from the web application is the
+connector-enrolment slice rather than this one. A human session therefore does
+not reach them today, and the token is what an operator and the end-to-end
+harness use.
 
 ## 10. Published-service endpoints
 

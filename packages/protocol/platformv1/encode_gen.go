@@ -8,6 +8,204 @@ package platformv1
 // identically to the TypeScript encoder so that both languages produce byte-identical
 // frames.
 
+// encodeRepositoryIdentityInto writes the canonical encoding of a RepositoryIdentity.
+func encodeRepositoryIdentityInto(w *canonicalWriter, value RepositoryIdentity) {
+	w.beginObject()
+	w.key("canonical")
+	w.string(value.Canonical)
+	if value.CloneURLs != nil {
+		w.key("clone_urls")
+		w.beginArray()
+		for _, item := range value.CloneURLs {
+			w.item()
+			w.string(item)
+		}
+		w.endArray()
+	}
+	w.endObject()
+}
+
+// EncodeRepositoryIdentity returns the canonical encoding of a RepositoryIdentity.
+func EncodeRepositoryIdentity(value RepositoryIdentity) ([]byte, error) {
+	var w canonicalWriter
+	encodeRepositoryIdentityInto(&w, value)
+	return w.result()
+}
+
+// encodeValidationViewportInto writes the canonical encoding of a ValidationViewport.
+func encodeValidationViewportInto(w *canonicalWriter, value ValidationViewport) {
+	w.beginObject()
+	w.key("width")
+	w.integer(value.Width)
+	w.key("height")
+	w.integer(value.Height)
+	if value.DeviceScaleFactor != nil {
+		w.key("device_scale_factor")
+		w.number((*value.DeviceScaleFactor))
+	}
+	w.endObject()
+}
+
+// EncodeValidationViewport returns the canonical encoding of a ValidationViewport.
+func EncodeValidationViewport(value ValidationViewport) ([]byte, error) {
+	var w canonicalWriter
+	encodeValidationViewportInto(&w, value)
+	return w.result()
+}
+
+// encodeProjectSettingsInto writes the canonical encoding of a ProjectSettings.
+func encodeProjectSettingsInto(w *canonicalWriter, value ProjectSettings) {
+	w.beginObject()
+	w.key("default_validation_viewports")
+	w.beginArray()
+	for _, item := range value.DefaultValidationViewports {
+		w.item()
+		encodeValidationViewportInto(w, item)
+	}
+	w.endArray()
+	w.endObject()
+}
+
+// EncodeProjectSettings returns the canonical encoding of a ProjectSettings.
+func EncodeProjectSettings(value ProjectSettings) ([]byte, error) {
+	var w canonicalWriter
+	encodeProjectSettingsInto(&w, value)
+	return w.result()
+}
+
+// encodeOrganisationInto writes the canonical encoding of a Organisation.
+func encodeOrganisationInto(w *canonicalWriter, value Organisation) {
+	w.beginObject()
+	w.key("id")
+	w.string(value.ID)
+	w.key("name")
+	w.string(value.Name)
+	w.key("slug")
+	w.string(value.Slug)
+	w.key("status")
+	w.string(string(value.Status))
+	w.key("created_at")
+	w.string(value.CreatedAt)
+	w.key("updated_at")
+	w.string(value.UpdatedAt)
+	w.endObject()
+}
+
+// EncodeOrganisation returns the canonical encoding of a Organisation.
+func EncodeOrganisation(value Organisation) ([]byte, error) {
+	var w canonicalWriter
+	encodeOrganisationInto(&w, value)
+	return w.result()
+}
+
+// encodeUserInto writes the canonical encoding of a User.
+func encodeUserInto(w *canonicalWriter, value User) {
+	w.beginObject()
+	w.key("id")
+	w.string(value.ID)
+	w.key("organisation_id")
+	w.string(value.OrganisationID)
+	w.key("email")
+	w.string(value.Email)
+	w.key("display_name")
+	w.string(value.DisplayName)
+	w.key("status")
+	w.string(string(value.Status))
+	if value.LocalCredentialSet != nil {
+		w.key("local_credential_set")
+		w.boolean((*value.LocalCredentialSet))
+	}
+	w.key("created_at")
+	w.string(value.CreatedAt)
+	w.key("updated_at")
+	w.string(value.UpdatedAt)
+	w.endObject()
+}
+
+// EncodeUser returns the canonical encoding of a User.
+func EncodeUser(value User) ([]byte, error) {
+	var w canonicalWriter
+	encodeUserInto(&w, value)
+	return w.result()
+}
+
+// encodeProjectInto writes the canonical encoding of a Project.
+func encodeProjectInto(w *canonicalWriter, value Project) {
+	w.beginObject()
+	w.key("id")
+	w.string(value.ID)
+	w.key("organisation_id")
+	w.string(value.OrganisationID)
+	w.key("name")
+	w.string(value.Name)
+	w.key("slug")
+	w.string(value.Slug)
+	if value.RepositoryIdentity != nil {
+		w.key("repository_identity")
+		encodeRepositoryIdentityInto(w, (*value.RepositoryIdentity))
+	}
+	w.key("default_branch")
+	w.string(value.DefaultBranch)
+	w.key("status")
+	w.string(string(value.Status))
+	w.key("settings")
+	encodeProjectSettingsInto(w, value.Settings)
+	w.key("version")
+	w.integer(value.Version)
+	w.key("created_at")
+	w.string(value.CreatedAt)
+	w.key("updated_at")
+	w.string(value.UpdatedAt)
+	w.endObject()
+}
+
+// EncodeProject returns the canonical encoding of a Project.
+func EncodeProject(value Project) ([]byte, error) {
+	var w canonicalWriter
+	encodeProjectInto(&w, value)
+	return w.result()
+}
+
+// encodeHumanSessionInto writes the canonical encoding of a HumanSession.
+func encodeHumanSessionInto(w *canonicalWriter, value HumanSession) {
+	w.beginObject()
+	w.key("session_id")
+	w.string(value.SessionID)
+	if value.UserID != nil {
+		w.key("user_id")
+		w.string((*value.UserID))
+	}
+	if value.OrganisationID != nil {
+		w.key("organisation_id")
+		w.string((*value.OrganisationID))
+	}
+	if value.Email != nil {
+		w.key("email")
+		w.string((*value.Email))
+	}
+	w.key("display")
+	w.string(value.Display)
+	if value.ProjectIDs != nil {
+		w.key("project_ids")
+		w.beginArray()
+		for _, item := range value.ProjectIDs {
+			w.item()
+			w.string(item)
+		}
+		w.endArray()
+	}
+	w.key("expires_at")
+	w.string(value.ExpiresAt)
+	w.endObject()
+}
+
+// EncodeHumanSession returns the canonical encoding of a HumanSession.
+func EncodeHumanSession(value HumanSession) ([]byte, error) {
+	var w canonicalWriter
+	encodeHumanSessionInto(&w, value)
+	return w.result()
+}
+
 // encodeActorInto writes the canonical encoding of a Actor.
 func encodeActorInto(w *canonicalWriter, value Actor) {
 	w.beginObject()
@@ -166,6 +364,14 @@ func encodeProjectCreatedPayloadInto(w *canonicalWriter, value ProjectCreatedPay
 	w.string(value.Slug)
 	w.key("name")
 	w.string(value.Name)
+	if value.DefaultBranch != nil {
+		w.key("default_branch")
+		w.string((*value.DefaultBranch))
+	}
+	if value.RepositoryCanonical != nil {
+		w.key("repository_canonical")
+		w.string((*value.RepositoryCanonical))
+	}
 	w.endObject()
 }
 
@@ -174,6 +380,134 @@ func encodeProjectCreatedPayloadInto(w *canonicalWriter, value ProjectCreatedPay
 func EncodeProjectCreatedPayload(value ProjectCreatedPayload) ([]byte, error) {
 	var w canonicalWriter
 	encodeProjectCreatedPayloadInto(&w, value)
+	return w.result()
+}
+
+// encodeProjectRepositoryChangedPayloadInto writes the canonical encoding of a
+// ProjectRepositoryChangedPayload.
+func encodeProjectRepositoryChangedPayloadInto(w *canonicalWriter, value ProjectRepositoryChangedPayload) {
+	w.beginObject()
+	if value.PreviousCanonical != nil {
+		w.key("previous_canonical")
+		w.string((*value.PreviousCanonical))
+	}
+	w.key("new_canonical")
+	w.string(value.NewCanonical)
+	w.endObject()
+}
+
+// EncodeProjectRepositoryChangedPayload returns the canonical encoding of a
+// ProjectRepositoryChangedPayload.
+func EncodeProjectRepositoryChangedPayload(value ProjectRepositoryChangedPayload) ([]byte, error) {
+	var w canonicalWriter
+	encodeProjectRepositoryChangedPayloadInto(&w, value)
+	return w.result()
+}
+
+// encodeUserInvitedPayloadInto writes the canonical encoding of a UserInvitedPayload.
+func encodeUserInvitedPayloadInto(w *canonicalWriter, value UserInvitedPayload) {
+	w.beginObject()
+	w.key("user_id")
+	w.string(value.UserID)
+	w.key("method")
+	w.string(string(value.Method))
+	w.key("expires_at")
+	w.string(value.ExpiresAt)
+	w.endObject()
+}
+
+// EncodeUserInvitedPayload returns the canonical encoding of a UserInvitedPayload.
+func EncodeUserInvitedPayload(value UserInvitedPayload) ([]byte, error) {
+	var w canonicalWriter
+	encodeUserInvitedPayloadInto(&w, value)
+	return w.result()
+}
+
+// encodeUserCredentialsSetPayloadInto writes the canonical encoding of a
+// UserCredentialsSetPayload.
+func encodeUserCredentialsSetPayloadInto(w *canonicalWriter, value UserCredentialsSetPayload) {
+	w.beginObject()
+	w.key("user_id")
+	w.string(value.UserID)
+	w.key("method")
+	w.string(string(value.Method))
+	w.endObject()
+}
+
+// EncodeUserCredentialsSetPayload returns the canonical encoding of a
+// UserCredentialsSetPayload.
+func EncodeUserCredentialsSetPayload(value UserCredentialsSetPayload) ([]byte, error) {
+	var w canonicalWriter
+	encodeUserCredentialsSetPayloadInto(&w, value)
+	return w.result()
+}
+
+// encodeAuthenticationLoginSucceededPayloadInto writes the canonical encoding of a
+// AuthenticationLoginSucceededPayload.
+func encodeAuthenticationLoginSucceededPayloadInto(w *canonicalWriter, value AuthenticationLoginSucceededPayload) {
+	w.beginObject()
+	w.key("session_id")
+	w.string(value.SessionID)
+	if value.UserID != nil {
+		w.key("user_id")
+		w.string((*value.UserID))
+	}
+	w.key("method")
+	w.string(string(value.Method))
+	w.endObject()
+}
+
+// EncodeAuthenticationLoginSucceededPayload returns the canonical encoding of a
+// AuthenticationLoginSucceededPayload.
+func EncodeAuthenticationLoginSucceededPayload(value AuthenticationLoginSucceededPayload) ([]byte, error) {
+	var w canonicalWriter
+	encodeAuthenticationLoginSucceededPayloadInto(&w, value)
+	return w.result()
+}
+
+// encodeAuthenticationLoginFailedPayloadInto writes the canonical encoding of a
+// AuthenticationLoginFailedPayload.
+func encodeAuthenticationLoginFailedPayloadInto(w *canonicalWriter, value AuthenticationLoginFailedPayload) {
+	w.beginObject()
+	w.key("reason")
+	w.string(string(value.Reason))
+	w.key("method")
+	w.string(string(value.Method))
+	if value.UserID != nil {
+		w.key("user_id")
+		w.string((*value.UserID))
+	}
+	w.endObject()
+}
+
+// EncodeAuthenticationLoginFailedPayload returns the canonical encoding of a
+// AuthenticationLoginFailedPayload.
+func EncodeAuthenticationLoginFailedPayload(value AuthenticationLoginFailedPayload) ([]byte, error) {
+	var w canonicalWriter
+	encodeAuthenticationLoginFailedPayloadInto(&w, value)
+	return w.result()
+}
+
+// encodeSessionRevokedPayloadInto writes the canonical encoding of a
+// SessionRevokedPayload.
+func encodeSessionRevokedPayloadInto(w *canonicalWriter, value SessionRevokedPayload) {
+	w.beginObject()
+	w.key("session_id")
+	w.string(value.SessionID)
+	if value.UserID != nil {
+		w.key("user_id")
+		w.string((*value.UserID))
+	}
+	w.key("reason")
+	w.string(string(value.Reason))
+	w.endObject()
+}
+
+// EncodeSessionRevokedPayload returns the canonical encoding of a
+// SessionRevokedPayload.
+func EncodeSessionRevokedPayload(value SessionRevokedPayload) ([]byte, error) {
+	var w canonicalWriter
+	encodeSessionRevokedPayloadInto(&w, value)
 	return w.result()
 }
 

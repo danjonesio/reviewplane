@@ -573,6 +573,17 @@ Initial:
 - Secure session cookies
 - Optional bootstrap administrator token
 
+Stage 1 implements the first two. A local account is established once from a
+one-time installation token minted by `reviewplane install-token`, and
+authenticates with a password; the session it issues is the record ADR-0016
+introduced, now bound to a user and carrying a CSRF token
+(`docs/SECURITY.md` section 6.1, `docs/API.md` section 4.0).
+
+The bootstrap administrator token remains, as this list says it may: it is the
+machine credential the worker channel, the provisioning routes and the operator
+harnesses use, and it is deliberately not a human session — it carries no CSRF
+token, so it cannot reach a state-changing browser route.
+
 Later:
 
 - OIDC

@@ -6,6 +6,7 @@ import {
   checkArray,
   checkBoolean,
   checkInteger,
+  checkNumber,
   checkObject,
   checkPlainObject,
   checkString,
@@ -13,13 +14,17 @@ import {
 
 const PATTERN_0 = new RegExp("^[A-Za-z0-9_-]+$", "u");
 const PATTERN_1 = new RegExp("^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$", "u");
-const PATTERN_2 = new RegExp("^[^\\x00-\\x1f]+$", "u");
-const PATTERN_3 = new RegExp("^[a-z0-9][a-z0-9-]*$", "u");
-const PATTERN_4 = new RegExp("^[a-z][a-z0-9_]*$", "u");
-const PATTERN_5 = new RegExp("^[^\\x00]+$", "u");
-const PATTERN_6 = new RegExp("^[A-Za-z0-9_.-]+$", "u");
-const PATTERN_7 = new RegExp("^[a-z][a-z0-9_.]*$", "u");
-const PATTERN_8 = new RegExp("^[a-z][a-z0-9_.\\[\\]]*$", "u");
+const PATTERN_2 = new RegExp("^[a-z0-9][a-z0-9-]*$", "u");
+const PATTERN_3 = new RegExp("^[^\\x00-\\x1f]+$", "u");
+const PATTERN_4 = new RegExp("^[^\\s@\\x00-\\x1f]+@[^\\s@\\x00-\\x1f]+$", "u");
+const PATTERN_5 = new RegExp("^[A-Za-z0-9][A-Za-z0-9._/-]*$", "u");
+const PATTERN_6 = new RegExp("^[a-z0-9][a-z0-9.-]*(:[0-9]{1,5})?(/[A-Za-z0-9._~-]+)+$", "u");
+const PATTERN_7 = new RegExp("^[^\\s\\x00-\\x1f]+$", "u");
+const PATTERN_8 = new RegExp("^[a-z][a-z0-9_]*$", "u");
+const PATTERN_9 = new RegExp("^[^\\x00]+$", "u");
+const PATTERN_10 = new RegExp("^[A-Za-z0-9_.-]+$", "u");
+const PATTERN_11 = new RegExp("^[a-z][a-z0-9_.]*$", "u");
+const PATTERN_12 = new RegExp("^[a-z][a-z0-9_.\\[\\]]*$", "u");
 
 /**
  * Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the
@@ -63,7 +68,7 @@ export function validateCursor(value: unknown, path: string, out: SchemaViolatio
  * that source.
  */
 export function validateMessageType(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["organisation.created","project.created","project.updated","project.archived","job.enqueued","job.succeeded","job.failed"] });
+  checkString(value, path, out, { values: ["organisation.created","project.created","project.updated","project.repository_changed","project.archived","user.invited","user.credentials_set","authentication.login_succeeded","authentication.login_failed","session.revoked","job.enqueued","job.succeeded","job.failed"] });
 }
 
 /**
@@ -108,10 +113,352 @@ export function validateProjectStatus(value: unknown, path: string, out: SchemaV
 }
 
 /**
+ * Organisation lifecycle status (docs/DOMAIN_MODEL.md section 4).
+ */
+export function validateOrganisationStatus(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["active","suspended"] });
+}
+
+/**
+ * User lifecycle status (docs/DOMAIN_MODEL.md section 5). A suspended user keeps every
+ * record they authored and can no longer authenticate.
+ */
+export function validateUserStatus(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["active","suspended"] });
+}
+
+/**
+ * Human-friendly alias, unique inside its parent. Mutable, and never a substitute for the
+ * identifier (docs/DOMAIN_MODEL.md section 3).
+ */
+export function validateSlug(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 63, pattern: PATTERN_2 });
+}
+
+/**
+ * Name a human reads. It is description and never an authorisation input.
+ */
+export function validateDisplayName(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 200, pattern: PATTERN_3 });
+}
+
+/**
+ * Address a human is known by. It is an alias for a user, never an identity: the
+ * identifier is what every other record references. The bound is the RFC 5321 maximum path
+ * length. The pattern is deliberately permissive — one at-sign, no whitespace and no
+ * control characters — because a stricter one rejects addresses that work: a dotless host
+ * such as administrator@localhost is what a fresh self-hosted installation is seeded with,
+ * and deliverability is not something a schema can decide.
+ */
+export function validateEmailAddress(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 3, maxLength: 254, pattern: PATTERN_4 });
+}
+
+/**
+ * Git branch name. Bounded and restricted to the characters a ref may hold, so a value
+ * stored here cannot become an argument to something else.
+ */
+export function validateGitRefName(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 255, pattern: PATTERN_5 });
+}
+
+/**
+ * How a human authenticated. bootstrap_token is the ADR-0016 exchange, install_token is
+ * the one-time administrator bootstrap, and password is a local account.
+ */
+export function validateLoginMethod(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["password","bootstrap_token","install_token"] });
+}
+
+/**
+ * Why an authentication attempt was refused. Stable, so a run of failures can be
+ * classified from the audit trail alone without any record of what was submitted.
+ */
+export function validateLoginFailureReason(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["unknown_user","invalid_password","password_not_set","user_suspended","rate_limited","install_token_invalid","install_token_expired","install_token_consumed"] });
+}
+
+/**
+ * Why a session stopped being usable.
+ */
+export function validateSessionRevocationReason(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["sign_out","rotated","revoked_by_user","revoked_by_administrator"] });
+}
+
+/**
+ * Normalised host and path, lowercase host, no scheme, no credentials, no .git suffix and
+ * no trailing slash, for example github.com/example/refresh-surplus.
+ */
+export function validateRepositoryIdentityCanonical(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 3, maxLength: 255, pattern: PATTERN_6 });
+}
+
+export function validateRepositoryIdentityCloneUrlsItem(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 3, maxLength: 512, pattern: PATTERN_7 });
+}
+
+/**
+ * Clone URLs that reduce to canonical, in the order they were supplied. Duplicates are
+ * removed by the control plane before storage.
+ */
+export function validateRepositoryIdentityCloneUrls(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 8, uniqueItems: true })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateRepositoryIdentityCloneUrlsItem(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Provider-agnostic repository identity (docs/DOMAIN_MODEL.md section 6). canonical is the
+ * normalised host-and-path form that two clone URLs for the same repository both reduce
+ * to, which is what lets an SSH remote and an HTTPS remote be recognised as one
+ * repository. clone_urls records the forms actually seen, for display and for a connector
+ * to match a checkout against.
+ */
+export function validateRepositoryIdentity(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["canonical", "clone_urls"], ["canonical"]);
+  if (source === null) return;
+  if (source["canonical"] !== undefined) {
+    validateRepositoryIdentityCanonical(source["canonical"], `${path}.canonical`, out);
+  }
+  if (source["clone_urls"] !== undefined) {
+    validateRepositoryIdentityCloneUrls(source["clone_urls"], `${path}.clone_urls`, out);
+  }
+}
+
+/**
+ * Viewport width in CSS pixels.
+ */
+export function validateValidationViewportWidth(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 240, maximum: 3840 });
+}
+
+/**
+ * Viewport height in CSS pixels.
+ */
+export function validateValidationViewportHeight(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 240, maximum: 2160 });
+}
+
+/**
+ * Device pixel ratio. Absent means 1, which is what a browser session adopts when the
+ * project does not say otherwise.
+ */
+export function validateValidationViewportDeviceScaleFactor(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkNumber(value, path, out, { minimum: 1, maximum: 4 });
+}
+
+/**
+ * A viewport the project validates at (docs/UX_FLOWS.md section 4). The bounds are the
+ * browser protocol's, because a viewport stored here is one a browser session is later
+ * asked to adopt; a value the worker would refuse must not be storable.
+ */
+export function validateValidationViewport(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["width", "height", "device_scale_factor"], ["width", "height"]);
+  if (source === null) return;
+  if (source["width"] !== undefined) {
+    validateValidationViewportWidth(source["width"], `${path}.width`, out);
+  }
+  if (source["height"] !== undefined) {
+    validateValidationViewportHeight(source["height"], `${path}.height`, out);
+  }
+  if (source["device_scale_factor"] !== undefined) {
+    validateValidationViewportDeviceScaleFactor(source["device_scale_factor"], `${path}.device_scale_factor`, out);
+  }
+}
+
+/**
+ * Viewports a finding is expected to be validated at. It defaults to 390x844 and 1440x900,
+ * which AGENTS.md requires of browser-facing work and the Stage 1 completion gate checks
+ * against.
+ */
+export function validateProjectSettingsDefaultValidationViewports(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 1, maxItems: 8, uniqueItems: true })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateValidationViewport(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Project settings (docs/DOMAIN_MODEL.md section 6). Stage 1 holds the default validation
+ * viewports and nothing else; the object refuses unknown members so a setting cannot be
+ * introduced in one service without being defined here first.
+ */
+export function validateProjectSettings(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["default_validation_viewports"], ["default_validation_viewports"]);
+  if (source === null) return;
+  if (source["default_validation_viewports"] !== undefined) {
+    validateProjectSettingsDefaultValidationViewports(source["default_validation_viewports"], `${path}.default_validation_viewports`, out);
+  }
+}
+
+/**
+ * The top-level administrative and data-isolation boundary (docs/DOMAIN_MODEL.md section
+ * 4).
+ */
+export function validateOrganisation(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["id", "name", "slug", "status", "created_at", "updated_at"], ["id", "name", "slug", "status", "created_at", "updated_at"]);
+  if (source === null) return;
+  if (source["id"] !== undefined) {
+    validateIdentifier(source["id"], `${path}.id`, out);
+  }
+  if (source["name"] !== undefined) {
+    validateDisplayName(source["name"], `${path}.name`, out);
+  }
+  if (source["slug"] !== undefined) {
+    validateSlug(source["slug"], `${path}.slug`, out);
+  }
+  if (source["status"] !== undefined) {
+    validateOrganisationStatus(source["status"], `${path}.status`, out);
+  }
+  if (source["created_at"] !== undefined) {
+    validateTimestamp(source["created_at"], `${path}.created_at`, out);
+  }
+  if (source["updated_at"] !== undefined) {
+    validateTimestamp(source["updated_at"], `${path}.updated_at`, out);
+  }
+}
+
+/**
+ * Whether this user can authenticate locally. It is the fact a first-run screen needs, and
+ * it says nothing about the credential itself. The name avoids the word the schema checker
+ * forbids in a field, which exists so that no protocol field can ever carry a credential.
+ */
+export function validateUserLocalCredentialSet(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * A human identity (docs/DOMAIN_MODEL.md section 5). It never carries credential material:
+ * whether a password exists is stated, and the hash is not part of any representation that
+ * leaves the database.
+ */
+export function validateUser(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["id", "organisation_id", "email", "display_name", "status", "local_credential_set", "created_at", "updated_at"], ["id", "organisation_id", "email", "display_name", "status", "created_at", "updated_at"]);
+  if (source === null) return;
+  if (source["id"] !== undefined) {
+    validateIdentifier(source["id"], `${path}.id`, out);
+  }
+  if (source["organisation_id"] !== undefined) {
+    validateIdentifier(source["organisation_id"], `${path}.organisation_id`, out);
+  }
+  if (source["email"] !== undefined) {
+    validateEmailAddress(source["email"], `${path}.email`, out);
+  }
+  if (source["display_name"] !== undefined) {
+    validateDisplayName(source["display_name"], `${path}.display_name`, out);
+  }
+  if (source["status"] !== undefined) {
+    validateUserStatus(source["status"], `${path}.status`, out);
+  }
+  if (source["local_credential_set"] !== undefined) {
+    validateUserLocalCredentialSet(source["local_credential_set"], `${path}.local_credential_set`, out);
+  }
+  if (source["created_at"] !== undefined) {
+    validateTimestamp(source["created_at"], `${path}.created_at`, out);
+  }
+  if (source["updated_at"] !== undefined) {
+    validateTimestamp(source["updated_at"], `${path}.updated_at`, out);
+  }
+}
+
+/**
+ * Optimistic-concurrency version (docs/API.md section 5.2). A write carrying a different
+ * expected_version is refused with VERSION_CONFLICT rather than silently overwriting.
+ */
+export function validateProjectVersion(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 1, maximum: 9007199254740991 });
+}
+
+/**
+ * The principal working boundary (docs/DOMAIN_MODEL.md section 6). A review belongs to
+ * exactly one project, and a browser session may only route to services authorised for the
+ * same project.
+ */
+export function validateProject(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["id", "organisation_id", "name", "slug", "repository_identity", "default_branch", "status", "settings", "version", "created_at", "updated_at"], ["id", "organisation_id", "name", "slug", "default_branch", "status", "settings", "version", "created_at", "updated_at"]);
+  if (source === null) return;
+  if (source["id"] !== undefined) {
+    validateIdentifier(source["id"], `${path}.id`, out);
+  }
+  if (source["organisation_id"] !== undefined) {
+    validateIdentifier(source["organisation_id"], `${path}.organisation_id`, out);
+  }
+  if (source["name"] !== undefined) {
+    validateDisplayName(source["name"], `${path}.name`, out);
+  }
+  if (source["slug"] !== undefined) {
+    validateSlug(source["slug"], `${path}.slug`, out);
+  }
+  if (source["repository_identity"] !== undefined) {
+    validateRepositoryIdentity(source["repository_identity"], `${path}.repository_identity`, out);
+  }
+  if (source["default_branch"] !== undefined) {
+    validateGitRefName(source["default_branch"], `${path}.default_branch`, out);
+  }
+  if (source["status"] !== undefined) {
+    validateProjectStatus(source["status"], `${path}.status`, out);
+  }
+  if (source["settings"] !== undefined) {
+    validateProjectSettings(source["settings"], `${path}.settings`, out);
+  }
+  if (source["version"] !== undefined) {
+    validateProjectVersion(source["version"], `${path}.version`, out);
+  }
+  if (source["created_at"] !== undefined) {
+    validateTimestamp(source["created_at"], `${path}.created_at`, out);
+  }
+  if (source["updated_at"] !== undefined) {
+    validateTimestamp(source["updated_at"], `${path}.updated_at`, out);
+  }
+}
+
+/**
+ * Projects the session may reach. Absent means every project in the organisation.
+ */
+export function validateHumanSessionProjectIds(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 200, uniqueItems: true })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateIdentifier(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * What a human session tells its own holder (docs/API.md section 4). The session token
+ * lives in an HTTP-only cookie and is never part of this representation; project_ids
+ * absent means organisation-wide scope, and a list means exactly those projects.
+ */
+export function validateHumanSession(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["session_id", "user_id", "organisation_id", "email", "display", "project_ids", "expires_at"], ["session_id", "display", "expires_at"]);
+  if (source === null) return;
+  if (source["session_id"] !== undefined) {
+    validateIdentifier(source["session_id"], `${path}.session_id`, out);
+  }
+  if (source["user_id"] !== undefined) {
+    validateIdentifier(source["user_id"], `${path}.user_id`, out);
+  }
+  if (source["organisation_id"] !== undefined) {
+    validateIdentifier(source["organisation_id"], `${path}.organisation_id`, out);
+  }
+  if (source["email"] !== undefined) {
+    validateEmailAddress(source["email"], `${path}.email`, out);
+  }
+  if (source["display"] !== undefined) {
+    validateDisplayName(source["display"], `${path}.display`, out);
+  }
+  if (source["project_ids"] !== undefined) {
+    validateHumanSessionProjectIds(source["project_ids"], `${path}.project_ids`, out);
+  }
+  if (source["expires_at"] !== undefined) {
+    validateTimestamp(source["expires_at"], `${path}.expires_at`, out);
+  }
+}
+
+/**
  * Human-readable label for a timeline. It is description and never an authorisation input.
  */
 export function validateActorDisplay(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 200, pattern: PATTERN_2 });
+  checkString(value, path, out, { minLength: 1, maxLength: 200, pattern: PATTERN_3 });
 }
 
 /**
@@ -249,14 +596,14 @@ export function validateEnvelope(value: unknown, path: string, out: SchemaViolat
  * Mutable human-friendly alias. The identifier is authoritative; this is not.
  */
 export function validateOrganisationCreatedPayloadSlug(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 63, pattern: PATTERN_3 });
+  checkString(value, path, out, { minLength: 1, maxLength: 63, pattern: PATTERN_2 });
 }
 
 /**
  * Display name.
  */
 export function validateOrganisationCreatedPayloadName(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 200, pattern: PATTERN_2 });
+  checkString(value, path, out, { minLength: 1, maxLength: 200, pattern: PATTERN_3 });
 }
 
 /**
@@ -277,21 +624,30 @@ export function validateOrganisationCreatedPayload(value: unknown, path: string,
  * Project-scoped alias. Mutable, and never a substitute for the identifier.
  */
 export function validateProjectCreatedPayloadSlug(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 63, pattern: PATTERN_3 });
+  checkString(value, path, out, { minLength: 1, maxLength: 63, pattern: PATTERN_2 });
 }
 
 /**
  * Display name.
  */
 export function validateProjectCreatedPayloadName(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 200, pattern: PATTERN_2 });
+  checkString(value, path, out, { minLength: 1, maxLength: 200, pattern: PATTERN_3 });
+}
+
+/**
+ * Normalised repository identity the project was created with, when one was supplied. The
+ * canonical form alone: the clone URLs are queryable on the record and add nothing an
+ * auditor needs.
+ */
+export function validateProjectCreatedPayloadRepositoryCanonical(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 3, maxLength: 255, pattern: PATTERN_6 });
 }
 
 /**
  * Payload of project.created.
  */
 export function validateProjectCreatedPayload(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["slug", "name"], ["slug", "name"]);
+  const source = checkObject(value, path, out, ["slug", "name", "default_branch", "repository_canonical"], ["slug", "name"]);
   if (source === null) return;
   if (source["slug"] !== undefined) {
     validateProjectCreatedPayloadSlug(source["slug"], `${path}.slug`, out);
@@ -299,10 +655,135 @@ export function validateProjectCreatedPayload(value: unknown, path: string, out:
   if (source["name"] !== undefined) {
     validateProjectCreatedPayloadName(source["name"], `${path}.name`, out);
   }
+  if (source["default_branch"] !== undefined) {
+    validateGitRefName(source["default_branch"], `${path}.default_branch`, out);
+  }
+  if (source["repository_canonical"] !== undefined) {
+    validateProjectCreatedPayloadRepositoryCanonical(source["repository_canonical"], `${path}.repository_canonical`, out);
+  }
+}
+
+/**
+ * Normalised identity before the change. Absent when the project had no repository
+ * association.
+ */
+export function validateProjectRepositoryChangedPayloadPreviousCanonical(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 3, maxLength: 255, pattern: PATTERN_6 });
+}
+
+/**
+ * Normalised identity after the change.
+ */
+export function validateProjectRepositoryChangedPayloadNewCanonical(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 3, maxLength: 255, pattern: PATTERN_6 });
+}
+
+/**
+ * Payload of project.repository_changed. It carries both sides of the move, because a
+ * review captured before it was interpreted against the previous repository
+ * (docs/DOMAIN_MODEL.md section 6).
+ */
+export function validateProjectRepositoryChangedPayload(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["previous_canonical", "new_canonical"], ["new_canonical"]);
+  if (source === null) return;
+  if (source["previous_canonical"] !== undefined) {
+    validateProjectRepositoryChangedPayloadPreviousCanonical(source["previous_canonical"], `${path}.previous_canonical`, out);
+  }
+  if (source["new_canonical"] !== undefined) {
+    validateProjectRepositoryChangedPayloadNewCanonical(source["new_canonical"], `${path}.new_canonical`, out);
+  }
+}
+
+/**
+ * Payload of user.invited. Issuing a credential-establishing token is a permission change,
+ * and docs/SECURITY.md section 16 requires an audit record for one. It never carries the
+ * token: a reader learns that a way in exists and when it closes, not what it is.
+ */
+export function validateUserInvitedPayload(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["user_id", "method", "expires_at"], ["user_id", "method", "expires_at"]);
+  if (source === null) return;
+  if (source["user_id"] !== undefined) {
+    validateIdentifier(source["user_id"], `${path}.user_id`, out);
+  }
+  if (source["method"] !== undefined) {
+    validateLoginMethod(source["method"], `${path}.method`, out);
+  }
+  if (source["expires_at"] !== undefined) {
+    validateTimestamp(source["expires_at"], `${path}.expires_at`, out);
+  }
+}
+
+/**
+ * Payload of user.credentials_set. Setting a password is a permission change and
+ * docs/SECURITY.md section 16 requires an audit record for one; the record names the user
+ * and the route the credential arrived by, and nothing else.
+ */
+export function validateUserCredentialsSetPayload(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["user_id", "method"], ["user_id", "method"]);
+  if (source === null) return;
+  if (source["user_id"] !== undefined) {
+    validateIdentifier(source["user_id"], `${path}.user_id`, out);
+  }
+  if (source["method"] !== undefined) {
+    validateLoginMethod(source["method"], `${path}.method`, out);
+  }
+}
+
+/**
+ * Payload of authentication.login_succeeded.
+ */
+export function validateAuthenticationLoginSucceededPayload(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["session_id", "user_id", "method"], ["session_id", "method"]);
+  if (source === null) return;
+  if (source["session_id"] !== undefined) {
+    validateIdentifier(source["session_id"], `${path}.session_id`, out);
+  }
+  if (source["user_id"] !== undefined) {
+    validateIdentifier(source["user_id"], `${path}.user_id`, out);
+  }
+  if (source["method"] !== undefined) {
+    validateLoginMethod(source["method"], `${path}.method`, out);
+  }
+}
+
+/**
+ * Payload of authentication.login_failed. It never carries the submitted credential, and
+ * never the identifier that was typed beside it: a password mistyped into an email field
+ * would otherwise be written to an append-only table (docs/SECURITY.md section 18).
+ */
+export function validateAuthenticationLoginFailedPayload(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["reason", "method", "user_id"], ["reason", "method"]);
+  if (source === null) return;
+  if (source["reason"] !== undefined) {
+    validateLoginFailureReason(source["reason"], `${path}.reason`, out);
+  }
+  if (source["method"] !== undefined) {
+    validateLoginMethod(source["method"], `${path}.method`, out);
+  }
+  if (source["user_id"] !== undefined) {
+    validateIdentifier(source["user_id"], `${path}.user_id`, out);
+  }
+}
+
+/**
+ * Payload of session.revoked.
+ */
+export function validateSessionRevokedPayload(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["session_id", "user_id", "reason"], ["session_id", "reason"]);
+  if (source === null) return;
+  if (source["session_id"] !== undefined) {
+    validateIdentifier(source["session_id"], `${path}.session_id`, out);
+  }
+  if (source["user_id"] !== undefined) {
+    validateIdentifier(source["user_id"], `${path}.user_id`, out);
+  }
+  if (source["reason"] !== undefined) {
+    validateSessionRevocationReason(source["reason"], `${path}.reason`, out);
+  }
 }
 
 export function validateProjectUpdatedPayloadChangedFieldsItem(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_4 });
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_8 });
 }
 
 /**
@@ -621,7 +1102,7 @@ export function validateStreamErrorType(value: unknown, path: string, out: Schem
  * trace.
  */
 export function validateStreamErrorMessage(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 1024, pattern: PATTERN_5 });
+  checkString(value, path, out, { minLength: 1, maxLength: 1024, pattern: PATTERN_9 });
 }
 
 /**
@@ -687,7 +1168,7 @@ export function validateApiErrorDetailsCandidates(value: unknown, path: string, 
 }
 
 export function validateApiErrorDetailsAllowedTransitionsItem(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_6 });
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_10 });
 }
 
 /**
@@ -702,7 +1183,7 @@ export function validateApiErrorDetailsAllowedTransitions(value: unknown, path: 
 }
 
 export function validateApiErrorDetailsRequiredEvidenceItem(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_4 });
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_8 });
 }
 
 /**
@@ -716,7 +1197,7 @@ export function validateApiErrorDetailsRequiredEvidence(value: unknown, path: st
 }
 
 export function validateApiErrorDetailsMissingContextItem(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_7 });
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_11 });
 }
 
 /**
@@ -742,14 +1223,14 @@ export function validateApiErrorDetailsRetryAfterMs(value: unknown, path: string
  * The request member the refusal is about.
  */
 export function validateApiErrorDetailsField(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 128, pattern: PATTERN_8 });
+  checkString(value, path, out, { minLength: 1, maxLength: 128, pattern: PATTERN_12 });
 }
 
 /**
  * Stable sub-reason where one code covers several causes.
  */
 export function validateApiErrorDetailsReason(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_4 });
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_8 });
 }
 
 /**
@@ -797,7 +1278,7 @@ export function validateApiErrorDetails(value: unknown, path: string, out: Schem
  * (docs/SECURITY.md section 18).
  */
 export function validateApiErrorMessage(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 1024, pattern: PATTERN_5 });
+  checkString(value, path, out, { minLength: 1, maxLength: 1024, pattern: PATTERN_9 });
 }
 
 /**
@@ -858,7 +1339,7 @@ export function validateCursorClaimsVersion(value: unknown, path: string, out: S
  * Value of the collection's sort column at the last row of the previous page.
  */
 export function validateCursorClaimsSortKey(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 128, pattern: PATTERN_5 });
+  checkString(value, path, out, { minLength: 1, maxLength: 128, pattern: PATTERN_9 });
 }
 
 /**

@@ -20,6 +20,7 @@ import {
   startHarness,
   type Harness,
 } from "./support/worker-harness.ts";
+import { claimSessionFor, type SessionCookies } from "./support/identity.ts";
 import { encodePng, sha256 } from "./support/png.ts";
 import { startMigratedDatabase, truncateAll, type MigratedDatabase } from "./support/postgres.ts";
 
@@ -799,4 +800,249 @@ test("every lifecycle change produces an event that satisfies the protocol schem
   }
   assert.ok(decoded >= 9, `only ${String(decoded)} review-domain events were checked`);
   process.stdout.write(`EVIDENCE ${String(decoded)} events decoded against the review schema\n`);
+});
+
+// ---------------------------------------------------------------------------
+// CSRF on the state-changing routes (`docs/API.md` section 4.0)
+// ---------------------------------------------------------------------------
+
+/** A state-changing request carrying the session cookie and no token. */
+async function forged(
+  method: "POST" | "PATCH",
+  url: string,
+  payload: Record<string, unknown>,
+  cookies: SessionCookies,
+) {
+  const response = await harness.built.app.inject({
+    method,
+    url,
+    headers: cookies.readHeaders,
+    payload,
+  });
+  assert.equal(
+    response.statusCode,
+    403,
+    `${method} ${url} accepted a cookie with no CSRF token: ${response.body}`,
+  );
+  const body = response.json() as { error: { code: string; details?: { reason?: string } } };
+  assert.equal(body.error.code, "AUTHORISATION_DENIED", response.body);
+  assert.equal(body.error.details?.reason, "csrf_token_invalid", response.body);
+  process.stdout.write(`EVIDENCE forged ${method} ${url} -> 403 ${response.body}\n`);
+  return response;
+}
+
+/**
+ * The review is the system of record, and each route here writes to it.
+ *
+ * All five accepted a session cookie with no CSRF token of any kind. With a
+ * real password session and no `X-CSRF-Token`, `PATCH /api/v1/reviews/:id`
+ * answered `200` twice — retitling a review and moving it `DRAFT` to `READY` —
+ * and the audit trail attributed both writes to the account whose cookie was
+ * replayed, so a forged change to the system of record was indistinguishable
+ * from a genuine one.
+ *
+ * Every case is asserted three ways: the cookie alone is refused, the refusal
+ * is the CSRF refusal rather than a validation error, and the row the request
+ * aimed at did not move. The same request with the token then succeeds, because
+ * a guard that refused everything would pass the first two.
+ */
+test("every state-changing review route refuses a cookie session without the CSRF token", async () => {
+  const fixture = await seedFixture();
+  const cookies = await claimSessionFor(harness.built, postgres.pool, fixture.organisationId);
+  const app = harness.built.app;
+  const reviewsUrl = `/api/v1/projects/${fixture.projectId}/reviews`;
+
+  // 1. Creating a review.
+  await forged("POST", reviewsUrl, reviewBody(fixture), cookies);
+  const nothingCreated = await postgres.pool.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM reviews WHERE project_id = $1",
+    [fixture.projectId],
+  );
+  assert.equal(nothingCreated.rows[0]?.count, "0", "a forged request created a review");
+
+  const created = await app.inject({
+    method: "POST",
+    url: reviewsUrl,
+    headers: cookies.writeHeaders,
+    payload: reviewBody(fixture),
+  });
+  assert.equal(created.statusCode, 201, created.body);
+  const review = (created.json() as { data: { id: string; version: number } }).data;
+
+  // 2. Updating one: the request the review actually exploited, so the row is
+  //    read back rather than the status code trusted.
+  await forged(
+    "PATCH",
+    `/api/v1/reviews/${review.id}`,
+    { expected_version: review.version, title: "Forged title", status: "READY" },
+    cookies,
+  );
+  const untouched = await postgres.pool.query<{ title: string; status: string; version: number }>(
+    "SELECT title, status, version FROM reviews WHERE id = $1",
+    [review.id],
+  );
+  assert.equal(untouched.rows[0]?.title, "Bugs on homepage", "a forged request retitled a review");
+  assert.equal(untouched.rows[0]?.status, "DRAFT", "a forged request advanced a review");
+  assert.equal(untouched.rows[0]?.version, review.version);
+
+  // An invented token is no better than an absent one.
+  const wrong = await app.inject({
+    method: "PATCH",
+    url: `/api/v1/reviews/${review.id}`,
+    headers: { ...cookies.readHeaders, "x-csrf-token": "not-the-token" },
+    payload: { expected_version: review.version, title: "Forged title" },
+  });
+  assert.equal(wrong.statusCode, 403, wrong.body);
+
+  // The guard runs before the body is decoded. A forged request whose body the
+  // schema would reject is still answered with the CSRF refusal — the missing
+  // guard was proved by the opposite: a body error came back for the token, for
+  // a wrong token and for no token alike, which only happens when nothing
+  // refuses before the decoder.
+  await forged(
+    "PATCH",
+    `/api/v1/reviews/${review.id}`,
+    { expected_version: "not a number", status: "NOT_A_STATUS" },
+    cookies,
+  );
+
+  const updated = await app.inject({
+    method: "PATCH",
+    url: `/api/v1/reviews/${review.id}`,
+    headers: cookies.writeHeaders,
+    payload: { expected_version: review.version, title: "Bugs on the homepage" },
+  });
+  assert.equal(updated.statusCode, 200, updated.body);
+  const reviewVersion = (updated.json() as { data: { version: number } }).data.version;
+
+  // 3. Creating a finding.
+  await forged("POST", `/api/v1/reviews/${review.id}/findings`, findingBody(fixture), cookies);
+  const noFindings = await postgres.pool.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM findings WHERE review_id = $1",
+    [review.id],
+  );
+  assert.equal(noFindings.rows[0]?.count, "0", "a forged request created a finding");
+
+  const finding = await app.inject({
+    method: "POST",
+    url: `/api/v1/reviews/${review.id}/findings`,
+    headers: cookies.writeHeaders,
+    payload: findingBody(fixture),
+  });
+  assert.equal(finding.statusCode, 201, finding.body);
+  const target = (finding.json() as { data: { finding: { id: string; version: number } } }).data
+    .finding;
+
+  // 4. Updating a finding. `OPEN -> WONT_FIX` is a legal transition for a human,
+  //    so this is a forgery that would otherwise have worked: another origin
+  //    silently closing somebody's finding.
+  await forged(
+    "PATCH",
+    `/api/v1/findings/${target.id}`,
+    { expected_version: target.version, status: "WONT_FIX" },
+    cookies,
+  );
+  const findingRow = await postgres.pool.query<{ status: string }>(
+    "SELECT status FROM findings WHERE id = $1",
+    [target.id],
+  );
+  assert.equal(findingRow.rows[0]?.status, "OPEN", "a forged request moved a finding");
+
+  const findingUpdated = await app.inject({
+    method: "PATCH",
+    url: `/api/v1/findings/${target.id}`,
+    headers: cookies.writeHeaders,
+    payload: { expected_version: target.version, severity: "critical" },
+  });
+  assert.equal(findingUpdated.statusCode, 200, findingUpdated.body);
+
+  // 5. Annotating one.
+  const annotation = {
+    artefact_id: fixture.artefactId,
+    type: "rectangle",
+    geometry: { x: 0.1, y: 0.1, width: 0.2, height: 0.2 },
+    label: "The overlapping heading",
+  };
+  await forged("POST", `/api/v1/findings/${target.id}/annotations`, annotation, cookies);
+  const noAnnotations = await postgres.pool.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM annotations WHERE finding_id = $1",
+    [target.id],
+  );
+  assert.equal(noAnnotations.rows[0]?.count, "0", "a forged request created an annotation");
+
+  const annotated = await app.inject({
+    method: "POST",
+    url: `/api/v1/findings/${target.id}/annotations`,
+    headers: cookies.writeHeaders,
+    payload: annotation,
+  });
+  assert.equal(annotated.statusCode, 201, annotated.body);
+
+  // Reads are untouched: the cookie alone still reads, which is what keeps this
+  // a CSRF guard rather than a second authentication.
+  const read = await app.inject({
+    method: "GET",
+    url: `/api/v1/reviews/${review.id}`,
+    headers: cookies.readHeaders,
+  });
+  assert.equal(read.statusCode, 200, read.body);
+  assert.equal((read.json() as { data: { version: number } }).data.version, reviewVersion);
+
+  // Nothing a forged request asked for reached the audit trail.
+  const events = await postgres.pool.query<{ type: string; payload: Record<string, unknown> }>(
+    "SELECT type, payload FROM events WHERE project_id = $1",
+    [fixture.projectId],
+  );
+  const payloads = events.rows.map((row) => JSON.stringify(row.payload));
+  assert.ok(!payloads.some((payload) => payload.includes("Forged title")), payloads.join("\n"));
+  assert.equal(
+    events.rows.filter((row) => row.type === "review.status_changed").length,
+    0,
+    "a forged request recorded a status change",
+  );
+  assert.equal(
+    events.rows.filter((row) => row.type === "finding.status_changed").length,
+    0,
+    "a forged request recorded a finding transition",
+  );
+});
+
+test("the ADR-0016 viewer session cannot write to a review", async () => {
+  // The exchange issues no CSRF token, so the strict guard refuses it outright.
+  // Before that guard reached these routes this exact session could retitle a
+  // review, which is why "the exchange is a read-only credential" needs a test
+  // rather than a comment (`docs/API.md` section 4.0, ADR-0016 follow-up).
+  const fixture = await seedFixture();
+  const review = (await createReview(fixture)).json() as { data: { id: string; version: number } };
+
+  const minted = await harness.built.app.inject({
+    method: "POST",
+    url: `/api/v1/projects/${fixture.projectId}/viewer-sessions`,
+    headers: ADMIN,
+  });
+  assert.equal(minted.statusCode, 201, minted.body);
+  const token = (minted.json() as { data: { token: string } }).data.token;
+  const cookie = { cookie: `reviewplane_viewer=${encodeURIComponent(token)}` };
+
+  const refused = await harness.built.app.inject({
+    method: "PATCH",
+    url: `/api/v1/reviews/${review.data.id}`,
+    headers: cookie,
+    payload: { expected_version: review.data.version, title: "Written by a token-less session" },
+  });
+  assert.equal(refused.statusCode, 403, refused.body);
+  assert.equal(
+    (refused.json() as { error: { details?: { reason?: string } } }).error.details?.reason,
+    "csrf_token_invalid",
+  );
+  process.stdout.write(`EVIDENCE ADR-0016 session write refused: ${refused.body}\n`);
+
+  // It still reads its own project, which is what the exchange is for.
+  const read = await harness.built.app.inject({
+    method: "GET",
+    url: `/api/v1/reviews/${review.data.id}`,
+    headers: cookie,
+  });
+  assert.equal(read.statusCode, 200, read.body);
+  assert.equal((read.json() as { data: { title: string } }).data.title, "Bugs on homepage");
 });

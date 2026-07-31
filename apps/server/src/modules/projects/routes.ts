@@ -1,47 +1,68 @@
 /**
- * Minimal organisation and project endpoints (`docs/API.md` sections 7 and 8).
+ * Organisation and project endpoints (`docs/API.md` sections 7 and 8).
  *
- * Only what browser sessions and artefacts need to exist: a project to own
- * them and an organisation to own the project. Membership, repository identity
- * and settings arrive with the issues that use them.
+ * ```text
+ * GET    /api/v1/projects                       projects this session may see
+ * POST   /api/v1/projects                       create one
+ * GET    /api/v1/projects/:projectId            read one
+ * PATCH  /api/v1/projects/:projectId            change one
+ * DELETE /api/v1/projects/:projectId            archive one
+ * GET    /api/v1/projects/:projectId/activity   its event timeline
+ * ```
  *
- * Both routes are administrative, so a worker credential is refused here even
- * though it authenticates successfully elsewhere (`docs/SECURITY.md` §6.3).
+ * Reads are available to any human session, filtered by its scope. Writes are
+ * organisation administration: an organisation-wide session performs them, a
+ * project-scoped delegation does not, and no machine credential does
+ * (`docs/SECURITY.md` sections 6.3 and 7). A cookie-authenticated write also
+ * carries the CSRF token — that is what makes these the first state-changing
+ * routes a browser session may reach, which ADR-0016 said would have to arrive
+ * together with the CSRF protection.
+ *
+ * A project the caller may not see answers exactly as an unknown identifier
+ * does. `docs/API.md` section 5 requires it: `AUTHORISATION_DENIED` would
+ * confirm that the project exists, which is the enumeration the cross-project
+ * test exists to prevent.
+ *
+ * The two `POST /api/v1/organisations…` routes below are the Stage 0
+ * provisioning pair. They remain administrative — bootstrap token only — and
+ * exist because the harnesses, the fixture capture and the Compose end-to-end
+ * scenario seed a deployment through them.
  */
 
-import type { FastifyInstance, FastifyRequest } from "fastify";
-import type { Pool } from "pg";
+import type { FastifyInstance } from "fastify";
 
 import { requireAdministrator } from "../../auth.ts";
+import type { Pool } from "../../db/pool.ts";
 import { inTransaction } from "../../db/pool.ts";
 import { appendEvent } from "../../events/append.ts";
 import { EventStreamReader } from "../../events/stream.ts";
 import { ApiError, notFound } from "../../errors.ts";
 import { buildPage, pageMeta, readPageRequest } from "../../http/pagination.ts";
 import { newEntityId } from "../../ids.ts";
+import {
+  requireCsrfToken,
+  requireHuman,
+  requireOrganisationAdministrator,
+  resolveProject,
+  scopeParameter,
+} from "../identity/authorisation.ts";
+import type { OrganisationStore } from "../identity/organisations.ts";
 import type { ViewerPrincipal } from "../live/viewer-sessions.ts";
+import { projectView } from "./service.ts";
+import type { ProjectRow, ProjectService } from "./service.ts";
 
 export interface ProjectRoutesOptions {
   readonly pool: Pool;
+  readonly projects: ProjectService;
+  readonly organisations: OrganisationStore;
   readonly bootstrapToken: string;
   readonly workerCredential: string;
-  /**
-   * Resolves a human viewer (ADR-0016). Reads are available to a viewer
-   * session; writes stay administrative.
-   */
-  readonly viewerAuth?: (request: FastifyRequest) => Promise<ViewerPrincipal>;
 }
 
 const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/u;
 
-interface ProjectListRow {
-  readonly id: string;
-  readonly organisation_id: string;
-  readonly name: string;
-  readonly slug: string;
-  readonly status: string;
-  readonly created_at: Date;
-}
+const PROJECT_COLUMNS = `id, organisation_id, name, slug, repository_identity, default_branch,
+                         status, settings, version, created_at, updated_at`;
 
 export async function registerProjectRoutes(
   app: FastifyInstance,
@@ -49,6 +70,21 @@ export async function registerProjectRoutes(
 ): Promise<void> {
   const { pool } = options;
 
+  /** The organisation a write applies to: the session's, or the only one. */
+  const writeOrganisation = async (principal: ViewerPrincipal): Promise<string> => {
+    if (principal.organisationId !== null) return principal.organisationId;
+    const organisation = await options.organisations.primary();
+    if (organisation === null) throw notFound("The organisation");
+    return organisation.id;
+  };
+
+  const actorFor = (principal: ViewerPrincipal): { type: "human_user"; id?: string; display: string } => ({
+    type: "human_user",
+    ...(principal.userId === null ? {} : { id: principal.userId }),
+    display: principal.display,
+  });
+
+  // ------------------------------------------------- Stage 0 provisioning
   app.post("/api/v1/organisations", async (request, reply) => {
     requireAdministrator(request, options.bootstrapToken, options.workerCredential);
     const body = request.body as { name?: string; slug?: string };
@@ -57,11 +93,20 @@ export async function registerProjectRoutes(
       throw new ApiError("UNSUPPORTED_CAPABILITY", "slug must be lowercase, alphanumeric or hyphens.");
     }
     const id = newEntityId("organisation");
-    await pool.query("INSERT INTO organisations (id, name, slug) VALUES ($1, $2, $3)", [
-      id,
-      body.name ?? slug,
-      slug,
-    ]);
+    await inTransaction(pool, async (client) => {
+      await client.query("INSERT INTO organisations (id, name, slug) VALUES ($1, $2, $3)", [
+        id,
+        body.name ?? slug,
+        slug,
+      ]);
+      await appendEvent(client, {
+        type: "organisation.created",
+        organisationId: id,
+        actor: { type: "human_user", display: "bootstrap administrator" },
+        correlation: { request_id: request.id },
+        payload: { slug, name: body.name ?? slug },
+      });
+    });
     return reply.status(201).send({ data: { id, slug }, meta: { request_id: request.id } });
   });
 
@@ -69,64 +114,159 @@ export async function registerProjectRoutes(
     requireAdministrator(request, options.bootstrapToken, options.workerCredential);
     const { organisationId } = request.params as { organisationId: string };
     const body = request.body as { name?: string; slug?: string };
-    const slug = body.slug ?? "";
-    if (!SLUG_PATTERN.test(slug)) {
-      throw new ApiError("UNSUPPORTED_CAPABILITY", "slug must be lowercase, alphanumeric or hyphens.");
-    }
     const organisation = await pool.query("SELECT id FROM organisations WHERE id = $1", [
       organisationId,
     ]);
     if (organisation.rows.length === 0) throw notFound("The organisation");
 
-    const id = newEntityId("project");
-    const record = await inTransaction(pool, async (client) => {
-      await client.query(
-        "INSERT INTO projects (id, organisation_id, name, slug) VALUES ($1, $2, $3, $4)",
-        [id, organisationId, body.name ?? slug, slug],
-      );
-      await appendEvent(client, {
-        type: "project.created",
-        organisationId,
-        projectId: id,
-        actor: { type: "human_user", display: "bootstrap administrator" },
-        payload: { slug, name: body.name ?? slug },
-      });
-      return { id, slug, organisation_id: organisationId };
+    const created = await options.projects.create({
+      organisationId,
+      name: body.name ?? body.slug ?? "",
+      slug: body.slug,
+      actor: { type: "human_user", display: "bootstrap administrator" },
+      requestId: request.id,
     });
-    return reply.status(201).send({ data: record, meta: { request_id: request.id } });
+    return reply.status(201).send({
+      data: { id: created.id, slug: created.slug, organisation_id: created.organisation_id },
+      meta: { request_id: request.id },
+    });
   });
 
+  // ------------------------------------------------------------- projects
   /**
    * Projects the caller may see (`docs/API.md` section 8).
    *
-   * A project-scoped viewer session sees exactly its own projects, which is
-   * what stops the web application listing another project's browser sessions
-   * merely because it asked.
+   * A project-scoped session sees exactly its own projects, which is what stops
+   * the web application listing another project's work merely because it asked.
    */
   app.get("/api/v1/projects", async (request, reply) => {
-    const principal = await requireViewer(request);
-    const scoped = principal.projectIds === null ? null : [...principal.projectIds];
+    const principal = requireHuman(request);
+    const scoped = scopeParameter(principal);
     const page = readPageRequest(request.query);
+    const includeArchived = (request.query as { include_archived?: unknown }).include_archived === "true";
     // Keyset pagination, ordered by the same pair the cursor carries. Reading
     // `limit + 1` rows is how the endpoint knows whether another page exists
     // without a second count query (`docs/API.md` section 6).
-    const rows = await pool.query<ProjectListRow>(
-      `SELECT id, organisation_id, name, slug, status, created_at
+    const rows = await pool.query<ProjectRow>(
+      `SELECT ${PROJECT_COLUMNS}
          FROM projects
         WHERE ($1::text[] IS NULL OR id = ANY($1))
-          AND ($2::text IS NULL OR (created_at, id) < ($2::timestamptz, $3::text))
+          AND ($2::text IS NULL OR organisation_id = $2)
+          AND ($3::boolean OR status <> 'archived')
+          AND ($4::text IS NULL OR (created_at, id) < ($4::timestamptz, $5::text))
         ORDER BY created_at DESC, id DESC
-        LIMIT $4`,
-      [scoped, page.after?.sortKey ?? null, page.after?.id ?? null, page.limit + 1],
+        LIMIT $6`,
+      [
+        scoped,
+        principal.organisationId,
+        includeArchived,
+        page.after?.sortKey ?? null,
+        page.after?.id ?? null,
+        page.limit + 1,
+      ],
     );
     const built = buildPage(rows.rows, page, (row) => ({
       sortKey: row.created_at.toISOString(),
       id: row.id,
     }));
     return reply.send({
-      data: built.items.map(({ created_at: _createdAt, ...project }) => project),
+      data: built.items.map((row) => projectView(row)),
       meta: pageMeta(request.id, built.nextCursor),
     });
+  });
+
+  /** Creates a project (`docs/UX_FLOWS.md` section 4). */
+  app.post("/api/v1/projects", async (request, reply) => {
+    const principal = requireOrganisationAdministrator(request);
+    requireCsrfToken(request, principal);
+    const body = (request.body ?? {}) as {
+      name?: unknown;
+      slug?: unknown;
+      repository_identity?: unknown;
+      default_branch?: unknown;
+      settings?: unknown;
+    };
+    const organisationId = await writeOrganisation(principal);
+
+    const created = await options.projects.create({
+      organisationId,
+      name: typeof body.name === "string" ? body.name : "",
+      slug: typeof body.slug === "string" ? body.slug : undefined,
+      ...(body.repository_identity === undefined
+        ? {}
+        : { repositoryIdentity: body.repository_identity }),
+      ...(typeof body.default_branch === "string" ? { defaultBranch: body.default_branch } : {}),
+      ...(body.settings === undefined ? {} : { settings: body.settings }),
+      actor: actorFor(principal),
+      requestId: request.id,
+    });
+    return reply
+      .status(201)
+      .send({ data: projectView(created), meta: { request_id: request.id } });
+  });
+
+  app.get("/api/v1/projects/:projectId", async (request, reply) => {
+    const principal = requireHuman(request);
+    const { projectId } = request.params as { projectId: string };
+    await resolveProject(pool, principal, projectId);
+    const project = await options.projects.byId(projectId);
+    if (project === null) throw notFound("The project");
+    return reply.send({ data: projectView(project), meta: { request_id: request.id } });
+  });
+
+  app.patch("/api/v1/projects/:projectId", async (request, reply) => {
+    const principal = requireOrganisationAdministrator(request);
+    requireCsrfToken(request, principal);
+    const { projectId } = request.params as { projectId: string };
+    const project = await resolveProject(pool, principal, projectId);
+    const body = (request.body ?? {}) as {
+      name?: unknown;
+      slug?: unknown;
+      repository_identity?: unknown;
+      default_branch?: unknown;
+      settings?: unknown;
+      expected_version?: unknown;
+    };
+
+    const updated = await options.projects.update({
+      projectId,
+      organisationId: project.organisationId,
+      ...(body.expected_version === undefined
+        ? {}
+        : { expectedVersion: readVersion(body.expected_version) }),
+      ...(typeof body.name === "string" ? { name: body.name } : {}),
+      ...(typeof body.slug === "string" ? { slug: body.slug } : {}),
+      ...(body.repository_identity === undefined
+        ? {}
+        : { repositoryIdentity: body.repository_identity }),
+      ...(typeof body.default_branch === "string" ? { defaultBranch: body.default_branch } : {}),
+      ...(body.settings === undefined ? {} : { settings: body.settings }),
+      actor: actorFor(principal),
+      requestId: request.id,
+    });
+    return reply.send({ data: projectView(updated), meta: { request_id: request.id } });
+  });
+
+  /**
+   * Archives a project. `docs/API.md` section 8: deletion archives, and a
+   * destructive purge is a separate flow that does not exist yet — so nothing
+   * here removes a review, an artefact or an event.
+   */
+  app.delete("/api/v1/projects/:projectId", async (request, reply) => {
+    const principal = requireOrganisationAdministrator(request);
+    requireCsrfToken(request, principal);
+    const { projectId } = request.params as { projectId: string };
+    const project = await resolveProject(pool, principal, projectId);
+    const expected = (request.query as { expected_version?: unknown }).expected_version;
+
+    const archived = await options.projects.archive({
+      projectId,
+      organisationId: project.organisationId,
+      ...(expected === undefined ? {} : { expectedVersion: readVersion(expected) }),
+      actor: actorFor(principal),
+      requestId: request.id,
+    });
+    return reply.send({ data: projectView(archived), meta: { request_id: request.id } });
   });
 
   /**
@@ -137,25 +277,11 @@ export async function registerProjectRoutes(
    * as pages. A client that has been away longer than the replay window, or
    * that has just been told to refresh, refetches here and then resumes the
    * socket from the newest sequence it received.
-   *
-   * The project is resolved inside the viewer's scope, so a project the viewer
-   * may not see answers exactly as an unknown identifier does — the API never
-   * confirms that another organisation's project exists.
    */
   app.get("/api/v1/projects/:projectId/activity", async (request, reply) => {
-    const principal = await requireViewer(request);
+    const principal = requireHuman(request);
     const { projectId } = request.params as { projectId: string };
-    const scoped = principal.projectIds === null ? null : [...principal.projectIds];
-    const found = await pool.query<{ id: string; organisation_id: string }>(
-      `SELECT id, organisation_id FROM projects
-        WHERE id = $1 AND ($2::text[] IS NULL OR id = ANY($2))`,
-      [projectId, scoped],
-    );
-    const project = found.rows[0];
-    if (project === undefined) throw notFound("The project");
-    if (principal.organisationId !== null && principal.organisationId !== project.organisation_id) {
-      throw notFound("The project");
-    }
+    const project = await resolveProject(pool, principal, projectId);
 
     const page = readPageRequest(request.query);
     const reader = new EventStreamReader(pool);
@@ -178,35 +304,14 @@ export async function registerProjectRoutes(
     }));
     return reply.send({ data: built.items, meta: pageMeta(request.id, built.nextCursor) });
   });
+}
 
-  app.get("/api/v1/projects/:projectId", async (request, reply) => {
-    const principal = await requireViewer(request);
-    const { projectId } = request.params as { projectId: string };
-    if (principal.projectIds !== null && !principal.projectIds.has(projectId)) {
-      throw new ApiError(
-        "PROJECT_CONTEXT_MISMATCH",
-        "This viewer session is not authorised for that project.",
-      );
-    }
-    const rows = await pool.query(
-      "SELECT id, organisation_id, name, slug, status FROM projects WHERE id = $1",
-      [projectId],
-    );
-    const row = rows.rows[0] as Record<string, unknown> | undefined;
-    if (row === undefined) throw notFound("The project");
-    return reply.send({ data: row, meta: { request_id: request.id } });
-  });
-
-  /** Administrator token or viewer session; nothing else reaches a read. */
-  async function requireViewer(request: FastifyRequest): Promise<ViewerPrincipal> {
-    if (options.viewerAuth !== undefined) return options.viewerAuth(request);
-    requireAdministrator(request, options.bootstrapToken, options.workerCredential);
-    return {
-      type: "human_viewer",
-      viewerSessionId: "bootstrap",
-      organisationId: null,
-      projectIds: null,
-      display: "bootstrap administrator",
-    };
+function readVersion(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new ApiError("VALIDATION_FAILED", "expected_version must be a positive whole number.", {
+      field: "expected_version",
+    });
   }
+  return parsed;
 }

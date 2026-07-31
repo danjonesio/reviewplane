@@ -47,17 +47,23 @@ var ChannelValues = []Channel{ChannelOrganisation, ChannelJobs, ChannelStream, C
 type MessageType string
 
 const (
-	MessageTypeOrganisationCreated MessageType = "organisation.created"
-	MessageTypeProjectCreated      MessageType = "project.created"
-	MessageTypeProjectUpdated      MessageType = "project.updated"
-	MessageTypeProjectArchived     MessageType = "project.archived"
-	MessageTypeJobEnqueued         MessageType = "job.enqueued"
-	MessageTypeJobSucceeded        MessageType = "job.succeeded"
-	MessageTypeJobFailed           MessageType = "job.failed"
+	MessageTypeOrganisationCreated          MessageType = "organisation.created"
+	MessageTypeProjectCreated               MessageType = "project.created"
+	MessageTypeProjectUpdated               MessageType = "project.updated"
+	MessageTypeProjectRepositoryChanged     MessageType = "project.repository_changed"
+	MessageTypeProjectArchived              MessageType = "project.archived"
+	MessageTypeUserInvited                  MessageType = "user.invited"
+	MessageTypeUserCredentialsSet           MessageType = "user.credentials_set"
+	MessageTypeAuthenticationLoginSucceeded MessageType = "authentication.login_succeeded"
+	MessageTypeAuthenticationLoginFailed    MessageType = "authentication.login_failed"
+	MessageTypeSessionRevoked               MessageType = "session.revoked"
+	MessageTypeJobEnqueued                  MessageType = "job.enqueued"
+	MessageTypeJobSucceeded                 MessageType = "job.succeeded"
+	MessageTypeJobFailed                    MessageType = "job.failed"
 )
 
 // MessageTypeValues lists every value in declaration order.
-var MessageTypeValues = []MessageType{MessageTypeOrganisationCreated, MessageTypeProjectCreated, MessageTypeProjectUpdated, MessageTypeProjectArchived, MessageTypeJobEnqueued, MessageTypeJobSucceeded, MessageTypeJobFailed}
+var MessageTypeValues = []MessageType{MessageTypeOrganisationCreated, MessageTypeProjectCreated, MessageTypeProjectUpdated, MessageTypeProjectRepositoryChanged, MessageTypeProjectArchived, MessageTypeUserInvited, MessageTypeUserCredentialsSet, MessageTypeAuthenticationLoginSucceeded, MessageTypeAuthenticationLoginFailed, MessageTypeSessionRevoked, MessageTypeJobEnqueued, MessageTypeJobSucceeded, MessageTypeJobFailed}
 
 // ErrorClass is defined by the connector protocol schema.
 //
@@ -158,6 +164,83 @@ const (
 // ProjectStatusValues lists every value in declaration order.
 var ProjectStatusValues = []ProjectStatus{ProjectStatusActive, ProjectStatusArchived}
 
+// OrganisationStatus is defined by the connector protocol schema.
+//
+// Organisation lifecycle status (docs/DOMAIN_MODEL.md section 4).
+type OrganisationStatus string
+
+const (
+	OrganisationStatusActive    OrganisationStatus = "active"
+	OrganisationStatusSuspended OrganisationStatus = "suspended"
+)
+
+// OrganisationStatusValues lists every value in declaration order.
+var OrganisationStatusValues = []OrganisationStatus{OrganisationStatusActive, OrganisationStatusSuspended}
+
+// UserStatus is defined by the connector protocol schema.
+//
+// User lifecycle status (docs/DOMAIN_MODEL.md section 5). A suspended user keeps every
+// record they authored and can no longer authenticate.
+type UserStatus string
+
+const (
+	UserStatusActive    UserStatus = "active"
+	UserStatusSuspended UserStatus = "suspended"
+)
+
+// UserStatusValues lists every value in declaration order.
+var UserStatusValues = []UserStatus{UserStatusActive, UserStatusSuspended}
+
+// LoginMethod is defined by the connector protocol schema.
+//
+// How a human authenticated. bootstrap_token is the ADR-0016 exchange, install_token
+// is the one-time administrator bootstrap, and password is a local account.
+type LoginMethod string
+
+const (
+	LoginMethodPassword       LoginMethod = "password"
+	LoginMethodBootstrapToken LoginMethod = "bootstrap_token"
+	LoginMethodInstallToken   LoginMethod = "install_token"
+)
+
+// LoginMethodValues lists every value in declaration order.
+var LoginMethodValues = []LoginMethod{LoginMethodPassword, LoginMethodBootstrapToken, LoginMethodInstallToken}
+
+// LoginFailureReason is defined by the connector protocol schema.
+//
+// Why an authentication attempt was refused. Stable, so a run of failures can be
+// classified from the audit trail alone without any record of what was submitted.
+type LoginFailureReason string
+
+const (
+	LoginFailureReasonUnknownUser          LoginFailureReason = "unknown_user"
+	LoginFailureReasonInvalidPassword      LoginFailureReason = "invalid_password"
+	LoginFailureReasonPasswordNotSet       LoginFailureReason = "password_not_set"
+	LoginFailureReasonUserSuspended        LoginFailureReason = "user_suspended"
+	LoginFailureReasonRateLimited          LoginFailureReason = "rate_limited"
+	LoginFailureReasonInstallTokenInvalid  LoginFailureReason = "install_token_invalid"
+	LoginFailureReasonInstallTokenExpired  LoginFailureReason = "install_token_expired"
+	LoginFailureReasonInstallTokenConsumed LoginFailureReason = "install_token_consumed"
+)
+
+// LoginFailureReasonValues lists every value in declaration order.
+var LoginFailureReasonValues = []LoginFailureReason{LoginFailureReasonUnknownUser, LoginFailureReasonInvalidPassword, LoginFailureReasonPasswordNotSet, LoginFailureReasonUserSuspended, LoginFailureReasonRateLimited, LoginFailureReasonInstallTokenInvalid, LoginFailureReasonInstallTokenExpired, LoginFailureReasonInstallTokenConsumed}
+
+// SessionRevocationReason is defined by the connector protocol schema.
+//
+// Why a session stopped being usable.
+type SessionRevocationReason string
+
+const (
+	SessionRevocationReasonSignOut                SessionRevocationReason = "sign_out"
+	SessionRevocationReasonRotated                SessionRevocationReason = "rotated"
+	SessionRevocationReasonRevokedByUser          SessionRevocationReason = "revoked_by_user"
+	SessionRevocationReasonRevokedByAdministrator SessionRevocationReason = "revoked_by_administrator"
+)
+
+// SessionRevocationReasonValues lists every value in declaration order.
+var SessionRevocationReasonValues = []SessionRevocationReason{SessionRevocationReasonSignOut, SessionRevocationReasonRotated, SessionRevocationReasonRevokedByUser, SessionRevocationReasonRevokedByAdministrator}
+
 // StreamSubscribeType is defined by the connector protocol schema.
 //
 // Message discriminator.
@@ -242,36 +325,54 @@ const (
 
 // MessageDirections records the sender of each message type.
 var MessageDirections = map[MessageType]MessageDirection{
-	MessageTypeOrganisationCreated: DirectionControlPlaneToSubscriber,
-	MessageTypeProjectCreated:      DirectionControlPlaneToSubscriber,
-	MessageTypeProjectUpdated:      DirectionControlPlaneToSubscriber,
-	MessageTypeProjectArchived:     DirectionControlPlaneToSubscriber,
-	MessageTypeJobEnqueued:         DirectionControlPlaneToSubscriber,
-	MessageTypeJobSucceeded:        DirectionControlPlaneToSubscriber,
-	MessageTypeJobFailed:           DirectionControlPlaneToSubscriber,
+	MessageTypeOrganisationCreated:          DirectionControlPlaneToSubscriber,
+	MessageTypeProjectCreated:               DirectionControlPlaneToSubscriber,
+	MessageTypeProjectUpdated:               DirectionControlPlaneToSubscriber,
+	MessageTypeProjectRepositoryChanged:     DirectionControlPlaneToSubscriber,
+	MessageTypeProjectArchived:              DirectionControlPlaneToSubscriber,
+	MessageTypeUserInvited:                  DirectionControlPlaneToSubscriber,
+	MessageTypeUserCredentialsSet:           DirectionControlPlaneToSubscriber,
+	MessageTypeAuthenticationLoginSucceeded: DirectionControlPlaneToSubscriber,
+	MessageTypeAuthenticationLoginFailed:    DirectionControlPlaneToSubscriber,
+	MessageTypeSessionRevoked:               DirectionControlPlaneToSubscriber,
+	MessageTypeJobEnqueued:                  DirectionControlPlaneToSubscriber,
+	MessageTypeJobSucceeded:                 DirectionControlPlaneToSubscriber,
+	MessageTypeJobFailed:                    DirectionControlPlaneToSubscriber,
 }
 
 // MessageChannels records the channel each message type travels on.
 var MessageChannels = map[MessageType]Channel{
-	MessageTypeOrganisationCreated: ChannelOrganisation,
-	MessageTypeProjectCreated:      ChannelOrganisation,
-	MessageTypeProjectUpdated:      ChannelOrganisation,
-	MessageTypeProjectArchived:     ChannelOrganisation,
-	MessageTypeJobEnqueued:         ChannelJobs,
-	MessageTypeJobSucceeded:        ChannelJobs,
-	MessageTypeJobFailed:           ChannelJobs,
+	MessageTypeOrganisationCreated:          ChannelOrganisation,
+	MessageTypeProjectCreated:               ChannelOrganisation,
+	MessageTypeProjectUpdated:               ChannelOrganisation,
+	MessageTypeProjectRepositoryChanged:     ChannelOrganisation,
+	MessageTypeProjectArchived:              ChannelOrganisation,
+	MessageTypeUserInvited:                  ChannelOrganisation,
+	MessageTypeUserCredentialsSet:           ChannelOrganisation,
+	MessageTypeAuthenticationLoginSucceeded: ChannelOrganisation,
+	MessageTypeAuthenticationLoginFailed:    ChannelOrganisation,
+	MessageTypeSessionRevoked:               ChannelOrganisation,
+	MessageTypeJobEnqueued:                  ChannelJobs,
+	MessageTypeJobSucceeded:                 ChannelJobs,
+	MessageTypeJobFailed:                    ChannelJobs,
 }
 
 // PayloadMaxBytes records the maximum canonical payload size for each message type. A
 // payload larger than its bound is rejected.
 var PayloadMaxBytes = map[MessageType]int{
-	MessageTypeOrganisationCreated: 1024,
-	MessageTypeProjectCreated:      1024,
-	MessageTypeProjectUpdated:      1024,
-	MessageTypeProjectArchived:     512,
-	MessageTypeJobEnqueued:         1024,
-	MessageTypeJobSucceeded:        1024,
-	MessageTypeJobFailed:           1024,
+	MessageTypeOrganisationCreated:          1024,
+	MessageTypeProjectCreated:               1024,
+	MessageTypeProjectUpdated:               1024,
+	MessageTypeProjectRepositoryChanged:     1024,
+	MessageTypeProjectArchived:              512,
+	MessageTypeUserInvited:                  512,
+	MessageTypeUserCredentialsSet:           512,
+	MessageTypeAuthenticationLoginSucceeded: 512,
+	MessageTypeAuthenticationLoginFailed:    512,
+	MessageTypeSessionRevoked:               512,
+	MessageTypeJobEnqueued:                  1024,
+	MessageTypeJobSucceeded:                 1024,
+	MessageTypeJobFailed:                    1024,
 }
 
 // ViolationReason classifies a refused frame. Only some reasons map to a wire error
@@ -344,7 +445,7 @@ type SchemaViolation struct {
 // schema version, which is why the envelope's type field bounds a name's shape rather
 // than enumerating it. A consumer that does not recognise a name MUST ignore the event
 // rather than fail.
-var EventTypes = []string{"organisation.created", "user.invited", "authentication.login_succeeded", "authentication.login_failed", "session.revoked", "project.created", "project.updated", "project.repository_changed", "project.archived", "connector.enrolled", "connector.connected", "connector.degraded", "connector.disconnected", "connector.revoked", "workspace.observed", "workspace.head_changed", "published_service.requested", "published_service.ready", "published_service.failed", "published_service.expired", "published_service.revoked", "agent_credential.issued", "agent_session.started", "agent_session.waiting", "agent_session.blocked", "agent_session.completed", "agent_session.failed", "agent_session.disconnected", "browser_session.requested", "browser_session.allocated", "browser_session.ready", "browser_session.navigated", "browser_session.paused", "browser_session.resumed", "browser_session.degraded", "browser_session.terminated", "browser_session.failed", "browser.control_requested", "browser.control_transferred", "browser.control_released", "browser.command_rejected", "browser.command_executed", "browser.live_view_started", "browser.live_view_stopped", "screenshot.captured", "artefact.upload_started", "artefact.upload_completed", "artefact.upload_failed", "artefact.access_granted", "artefact.redacted", "artefact.expired", "review.created", "review.named", "review.assigned", "review.claimed", "review.status_changed", "review.accepted", "review.reopened", "review.archived", "finding.created", "finding.annotated", "finding.claimed", "finding.status_changed", "finding.comment_added", "finding.verification_submitted", "finding.verification_accepted", "finding.verification_rejected", "finding.resolved", "finding.reopened", "job.enqueued", "job.succeeded", "job.failed"}
+var EventTypes = []string{"organisation.created", "user.invited", "user.credentials_set", "authentication.login_succeeded", "authentication.login_failed", "session.revoked", "project.created", "project.updated", "project.repository_changed", "project.archived", "connector.enrolled", "connector.connected", "connector.degraded", "connector.disconnected", "connector.revoked", "workspace.observed", "workspace.head_changed", "published_service.requested", "published_service.ready", "published_service.failed", "published_service.expired", "published_service.revoked", "agent_credential.issued", "agent_session.started", "agent_session.waiting", "agent_session.blocked", "agent_session.completed", "agent_session.failed", "agent_session.disconnected", "browser_session.requested", "browser_session.allocated", "browser_session.ready", "browser_session.navigated", "browser_session.paused", "browser_session.resumed", "browser_session.degraded", "browser_session.terminated", "browser_session.failed", "browser.control_requested", "browser.control_transferred", "browser.control_released", "browser.command_rejected", "browser.command_executed", "browser.live_view_started", "browser.live_view_stopped", "screenshot.captured", "artefact.upload_started", "artefact.upload_completed", "artefact.upload_failed", "artefact.access_granted", "artefact.redacted", "artefact.expired", "review.created", "review.named", "review.assigned", "review.claimed", "review.status_changed", "review.accepted", "review.reopened", "review.archived", "finding.created", "finding.annotated", "finding.claimed", "finding.status_changed", "finding.comment_added", "finding.verification_submitted", "finding.verification_accepted", "finding.verification_rejected", "finding.resolved", "finding.reopened", "job.enqueued", "job.succeeded", "job.failed"}
 
 // StreamMessageTypes lists the discriminator values carried by the stream control
 // messages of docs/API.md section 18.1. An event envelope carries its own event type
@@ -372,6 +473,8 @@ var PaginationParameters = []string{"cursor", "limit"}
 var IdentifierPrefixes = map[string]string{
 	"organisation":      "org_",
 	"user":              "usr_",
+	"install_token":     "ins_",
+	"human_session":     "vwr_",
 	"project":           "prj_",
 	"environment":       "env_",
 	"connector":         "con_",
@@ -420,6 +523,180 @@ type SequenceNumber = int64
 // padding; its contents are the server's business and a client MUST NOT parse,
 // construct or modify one.
 type Cursor = string
+
+// Slug is defined by the connector protocol schema.
+//
+// Human-friendly alias, unique inside its parent. Mutable, and never a substitute for
+// the identifier (docs/DOMAIN_MODEL.md section 3).
+type Slug = string
+
+// DisplayName is defined by the connector protocol schema.
+//
+// Name a human reads. It is description and never an authorisation input.
+type DisplayName = string
+
+// EmailAddress is defined by the connector protocol schema.
+//
+// Address a human is known by. It is an alias for a user, never an identity: the
+// identifier is what every other record references. The bound is the RFC 5321 maximum
+// path length. The pattern is deliberately permissive — one at-sign, no whitespace and
+// no control characters — because a stricter one rejects addresses that work: a
+// dotless host such as administrator@localhost is what a fresh self-hosted
+// installation is seeded with, and deliverability is not something a schema can
+// decide.
+type EmailAddress = string
+
+// GitRefName is defined by the connector protocol schema.
+//
+// Git branch name. Bounded and restricted to the characters a ref may hold, so a value
+// stored here cannot become an argument to something else.
+type GitRefName = string
+
+// RepositoryIdentity is defined by the connector protocol schema.
+//
+// Provider-agnostic repository identity (docs/DOMAIN_MODEL.md section 6). canonical is
+// the normalised host-and-path form that two clone URLs for the same repository both
+// reduce to, which is what lets an SSH remote and an HTTPS remote be recognised as one
+// repository. clone_urls records the forms actually seen, for display and for a
+// connector to match a checkout against.
+type RepositoryIdentity struct {
+	// Normalised host and path, lowercase host, no scheme, no credentials, no .git suffix
+	// and no trailing slash, for example github.com/example/refresh-surplus.
+	Canonical string `json:"canonical"`
+	// Clone URLs that reduce to canonical, in the order they were supplied. Duplicates
+	// are removed by the control plane before storage.
+	CloneURLs []string `json:"clone_urls,omitempty"`
+}
+
+// ValidationViewport is defined by the connector protocol schema.
+//
+// A viewport the project validates at (docs/UX_FLOWS.md section 4). The bounds are the
+// browser protocol's, because a viewport stored here is one a browser session is later
+// asked to adopt; a value the worker would refuse must not be storable.
+type ValidationViewport struct {
+	// Viewport width in CSS pixels.
+	Width int64 `json:"width"`
+	// Viewport height in CSS pixels.
+	Height int64 `json:"height"`
+	// Device pixel ratio. Absent means 1, which is what a browser session adopts when the
+	// project does not say otherwise.
+	DeviceScaleFactor *float64 `json:"device_scale_factor,omitempty"`
+}
+
+// ProjectSettings is defined by the connector protocol schema.
+//
+// Project settings (docs/DOMAIN_MODEL.md section 6). Stage 1 holds the default
+// validation viewports and nothing else; the object refuses unknown members so a
+// setting cannot be introduced in one service without being defined here first.
+type ProjectSettings struct {
+	// Viewports a finding is expected to be validated at. It defaults to 390x844 and
+	// 1440x900, which AGENTS.md requires of browser-facing work and the Stage 1
+	// completion gate checks against.
+	DefaultValidationViewports []ValidationViewport `json:"default_validation_viewports"`
+}
+
+// Organisation is defined by the connector protocol schema.
+//
+// The top-level administrative and data-isolation boundary (docs/DOMAIN_MODEL.md
+// section 4).
+type Organisation struct {
+	// Organisation identity, conventionally prefixed org_.
+	ID string `json:"id"`
+	// Display name.
+	Name string `json:"name"`
+	// Mutable alias.
+	Slug string `json:"slug"`
+	// Lifecycle status.
+	Status OrganisationStatus `json:"status"`
+	// When the organisation was created.
+	CreatedAt string `json:"created_at"`
+	// When it last changed.
+	UpdatedAt string `json:"updated_at"`
+}
+
+// User is defined by the connector protocol schema.
+//
+// A human identity (docs/DOMAIN_MODEL.md section 5). It never carries credential
+// material: whether a password exists is stated, and the hash is not part of any
+// representation that leaves the database.
+type User struct {
+	// User identity, conventionally prefixed usr_.
+	ID string `json:"id"`
+	// Owning organisation, carried for defence-in-depth filtering (docs/DOMAIN_MODEL.md
+	// section 3).
+	OrganisationID string `json:"organisation_id"`
+	// Address the human is known by.
+	Email string `json:"email"`
+	// Name shown in a timeline.
+	DisplayName string `json:"display_name"`
+	// Lifecycle status.
+	Status UserStatus `json:"status"`
+	// Whether this user can authenticate locally. It is the fact a first-run screen
+	// needs, and it says nothing about the credential itself. The name avoids the word
+	// the schema checker forbids in a field, which exists so that no protocol field can
+	// ever carry a credential.
+	LocalCredentialSet *bool `json:"local_credential_set,omitempty"`
+	// When the user record was created.
+	CreatedAt string `json:"created_at"`
+	// When it last changed.
+	UpdatedAt string `json:"updated_at"`
+}
+
+// Project is defined by the connector protocol schema.
+//
+// The principal working boundary (docs/DOMAIN_MODEL.md section 6). A review belongs to
+// exactly one project, and a browser session may only route to services authorised for
+// the same project.
+type Project struct {
+	// Project identity, conventionally prefixed prj_.
+	ID string `json:"id"`
+	// Owning organisation, carried for defence-in-depth filtering.
+	OrganisationID string `json:"organisation_id"`
+	// Display name.
+	Name string `json:"name"`
+	// Alias, unique within the organisation.
+	Slug string `json:"slug"`
+	// Repository the project's work lands in. Absent until an operator supplies one; a
+	// change to it is audited as project.repository_changed.
+	RepositoryIdentity *RepositoryIdentity `json:"repository_identity,omitempty"`
+	// Branch reviews are captured against by default.
+	DefaultBranch string `json:"default_branch"`
+	// Lifecycle status. Deleting a project archives it.
+	Status ProjectStatus `json:"status"`
+	// Project settings.
+	Settings ProjectSettings `json:"settings"`
+	// Optimistic-concurrency version (docs/API.md section 5.2). A write carrying a
+	// different expected_version is refused with VERSION_CONFLICT rather than silently
+	// overwriting.
+	Version int64 `json:"version"`
+	// When the project was created.
+	CreatedAt string `json:"created_at"`
+	// When it last changed.
+	UpdatedAt string `json:"updated_at"`
+}
+
+// HumanSession is defined by the connector protocol schema.
+//
+// What a human session tells its own holder (docs/API.md section 4). The session token
+// lives in an HTTP-only cookie and is never part of this representation; project_ids
+// absent means organisation-wide scope, and a list means exactly those projects.
+type HumanSession struct {
+	// Session identity, conventionally prefixed vwr_.
+	SessionID string `json:"session_id"`
+	// The authenticated user. Absent for a session issued from the bootstrap
+	// administrator token, which has no user record behind it (ADR-0016).
+	UserID *string `json:"user_id,omitempty"`
+	// Organisation the session acts in.
+	OrganisationID *string `json:"organisation_id,omitempty"`
+	// Address of the authenticated user, when there is one.
+	Email *string `json:"email,omitempty"`
+	// Name shown in the application shell.
+	Display string `json:"display"`
+	// Projects the session may reach. Absent means every project in the organisation.
+	ProjectIDs []string `json:"project_ids,omitempty"`
+	// When the session stops being usable without revocation.
+	ExpiresAt string `json:"expires_at"`
+}
 
 // Actor is defined by the connector protocol schema.
 //
@@ -521,6 +798,95 @@ type ProjectCreatedPayload struct {
 	Slug string `json:"slug"`
 	// Display name.
 	Name string `json:"name"`
+	// Branch the project captures reviews against. Absent on a project created before the
+	// field existed.
+	DefaultBranch *string `json:"default_branch,omitempty"`
+	// Normalised repository identity the project was created with, when one was supplied.
+	// The canonical form alone: the clone URLs are queryable on the record and add
+	// nothing an auditor needs.
+	RepositoryCanonical *string `json:"repository_canonical,omitempty"`
+}
+
+// ProjectRepositoryChangedPayload is defined by the connector protocol schema.
+//
+// Payload of project.repository_changed. It carries both sides of the move, because a
+// review captured before it was interpreted against the previous repository
+// (docs/DOMAIN_MODEL.md section 6).
+type ProjectRepositoryChangedPayload struct {
+	// Normalised identity before the change. Absent when the project had no repository
+	// association.
+	PreviousCanonical *string `json:"previous_canonical,omitempty"`
+	// Normalised identity after the change.
+	NewCanonical string `json:"new_canonical"`
+}
+
+// UserInvitedPayload is defined by the connector protocol schema.
+//
+// Payload of user.invited. Issuing a credential-establishing token is a permission
+// change, and docs/SECURITY.md section 16 requires an audit record for one. It never
+// carries the token: a reader learns that a way in exists and when it closes, not what
+// it is.
+type UserInvitedPayload struct {
+	// User the token establishes credentials for.
+	UserID string `json:"user_id"`
+	// Kind of token that was issued.
+	Method LoginMethod `json:"method"`
+	// When the token stops being usable, whether or not it was used.
+	ExpiresAt string `json:"expires_at"`
+}
+
+// UserCredentialsSetPayload is defined by the connector protocol schema.
+//
+// Payload of user.credentials_set. Setting a password is a permission change and
+// docs/SECURITY.md section 16 requires an audit record for one; the record names the
+// user and the route the credential arrived by, and nothing else.
+type UserCredentialsSetPayload struct {
+	// User whose password changed.
+	UserID string `json:"user_id"`
+	// How the credential was established.
+	Method LoginMethod `json:"method"`
+}
+
+// AuthenticationLoginSucceededPayload is defined by the connector protocol schema.
+//
+// Payload of authentication.login_succeeded.
+type AuthenticationLoginSucceededPayload struct {
+	// Session that was issued.
+	SessionID string `json:"session_id"`
+	// User that authenticated. Absent for the bootstrap-token exchange, which has no user
+	// record behind it.
+	UserID *string `json:"user_id,omitempty"`
+	// How the human authenticated.
+	Method LoginMethod `json:"method"`
+}
+
+// AuthenticationLoginFailedPayload is defined by the connector protocol schema.
+//
+// Payload of authentication.login_failed. It never carries the submitted credential,
+// and never the identifier that was typed beside it: a password mistyped into an email
+// field would otherwise be written to an append-only table (docs/SECURITY.md section
+// 18).
+type AuthenticationLoginFailedPayload struct {
+	// Stable failure class.
+	Reason LoginFailureReason `json:"reason"`
+	// Route the attempt arrived by.
+	Method LoginMethod `json:"method"`
+	// User the attempt named, when it named one that exists. Absent for an unknown
+	// address, which is what stops the audit trail confirming which addresses have
+	// accounts.
+	UserID *string `json:"user_id,omitempty"`
+}
+
+// SessionRevokedPayload is defined by the connector protocol schema.
+//
+// Payload of session.revoked.
+type SessionRevokedPayload struct {
+	// Session that was revoked.
+	SessionID string `json:"session_id"`
+	// User the session belonged to, when it belonged to one.
+	UserID *string `json:"user_id,omitempty"`
+	// Why it was revoked.
+	Reason SessionRevocationReason `json:"reason"`
 }
 
 // ProjectUpdatedPayload is defined by the connector protocol schema.
@@ -778,10 +1144,47 @@ func (ProjectUpdatedPayload) MessageType() MessageType { return MessageTypeProje
 
 func (ProjectUpdatedPayload) isConnectorPayload() {}
 
+// MessageType reports the envelope type carrying a ProjectRepositoryChangedPayload.
+func (ProjectRepositoryChangedPayload) MessageType() MessageType {
+	return MessageTypeProjectRepositoryChanged
+}
+
+func (ProjectRepositoryChangedPayload) isConnectorPayload() {}
+
 // MessageType reports the envelope type carrying a ProjectArchivedPayload.
 func (ProjectArchivedPayload) MessageType() MessageType { return MessageTypeProjectArchived }
 
 func (ProjectArchivedPayload) isConnectorPayload() {}
+
+// MessageType reports the envelope type carrying a UserInvitedPayload.
+func (UserInvitedPayload) MessageType() MessageType { return MessageTypeUserInvited }
+
+func (UserInvitedPayload) isConnectorPayload() {}
+
+// MessageType reports the envelope type carrying a UserCredentialsSetPayload.
+func (UserCredentialsSetPayload) MessageType() MessageType { return MessageTypeUserCredentialsSet }
+
+func (UserCredentialsSetPayload) isConnectorPayload() {}
+
+// MessageType reports the envelope type carrying a
+// AuthenticationLoginSucceededPayload.
+func (AuthenticationLoginSucceededPayload) MessageType() MessageType {
+	return MessageTypeAuthenticationLoginSucceeded
+}
+
+func (AuthenticationLoginSucceededPayload) isConnectorPayload() {}
+
+// MessageType reports the envelope type carrying a AuthenticationLoginFailedPayload.
+func (AuthenticationLoginFailedPayload) MessageType() MessageType {
+	return MessageTypeAuthenticationLoginFailed
+}
+
+func (AuthenticationLoginFailedPayload) isConnectorPayload() {}
+
+// MessageType reports the envelope type carrying a SessionRevokedPayload.
+func (SessionRevokedPayload) MessageType() MessageType { return MessageTypeSessionRevoked }
+
+func (SessionRevokedPayload) isConnectorPayload() {}
 
 // MessageType reports the envelope type carrying a JobEnqueuedPayload.
 func (JobEnqueuedPayload) MessageType() MessageType { return MessageTypeJobEnqueued }

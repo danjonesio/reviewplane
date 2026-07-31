@@ -106,8 +106,30 @@ credential:
 | `REVIEWPLANE_ARTEFACT_PATH` | `/var/lib/reviewplane/artefacts` | Filesystem artefact-store root (ADR-0012) |
 | `REVIEWPLANE_ARTEFACT_MAX_BYTES` | `20971520` | Largest artefact accepted |
 | `REVIEWPLANE_WORKER_REQUEST_TIMEOUT_MS` | `150000` | Bound on one worker request |
-| `REVIEWPLANE_ALLOWED_ORIGINS` | empty | Comma-separated origins a browser may open the live WebSocket from (ADR-0016). Empty accepts a request with no `Origin`, which is a non-browser client |
-| `REVIEWPLANE_SECURE_COOKIES` | `true` | Whether the viewer session cookie is marked `Secure`. Set to `false` only for plain-HTTP local development |
+| `REVIEWPLANE_ALLOWED_ORIGINS` | empty | Comma-separated origins a browser may use. See below: the two surfaces that read it read it differently |
+| `REVIEWPLANE_SECURE_COOKIES` | `true` | Whether the session and CSRF cookies are marked `Secure`. Set to `false` only for plain-HTTP local development |
+
+#### What `REVIEWPLANE_ALLOWED_ORIGINS` actually does
+
+Two surfaces read it, and an empty value means something different to each.
+
+| Surface | Configured origins | Empty |
+|---|---|---|
+| Live WebSocket upgrade (`docs/API.md` §18.2) | An `Origin` not on the list is refused | **Any** `Origin` is refused; only a request that sends none — a non-browser client — is accepted |
+| Sign-in routes (`docs/API.md` §4.0) | An `Origin` not on the list is refused | **No origin check is applied**; the `SameSite=Strict` session cookie is what stops a forged sign-in being useful |
+
+A deployment that serves the web application should therefore set it to the
+origin the application is served from. Leaving it empty leaves the live channel
+usable only by non-browser clients, and leaves the sign-in routes relying on
+`SameSite` alone.
+
+Local accounts need no configuration. `authentication.mode: local` above describes
+what the deployment does, and the administrator's credential is established once
+from a token an operator mints with `reviewplane install-token`
+(`docs/DEPLOYMENT.md` section 11) rather than from a setting: a password in an
+environment variable would be a password in a process listing, a shell history
+and every `docker inspect`. `authentication.session_ttl` is twelve hours and is
+not yet configurable.
 
 ## 3. Browser-worker configuration
 

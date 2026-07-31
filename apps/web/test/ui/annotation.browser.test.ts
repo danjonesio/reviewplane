@@ -34,7 +34,8 @@ import {
   CAPTURE_VIEWPORT,
   MARKED_COLOUR,
   MARKED_REGION,
-  UI_SUITE_TOKEN,
+  UI_SUITE_EMAIL,
+  UI_SUITE_PASSWORD,
   startStubControlPlane,
   type StubControlPlane,
 } from "./stub-control-plane.ts";
@@ -144,7 +145,8 @@ async function openReview(
   });
 
   await page.goto(stub.origin, { waitUntil: "domcontentloaded" });
-  await page.getByLabel("Bootstrap administrator token").fill(UI_SUITE_TOKEN);
+  await page.getByLabel("Email address").fill(UI_SUITE_EMAIL);
+  await page.getByLabel("Password").fill(UI_SUITE_PASSWORD);
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.getByRole("heading", { name: "Live sessions" }).waitFor();
   errors.length = 0;

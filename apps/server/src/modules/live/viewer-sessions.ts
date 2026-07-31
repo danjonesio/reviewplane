@@ -1,15 +1,18 @@
 /**
- * Human viewer sessions (ADR-0016).
+ * Human sessions (ADR-0016, extended by RVP-12).
  *
- * Stage 0 has one human: the holder of the bootstrap administrator token
- * (`docs/ARCHITECTURE.md` section 11). That token is a long-lived credential
- * and must not travel to a browser, and a browser cannot present a bearer
- * header on a WebSocket handshake in any case. So the token is exchanged once,
- * over an ordinary authenticated request, for a short-lived session whose
- * token lives in an HTTP-only cookie — which is precisely the shape
- * `docs/API.md` section 4 already specifies for the human API.
+ * ADR-0016 introduced this record for a deployment whose only human credential
+ * was the bootstrap administrator token: the token is exchanged, over an
+ * ordinary authenticated request, for a short-lived session whose token lives
+ * in an HTTP-only cookie. Its follow-up said local accounts would replace the
+ * exchange and that "the viewer-session record and its project scope are the
+ * part that survives". They are the part that survived: a password login issues
+ * a row in this table, with the same cookie, the same digest-only storage and
+ * the same project scope, so the live channel, the artefact grants and every
+ * project-scoped read authorise a real account today without learning a second
+ * session kind.
  *
- * Two properties are load-bearing:
+ * Four properties are load-bearing:
  *
  *   * the database stores only a digest of the session token, so a dump of
  *     this table is not a set of usable credentials;
@@ -17,7 +20,14 @@
  *     is organisation-wide; a project-scoped session can be minted for one
  *     project and is refused on every other. That is the mechanism the live
  *     channel authorises against, so "a viewer from another project is
- *     refused" is enforcement rather than an assertion about a future feature.
+ *     refused" is enforcement rather than an assertion about a future feature;
+ *   * a session issued to a user carries a CSRF token, stored as a digest and
+ *     returned once so that it can travel in a readable cookie. A session
+ *     without one cannot satisfy the check, so the ADR-0016 exchange stays a
+ *     read-only credential rather than being admitted by a null comparison;
+ *   * rotation is a first-class transition: the replacement names the session
+ *     it replaced, and the replaced row is revoked with reason `rotated`, so an
+ *     auditor reading the pair sees one event and not two unrelated ones.
  */
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
@@ -36,18 +46,50 @@ export const VIEWER_SESSION_TTL_SECONDS = 12 * 60 * 60;
 export interface ViewerPrincipal {
   readonly type: "human_viewer";
   readonly viewerSessionId: string;
+  /** The account behind the session, or null for the ADR-0016 exchange. */
+  readonly userId: string | null;
   readonly organisationId: string | null;
   /** Null means every project; a set means exactly those projects. */
   readonly projectIds: ReadonlySet<string> | null;
   readonly display: string;
+  /**
+   * How the request authenticated. A cookie is replayable by another origin's
+   * markup, so a state-changing request that arrives on one must also carry the
+   * CSRF token (`docs/API.md` section 4); a bearer token is not sent by a
+   * browser on a cross-site request and needs no second factor.
+   */
+  readonly credential: "cookie" | "bootstrap_token";
+  /** Digest of the session's CSRF token, or null when it has none. */
+  readonly csrfTokenDigest: string | null;
+  readonly expiresAt: Date | null;
 }
 
 export interface IssuedViewerSession {
   readonly id: string;
   /** The raw token. Returned once, to be set as a cookie, and never stored. */
   readonly token: string;
+  /**
+   * The raw CSRF token, when the session was issued with one. Returned once and
+   * stored only as a digest, exactly as the session token is.
+   */
+  readonly csrfToken: string | null;
   readonly expiresAt: Date;
   readonly projectIds: readonly string[] | null;
+  readonly userId: string | null;
+}
+
+/** `docs/EVENTS.md` section 7: why a session stopped being usable. */
+export type SessionRevocationReason =
+  | "sign_out"
+  | "rotated"
+  | "revoked_by_user"
+  | "revoked_by_administrator";
+
+/** A session that was revoked, named so its event can be written. */
+export interface RevokedSession {
+  readonly id: string;
+  readonly userId: string | null;
+  readonly organisationId: string | null;
 }
 
 function digest(token: string): string {
@@ -75,20 +117,32 @@ export class ViewerSessionStore {
   /**
    * Issues a session. `projectIds` of `null` is organisation-wide; a list
    * scopes the session to exactly those projects.
+   *
+   * A session bound to a user is issued with a CSRF token; the ADR-0016
+   * exchange is not, which is what keeps it a read-only credential.
    */
   async issue(input: {
     readonly organisationId: string | null;
     readonly projectIds: readonly string[] | null;
     readonly display: string;
     readonly ttlSeconds?: number;
+    readonly userId?: string | null;
+    /** Set to mint a CSRF token for this session. */
+    readonly withCsrfToken?: boolean;
+    /** The session this one replaces, for a rotation. */
+    readonly rotatedFromSessionId?: string | null;
   }): Promise<IssuedViewerSession> {
     const token = randomBytes(32).toString("base64url");
+    const userId = input.userId ?? null;
+    const csrfToken = input.withCsrfToken === true ? randomBytes(32).toString("base64url") : null;
     const id = newId("vwr_");
     const ttl = input.ttlSeconds ?? VIEWER_SESSION_TTL_SECONDS;
     const expiresAt = new Date(Date.now() + ttl * 1000);
     await this.#pool.query(
-      `INSERT INTO viewer_sessions (id, token_sha256, organisation_id, project_ids, display, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
+      `INSERT INTO viewer_sessions
+         (id, token_sha256, organisation_id, project_ids, display, expires_at,
+          user_id, csrf_token_sha256, rotated_from_session_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [
         id,
         digest(token),
@@ -96,9 +150,12 @@ export class ViewerSessionStore {
         input.projectIds === null ? null : [...input.projectIds],
         input.display,
         expiresAt.toISOString(),
+        userId,
+        csrfToken === null ? null : digest(csrfToken),
+        input.rotatedFromSessionId ?? null,
       ],
     );
-    return { id, token, expiresAt, projectIds: input.projectIds };
+    return { id, token, csrfToken, expiresAt, projectIds: input.projectIds, userId };
   }
 
   /**
@@ -115,16 +172,33 @@ export class ViewerSessionStore {
       organisation_id: string | null;
       project_ids: string[] | null;
       display: string;
+      user_id: string | null;
+      csrf_token_sha256: string | null;
+      expires_at: Date;
+      user_status: string | null;
     }>(
-      `SELECT id, token_sha256, organisation_id, project_ids, display
+      `SELECT viewer_sessions.id,
+              viewer_sessions.token_sha256,
+              viewer_sessions.organisation_id,
+              viewer_sessions.project_ids,
+              viewer_sessions.display,
+              viewer_sessions.user_id,
+              viewer_sessions.csrf_token_sha256,
+              viewer_sessions.expires_at,
+              users.status AS user_status
          FROM viewer_sessions
-        WHERE token_sha256 = $1
-          AND revoked_at IS NULL
-          AND expires_at > now()`,
+         LEFT JOIN users ON users.id = viewer_sessions.user_id
+        WHERE viewer_sessions.token_sha256 = $1
+          AND viewer_sessions.revoked_at IS NULL
+          AND viewer_sessions.expires_at > now()`,
       [presented],
     );
     const row = rows.rows[0];
     if (row === undefined) return null;
+    // A suspended account stops working on its next request rather than when
+    // its session happens to expire (`docs/SECURITY.md` section 7: current
+    // session state is an authorisation input).
+    if (row.user_id !== null && row.user_status !== "active") return null;
     // The lookup is by digest, so this comparison is belt and braces; it is
     // constant time because the value is still credential-derived.
     if (!digestMatches(row.token_sha256, presented)) return null;
@@ -134,17 +208,69 @@ export class ViewerSessionStore {
     return {
       type: "human_viewer",
       viewerSessionId: row.id,
+      userId: row.user_id,
       organisationId: row.organisation_id,
       projectIds: row.project_ids === null ? null : new Set(row.project_ids),
       display: row.display,
+      credential: "cookie",
+      csrfTokenDigest: row.csrf_token_sha256,
+      expiresAt: row.expires_at,
     };
   }
 
-  async revoke(viewerSessionId: string): Promise<void> {
-    await this.#pool.query(
-      "UPDATE viewer_sessions SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL",
-      [viewerSessionId],
+  /**
+   * Revokes one session and reports what it was, so the caller can write the
+   * `session.revoked` event for it. A session that was already revoked answers
+   * null: the event is written once.
+   */
+  async revoke(
+    viewerSessionId: string,
+    reason: SessionRevocationReason = "sign_out",
+  ): Promise<RevokedSession | null> {
+    const revoked = await this.#pool.query<{
+      id: string;
+      user_id: string | null;
+      organisation_id: string | null;
+    }>(
+      `UPDATE viewer_sessions
+          SET revoked_at = now(), revocation_reason = $2
+        WHERE id = $1 AND revoked_at IS NULL
+        RETURNING id, user_id, organisation_id`,
+      [viewerSessionId, reason],
     );
+    const row = revoked.rows[0];
+    if (row === undefined) return null;
+    return { id: row.id, userId: row.user_id, organisationId: row.organisation_id };
+  }
+
+  /**
+   * Revokes every live session a user holds, optionally sparing one.
+   *
+   * It is what "sessions can be revoked" means for an account rather than for a
+   * cookie, and it is the same statement rotation uses: a privilege change
+   * takes every session the change might have been made under.
+   */
+  async revokeAllForUser(
+    userId: string,
+    reason: SessionRevocationReason,
+    exceptSessionId?: string,
+  ): Promise<readonly RevokedSession[]> {
+    const revoked = await this.#pool.query<{
+      id: string;
+      user_id: string | null;
+      organisation_id: string | null;
+    }>(
+      `UPDATE viewer_sessions
+          SET revoked_at = now(), revocation_reason = $2
+        WHERE user_id = $1 AND revoked_at IS NULL AND ($3::text IS NULL OR id <> $3)
+        RETURNING id, user_id, organisation_id`,
+      [userId, reason, exceptSessionId ?? null],
+    );
+    return revoked.rows.map((row) => ({
+      id: row.id,
+      userId: row.user_id,
+      organisationId: row.organisation_id,
+    }));
   }
 }
 
@@ -196,4 +322,47 @@ export function viewerCookie(token: string, maxAgeSeconds: number, secure: boole
 
 export function clearedViewerCookie(secure: boolean): string {
   return viewerCookie("", 0, secure);
+}
+
+/** Cookie the CSRF token travels in, and the header that must echo it. */
+export const CSRF_COOKIE = "reviewplane_csrf";
+export const CSRF_HEADER = "x-csrf-token";
+
+/**
+ * The CSRF cookie.
+ *
+ * Deliberately **not** `HttpOnly`: the application has to read it to put the
+ * value in a request header, and that is the whole mechanism. It is not a
+ * second credential — on its own it authenticates nothing, and the session
+ * cookie it accompanies is unreadable to script.
+ *
+ * `SameSite=Strict` again, so another origin's markup cannot cause either
+ * cookie to be sent; the header requirement is what covers the cases
+ * `SameSite` does not, such as a browser that ignores it or a redirect chain
+ * that a future feature introduces.
+ */
+export function csrfCookie(token: string, maxAgeSeconds: number, secure: boolean): string {
+  const attributes = [
+    `${CSRF_COOKIE}=${encodeURIComponent(token)}`,
+    "Path=/",
+    "SameSite=Strict",
+    `Max-Age=${String(maxAgeSeconds)}`,
+  ];
+  if (secure) attributes.push("Secure");
+  return attributes.join("; ");
+}
+
+export function clearedCsrfCookie(secure: boolean): string {
+  return csrfCookie("", 0, secure);
+}
+
+/** SHA-256 of a CSRF token, for comparison against the stored digest. */
+export function csrfDigest(token: string): string {
+  return digest(token);
+}
+
+/** Constant-time comparison of a presented CSRF token against a stored digest. */
+export function csrfTokenMatches(presented: string | undefined, storedDigest: string | null): boolean {
+  if (presented === undefined || presented === "" || storedDigest === null) return false;
+  return digestMatches(digest(presented), storedDigest);
 }

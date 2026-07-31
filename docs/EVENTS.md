@@ -95,10 +95,36 @@ Names are stable public integration contracts.
 
 - `organisation.created`
 - `user.invited`
+- `user.credentials_set`
 - `membership.role_changed`
 - `authentication.login_succeeded`
 - `authentication.login_failed`
 - `session.revoked`
+
+These are written to the organisation's stream, because a human identity
+precedes any project association.
+
+`user.invited` records that a one-time credential-establishing grant was issued.
+Stage 1's only form is the installation token an operator mints with
+`reviewplane install-token`; the payload names the user and when the grant
+closes, and never the token. `user.credentials_set` records that a password was
+established or replaced, which `docs/SECURITY.md` section 16 requires of a
+permission change; it carries the user and the route the credential arrived by
+and nothing derived from the credential.
+
+`authentication.login_failed` carries a stable reason — `unknown_user`,
+`invalid_password`, `password_not_set`, `user_suspended`, `rate_limited`, or one
+of the install-token reasons — and it never carries the submitted password, nor
+the address submitted beside it. People type passwords into email fields, and an
+append-only table is the worst place in the system to discover that. Its actor
+is `system`: an unauthenticated attempt has not established who made it, and the
+payload names a user only when the attempt reached one that exists.
+
+`session.revoked` covers sign-out, rotation on privilege change and
+administrative revocation, distinguished by `reason`. Rotation writes it for the
+session being replaced, and the replacement records which session it replaced,
+so an auditor reading the pair sees one rotation rather than two unrelated
+events.
 
 ### Project
 
@@ -106,6 +132,17 @@ Names are stable public integration contracts.
 - `project.updated`
 - `project.repository_changed`
 - `project.archived`
+
+`project.updated` names the fields that changed rather than restating the
+record: the record is queryable, and the audit question is what moved.
+
+`project.repository_changed` is separate from it, and carries both the previous
+and the new canonical identity. A review's captured commit is interpreted
+against the repository the project points at, so moving it quietly would
+reinterpret history (`docs/DOMAIN_MODEL.md` section 6).
+
+`project.archived` carries the previous and new status. Archival is not
+deletion: the project's reviews, evidence and events all outlive it.
 
 ### Connector and environment
 

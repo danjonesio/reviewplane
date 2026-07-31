@@ -13,6 +13,7 @@
  * reviewplane migrate --status  report the schema version and what is pending
  * reviewplane serve             the api role: HTTP API, connector listener
  * reviewplane jobs              the jobs role: durable background work
+ * reviewplane install-token     mint the one-time administrator bootstrap token
  * reviewplane version           the build this image carries
  * ```
  *
@@ -34,6 +35,9 @@ import { migrate, migrationState } from "./db/migrate.ts";
 import { createPool, type Pool } from "./db/pool.ts";
 import { readBuildInfo, registerHealthRoutes } from "./health.ts";
 import { JobRunner } from "./jobs/runner.ts";
+import { InstallTokenStore } from "./modules/identity/install-tokens.ts";
+import { OrganisationStore } from "./modules/identity/organisations.ts";
+import { UserStore } from "./modules/identity/users.ts";
 
 /** Exit code for `migrate --status` when the schema is behind the code. */
 export const EXIT_MIGRATIONS_PENDING = 3;
@@ -44,6 +48,9 @@ const USAGE = `reviewplane <command>
   serve                run the api role
   jobs [--once]        run the jobs role, serving /health/live, /health/ready
                        and /version on REVIEWPLANE_JOBS_HEALTH_PORT (8081)
+  install-token [--ttl-seconds N]
+                       mint the one-time administrator bootstrap token and print
+                       it once; it is single-use and expires (default 24 hours)
   version              print the build information
 
 Configuration is read from the environment; see docs/CONFIGURATION.md.
@@ -202,6 +209,75 @@ async function runJobs(pool: Pool, once: boolean): Promise<number> {
   return 0;
 }
 
+/**
+ * Mints the one-time administrator bootstrap token
+ * (`docs/SECURITY.md` section 6.1, `docs/DEPLOYMENT.md` section 6).
+ *
+ * It prints the token once, to standard output, and the control plane keeps
+ * only its digest. An operator who loses it mints another; the outstanding one
+ * still expires on its own, because a token that waited for ever on a console
+ * scrollback would be a permanent way in.
+ *
+ * It refuses to mint a second token for an account that already has a
+ * credential. Re-bootstrapping is a password reset, and a reset that anybody
+ * with database access can trigger silently is not one this command should
+ * offer by accident.
+ */
+async function runInstallToken(pool: Pool, argv: readonly string[], force: boolean): Promise<number> {
+  const state = await migrationState(pool);
+  if (state.pending.length > 0) {
+    process.stderr.write(
+      `the schema is behind this build (${String(state.pending.length)} migration(s) pending); run reviewplane migrate first\n`,
+    );
+    return 1;
+  }
+
+  const organisations = new OrganisationStore(pool);
+  const organisation = await organisations.primary();
+  if (organisation === null) {
+    process.stderr.write("this deployment has no organisation; run reviewplane migrate first\n");
+    return 1;
+  }
+  const users = new UserStore(pool);
+  const user = await users.sole(organisation.id);
+  if (user === null) {
+    process.stderr.write("this deployment has no user record; run reviewplane migrate first\n");
+    return 1;
+  }
+  if (user.passwordHash !== null && !force) {
+    process.stderr.write(
+      "this installation already has an administrator credential; pass --force to mint a reset token\n",
+    );
+    return 1;
+  }
+
+  const ttl = readTtlSeconds(argv);
+  const issued = await new InstallTokenStore(pool).issue({
+    organisationId: organisation.id,
+    userId: user.id,
+    ...(ttl === undefined ? {} : { ttlSeconds: ttl }),
+  });
+
+  write("administrator install token (shown once):");
+  write("");
+  write(`  ${issued.token}`);
+  write("");
+  write(`expires at ${issued.expiresAt.toISOString()}`);
+  write("Open the web application and complete the first-run screen with it.");
+  return 0;
+}
+
+function readTtlSeconds(argv: readonly string[]): number | undefined {
+  const index = argv.indexOf("--ttl-seconds");
+  if (index === -1) return undefined;
+  const raw = argv[index + 1];
+  const value = Number(raw);
+  if (raw === undefined || !Number.isInteger(value) || value <= 0) {
+    throw new ConfigurationError("--ttl-seconds must be a positive whole number of seconds.");
+  }
+  return value;
+}
+
 /** Listen address for the jobs role's health endpoints. */
 function jobsHealthHost(): string {
   return process.env["REVIEWPLANE_JOBS_HEALTH_HOST"] ?? "0.0.0.0";
@@ -266,6 +342,8 @@ export async function main(argv: readonly string[]): Promise<number> {
         return await runServe(pool);
       case "jobs":
         return await runJobs(pool, rest.includes("--once"));
+      case "install-token":
+        return await runInstallToken(pool, rest, rest.includes("--force"));
       default:
         process.stderr.write(`unknown command: ${command}\n\n${USAGE}`);
         return 1;

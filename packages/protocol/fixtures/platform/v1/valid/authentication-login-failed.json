@@ -1,0 +1,17 @@
+{
+  "id": "evt_2000000000000000000000000000000d",
+  "schema_version": 1,
+  "sequence": 4,
+  "type": "authentication.login_failed",
+  "occurred_at": "2026-07-30T11:21:50.100Z",
+  "recorded_at": "2026-07-30T11:21:50.109Z",
+  "organisation_id": "org_2f1c8ba0d9e34a7f8b6c5d4e3f2a1b09",
+  "actor": {
+    "type": "system"
+  },
+  "payload": {
+    "reason": "invalid_password",
+    "method": "password",
+    "user_id": "usr_1111222233334444555566667777888"
+  }
+}

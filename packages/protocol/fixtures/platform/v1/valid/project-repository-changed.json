@@ -1,0 +1,22 @@
+{
+  "id": "evt_2000000000000000000000000000000a",
+  "schema_version": 1,
+  "sequence": 4,
+  "type": "project.repository_changed",
+  "occurred_at": "2026-07-30T11:26:02.004Z",
+  "recorded_at": "2026-07-30T11:26:02.019Z",
+  "organisation_id": "org_2f1c8ba0d9e34a7f8b6c5d4e3f2a1b09",
+  "project_id": "prj_9a8b7c6d5e4f30291827364554637281",
+  "actor": {
+    "type": "human_user",
+    "id": "usr_1111222233334444555566667777888",
+    "display": "Dan Jones"
+  },
+  "correlation": {
+    "request_id": "req_abcdef0123456789"
+  },
+  "payload": {
+    "previous_canonical": "github.com/example/refresh-surplus",
+    "new_canonical": "git.example.internal:2222/platform/refresh-surplus"
+  }
+}

@@ -10,6 +10,7 @@
 import {
   jsonBoolean,
   jsonInteger,
+  jsonNumber,
   jsonString,
 } from "../../../canonical.ts";
 import type {
@@ -18,22 +19,145 @@ import type {
   ApiErrorDetails,
   ApiErrorResponse,
   ApiMeta,
+  AuthenticationLoginFailedPayload,
+  AuthenticationLoginSucceededPayload,
   Correlation,
   CursorClaims,
   Envelope,
+  HumanSession,
   JobEnqueuedPayload,
   JobFailedPayload,
   JobSucceededPayload,
+  Organisation,
   OrganisationCreatedPayload,
+  Project,
   ProjectArchivedPayload,
   ProjectCreatedPayload,
+  ProjectRepositoryChangedPayload,
+  ProjectSettings,
   ProjectUpdatedPayload,
+  RepositoryIdentity,
+  SessionRevokedPayload,
   StreamError,
   StreamHeartbeat,
   StreamRefreshRequired,
   StreamSubscribe,
   StreamSubscribed,
+  User,
+  UserCredentialsSetPayload,
+  UserInvitedPayload,
+  ValidationViewport,
 } from "./types.ts";
+
+/**
+ * Canonically encodes a RepositoryIdentity.
+ */
+export function encodeRepositoryIdentity(value: RepositoryIdentity): string {
+  const fields: string[] = [];
+  fields.push(`"canonical":${jsonString(value.canonical)}`);
+  if (value.clone_urls !== undefined) {
+    fields.push(`"clone_urls":${`[${value.clone_urls.map((item) => jsonString(item)).join(",")}]`}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ValidationViewport.
+ */
+export function encodeValidationViewport(value: ValidationViewport): string {
+  const fields: string[] = [];
+  fields.push(`"width":${jsonInteger(value.width)}`);
+  fields.push(`"height":${jsonInteger(value.height)}`);
+  if (value.device_scale_factor !== undefined) {
+    fields.push(`"device_scale_factor":${jsonNumber(value.device_scale_factor)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ProjectSettings.
+ */
+export function encodeProjectSettings(value: ProjectSettings): string {
+  const fields: string[] = [];
+  fields.push(`"default_validation_viewports":${`[${value.default_validation_viewports.map((item) => encodeValidationViewport(item)).join(",")}]`}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a Organisation.
+ */
+export function encodeOrganisation(value: Organisation): string {
+  const fields: string[] = [];
+  fields.push(`"id":${jsonString(value.id)}`);
+  fields.push(`"name":${jsonString(value.name)}`);
+  fields.push(`"slug":${jsonString(value.slug)}`);
+  fields.push(`"status":${jsonString(value.status)}`);
+  fields.push(`"created_at":${jsonString(value.created_at)}`);
+  fields.push(`"updated_at":${jsonString(value.updated_at)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a User.
+ */
+export function encodeUser(value: User): string {
+  const fields: string[] = [];
+  fields.push(`"id":${jsonString(value.id)}`);
+  fields.push(`"organisation_id":${jsonString(value.organisation_id)}`);
+  fields.push(`"email":${jsonString(value.email)}`);
+  fields.push(`"display_name":${jsonString(value.display_name)}`);
+  fields.push(`"status":${jsonString(value.status)}`);
+  if (value.local_credential_set !== undefined) {
+    fields.push(`"local_credential_set":${jsonBoolean(value.local_credential_set)}`);
+  }
+  fields.push(`"created_at":${jsonString(value.created_at)}`);
+  fields.push(`"updated_at":${jsonString(value.updated_at)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a Project.
+ */
+export function encodeProject(value: Project): string {
+  const fields: string[] = [];
+  fields.push(`"id":${jsonString(value.id)}`);
+  fields.push(`"organisation_id":${jsonString(value.organisation_id)}`);
+  fields.push(`"name":${jsonString(value.name)}`);
+  fields.push(`"slug":${jsonString(value.slug)}`);
+  if (value.repository_identity !== undefined) {
+    fields.push(`"repository_identity":${encodeRepositoryIdentity(value.repository_identity)}`);
+  }
+  fields.push(`"default_branch":${jsonString(value.default_branch)}`);
+  fields.push(`"status":${jsonString(value.status)}`);
+  fields.push(`"settings":${encodeProjectSettings(value.settings)}`);
+  fields.push(`"version":${jsonInteger(value.version)}`);
+  fields.push(`"created_at":${jsonString(value.created_at)}`);
+  fields.push(`"updated_at":${jsonString(value.updated_at)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a HumanSession.
+ */
+export function encodeHumanSession(value: HumanSession): string {
+  const fields: string[] = [];
+  fields.push(`"session_id":${jsonString(value.session_id)}`);
+  if (value.user_id !== undefined) {
+    fields.push(`"user_id":${jsonString(value.user_id)}`);
+  }
+  if (value.organisation_id !== undefined) {
+    fields.push(`"organisation_id":${jsonString(value.organisation_id)}`);
+  }
+  if (value.email !== undefined) {
+    fields.push(`"email":${jsonString(value.email)}`);
+  }
+  fields.push(`"display":${jsonString(value.display)}`);
+  if (value.project_ids !== undefined) {
+    fields.push(`"project_ids":${`[${value.project_ids.map((item) => jsonString(item)).join(",")}]`}`);
+  }
+  fields.push(`"expires_at":${jsonString(value.expires_at)}`);
+  return `{${fields.join(",")}}`;
+}
 
 /**
  * Canonically encodes a Actor.
@@ -140,6 +264,84 @@ export function encodeProjectCreatedPayload(value: ProjectCreatedPayload): strin
   const fields: string[] = [];
   fields.push(`"slug":${jsonString(value.slug)}`);
   fields.push(`"name":${jsonString(value.name)}`);
+  if (value.default_branch !== undefined) {
+    fields.push(`"default_branch":${jsonString(value.default_branch)}`);
+  }
+  if (value.repository_canonical !== undefined) {
+    fields.push(`"repository_canonical":${jsonString(value.repository_canonical)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ProjectRepositoryChangedPayload.
+ */
+export function encodeProjectRepositoryChangedPayload(value: ProjectRepositoryChangedPayload): string {
+  const fields: string[] = [];
+  if (value.previous_canonical !== undefined) {
+    fields.push(`"previous_canonical":${jsonString(value.previous_canonical)}`);
+  }
+  fields.push(`"new_canonical":${jsonString(value.new_canonical)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a UserInvitedPayload.
+ */
+export function encodeUserInvitedPayload(value: UserInvitedPayload): string {
+  const fields: string[] = [];
+  fields.push(`"user_id":${jsonString(value.user_id)}`);
+  fields.push(`"method":${jsonString(value.method)}`);
+  fields.push(`"expires_at":${jsonString(value.expires_at)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a UserCredentialsSetPayload.
+ */
+export function encodeUserCredentialsSetPayload(value: UserCredentialsSetPayload): string {
+  const fields: string[] = [];
+  fields.push(`"user_id":${jsonString(value.user_id)}`);
+  fields.push(`"method":${jsonString(value.method)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a AuthenticationLoginSucceededPayload.
+ */
+export function encodeAuthenticationLoginSucceededPayload(value: AuthenticationLoginSucceededPayload): string {
+  const fields: string[] = [];
+  fields.push(`"session_id":${jsonString(value.session_id)}`);
+  if (value.user_id !== undefined) {
+    fields.push(`"user_id":${jsonString(value.user_id)}`);
+  }
+  fields.push(`"method":${jsonString(value.method)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a AuthenticationLoginFailedPayload.
+ */
+export function encodeAuthenticationLoginFailedPayload(value: AuthenticationLoginFailedPayload): string {
+  const fields: string[] = [];
+  fields.push(`"reason":${jsonString(value.reason)}`);
+  fields.push(`"method":${jsonString(value.method)}`);
+  if (value.user_id !== undefined) {
+    fields.push(`"user_id":${jsonString(value.user_id)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a SessionRevokedPayload.
+ */
+export function encodeSessionRevokedPayload(value: SessionRevokedPayload): string {
+  const fields: string[] = [];
+  fields.push(`"session_id":${jsonString(value.session_id)}`);
+  if (value.user_id !== undefined) {
+    fields.push(`"user_id":${jsonString(value.user_id)}`);
+  }
+  fields.push(`"reason":${jsonString(value.reason)}`);
   return `{${fields.join(",")}}`;
 }
 

@@ -1,0 +1,19 @@
+{
+  "id": "evt_2000000000000000000000000000000e",
+  "schema_version": 1,
+  "sequence": 5,
+  "type": "session.revoked",
+  "occurred_at": "2026-07-30T11:40:02.000Z",
+  "recorded_at": "2026-07-30T11:40:02.008Z",
+  "organisation_id": "org_2f1c8ba0d9e34a7f8b6c5d4e3f2a1b09",
+  "actor": {
+    "type": "human_user",
+    "id": "usr_1111222233334444555566667777888",
+    "display": "Administrator"
+  },
+  "payload": {
+    "session_id": "vwr_5a4b3c2d1e0f98877665544332211009",
+    "user_id": "usr_1111222233334444555566667777888",
+    "reason": "sign_out"
+  }
+}

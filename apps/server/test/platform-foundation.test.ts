@@ -531,8 +531,21 @@ describe("event records", () => {
       // is audited by the authentication events of docs/EVENTS.md section 7 when
       // those land; an idempotency key is a request-deduplication artefact whose
       // own creation is not an occurrence anybody audits.
-      ["modules/live/viewer-sessions.ts", "viewer sessions are credentials, not domain records"],
+      // A viewer session is a credential rather than a domain record, so this
+      // store writes no event of its own. Every route that calls it does:
+      // `modules/identity/routes.ts` and the ADR-0016 sign-out in
+      // `modules/live/routes.ts` both record `session.revoked`, and issuing one
+      // is recorded by the `authentication.login_succeeded` beside it. The
+      // wording matters — this exemption previously claimed an audit that one
+      // of those two routes was not in fact performing (RVP-12 review, F1).
+      ["modules/live/viewer-sessions.ts", "viewer sessions are credentials, not domain records; every route that issues or revokes one writes the matching authentication event"],
       ["modules/agents/idempotency.ts", "an idempotency key deduplicates a request; it is not a change"],
+      // Throttling state. The refusal it produces is audited as
+      // authentication.login_failed with reason `rate_limited`, so the fact an
+      // operator needs — that the limiter engaged — is in the event stream; the
+      // counter itself is bookkeeping, and an event per failed guess would let
+      // an attacker fill the audit trail.
+      ["modules/identity/rate-limit.ts", "login throttling state; the refusal it produces is evented as authentication.login_failed"],
       // Registry and liveness bookkeeping. A worker heartbeat every few seconds
       // is exactly the high-frequency signal docs/EVENTS.md section 7 says must
       // be sampled or summarised rather than emitted as durable events.

@@ -8,10 +8,11 @@
  */
 
 import { Link, createRoute } from "@tanstack/react-router";
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState, type FormEvent, type ReactElement } from "react";
+import { useQueries, useQuery } from "@tanstack/react-query";
+import type { ReactElement } from "react";
 
-import { api, ApiFailure, isActive, type BrowserSession, type Project } from "../api/client.ts";
+import { api, isActive, type BrowserSession, type Project } from "../api/client.ts";
+import { useSession } from "../auth/session.ts";
 import { StatusBadge, type Tone } from "../components/StatusBadge.tsx";
 import { rootRoute } from "./root.tsx";
 
@@ -26,63 +27,6 @@ const TONE_FOR_SESSION: Readonly<Record<string, Tone>> = {
   TERMINATED: "neutral",
   FAILED: "failed",
 };
-
-function SignIn(): ReactElement {
-  const queryClient = useQueryClient();
-  const [token, setToken] = useState("");
-  const signIn = useMutation({
-    mutationFn: (value: string) => api.signIn(value),
-    onSuccess: () => queryClient.invalidateQueries(),
-  });
-
-  return (
-    <section aria-labelledby="sign-in-heading" className="max-w-xl">
-      <h1 id="sign-in-heading" className="text-xl font-semibold">
-        Sign in
-      </h1>
-      <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">
-        Stage 0 has one human account: the bootstrap administrator of this deployment. The token is
-        exchanged for a session cookie and is never stored in the browser.
-      </p>
-      <form
-        className="mt-4 flex flex-col gap-3"
-        onSubmit={(event: FormEvent) => {
-          event.preventDefault();
-          signIn.mutate(token);
-        }}
-      >
-        <label htmlFor="bootstrap-token" className="text-sm font-medium">
-          Bootstrap administrator token
-        </label>
-        <input
-          id="bootstrap-token"
-          name="bootstrap-token"
-          type="password"
-          autoComplete="off"
-          required
-          value={token}
-          onChange={(event) => {
-            setToken(event.target.value);
-          }}
-          className="rounded border border-slate-400 bg-white px-3 py-2 font-mono text-sm dark:bg-slate-900"
-        />
-        <button
-          type="submit"
-          className="self-start rounded bg-sky-700 px-4 py-2 text-sm font-medium text-white hover:bg-sky-800"
-        >
-          Sign in
-        </button>
-        {signIn.isError ? (
-          <p role="alert" className="text-sm text-red-800 dark:text-red-300">
-            {signIn.error instanceof ApiFailure
-              ? `${signIn.error.code}: ${signIn.error.message}`
-              : "Sign-in failed."}
-          </p>
-        ) : null}
-      </form>
-    </section>
-  );
-}
 
 function SessionRow({
   session,
@@ -142,11 +86,14 @@ function SessionRow({
 }
 
 function Sessions(): ReactElement {
-  const viewer = useQuery({ queryKey: ["viewer"], queryFn: () => api.currentViewer(), retry: false });
+  // The shell has already established that somebody is signed in; this page
+  // reads the same session rather than asking again, so a sign-out clears every
+  // surface at once.
+  const session = useSession();
   const projects = useQuery({
     queryKey: ["projects"],
     queryFn: () => api.projects(),
-    enabled: viewer.data !== undefined,
+    enabled: session.data !== undefined,
   });
   const projectIds = projects.data?.map((project) => project.id) ?? [];
   const sessionQueries = useQueries({
@@ -159,12 +106,11 @@ function Sessions(): ReactElement {
     })),
   });
 
-  if (viewer.isPending) return <p role="status">Loading.</p>;
-  if (viewer.isError) return <SignIn />;
+  if (session.isPending) return <p role="status">Loading.</p>;
 
   const sessions = sessionQueries
     .flatMap((query) => query.data ?? [])
-    .filter((session) => isActive(session))
+    .filter((browserSession) => isActive(browserSession))
     .sort((left, right) => right.created_at.localeCompare(left.created_at));
 
   const byId = new Map((projects.data ?? []).map((project) => [project.id, project]));
@@ -175,8 +121,8 @@ function Sessions(): ReactElement {
         Live sessions
       </h1>
       <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">
-        Signed in as {viewer.data.display}. Chromium runs centrally; each session reaches its
-        application through a private route.
+        Signed in as {session.data?.user?.email ?? session.data?.session.display ?? "this session"}.
+        Chromium runs centrally; each session reaches its application through a private route.
       </p>
 
       {projects.isPending ? <p role="status">Loading projects.</p> : null}

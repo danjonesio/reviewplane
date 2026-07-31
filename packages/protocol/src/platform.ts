@@ -26,3 +26,5 @@ export * from "./generated/platform/v1/index.ts";
 export * from "./entity-id.ts";
 export * from "./cursor.ts";
 export * from "./platform-event.ts";
+export * from "./repository-identity.ts";
+export * from "./project-settings.ts";

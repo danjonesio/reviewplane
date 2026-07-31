@@ -48,6 +48,11 @@ export interface StubOptions {
   /** Set to refuse the live upgrade, for the failure-state case. */
   refuseLive?: boolean;
   /**
+   * Start as an installation nobody has claimed, so the first-run screen asks
+   * for the install token rather than for a password.
+   */
+  readonly bootstrapRequired?: boolean;
+  /**
    * PNG bytes served as the review's screenshot artefact. Supplied by the
    * annotation suite, which renders a real page and marks a known region of
    * it, because an overlay that lands on the wrong part of a blank image would
@@ -69,12 +74,41 @@ export interface StubControlPlane {
 const BOOTSTRAP_TOKEN = "ui-suite-bootstrap-token";
 const COOKIE = "reviewplane_viewer=ui-suite-session";
 
+/** The account and the one-time token the first-run suite signs in with. */
+export const UI_SUITE_EMAIL = "administrator@localhost";
+export const UI_SUITE_PASSWORD = "correct horse battery staple";
+export const UI_SUITE_INSTALL_TOKEN = "rpi_ui-suite-install-token";
+
+/**
+ * The CSRF token the stub issues with a session.
+ *
+ * It travels in a readable cookie and must come back in `X-CSRF-Token` on every
+ * state-changing request, exactly as the control plane requires — so a bundle
+ * that stopped sending the header would fail this suite rather than only the
+ * server's own tests.
+ */
+const CSRF_TOKEN = "ui-suite-csrf-token";
+
+const DEFAULT_VIEWPORTS = [
+  { width: 390, height: 844 },
+  { width: 1440, height: 900 },
+];
+
 const PROJECT = {
   id: "prj_ui_suite",
   organisation_id: "org_ui_suite",
   name: "Refresh Surplus",
   slug: "refresh-surplus",
   status: "active",
+  default_branch: "main",
+  settings: { default_validation_viewports: DEFAULT_VIEWPORTS },
+  version: 1,
+  repository_identity: {
+    canonical: "github.com/example/refresh-surplus",
+    clone_urls: ["git@github.com:example/refresh-surplus.git"],
+  },
+  created_at: "2026-07-30T09:00:00.000Z",
+  updated_at: "2026-07-30T09:00:00.000Z",
 };
 
 export const SESSION: {
@@ -267,10 +301,71 @@ function hasSession(request: IncomingMessage): boolean {
   return (request.headers.cookie ?? "").includes("reviewplane_viewer=");
 }
 
+/**
+ * Whether a state-changing request carried the CSRF token.
+ *
+ * The stub enforces it for the same reason the control plane does: a bundle
+ * that stopped echoing the header would otherwise pass a suite that only ever
+ * reads.
+ */
+function hasCsrf(request: IncomingMessage): boolean {
+  const presented = request.headers["x-csrf-token"];
+  const value = Array.isArray(presented) ? presented[0] : presented;
+  return hasSession(request) && value === CSRF_TOKEN;
+}
+
+/** Sets the session pair and answers with the session body. */
+function issueSession(response: ServerResponse, email: string): void {
+  response.setHeader("set-cookie", [
+    `${COOKIE}; Path=/; HttpOnly; SameSite=Strict; Max-Age=3600`,
+    `reviewplane_csrf=${CSRF_TOKEN}; Path=/; SameSite=Strict; Max-Age=3600`,
+  ]);
+  sendJson(response, 201, {
+    data: {
+      session: {
+        session_id: "vwr_ui",
+        user_id: "usr_ui",
+        organisation_id: PROJECT.organisation_id,
+        email,
+        display: "Administrator",
+        expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+      },
+      user: {
+        id: "usr_ui",
+        organisation_id: PROJECT.organisation_id,
+        email,
+        display_name: "Administrator",
+        status: "active",
+        local_credential_set: true,
+      },
+    },
+  });
+}
+
+/** Reads a JSON body, bounded so a stub cannot be made to buffer for ever. */
+async function readJsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += (chunk as Buffer).byteLength;
+    if (size > 64 * 1024) break;
+    chunks.push(chunk as Buffer);
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
 export async function startStubControlPlane(options: StubOptions): Promise<StubControlPlane> {
   const state = { viewers: 0, framesSent: 0, sequence: 0, grants: 0 };
   /** Minted artefact grants, so a content path is only reachable through one. */
   const grants = new Map<string, string>();
+  /** Projects this deployment holds, so creation and the switcher are real. */
+  const projects = new Map<string, Record<string, unknown>>([[PROJECT.id, { ...PROJECT }]]);
+  let bootstrapRequired = options.bootstrapRequired === true;
+  let created = 0;
 
   const server: Server = createServer((request, response) => {
     void handle(request, response).catch(() => {
@@ -281,6 +376,94 @@ export async function startStubControlPlane(options: StubOptions): Promise<StubC
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url ?? "/", "http://ui-suite.invalid");
     const path = url.pathname;
+
+    // ------------------------------------------------------ authentication
+    if (path === "/api/v1/auth/bootstrap" && request.method === "GET") {
+      sendJson(response, 200, {
+        data: {
+          bootstrap_required: bootstrapRequired,
+          install_token_outstanding: bootstrapRequired,
+          organisation: { id: PROJECT.organisation_id, name: "ReviewPlane", slug: "reviewplane" },
+        },
+      });
+      return;
+    }
+
+    if (path === "/api/v1/auth/bootstrap" && request.method === "POST") {
+      const body = await readJsonBody(request);
+      if (body["token"] !== UI_SUITE_INSTALL_TOKEN) {
+        sendJson(response, 401, {
+          error: {
+            code: "AUTHENTICATION_REQUIRED",
+            message: "That installation token cannot be used.",
+          },
+        });
+        return;
+      }
+      bootstrapRequired = false;
+      issueSession(response, String(body["email"] ?? UI_SUITE_EMAIL));
+      return;
+    }
+
+    if (path === "/api/v1/auth/sessions" && request.method === "POST") {
+      const body = await readJsonBody(request);
+      if (body["email"] !== UI_SUITE_EMAIL || body["password"] !== UI_SUITE_PASSWORD) {
+        sendJson(response, 401, {
+          error: {
+            code: "AUTHENTICATION_REQUIRED",
+            message: "That email address and password do not match an account.",
+          },
+        });
+        return;
+      }
+      issueSession(response, UI_SUITE_EMAIL);
+      return;
+    }
+
+    if (path === "/api/v1/auth/sessions/current") {
+      if (request.method === "DELETE") {
+        if (!hasCsrf(request)) {
+          sendJson(response, 403, {
+            error: { code: "AUTHORISATION_DENIED", message: "This request needs a CSRF token." },
+          });
+          return;
+        }
+        response.setHeader("set-cookie", [
+          "reviewplane_viewer=; Path=/; Max-Age=0",
+          "reviewplane_csrf=; Path=/; Max-Age=0",
+        ]);
+        response.writeHead(204);
+        response.end();
+        return;
+      }
+      if (!hasSession(request)) {
+        sendJson(response, 401, {
+          error: { code: "AUTHENTICATION_REQUIRED", message: "Sign in to continue." },
+        });
+        return;
+      }
+      sendJson(response, 200, {
+        data: {
+          session: {
+            session_id: "vwr_ui",
+            user_id: "usr_ui",
+            organisation_id: PROJECT.organisation_id,
+            email: UI_SUITE_EMAIL,
+            display: "Administrator",
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          },
+          user: {
+            id: "usr_ui",
+            organisation_id: PROJECT.organisation_id,
+            email: UI_SUITE_EMAIL,
+            display_name: "Administrator",
+            status: "active",
+            local_credential_set: true,
+          },
+        },
+      });
+      return;
+    }
 
     if (path === "/api/v1/auth/viewer-sessions" && request.method === "POST") {
       if (request.headers.authorization !== `Bearer ${BOOTSTRAP_TOKEN}`) {
@@ -324,8 +507,87 @@ export async function startStubControlPlane(options: StubOptions): Promise<StubC
       return;
     }
 
+    // ------------------------------------------------------------ projects
+    if (path === "/api/v1/projects" && request.method === "POST") {
+      if (!hasCsrf(request)) {
+        sendJson(response, 403, {
+          error: {
+            code: "AUTHORISATION_DENIED",
+            message: "This request changes state and must carry the session's CSRF token.",
+          },
+        });
+        return;
+      }
+      const body = await readJsonBody(request);
+      const name = String(body["name"] ?? "");
+      created += 1;
+      const project = {
+        id: `prj_ui_created_${String(created)}`,
+        organisation_id: PROJECT.organisation_id,
+        name,
+        slug: name
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/gu, "-")
+          .replace(/^-+|-+$/gu, ""),
+        status: "active",
+        default_branch: String(body["default_branch"] ?? "main"),
+        settings: body["settings"] ?? { default_validation_viewports: DEFAULT_VIEWPORTS },
+        version: 1,
+        ...(typeof body["repository_identity"] === "string"
+          ? {
+              repository_identity: {
+                canonical: String(body["repository_identity"])
+                  .replace(/^[a-z]+:\/\//u, "")
+                  .replace(/^[^@]+@/u, "")
+                  .replace(/:/u, "/")
+                  .replace(/\.git$/u, ""),
+                clone_urls: [String(body["repository_identity"])],
+              },
+            }
+          : {}),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      projects.set(project.id, project);
+      sendJson(response, 201, { data: project });
+      return;
+    }
+
     if (path === "/api/v1/projects") {
-      sendJson(response, 200, { data: [PROJECT] });
+      sendJson(response, 200, { data: [...projects.values()] });
+      return;
+    }
+
+    const projectMatch = /^\/api\/v1\/projects\/([^/]+)$/u.exec(path);
+    if (projectMatch !== null) {
+      const project = projects.get(projectMatch[1] as string);
+      if (project === undefined) {
+        sendJson(response, 404, {
+          error: { code: "RESOURCE_NOT_FOUND", message: "The project was not found." },
+        });
+        return;
+      }
+      sendJson(response, 200, { data: project });
+      return;
+    }
+
+    const activityMatch = /^\/api\/v1\/projects\/([^/]+)\/activity/u.exec(path);
+    if (activityMatch !== null) {
+      sendJson(response, 200, {
+        data: [
+          {
+            id: "evt_ui_created",
+            sequence: 1,
+            type: "project.created",
+            occurred_at: "2026-07-30T09:00:00.000Z",
+            recorded_at: "2026-07-30T09:00:00.010Z",
+            organisation_id: PROJECT.organisation_id,
+            project_id: activityMatch[1],
+            actor: { type: "human_user", display: "Administrator" },
+            payload: { slug: "refresh-surplus", name: "Refresh Surplus" },
+          },
+        ],
+      });
       return;
     }
     if (path === `/api/v1/projects/${PROJECT.id}/browser-sessions`) {
@@ -566,6 +828,11 @@ export async function startStubControlPlane(options: StubOptions): Promise<StubC
     async stop(): Promise<void> {
       for (const client of sockets.clients) client.terminate();
       sockets.close();
+      // `server.close()` waits for every open connection to end, and a browser
+      // holds its keep-alive socket open for a minute. Without this the suite
+      // does not fail — it hangs, having already finished, which is far harder
+      // to diagnose than a failure.
+      server.closeAllConnections();
       await new Promise<void>((resolve) => {
         server.close(() => {
           resolve();

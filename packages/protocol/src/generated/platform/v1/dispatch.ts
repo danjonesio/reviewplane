@@ -8,6 +8,8 @@
 
 import type { SchemaViolation } from "./types.ts";
 import type {
+  AuthenticationLoginFailedPayload,
+  AuthenticationLoginSucceededPayload,
   Envelope,
   JobEnqueuedPayload,
   JobFailedPayload,
@@ -17,34 +19,56 @@ import type {
   PlatformFrame,
   ProjectArchivedPayload,
   ProjectCreatedPayload,
+  ProjectRepositoryChangedPayload,
   ProjectUpdatedPayload,
+  SessionRevokedPayload,
+  UserCredentialsSetPayload,
+  UserInvitedPayload,
 } from "./types.ts";
 import {
+  decodeAuthenticationLoginFailedPayload,
+  decodeAuthenticationLoginSucceededPayload,
   decodeJobEnqueuedPayload,
   decodeJobFailedPayload,
   decodeJobSucceededPayload,
   decodeOrganisationCreatedPayload,
   decodeProjectArchivedPayload,
   decodeProjectCreatedPayload,
+  decodeProjectRepositoryChangedPayload,
   decodeProjectUpdatedPayload,
+  decodeSessionRevokedPayload,
+  decodeUserCredentialsSetPayload,
+  decodeUserInvitedPayload,
 } from "./decode.ts";
 import {
+  encodeAuthenticationLoginFailedPayload,
+  encodeAuthenticationLoginSucceededPayload,
   encodeJobEnqueuedPayload,
   encodeJobFailedPayload,
   encodeJobSucceededPayload,
   encodeOrganisationCreatedPayload,
   encodeProjectArchivedPayload,
   encodeProjectCreatedPayload,
+  encodeProjectRepositoryChangedPayload,
   encodeProjectUpdatedPayload,
+  encodeSessionRevokedPayload,
+  encodeUserCredentialsSetPayload,
+  encodeUserInvitedPayload,
 } from "./encode.ts";
 import {
+  validateAuthenticationLoginFailedPayload,
+  validateAuthenticationLoginSucceededPayload,
   validateJobEnqueuedPayload,
   validateJobFailedPayload,
   validateJobSucceededPayload,
   validateOrganisationCreatedPayload,
   validateProjectArchivedPayload,
   validateProjectCreatedPayload,
+  validateProjectRepositoryChangedPayload,
   validateProjectUpdatedPayload,
+  validateSessionRevokedPayload,
+  validateUserCredentialsSetPayload,
+  validateUserInvitedPayload,
 } from "./validate.ts";
 
 /**
@@ -54,7 +78,13 @@ export type PlatformPayload =
   | OrganisationCreatedPayload
   | ProjectCreatedPayload
   | ProjectUpdatedPayload
+  | ProjectRepositoryChangedPayload
   | ProjectArchivedPayload
+  | UserInvitedPayload
+  | UserCredentialsSetPayload
+  | AuthenticationLoginSucceededPayload
+  | AuthenticationLoginFailedPayload
+  | SessionRevokedPayload
   | JobEnqueuedPayload
   | JobSucceededPayload
   | JobFailedPayload;
@@ -73,8 +103,26 @@ export function validatePayload(type: MessageType, value: unknown, path: string,
     case "project.updated":
       validateProjectUpdatedPayload(value, path, out);
       return;
+    case "project.repository_changed":
+      validateProjectRepositoryChangedPayload(value, path, out);
+      return;
     case "project.archived":
       validateProjectArchivedPayload(value, path, out);
+      return;
+    case "user.invited":
+      validateUserInvitedPayload(value, path, out);
+      return;
+    case "user.credentials_set":
+      validateUserCredentialsSetPayload(value, path, out);
+      return;
+    case "authentication.login_succeeded":
+      validateAuthenticationLoginSucceededPayload(value, path, out);
+      return;
+    case "authentication.login_failed":
+      validateAuthenticationLoginFailedPayload(value, path, out);
+      return;
+    case "session.revoked":
+      validateSessionRevokedPayload(value, path, out);
       return;
     case "job.enqueued":
       validateJobEnqueuedPayload(value, path, out);
@@ -99,8 +147,20 @@ export function decodeFrame(envelope: Envelope, value: unknown): PlatformFrame {
       return { envelope, type: "project.created", payload: decodeProjectCreatedPayload(value) };
     case "project.updated":
       return { envelope, type: "project.updated", payload: decodeProjectUpdatedPayload(value) };
+    case "project.repository_changed":
+      return { envelope, type: "project.repository_changed", payload: decodeProjectRepositoryChangedPayload(value) };
     case "project.archived":
       return { envelope, type: "project.archived", payload: decodeProjectArchivedPayload(value) };
+    case "user.invited":
+      return { envelope, type: "user.invited", payload: decodeUserInvitedPayload(value) };
+    case "user.credentials_set":
+      return { envelope, type: "user.credentials_set", payload: decodeUserCredentialsSetPayload(value) };
+    case "authentication.login_succeeded":
+      return { envelope, type: "authentication.login_succeeded", payload: decodeAuthenticationLoginSucceededPayload(value) };
+    case "authentication.login_failed":
+      return { envelope, type: "authentication.login_failed", payload: decodeAuthenticationLoginFailedPayload(value) };
+    case "session.revoked":
+      return { envelope, type: "session.revoked", payload: decodeSessionRevokedPayload(value) };
     case "job.enqueued":
       return { envelope, type: "job.enqueued", payload: decodeJobEnqueuedPayload(value) };
     case "job.succeeded":
@@ -121,8 +181,20 @@ export function encodeFramePayload(frame: PlatformFrame): string {
       return encodeProjectCreatedPayload(frame.payload);
     case "project.updated":
       return encodeProjectUpdatedPayload(frame.payload);
+    case "project.repository_changed":
+      return encodeProjectRepositoryChangedPayload(frame.payload);
     case "project.archived":
       return encodeProjectArchivedPayload(frame.payload);
+    case "user.invited":
+      return encodeUserInvitedPayload(frame.payload);
+    case "user.credentials_set":
+      return encodeUserCredentialsSetPayload(frame.payload);
+    case "authentication.login_succeeded":
+      return encodeAuthenticationLoginSucceededPayload(frame.payload);
+    case "authentication.login_failed":
+      return encodeAuthenticationLoginFailedPayload(frame.payload);
+    case "session.revoked":
+      return encodeSessionRevokedPayload(frame.payload);
     case "job.enqueued":
       return encodeJobEnqueuedPayload(frame.payload);
     case "job.succeeded":

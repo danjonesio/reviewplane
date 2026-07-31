@@ -19,6 +19,7 @@ import {
   startHarness,
   type Harness,
 } from "./support/worker-harness.ts";
+import { claimSessionFor } from "./support/identity.ts";
 import { encodePng, sha256 } from "./support/png.ts";
 import { startMigratedDatabase, truncateAll, type MigratedDatabase } from "./support/postgres.ts";
 
@@ -334,9 +335,9 @@ test("artefact content is unreachable without a live grant issued to the caller"
   assert.ok(organisationId.length > 0);
 });
 
-test("a viewer scoped to another project cannot mint a grant for this artefact", async () => {
-  const first = await seedProjectAndWorker(harness);
-  const created = await intent(first.projectId);
+/** Uploads and completes one screenshot, and answers its identifier. */
+async function storedArtefact(projectId: string): Promise<string> {
+  const created = await intent(projectId);
   const { artefact_id: artefactId, upload_path: uploadPath } = (
     created.json() as { data: { artefact_id: string; upload_path: string } }
   ).data;
@@ -352,6 +353,12 @@ test("a viewer scoped to another project cannot mint a grant for this artefact",
     headers: WORKER,
     payload: { sha256: sha256(PNG) },
   });
+  return artefactId;
+}
+
+test("a viewer scoped to another project cannot reach this artefact", async () => {
+  const first = await seedProjectAndWorker(harness);
+  const artefactId = await storedArtefact(first.projectId);
 
   const second = await seedProjectAndWorker(harness);
   const minted = await harness.built.app.inject({
@@ -362,14 +369,81 @@ test("a viewer scoped to another project cannot mint a grant for this artefact",
   const token = (minted.json() as { data: { token: string } }).data.token;
   const cookie = `reviewplane_viewer=${encodeURIComponent(token)}`;
 
+  // The project scope is checked in the one function the read path and the
+  // write path share, so it is asserted where a foreign session can still get
+  // that far: reading the metadata.
+  const read = await harness.built.app.inject({
+    method: "GET",
+    url: `/api/v1/artefacts/${artefactId}`,
+    headers: { cookie },
+  });
+  assert.equal(read.statusCode, 403, read.body);
+  assert.equal((read.json() as { error: { code: string } }).error.code, "PROJECT_CONTEXT_MISMATCH");
+
+  // Minting a grant is a state change, and this session — the ADR-0016
+  // exchange — carries no CSRF token, so it is refused before its project scope
+  // is considered at all. Strictly the stronger refusal of the two.
   const refused = await harness.built.app.inject({
     method: "POST",
     url: `/api/v1/artefacts/${artefactId}/grants`,
     headers: { cookie },
   });
-  assert.equal(refused.statusCode, 403);
+  assert.equal(refused.statusCode, 403, refused.body);
   assert.equal(
-    (refused.json() as { error: { code: string } }).error.code,
-    "PROJECT_CONTEXT_MISMATCH",
+    (refused.json() as { error: { details?: { reason?: string } } }).error.details?.reason,
+    "csrf_token_invalid",
   );
+
+  const grants = await postgres.pool.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM artefact_access_grants WHERE artefact_id = $1",
+    [artefactId],
+  );
+  assert.equal(grants.rows[0]?.count, "0", "a refused request minted a grant");
+});
+
+test("minting an artefact grant refuses a cookie session without the CSRF token", async () => {
+  // A grant is a row plus an `artefact.access_granted` event, so minting one is
+  // a state change and `docs/API.md` section 4.0 applies to it. The route
+  // resolved a viewer session and asked for nothing else, which let another
+  // origin's markup mint evidence grants with a signed-in person's cookie.
+  const { organisationId, projectId } = await seedProjectAndWorker(harness);
+  const artefactId = await storedArtefact(projectId);
+  const cookies = await claimSessionFor(harness.built, postgres.pool, organisationId);
+
+  const forged = await harness.built.app.inject({
+    method: "POST",
+    url: `/api/v1/artefacts/${artefactId}/grants`,
+    headers: cookies.readHeaders,
+  });
+  assert.equal(forged.statusCode, 403, forged.body);
+  const body = forged.json() as { error: { code: string; details?: { reason?: string } } };
+  assert.equal(body.error.code, "AUTHORISATION_DENIED");
+  assert.equal(body.error.details?.reason, "csrf_token_invalid");
+  process.stdout.write(
+    `EVIDENCE forged POST /api/v1/artefacts/:id/grants -> 403 ${forged.body}\n`,
+  );
+
+  const none = await postgres.pool.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM artefact_access_grants WHERE artefact_id = $1",
+    [artefactId],
+  );
+  assert.equal(none.rows[0]?.count, "0", "a forged request minted a grant");
+
+  // With the token the same request works, and reading the bytes back with the
+  // cookie alone still works: a read needs no token.
+  const granted = await harness.built.app.inject({
+    method: "POST",
+    url: `/api/v1/artefacts/${artefactId}/grants`,
+    headers: cookies.writeHeaders,
+  });
+  assert.equal(granted.statusCode, 201, granted.body);
+  const grant = (granted.json() as { data: { url: string } }).data;
+
+  const served = await harness.built.app.inject({
+    method: "GET",
+    url: grant.url,
+    headers: cookies.readHeaders,
+  });
+  assert.equal(served.statusCode, 200, served.body);
+  assert.equal(sha256(served.rawPayload), sha256(PNG));
 });

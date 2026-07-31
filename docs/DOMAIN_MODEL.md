@@ -108,6 +108,25 @@ Role capabilities must be represented as permissions internally rather than hard
 - Change retention
 - View audit records
 
+### The Stage 1 subset
+
+Stage 1 has one organisation and one user, and no membership table: roles and
+permissions are Stage 3. The user record carries `id`, `organisation_id`,
+`email`, `display_name`, `status` and — separately from every representation
+that leaves the database — a password verifier. `email` is an alias and never an
+identity; the identifier is what every other record references.
+
+Until roles exist, "may administer the organisation" is decided by session
+scope: an organisation-wide session administers, and a session scoped to a
+single project does not. That predicate lives in one place, so introducing roles
+replaces it rather than every handler that consults it (`docs/SECURITY.md`
+section 7).
+
+A human session is the record ADR-0016 introduced, extended with the user it
+belongs to, a CSRF token digest and the session it rotated from. It stores only
+digests, carries an explicit project scope, expires, and can be revoked
+individually or for the whole account.
+
 ## 6. Project
 
 A project is the principal working boundary.
@@ -149,11 +168,38 @@ Repository identity is normalised and provider-agnostic:
 - Inbox items
 - Project-scoped secrets references
 
+### Settings
+
+`settings` is a closed object, defined once in
+`packages/protocol/schemas/platform/v1.schema.json`. Stage 1 holds one member:
+
+```json
+{
+  "default_validation_viewports": [
+    { "width": 390, "height": 844 },
+    { "width": 1440, "height": 900 }
+  ]
+}
+```
+
+Those two defaults are the viewports `AGENTS.md` requires browser-facing work to
+be checked at. A viewport here is bounded by the browser protocol's own viewport
+bounds, because a viewport stored as a project default is one a browser session
+is later asked to adopt: a value the worker would refuse MUST NOT be storable. A
+device pixel ratio of 1 is dropped rather than stored, so `390x844` and
+`390x844 @1x` are one value rather than two the uniqueness rule would admit side
+by side.
+
 ### Invariants
 
 - A review belongs to exactly one project
 - Browser sessions may only route to services authorised for the same project
 - Repository association changes are audited
+- A slug is unique within its organisation, and the uniqueness is enforced by
+  the database rather than by a read followed by a write: two concurrent
+  creations of one slug produce one project and one refusal
+- Deleting a project archives it. Reviews, findings, artefacts and events all
+  survive archival; a destructive purge is a separate later flow
 
 ## 7. Environment
 

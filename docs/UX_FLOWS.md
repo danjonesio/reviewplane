@@ -31,6 +31,42 @@ Settings
 
 The first release may hide unavailable team and policy surfaces while preserving the information architecture.
 
+### 2.1 What the application implements today
+
+Primary navigation: **Live sessions**, **Projects**, **Reviews**, a **project
+switcher** and the signed-in account with **Sign out**. Home, Connectors,
+Artefacts and Administration are not separate surfaces yet: connectors and
+artefacts are reached through the project that owns them, and administration has
+nothing in it while the deployment has one account.
+
+Within a project: **Overview**, **Live**, **Reviews**, **Environments**,
+**Settings**. Policies is hidden, as this section permits, because
+`docs/DOMAIN_MODEL.md` section 22 defers policy records to Stage 4. It keeps its
+documented position between Environments and Settings, so adding it later is a
+tab rather than a redesign.
+
+The project switcher is a native `<select>`. It is reachable and operable by
+keyboard on every platform without custom key handling, it is announced
+correctly by screen readers, and on a 390px viewport the platform supplies a
+usable picker for it.
+
+Navigation reflects authorisation and never grants it: every surface reads
+through a project-scoped API, and a session that may not see a project is
+refused by the control plane whether or not a link to it was rendered
+(`docs/SECURITY.md` section 7).
+
+## 2.2 First run
+
+An installation that has no administrator answers the first screen with **Set up
+this installation**: the one-time token from `reviewplane install-token`, the
+email address to create, and the password. A claimed installation answers with
+**Sign in**: email address and password. Both are the same screen, because for
+the person in front of it they are the same moment.
+
+The refusal of a sign-in is an `alert` region naming what to do, never a field
+that echoes what was typed, and it is the same message whichever part was wrong
+(`docs/SECURITY.md` section 6.1).
+
 ## 3. Fleet dashboard
 
 Purpose: answer "what are my agents and browsers doing now?"
@@ -74,6 +110,22 @@ Do not autoplay high-frame-rate streams for every card. Thumbnails use a low fra
 - Repository identity is normalised
 - Project slug is unique in organisation
 - Default viewport values are bounded
+
+### Implemented behaviour
+
+The form takes the project name, an optional repository clone URL, the default
+branch and the default validation viewports as checkboxes, defaulting to 390x844
+and 1440x900. It previews the address the name will produce while it is typed.
+
+Validation is the control plane's. The form previews an outcome; it does not
+decide one, because a second implementation of the rules would eventually
+disagree with the one that enforces them. A refused save is an `alert` naming
+the field, and the form keeps what was typed.
+
+Saving leads to the connector enrolment instructions rather than to a list: a
+project with no environment cannot do anything yet, and the command that gives
+it one is the next thing the person needs. The same instructions live on the
+project's Environments tab.
 
 ## 5. Connector enrolment
 

@@ -1,0 +1,17 @@
+{
+  "id": "evt_2000000000000000000000000000000f",
+  "schema_version": 1,
+  "sequence": 6,
+  "type": "authentication.login_failed",
+  "occurred_at": "2026-07-30T11:21:50.100Z",
+  "recorded_at": "2026-07-30T11:21:50.109Z",
+  "organisation_id": "org_2f1c8ba0d9e34a7f8b6c5d4e3f2a1b09",
+  "actor": {
+    "type": "system"
+  },
+  "payload": {
+    "reason": "unknown_user",
+    "method": "password",
+    "submitted_email": "administrator@localhost"
+  }
+}
