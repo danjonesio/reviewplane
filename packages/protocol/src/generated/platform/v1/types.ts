@@ -106,6 +106,7 @@ export const ERROR_CLASS_VALUES = [
   "APPROVAL_REQUIRED",
   "EVIDENCE_REQUIRED",
   "ARTEFACT_UPLOAD_INCOMPLETE",
+  "ARTEFACT_STORE_UNAVAILABLE",
   "UNSUPPORTED_CAPABILITY",
   "RATE_LIMITED",
   "INTERNAL_ERROR",
@@ -132,6 +133,7 @@ export type ErrorClass =
   | "APPROVAL_REQUIRED"
   | "EVIDENCE_REQUIRED"
   | "ARTEFACT_UPLOAD_INCOMPLETE"
+  | "ARTEFACT_STORE_UNAVAILABLE"
   | "UNSUPPORTED_CAPABILITY"
   | "RATE_LIMITED"
   | "INTERNAL_ERROR";
@@ -166,12 +168,16 @@ export const JOB_KIND_VALUES = [
   "event_outbox_dispatch",
   "idempotency_key_expiry",
   "published_service_expiry",
+  "artefact_thumbnail",
+  "review_export",
 ] as const;
 
 export type JobKind =
   | "event_outbox_dispatch"
   | "idempotency_key_expiry"
-  | "published_service_expiry";
+  | "published_service_expiry"
+  | "artefact_thumbnail"
+  | "review_export";
 
 /**
  * Why a job attempt failed. Stable, so a dead-lettered job can be diagnosed from the audit
@@ -541,6 +547,9 @@ export const EVENT_TYPES = [
   "finding.verification_rejected",
   "finding.resolved",
   "finding.reopened",
+  "finding.status_change_denied",
+  "review.comment_added",
+  "review.status_change_denied",
   "job.enqueued",
   "job.succeeded",
   "job.failed",

@@ -1,0 +1,26 @@
+{
+  "id": "evt_01JARTTHUMBNAIL",
+  "schema_version": 1,
+  "sequence": 33,
+  "type": "artefact.thumbnail_generated",
+  "occurred_at": "2026-07-30T10:12:06.402Z",
+  "recorded_at": "2026-07-30T10:12:06.409Z",
+  "organisation_id": "org_01JREFRESH",
+  "project_id": "prj_01JREFRESHSURPLUS",
+  "actor": {
+    "type": "system",
+    "display": "job runner"
+  },
+  "correlation": {
+    "artefact_id": "art_01JHOMEPAGESHOT"
+  },
+  "payload": {
+    "artefact_id": "art_01JHOMEPAGESHOT",
+    "state": "generated",
+    "thumbnail_artefact_id": "art_01JHOMEPAGETHUMB",
+    "content_rectangle": {
+      "width_px": 148,
+      "height_px": 320
+    }
+  }
+}

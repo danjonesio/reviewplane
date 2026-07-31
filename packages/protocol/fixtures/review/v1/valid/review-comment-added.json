@@ -1,0 +1,35 @@
+{
+  "id": "evt_01JREVIEWCOMMENT",
+  "schema_version": 1,
+  "occurred_at": "2026-07-31T09:02:11.004Z",
+  "recorded_at": "2026-07-31T09:02:11.011Z",
+  "organisation_id": "org_01JREFRESH",
+  "project_id": "prj_01JREFRESHSURPLUS",
+  "sequence": 55,
+  "type": "review.comment_added",
+  "actor": {
+    "type": "human_user",
+    "id": "vwr_01JBOOTSTRAPADMIN",
+    "display": "bootstrap administrator"
+  },
+  "correlation": {
+    "review_id": "rev_01JBUGSONHOMEPAGE"
+  },
+  "payload": {
+    "comment": {
+      "id": "cmt_01JWORKCRITICALFIRST",
+      "organisation_id": "org_01JREFRESH",
+      "project_id": "prj_01JREFRESHSURPLUS",
+      "review_id": "rev_01JBUGSONHOMEPAGE",
+      "body": "Work the critical and high findings first.",
+      "created_by": {
+        "type": "human_user",
+        "id": "vwr_01JBOOTSTRAPADMIN",
+        "display": "bootstrap administrator"
+      },
+      "revision": 2,
+      "supersedes_comment_id": "cmt_01JWORKCRITICAL",
+      "created_at": "2026-07-31T09:02:11.004Z"
+    }
+  }
+}

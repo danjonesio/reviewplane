@@ -426,17 +426,47 @@ Safe viewer supports:
 
 Active HTML is never rendered under the main application origin.
 
-The Stage 0 viewer implements the screenshot with toggleable annotations, three
-zoom levels (fit, 100%, 200%), and the metadata a reader needs in order to
-trust the picture: the content rectangle, the verified SHA-256 and the
-redaction state. Bytes are loaded through a short-lived access grant
-(ADR-0019), never from a path addressed by artefact identifier.
+The viewer implements the screenshot with toggleable annotations, three zoom
+levels (fit, 100%, 200%), the before-and-after comparison, the download, and
+the metadata a reader needs in order to trust the picture: the content
+rectangle, the verified SHA-256, the byte length, the redaction state and the
+retention expiry. Bytes are loaded through a short-lived access grant
+(ADR-0019), never from a path addressed by artefact identifier, and the grant
+is refreshed on a timer well inside its life rather than after a broken image.
+
+**Retention is shown as due, not as done.** The line reads "verification_evidence,
+due 2027-07-30" because the product records the date and runs no deletion
+(`docs/DOMAIN_MODEL.md` section 20). Saying "expires" would promise something
+it does not do.
+
+**Redaction is shown as recorded.** `not_applied` is displayed as "none
+applied", because no redaction runs yet and a reader must not assume one did.
+
+**The comparison is a real range input.** It is operable with the arrow keys,
+Home and End, with visible focus, and it carries an `aria-valuetext` saying how
+much of each picture is showing. A finding with no submitted after screenshot
+gets the sentence saying so rather than a control that compares nothing.
+
+**Active content is offered and never rendered.** An artefact the server marks
+`attachment` — a DOM snapshot, which is markup a browser would execute — is
+presented as a download with a sentence explaining why, and is not placed in an
+`img`, an `iframe` or an `object`. That is the reader-side statement of
+`docs/SECURITY.md` section 13; the server enforces the same rule with the
+disposition header.
+
+**Download when authorised** is the access grant. A session that can mint a
+grant for the bytes is authorised to have them, so the download is the grant's
+URL rather than a second permission.
 
 When the overlay cannot be drawn — an artefact the server could not measure, or
 a renderer failure — the viewer says which of the two happened and keeps
 showing the original screenshot and the annotation list. Evidence that cannot
 be drawn on is still evidence, and section 18 forbids a blank panel where a
 specific cause exists.
+
+Trace launch and export are not implemented: no trace is captured yet
+(`docs/DOMAIN_MODEL.md` section 20), so there is nothing for the control to
+open and the viewer offers none.
 
 ## 18. Empty and failure states
 
@@ -453,6 +483,25 @@ The UI must explain actionable causes:
 - Control lease lost
 
 Avoid generic "something went wrong" when a stable error code exists.
+
+Two of these belong to the artefact surface.
+
+**Evidence upload incomplete.** An artefact that has not passed verification is
+not evidence: no grant may be minted for it, and the refusal is
+`ARTEFACT_UPLOAD_INCOMPLETE`. When the cause is the store rather than the bytes
+the code is `ARTEFACT_STORE_UNAVAILABLE` instead, so the surface says "the
+evidence store is unreachable, this can be retried" rather than "the upload was
+rejected" — which would be untrue and would send a reader to recapture
+something that was fine. Neither message names the store, so a surface must
+render the code's own wording and never expect a path or an endpoint to explain
+the failure to a reader.
+
+**Agent lacks image-resource capability.** A `screenshot://` read by a client
+that declared no image capability returns the metadata, the verified digest and
+a short-lived path, with a `degraded` object naming
+`image_resources_unsupported` and saying what the caller got instead. It is a
+success, not a failure: refusing the read would deny the agent the digest and
+the metadata it can use, and would tell it nothing about why.
 
 The live surface implements this as a closed set. `failure_state` in
 `packages/protocol/schemas/live_view/v1.schema.json` enumerates the causes a

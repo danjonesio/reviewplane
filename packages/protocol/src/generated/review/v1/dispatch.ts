@@ -9,6 +9,8 @@
 import type { SchemaViolation } from "./types.ts";
 import type {
   ArtefactAccessGranted,
+  ArtefactDeleted,
+  ArtefactThumbnailGenerated,
   ArtefactUploadCompleted,
   ArtefactUploadFailed,
   ArtefactUploadStarted,
@@ -17,18 +19,29 @@ import type {
   FindingClaimed,
   FindingCommentAdded,
   FindingCreated,
+  FindingReopened,
+  FindingResolved,
+  FindingStatusChangeDenied,
   FindingStatusChanged,
   FindingVerificationSubmitted,
   MessageType,
+  ReviewAccepted,
+  ReviewArchived,
+  ReviewAssigned,
   ReviewClaimed,
+  ReviewCommentAdded,
   ReviewCreated,
   ReviewFrame,
   ReviewNamed,
+  ReviewReopened,
+  ReviewStatusChangeDenied,
   ReviewStatusChanged,
   ScreenshotCaptured,
 } from "./types.ts";
 import {
   decodeArtefactAccessGranted,
+  decodeArtefactDeleted,
+  decodeArtefactThumbnailGenerated,
   decodeArtefactUploadCompleted,
   decodeArtefactUploadFailed,
   decodeArtefactUploadStarted,
@@ -36,16 +49,27 @@ import {
   decodeFindingClaimed,
   decodeFindingCommentAdded,
   decodeFindingCreated,
+  decodeFindingReopened,
+  decodeFindingResolved,
+  decodeFindingStatusChangeDenied,
   decodeFindingStatusChanged,
   decodeFindingVerificationSubmitted,
+  decodeReviewAccepted,
+  decodeReviewArchived,
+  decodeReviewAssigned,
   decodeReviewClaimed,
+  decodeReviewCommentAdded,
   decodeReviewCreated,
   decodeReviewNamed,
+  decodeReviewReopened,
+  decodeReviewStatusChangeDenied,
   decodeReviewStatusChanged,
   decodeScreenshotCaptured,
 } from "./decode.ts";
 import {
   encodeArtefactAccessGranted,
+  encodeArtefactDeleted,
+  encodeArtefactThumbnailGenerated,
   encodeArtefactUploadCompleted,
   encodeArtefactUploadFailed,
   encodeArtefactUploadStarted,
@@ -53,16 +77,27 @@ import {
   encodeFindingClaimed,
   encodeFindingCommentAdded,
   encodeFindingCreated,
+  encodeFindingReopened,
+  encodeFindingResolved,
+  encodeFindingStatusChangeDenied,
   encodeFindingStatusChanged,
   encodeFindingVerificationSubmitted,
+  encodeReviewAccepted,
+  encodeReviewArchived,
+  encodeReviewAssigned,
   encodeReviewClaimed,
+  encodeReviewCommentAdded,
   encodeReviewCreated,
   encodeReviewNamed,
+  encodeReviewReopened,
+  encodeReviewStatusChangeDenied,
   encodeReviewStatusChanged,
   encodeScreenshotCaptured,
 } from "./encode.ts";
 import {
   validateArtefactAccessGranted,
+  validateArtefactDeleted,
+  validateArtefactThumbnailGenerated,
   validateArtefactUploadCompleted,
   validateArtefactUploadFailed,
   validateArtefactUploadStarted,
@@ -70,11 +105,20 @@ import {
   validateFindingClaimed,
   validateFindingCommentAdded,
   validateFindingCreated,
+  validateFindingReopened,
+  validateFindingResolved,
+  validateFindingStatusChangeDenied,
   validateFindingStatusChanged,
   validateFindingVerificationSubmitted,
+  validateReviewAccepted,
+  validateReviewArchived,
+  validateReviewAssigned,
   validateReviewClaimed,
+  validateReviewCommentAdded,
   validateReviewCreated,
   validateReviewNamed,
+  validateReviewReopened,
+  validateReviewStatusChangeDenied,
   validateReviewStatusChanged,
   validateScreenshotCaptured,
 } from "./validate.ts";
@@ -93,10 +137,21 @@ export type ReviewPayload =
   | FindingClaimed
   | FindingCommentAdded
   | FindingVerificationSubmitted
+  | ReviewAssigned
+  | ReviewAccepted
+  | ReviewReopened
+  | ReviewArchived
+  | ReviewCommentAdded
+  | FindingResolved
+  | FindingReopened
+  | ReviewStatusChangeDenied
+  | FindingStatusChangeDenied
   | ArtefactUploadStarted
   | ArtefactUploadCompleted
   | ArtefactUploadFailed
   | ArtefactAccessGranted
+  | ArtefactDeleted
+  | ArtefactThumbnailGenerated
   | ScreenshotCaptured;
 
 /**
@@ -134,6 +189,33 @@ export function validatePayload(type: MessageType, value: unknown, path: string,
     case "finding.verification_submitted":
       validateFindingVerificationSubmitted(value, path, out);
       return;
+    case "review.assigned":
+      validateReviewAssigned(value, path, out);
+      return;
+    case "review.accepted":
+      validateReviewAccepted(value, path, out);
+      return;
+    case "review.reopened":
+      validateReviewReopened(value, path, out);
+      return;
+    case "review.archived":
+      validateReviewArchived(value, path, out);
+      return;
+    case "review.comment_added":
+      validateReviewCommentAdded(value, path, out);
+      return;
+    case "finding.resolved":
+      validateFindingResolved(value, path, out);
+      return;
+    case "finding.reopened":
+      validateFindingReopened(value, path, out);
+      return;
+    case "review.status_change_denied":
+      validateReviewStatusChangeDenied(value, path, out);
+      return;
+    case "finding.status_change_denied":
+      validateFindingStatusChangeDenied(value, path, out);
+      return;
     case "artefact.upload_started":
       validateArtefactUploadStarted(value, path, out);
       return;
@@ -145,6 +227,12 @@ export function validatePayload(type: MessageType, value: unknown, path: string,
       return;
     case "artefact.access_granted":
       validateArtefactAccessGranted(value, path, out);
+      return;
+    case "artefact.deleted":
+      validateArtefactDeleted(value, path, out);
+      return;
+    case "artefact.thumbnail_generated":
+      validateArtefactThumbnailGenerated(value, path, out);
       return;
     case "screenshot.captured":
       validateScreenshotCaptured(value, path, out);
@@ -177,6 +265,24 @@ export function decodeFrame(envelope: Envelope, value: unknown): ReviewFrame {
       return { envelope, type: "finding.comment_added", payload: decodeFindingCommentAdded(value) };
     case "finding.verification_submitted":
       return { envelope, type: "finding.verification_submitted", payload: decodeFindingVerificationSubmitted(value) };
+    case "review.assigned":
+      return { envelope, type: "review.assigned", payload: decodeReviewAssigned(value) };
+    case "review.accepted":
+      return { envelope, type: "review.accepted", payload: decodeReviewAccepted(value) };
+    case "review.reopened":
+      return { envelope, type: "review.reopened", payload: decodeReviewReopened(value) };
+    case "review.archived":
+      return { envelope, type: "review.archived", payload: decodeReviewArchived(value) };
+    case "review.comment_added":
+      return { envelope, type: "review.comment_added", payload: decodeReviewCommentAdded(value) };
+    case "finding.resolved":
+      return { envelope, type: "finding.resolved", payload: decodeFindingResolved(value) };
+    case "finding.reopened":
+      return { envelope, type: "finding.reopened", payload: decodeFindingReopened(value) };
+    case "review.status_change_denied":
+      return { envelope, type: "review.status_change_denied", payload: decodeReviewStatusChangeDenied(value) };
+    case "finding.status_change_denied":
+      return { envelope, type: "finding.status_change_denied", payload: decodeFindingStatusChangeDenied(value) };
     case "artefact.upload_started":
       return { envelope, type: "artefact.upload_started", payload: decodeArtefactUploadStarted(value) };
     case "artefact.upload_completed":
@@ -185,6 +291,10 @@ export function decodeFrame(envelope: Envelope, value: unknown): ReviewFrame {
       return { envelope, type: "artefact.upload_failed", payload: decodeArtefactUploadFailed(value) };
     case "artefact.access_granted":
       return { envelope, type: "artefact.access_granted", payload: decodeArtefactAccessGranted(value) };
+    case "artefact.deleted":
+      return { envelope, type: "artefact.deleted", payload: decodeArtefactDeleted(value) };
+    case "artefact.thumbnail_generated":
+      return { envelope, type: "artefact.thumbnail_generated", payload: decodeArtefactThumbnailGenerated(value) };
     case "screenshot.captured":
       return { envelope, type: "screenshot.captured", payload: decodeScreenshotCaptured(value) };
   }
@@ -215,6 +325,24 @@ export function encodeFramePayload(frame: ReviewFrame): string {
       return encodeFindingCommentAdded(frame.payload);
     case "finding.verification_submitted":
       return encodeFindingVerificationSubmitted(frame.payload);
+    case "review.assigned":
+      return encodeReviewAssigned(frame.payload);
+    case "review.accepted":
+      return encodeReviewAccepted(frame.payload);
+    case "review.reopened":
+      return encodeReviewReopened(frame.payload);
+    case "review.archived":
+      return encodeReviewArchived(frame.payload);
+    case "review.comment_added":
+      return encodeReviewCommentAdded(frame.payload);
+    case "finding.resolved":
+      return encodeFindingResolved(frame.payload);
+    case "finding.reopened":
+      return encodeFindingReopened(frame.payload);
+    case "review.status_change_denied":
+      return encodeReviewStatusChangeDenied(frame.payload);
+    case "finding.status_change_denied":
+      return encodeFindingStatusChangeDenied(frame.payload);
     case "artefact.upload_started":
       return encodeArtefactUploadStarted(frame.payload);
     case "artefact.upload_completed":
@@ -223,6 +351,10 @@ export function encodeFramePayload(frame: ReviewFrame): string {
       return encodeArtefactUploadFailed(frame.payload);
     case "artefact.access_granted":
       return encodeArtefactAccessGranted(frame.payload);
+    case "artefact.deleted":
+      return encodeArtefactDeleted(frame.payload);
+    case "artefact.thumbnail_generated":
+      return encodeArtefactThumbnailGenerated(frame.payload);
     case "screenshot.captured":
       return encodeScreenshotCaptured(frame.payload);
   }

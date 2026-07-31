@@ -37,11 +37,13 @@ import {
   ArtefactService,
   BrowserSessionService,
   BrowserWorkerClient,
-  FilesystemArtefactStore,
   IdempotencyStore,
   ReviewService,
   WorkerRegistry,
   WorkspaceStore,
+  createArtefactStore,
+  loadArtefactStoreConfig,
+  loadRetentionWindows,
   registerHealthRoutes,
   type ArtefactStore,
 } from "@reviewplane/server/domain";
@@ -87,9 +89,21 @@ export async function buildMcpApp(options: BuildMcpAppOptions): Promise<BuiltMcp
   const { config, pool } = options;
   const app = Fastify({ logger: options.logger ?? false, bodyLimit: BODY_LIMIT });
 
-  const store = options.artefactStore ?? new FilesystemArtefactStore(config.artefactPath);
-  const artefacts = new ArtefactService(pool, store, config.artefactMaxBytes);
-  const reviews = new ReviewService(pool, artefacts);
+  // ADR-0012: the MCP endpoint reads evidence through the same driver the API
+  // wrote it with, chosen from the same configuration. A deployment running the
+  // `s3` driver would otherwise have an agent reading an empty local directory.
+  const store =
+    options.artefactStore ??
+    createArtefactStore(
+      loadArtefactStoreConfig(process.env, {
+        path: config.artefactPath,
+        maxBytes: config.artefactMaxBytes,
+      }),
+    );
+  const artefacts = new ArtefactService(pool, store, config.artefactMaxBytes, {
+    retention: loadRetentionWindows(process.env),
+  });
+  const reviews = new ReviewService(pool, artefacts, app.log);
   const workers = new WorkerRegistry(pool, "");
   const workerClient = new BrowserWorkerClient({
     endpoint: config.workerEndpoint,

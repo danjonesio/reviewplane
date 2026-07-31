@@ -675,6 +675,9 @@ POST   /api/v1/reviews/:reviewId/request-review
 POST   /api/v1/reviews/:reviewId/accept
 POST   /api/v1/reviews/:reviewId/reopen
 POST   /api/v1/reviews/:reviewId/archive
+GET    /api/v1/reviews/:reviewId/comments
+POST   /api/v1/reviews/:reviewId/comments
+PATCH  /api/v1/comments/:commentId
 GET    /api/v1/reviews/:reviewId/export
 ```
 
@@ -683,25 +686,80 @@ Review accept checks that all required human-authored findings are resolved or e
 `POST /api/v1/projects/:projectId/reviews` requires the captured source context
 of `docs/DOMAIN_MODEL.md` section 14 — `captured_branch`, `captured_commit`,
 `captured_workspace_id` and `source_browser_session_id` — and a project-scoped
-`slug`. A review is created `DRAFT` or `READY`; every other status is reached
-by a transition. A slug that is already in use by an **active** review of the
-same project is refused with `IDEMPOTENCY_CONFLICT`; the same slug in another
-project is unrelated. Active means every status except `CANCELLED` and
-`ARCHIVED`, so a withdrawn review releases its name and an accepted one keeps
-it: an agent told to work on `bugs-on-homepage` must never face two candidates.
+`slug`. It optionally takes a `priority`, which defaults to `medium` and orders
+a queue without gating anything. A review is created `DRAFT` or `READY`; every
+other status is reached by a transition. A slug that is already in use by an
+**active** review of the same project is refused with `IDEMPOTENCY_CONFLICT`;
+the same slug in another project is unrelated. Active means every status except
+`CANCELLED` and `ARCHIVED`, so a withdrawn review releases its name and an
+accepted one keeps it: an agent told to work on `bugs-on-homepage` must never
+face two candidates. Uniqueness is enforced by a partial unique index rather
+than by a read followed by a write, so two concurrent creations of one slug
+produce one review and one refusal.
 
-`GET /api/v1/projects/:projectId/reviews?slug=...` is the named lookup an agent
-uses; it searches active reviews only.
+`GET /api/v1/projects/:projectId/reviews` pages by the opaque cursor of section
+6, newest first. `?slug=...` is the named lookup an agent uses instead; it
+searches active reviews only and answers a single-element list.
 
-`ACCEPTED`, `CANCELLED` and `ARCHIVED` reviews are immutable except for
-archival metadata (`docs/DOMAIN_MODEL.md` section 14). An ordinary edit is
-refused with `POLICY_DENIED` rather than silently dropped. Only a `human_user`
-actor may move a review to `ACCEPTED`.
+The four lifecycle routes each fix their own target status rather than taking
+one in the body, so a caller cannot ask one route for another's transition. Each
+carries `expected_version` and an optional `reason`, which is recorded on the
+event and never on the record:
+
+- `request-review` moves the review to `AWAITING_HUMAN_REVIEW`.
+- `accept` moves it to `ACCEPTED`. It is refused with `POLICY_DENIED` unless
+  every human-authored finding has reached `RESOLVED`, `WONT_FIX` or
+  `DUPLICATE`; the refusal names one that has not. The precondition is checked
+  inside the transaction that holds the review's row lock, so a finding reopened
+  concurrently cannot slip past between the check and the write. Acceptance
+  records `review.accepted` beside `review.status_changed`, naming the human who
+  decided.
+- `reopen` moves it to `CHANGES_REQUESTED`. From `ACCEPTED` this is the explicit
+  reopen of `docs/DOMAIN_MODEL.md` section 14 and additionally records
+  `review.reopened` with the new `reopen_count`; prior findings, verifications,
+  comments and events are all retained.
+- `archive` moves it to `ARCHIVED` and records `review.archived` with the status
+  it was archived from. Archival is not deletion.
+
+`ACCEPTED`, `CANCELLED` and `ARCHIVED` reviews are immutable except for archival
+metadata, comments and an explicit reopen (`docs/DOMAIN_MODEL.md` section 14). An
+ordinary edit is refused with `POLICY_DENIED` rather than silently dropped, and a
+reopen that also carried a field edit is refused for the same reason. Only a
+`human_user` actor may move a review to `ACCEPTED`, `CANCELLED` or `ARCHIVED`;
+the three statuses an `agent_session` can reach are `ASSIGNED`, `IN_PROGRESS`
+and `AWAITING_HUMAN_REVIEW`, and every other request is refused with
+`AUTHORISATION_DENIED` and audited as `review.status_change_denied`.
+
+`POST /api/v1/reviews/:reviewId/assign` names at most one of `assigned_user_id`
+and `assigned_agent_session_id`; naming both is refused, and naming neither
+clears the assignment. A `READY` review becomes `ASSIGNED`. Assignment is
+separate from `review.claimed` because a human directing work and a worker taking
+it are different facts.
+
+`POST /api/v1/reviews/:reviewId/comments` appends a comment to the review itself
+and answers `201`. It carries no author: attribution is derived from the
+authenticated actor (`docs/DOMAIN_MODEL.md` section 18). `GET` returns the
+current revision of each comment; `?revisions=all` returns the retained history.
+`PATCH /api/v1/comments/:commentId` appends a new revision and supersedes the
+previous one; only the author may edit, and only the current revision, which is
+refused with `VERSION_CONFLICT` otherwise.
+
+`GET /api/v1/reviews/:reviewId/export` queues a durable job that produces a
+review-export artefact in the portable format of `docs/REVIEW_FORMAT.md`, and
+answers `202` with the export's state. It changes state the first time it is
+called, so it applies the CSRF rule of section 4.0 like any other write. Asking
+again while a run is in flight joins that run rather than queueing a second one,
+and answers `200` with the same export. When the job succeeds the export reports
+`ready` with the artefact identifier, its digest and its size; an attempt that
+fails leaves the export unready and no artefact at all. `reviewplane
+export-review` writes the same document to a file or to standard output
+(`docs/DEPLOYMENT.md` section 11).
 
 The request and response bodies are the `review_create_request`,
-`review_update_request` and `review` schemas of
-`packages/protocol/schemas/review/v1.schema.json`, and the server validates
-against the generated validator before any domain code runs.
+`review_update_request`, `review_assign_request`, `review_transition_request`,
+`comment_create_request`, `comment_update_request`, `review` and `comment`
+schemas of `packages/protocol/schemas/review/v1.schema.json`, and the server
+validates against the generated validator before any domain code runs.
 
 ## 13. Finding endpoints
 
@@ -711,7 +769,9 @@ POST   /api/v1/reviews/:reviewId/findings
 GET    /api/v1/findings/:findingId
 PATCH  /api/v1/findings/:findingId
 POST   /api/v1/findings/:findingId/claim
+GET    /api/v1/findings/:findingId/comments
 POST   /api/v1/findings/:findingId/comments
+GET    /api/v1/findings/:findingId/verification
 POST   /api/v1/findings/:findingId/verifications
 POST   /api/v1/findings/:findingId/accept
 POST   /api/v1/findings/:findingId/reopen
@@ -720,7 +780,9 @@ POST   /api/v1/findings/:findingId/wont-fix
 
 Updates include `expected_version`. A mismatch is refused with
 `VERSION_CONFLICT` and the version the record actually holds, so a caller can
-re-read and retry rather than guess.
+re-read and retry rather than guess. `POST .../claim` uses the same mechanism
+rather than a separate one, so a human and an agent claiming at once produce one
+claim and one `VERSION_CONFLICT`.
 
 `POST /api/v1/reviews/:reviewId/findings` requires the captured context of
 `docs/UX_FLOWS.md` section 9: `url`, `viewport` including
@@ -734,14 +796,81 @@ already be `available` — an unverified artefact is refused with
 may be supplied inline, and are then written in the same transaction as the
 finding.
 
-Status transitions are checked in this order: version, transition legality,
-actor authority, completion evidence. A human-authored finding cannot be set to
-`RESOLVED`, `WONT_FIX` or `DUPLICATE` by an agent
-(`AUTHORISATION_DENIED`); the transitions an agent may perform are the
-`docs/MCP_SPEC.md` section 7.7 list and nothing else (`POLICY_DENIED`);
-and a move to `FIXED_UNVERIFIED` without a resolution note is refused with
-`EVIDENCE_REQUIRED`. These are domain rules, enforced below the transport, so
-they hold for the MCP surface as well as for this one.
+`GET /api/v1/findings/:findingId/verification` returns the most recent
+verification submission for a finding, or `null`. The artefact viewer needs it:
+the before-and-after comparison of `docs/UX_FLOWS.md` section 17 is the pair of
+artefact identifiers it records (`docs/DOMAIN_MODEL.md` section 19), and a
+finding with no submission yet is the honest empty state rather than a
+comparison control with nothing to compare.
+
+It resolves its scope through the same helper every other route in this section
+uses, which carries the identifier, the session's project scope and **the
+caller's own organisation** in one query, so a record that satisfies one term and
+not the others is never returned. An earlier revision of this section recorded
+that resolution as defective — a session of one organisation could read, and in
+the `PATCH` cases modify, another's records — which RVP-66 and RVP-67 describe.
+That defect is repaired: the organisation term is derived from the authenticated
+principal rather than from the row being read, and a foreign identifier is
+answered `RESOURCE_NOT_FOUND` byte for byte as an unknown one is.
+
+The request body has **no `source` field**. It is derived from the authenticated
+actor and is immutable thereafter (`docs/DOMAIN_MODEL.md` section 15); a body
+that supplies one is refused as an unknown property by the generated validator,
+before any handler runs.
+
+Status transitions are checked in this order: version, **disposition
+authority**, transition legality, remaining actor authority, completion
+evidence.
+
+Disposition authority comes before legality deliberately. An earlier draft of
+this section put legality first, which contradicted the rule in the next
+paragraph: a final disposition would then be `AUTHORISATION_DENIED` only from a
+status the lifecycle already allowed it from, and `POLICY_DENIED` everywhere
+else. That made the answer depend on where the finding happened to be — so an
+agent asking to resolve a finding it had actually claimed was told the *move*
+was impossible rather than that the *decision* was not its to make, and the
+attempt was recorded under the wrong class. The rule is unconditional, so the
+check that enforces it runs unconditionally.
+
+- A finding cannot be set to `RESOLVED`, `WONT_FIX` or `DUPLICATE` by an agent —
+  `AUTHORISATION_DENIED`, whoever authored the finding and **from any status**.
+  For a human-authored finding that is the authority rule of
+  `docs/DOMAIN_MODEL.md` section 15; for an agent's own it is the absence of any
+  Stage 1 policy that would permit auto-resolution.
+- Any other transition an agent requests outside the `docs/MCP_SPEC.md` section
+  7.7 list is refused with `POLICY_DENIED` and `details.allowed_transitions`, so
+  the refusal says what is possible from here rather than only what is not.
+- A move to `FIXED_UNVERIFIED` without a resolution note is refused with
+  `EVIDENCE_REQUIRED`.
+
+**Every** refusal of a requested transition is audited as
+`finding.status_change_denied`, written outside the transaction the refusal
+rolled back — not only the authority ones. A refused transition is an attempt
+whichever check refused it, and the event carries the stable code so its class is
+readable without one event type per class. These are domain rules, enforced below the
+transport, so they hold for the MCP surface as well as for this one — and an
+agent credential presented to these routes is additionally refused at the
+transport with `AUTHORISATION_DENIED`, by token shape, because the review API is
+a human API (`docs/SECURITY.md` section 6.3).
+
+`accept`, `reopen` and `wont-fix` are the human dispositions. `accept` moves the
+finding to `RESOLVED`; `wont-fix` moves it to `WONT_FIX` and **requires a
+reason**, or to `DUPLICATE` when it also names `duplicate_of_finding_id`, which
+must be another finding of the same project; `reopen` moves it to `REOPENED` and
+retains prior verification history. Each records `finding.resolved` or
+`finding.reopened` beside `finding.status_changed`, naming the human who decided.
+
+`POST /api/v1/findings/:findingId/comments` appends a comment and answers `201`;
+`GET` returns the current revision of each, and `?revisions=all` the retained
+history. Attribution is derived from the authenticated actor, and the request
+body has no author field (`docs/DOMAIN_MODEL.md` section 18).
+
+`POST /api/v1/findings/:findingId/verifications` is **not implemented on this
+API yet**. The verification record exists and is reachable through
+`finding_submit_verification` on `/mcp/v1` (`docs/MCP_SPEC.md` section 7.7),
+which is the surface an agent uses; the human-facing route arrives with the
+evidence-gated completion work, along with the verification accept and reject
+decisions. The statuses those transitions target are the ones above.
 
 ## 14. Annotation endpoints
 
@@ -785,19 +914,102 @@ DELETE /api/v1/artefacts/:artefactId
 4. Complete with observed hash.
 5. Server verifies before making artefact available.
 
-Under the `filesystem` driver step 2 returns `upload_path`, the proxied endpoint above; the `s3` driver may return a presigned URL instead. Step 5 is the whole point of the flow: the server recomputes the digest of the bytes it stored and compares it with both the declared and the observed value. Until that succeeds the artefact stays `pending` or `uploaded`, no grant may be minted for it — the attempt is refused with `ARTEFACT_UPLOAD_INCOMPLETE` — and no caller may treat it as evidence. A mismatch marks the artefact `failed` and records `artefact.upload_failed`.
+Step 2 returns `upload_path`, the proxied endpoint above, and `max_bytes`, the
+largest body this deployment accepts. **Both drivers proxy the upload.**
+ADR-0012 permits the `s3` driver to issue a presigned upload URL instead, and
+this build does not: the server is where content-type validation happens, and a
+presigned upload would put unvalidated bytes in the bucket before anything
+looked at them. `upload_url` exists in the protocol for when that changes.
+
+The bytes are sent as `application/octet-stream`, or as `image/png` or
+`image/jpeg`. **The transport header is not the artefact's media type**: that
+was declared on the intent and is verified against the bytes, so a DOM snapshot
+and an accessibility snapshot travel as opaque bytes rather than as parsed
+bodies whose re-serialisation would no longer match the declared digest.
+
+Step 5 is the whole point of the flow: the server recomputes the digest of the
+bytes it stored and compares it with both the declared and the observed value.
+Until that succeeds the artefact stays `pending` or `uploaded`, no grant may be
+minted for it — the attempt is refused with `ARTEFACT_UPLOAD_INCOMPLETE` — and
+no caller may treat it as evidence.
+
+**Two failures, two outcomes, two codes.** Bytes that do not match what was
+declared are the uploader's fault: the artefact is marked `failed`,
+`artefact.upload_failed` is recorded, the refusal is `409
+ARTEFACT_UPLOAD_INCOMPLETE`, and the intent must not be retried, because it
+describes something the uploader did not send. A store that cannot be written
+to or read from is not the uploader's fault: the artefact keeps the state it
+had, the refusal is `503 ARTEFACT_STORE_UNAVAILABLE` carrying `details.reason =
+"artefact_store_unavailable"` and `details.retryable = true`, and the same
+intent — and the same idempotency key — may be retried when the store returns.
+Neither outcome makes anything available.
+
+The second code is what a *reader* gets too: a verified artefact whose bytes
+cannot be produced answers `ARTEFACT_STORE_UNAVAILABLE`, because that upload was
+complete and saying otherwise would send an operator to look at an uploader that
+did nothing wrong.
+
+**No refusal names the store.** A filesystem error carries an absolute server
+path and an S3 error carries the bucket endpoint and a fragment of the service's
+own XML. Neither reaches a caller: `docs/SECURITY.md` section 18 requires a
+stable code rather than free text precisely so that a failure is diagnosable
+without a response carrying deployment data, and agent sessions and browser
+workers both reach this path. The detail is written to the server log against
+the same request identifier.
+
+The intent honours `Idempotency-Key` (`docs/MCP_SPEC.md` section 10). A
+repeated request with the same key and the same body replays the first intent
+and returns `200`; the same key with a different body is refused with
+`IDEMPOTENCY_CONFLICT`. A worker that crashed mid-upload and retried the whole
+flow therefore produces one artefact rather than a second pending row for the
+same capture.
 
 Verification also decides what the bytes are and how large the picture in them
-is. The declared media type is a claim; the leading bytes are evidence, and a
-mismatch — an SVG or an HTML document uploaded as `image/png` — is refused on
-upload with `UNSUPPORTED_CAPABILITY` and marks the artefact `failed`. For an
-image the server measures the intrinsic pixel extent and records it as
+is. The declared media type is a claim; the bytes are evidence, and a mismatch —
+an SVG uploaded as `image/png`, or a PNG uploaded as a DOM snapshot — is refused
+on upload with `UNSUPPORTED_CAPABILITY` and marks the artefact `failed`. The
+kind fixes which media types are accepted (`docs/SECURITY.md` section 13). For
+an image the server measures the intrinsic pixel extent and records it as
 `content_rectangle`, because that rectangle is the reference frame every
 annotation on the artefact is normalised against (`docs/DOMAIN_MODEL.md`
 section 16) and an uploader that could choose it could move every existing
 mark. `filename` on the intent is display metadata only: it never reaches the
 content-addressed storage key, and a value that is a path rather than a name is
 refused.
+
+`expires_at` is computed from the retention class at intent and stored. Nothing
+deletes an artefact when it passes: retention enforcement is a later stage, and
+the date says when removal becomes due rather than that anything happened.
+
+Completing a `screenshot` enqueues a durable thumbnail job in the same
+transaction as the availability transition. The thumbnail is a **separate**
+artefact with its own digest, its own verification and `source_artefact_id`
+pointing at the original, because ADR-0006 forbids rewriting an original to
+carry something derived from it. `thumbnail_state` on the source records the
+outcome — `pending`, `generated`, `unsupported` or `failed` — so a reader can
+tell not-yet from not-possible.
+
+### Reading metadata and deleting
+
+`GET /api/v1/artefacts/:artefactId` resolves the artefact **inside the caller's
+scope**: the identifier, the caller's project scope and the caller's
+organisation are one predicate, so an artefact belonging to another project is
+answered `RESOURCE_NOT_FOUND` byte for byte as an identifier that never existed
+is. The same holds for minting a grant and for deleting.
+
+`DELETE /api/v1/artefacts/:artefactId` retains the metadata row with
+`deleted_at` set and removes the stored object **only when no other live
+artefact shares its content-addressed key**. It records `artefact.deleted`,
+whose payload says whether the bytes were removed. An optional
+`X-ReviewPlane-Reason` header is recorded with the event. A cookie-authenticated
+caller must carry the CSRF token, as it must for every state-changing route
+(section 4.0).
+
+**Only a human may delete.** An agent credential may read evidence and a
+browser-worker credential may write it; neither may remove it, and both are
+refused with `AUTHORISATION_DENIED`. That is the same authority boundary the
+finding lifecycle draws: a machine principal adds to the record and does not
+close it.
 
 ### Reading content back
 
@@ -811,18 +1023,38 @@ serves an artefact from its identifier.
   "artefact_id": "art_...",
   "url": "/api/v1/artefact-content/agr_...",
   "expires_at": "2026-07-30T10:14:04.118Z",
-  "expires_in_seconds": 120
+  "expires_in_seconds": 120,
+  "disposition": "inline"
 }
 ```
 
+Under the `s3` driver `url` is a short-lived presigned URL at the storage
+origin instead of a path this server serves (ADR-0012, ADR-0019). The grant row
+is still written and `artefact.access_granted` still recorded, so the audit
+trail does not depend on which driver a deployment runs, and the presigned URL
+pins the content type and the disposition inside its signature.
+
+`disposition` is derived from the media type and is never a caller's choice.
+`attachment` means the bytes are active markup and are served as a download,
+never rendered under the control-plane origin (`docs/SECURITY.md` section 13).
+
 `GET /api/v1/artefact-content/:grantId` resolves the grant, authenticates the
-caller independently, and requires the caller to be the grant's subject. An
-unknown, expired or revoked grant is refused with `AUTHENTICATION_REQUIRED`; a
-live grant presented by another principal with `AUTHORISATION_DENIED`. The
+caller independently, and requires the caller to be the grant's subject. The
 grant identifier therefore travels safely in a URL — which is what an `<img>`
 element needs — while the credential stays in the cookie or the `Authorization`
 header, as `docs/SECURITY.md` section 18 requires. Minting a grant records
 `artefact.access_granted`.
+
+**Every refusal from this route is the same refusal.** An unknown grant, an
+expired one, a revoked one, a caller with no credential and a live grant
+presented by another principal all produce `401 AUTHENTICATION_REQUIRED` with
+one message. Telling them apart is an existence oracle over grant identifiers,
+which section 5 and `docs/TESTING.md` section 10 forbid; that the identifier is
+24 random bytes makes such an oracle expensive rather than absent. It costs a
+caller nothing, because the remedy is the same in every case: mint a new grant.
+
+An earlier revision of this document specified `AUTHORISATION_DENIED` for the
+wrong-principal case. That distinction was the oracle, and it is gone.
 
 ## 15.1 Internal worker channel
 

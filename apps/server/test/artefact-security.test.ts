@@ -208,6 +208,18 @@ test("a hash mismatch leaves the artefact failed and unreadable", async () => {
     headers: ADMIN,
   });
   assert.equal((state.json() as { data: { state: string } }).data.state, "failed");
+
+  // No completion event was written, and the failure was. A consumer of the
+  // event stream must never see this artefact announced as evidence: the
+  // stream is what other services act on, so "unavailable in the database but
+  // announced on the stream" would be the worst of the two.
+  const events = await postgres.pool.query<{ type: string }>(
+    "SELECT type FROM events WHERE correlation->>'artefact_id' = $1 ORDER BY sequence",
+    [artefactId],
+  );
+  const types = events.rows.map((row) => row.type);
+  assert.deepEqual(types, ["artefact.upload_started", "artefact.upload_failed"]);
+  assert.ok(!types.includes("screenshot.captured"), "a failed artefact announced a capture");
 });
 
 test("path traversal in filename metadata is refused", async () => {
@@ -285,16 +297,23 @@ test("artefact content is unreachable without a live grant issued to the caller"
   const anonymous = await harness.built.app.inject({ method: "GET", url: grant.url });
   assert.equal(anonymous.statusCode, 401);
 
-  // A different principal holding the same grant is refused too.
+  // A different principal holding the same grant is refused too, and refused
+  // identically: an unknown grant, an unauthenticated caller and a wrong
+  // subject are three facts and one answer, or the route is an existence oracle
+  // over grant identifiers (RVP-67).
   const wrongPrincipal = await harness.built.app.inject({
     method: "GET",
     url: grant.url,
     headers: WORKER,
   });
-  assert.equal(wrongPrincipal.statusCode, 403);
+  assert.equal(wrongPrincipal.statusCode, 401);
+  const strip = (body: string): string => body.replace(/"request_id":"[^"]*"/u, '"request_id":"x"');
+  assert.equal(strip(wrongPrincipal.body), strip(invented.body));
+  assert.equal(strip(anonymous.body), strip(invented.body));
   process.stdout.write(
     `EVIDENCE grant scoping: anonymous ${String(anonymous.statusCode)}, ` +
-      `wrong principal ${String(wrongPrincipal.statusCode)}\n`,
+      `wrong principal ${String(wrongPrincipal.statusCode)}, unknown ${String(invented.statusCode)}, ` +
+      `one body ${strip(invented.body)}\n`,
   );
 
   const served = await harness.built.app.inject({
@@ -369,16 +388,26 @@ test("a viewer scoped to another project cannot reach this artefact", async () =
   const token = (minted.json() as { data: { token: string } }).data.token;
   const cookie = `reviewplane_viewer=${encodeURIComponent(token)}`;
 
-  // The project scope is checked in the one function the read path and the
-  // write path share, so it is asserted where a foreign session can still get
-  // that far: reading the metadata.
+  // The project scope is in the query, not in a check after the lookup, so a
+  // foreign artefact is not found rather than forbidden. `docs/TESTING.md`
+  // section 10 requires that identifiers from another tenant are not
+  // enumerable, and `PROJECT_CONTEXT_MISMATCH` here — which is what this route
+  // used to answer (RVP-67) — confirms that the identifier exists.
   const read = await harness.built.app.inject({
     method: "GET",
     url: `/api/v1/artefacts/${artefactId}`,
     headers: { cookie },
   });
-  assert.equal(read.statusCode, 403, read.body);
-  assert.equal((read.json() as { error: { code: string } }).error.code, "PROJECT_CONTEXT_MISMATCH");
+  assert.equal(read.statusCode, 404, read.body);
+  assert.equal((read.json() as { error: { code: string } }).error.code, "RESOURCE_NOT_FOUND");
+
+  const unknown = await harness.built.app.inject({
+    method: "GET",
+    url: "/api/v1/artefacts/art_01JNOSUCHARTEFACT",
+    headers: { cookie },
+  });
+  const strip = (body: string): string => body.replace(/"request_id":"[^"]*"/u, '"request_id":"x"');
+  assert.equal(strip(read.body), strip(unknown.body), "the two refusals must be indistinguishable");
 
   // Minting a grant is a state change, and this session — the ADR-0016
   // exchange — carries no CSRF token, so it is refused before its project scope
@@ -446,4 +475,55 @@ test("minting an artefact grant refuses a cookie session without the CSRF token"
   });
   assert.equal(served.statusCode, 200, served.body);
   assert.equal(sha256(served.rawPayload), sha256(PNG));
+});
+
+test("the browser worker container holds no artefact storage of any kind", async () => {
+  // ADR-0012: "Browser workers upload artefacts through the control-plane
+  // artefact API and hold no storage credentials." That is a fact about the
+  // deployment rather than about a code path, so it is asserted against the
+  // deployment: the worker service must mount no artefact volume, hold no
+  // artefact secret, and read no artefact or S3 setting.
+  const { readFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const compose = await readFile(
+    join(import.meta.dirname, "..", "..", "..", "deploy", "compose", "compose.yaml"),
+    "utf8",
+  );
+
+  // The worker's own block, from its service key to the next service at the
+  // same indentation. Parsed by hand rather than adding a YAML dependency to
+  // the server's test tree; the block is asserted to have been found, so a
+  // rename fails the test instead of silently asserting nothing.
+  const start = compose.indexOf("\n  browser-worker:");
+  assert.ok(start >= 0, "the compose file has no browser-worker service");
+  const rest = compose.slice(start + 1);
+  const nextService = /\n {2}[a-z][a-z0-9-]*:\n/u.exec(rest.slice(1));
+  const block = nextService === null ? rest : rest.slice(0, nextService.index + 1);
+  assert.ok(block.includes("REVIEWPLANE_WORKER_NAME"), "the worker block was not isolated");
+
+  // Comments are stripped before matching. The property is about what the
+  // service is *configured* with, and a comment recording that the worker
+  // deliberately mounts no artefact volume would otherwise fail the assertion
+  // that the worker mounts no artefact volume.
+  const configuration = block
+    .split("\n")
+    .filter((line) => !/^\s*#/u.test(line))
+    .join("\n");
+
+  assert.equal(
+    /artefact/iu.test(configuration),
+    false,
+    `the browser-worker service references artefact storage:\n${configuration}`,
+  );
+  assert.equal(
+    /REVIEWPLANE_S3_|s3_access|s3_secret/iu.test(configuration),
+    false,
+    `the browser-worker service references S3 credentials:\n${configuration}`,
+  );
+  // What it does have: a route to the control-plane API, which is the only way
+  // it can store anything at all.
+  assert.match(configuration, /http:\/\/api:8080/u);
+  process.stdout.write(
+    "EVIDENCE worker storage: the browser-worker compose service mounts no artefact volume, holds no artefact secret and reads no artefact or S3 setting; it uploads through http://api:8080\n",
+  );
 });

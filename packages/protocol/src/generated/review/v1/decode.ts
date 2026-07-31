@@ -18,12 +18,27 @@ import type {
   AnnotationType,
   Artefact,
   ArtefactAccessGranted,
+  ArtefactDeleted,
+  ArtefactDisposition,
   ArtefactKind,
+  ArtefactResource,
+  ArtefactResourceDegradation,
+  ArtefactResourceDegradationReason,
+  ArtefactResourceInstructionPolicy,
+  ArtefactResourceTrust,
   ArtefactState,
+  ArtefactStorageDriver,
+  ArtefactStoreStatus,
+  ArtefactThumbnailGenerated,
   ArtefactUploadCompleted,
+  ArtefactUploadCompletionRequest,
   ArtefactUploadFailed,
+  ArtefactUploadIntentRequest,
+  ArtefactUploadIntentResponse,
   ArtefactUploadStarted,
   Comment,
+  CommentCreateRequest,
+  CommentUpdateRequest,
   ContentRectangle,
   Correlation,
   CssPixelBox,
@@ -35,14 +50,19 @@ import type {
   ErrorDetails,
   Finding,
   FindingAnnotated,
+  FindingClaimRequest,
   FindingClaimed,
   FindingCommentAdded,
   FindingCreateRequest,
   FindingCreated,
+  FindingReopened,
+  FindingResolved,
   FindingSeverity,
   FindingSource,
   FindingStatus,
+  FindingStatusChangeDenied,
   FindingStatusChanged,
+  FindingTransitionRequest,
   FindingUpdateRequest,
   FindingVerificationSubmitted,
   MediaType,
@@ -50,15 +70,25 @@ import type {
   RedactionState,
   RetentionClass,
   Review,
+  ReviewAccepted,
+  ReviewArchived,
+  ReviewAssignRequest,
+  ReviewAssigned,
   ReviewClaimed,
+  ReviewCommentAdded,
   ReviewCreateRequest,
   ReviewCreated,
   ReviewNamed,
+  ReviewPriority,
+  ReviewReopened,
   ReviewStatus,
+  ReviewStatusChangeDenied,
   ReviewStatusChanged,
+  ReviewTransitionRequest,
   ReviewUpdateRequest,
   ScreenshotCaptured,
   ScrollPosition,
+  ThumbnailState,
   VerificationChecks,
   VerificationReference,
   VerificationStatus,
@@ -168,8 +198,12 @@ export function decodeReview(value: unknown): Review {
     title: source["title"] as string,
     ...(source["description"] === undefined ? {} : { description: source["description"] as string }),
     status: source["status"] as ReviewStatus,
+    ...(source["priority"] === undefined ? {} : { priority: source["priority"] as ReviewPriority }),
     version: source["version"] as number,
     created_by: decodeActor(source["created_by"]),
+    ...(source["assigned_user_id"] === undefined ? {} : { assigned_user_id: source["assigned_user_id"] as string }),
+    ...(source["assigned_agent_session_id"] === undefined ? {} : { assigned_agent_session_id: source["assigned_agent_session_id"] as string }),
+    ...(source["reopen_count"] === undefined ? {} : { reopen_count: source["reopen_count"] as number }),
     captured_branch: source["captured_branch"] as string,
     captured_commit: source["captured_commit"] as string,
     captured_workspace_id: source["captured_workspace_id"] as string,
@@ -257,6 +291,134 @@ export function decodeArtefact(value: unknown): Artefact {
     created_at: source["created_at"] as string,
     ...(source["available_at"] === undefined ? {} : { available_at: source["available_at"] as string }),
     ...(source["expires_at"] === undefined ? {} : { expires_at: source["expires_at"] as string }),
+    ...(source["disposition"] === undefined ? {} : { disposition: source["disposition"] as ArtefactDisposition }),
+    ...(source["encryption_key_reference"] === undefined ? {} : { encryption_key_reference: source["encryption_key_reference"] as string }),
+    ...(source["source_artefact_id"] === undefined ? {} : { source_artefact_id: source["source_artefact_id"] as string }),
+    ...(source["thumbnail_state"] === undefined ? {} : { thumbnail_state: source["thumbnail_state"] as ThumbnailState }),
+    ...(source["thumbnail_artefact_id"] === undefined ? {} : { thumbnail_artefact_id: source["thumbnail_artefact_id"] as string }),
+    ...(source["deleted_at"] === undefined ? {} : { deleted_at: source["deleted_at"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated ArtefactUploadIntentRequest.
+ */
+export function decodeArtefactUploadIntentRequest(value: unknown): ArtefactUploadIntentRequest {
+  const source = value as Record<string, unknown>;
+  return {
+    kind: source["kind"] as ArtefactKind,
+    content_type: source["content_type"] as MediaType,
+    size_bytes: source["size_bytes"] as number,
+    sha256: source["sha256"] as string,
+    ...(source["retention_class"] === undefined ? {} : { retention_class: source["retention_class"] as RetentionClass }),
+    ...(source["browser_session_id"] === undefined ? {} : { browser_session_id: source["browser_session_id"] as string }),
+    ...(source["source_artefact_id"] === undefined ? {} : { source_artefact_id: source["source_artefact_id"] as string }),
+    ...(source["filename"] === undefined ? {} : { filename: source["filename"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated ArtefactUploadIntentResponse.
+ */
+export function decodeArtefactUploadIntentResponse(value: unknown): ArtefactUploadIntentResponse {
+  const source = value as Record<string, unknown>;
+  return {
+    artefact_id: source["artefact_id"] as string,
+    state: source["state"] as ArtefactState,
+    ...(source["upload_path"] === undefined ? {} : { upload_path: source["upload_path"] as string }),
+    ...(source["upload_url"] === undefined ? {} : { upload_url: source["upload_url"] as string }),
+    ...(source["upload_expires_at"] === undefined ? {} : { upload_expires_at: source["upload_expires_at"] as string }),
+    max_bytes: source["max_bytes"] as number,
+  };
+}
+
+/**
+ * Decodes a validated ArtefactUploadCompletionRequest.
+ */
+export function decodeArtefactUploadCompletionRequest(value: unknown): ArtefactUploadCompletionRequest {
+  const source = value as Record<string, unknown>;
+  return {
+    sha256: source["sha256"] as string,
+    ...(source["size_bytes"] === undefined ? {} : { size_bytes: source["size_bytes"] as number }),
+  };
+}
+
+/**
+ * Decodes a validated ArtefactResource.
+ */
+export function decodeArtefactResource(value: unknown): ArtefactResource {
+  const source = value as Record<string, unknown>;
+  return {
+    artefact_id: source["artefact_id"] as string,
+    kind: source["kind"] as ArtefactKind,
+    state: source["state"] as ArtefactState,
+    content_type: source["content_type"] as MediaType,
+    ...(source["sha256"] === undefined ? {} : { sha256: source["sha256"] as string }),
+    ...(source["size_bytes"] === undefined ? {} : { size_bytes: source["size_bytes"] as number }),
+    ...(source["content_rectangle"] === undefined ? {} : { content_rectangle: decodeContentRectangle(source["content_rectangle"]) }),
+    ...(source["browser_session_id"] === undefined ? {} : { browser_session_id: source["browser_session_id"] as string }),
+    ...(source["redaction_state"] === undefined ? {} : { redaction_state: source["redaction_state"] as RedactionState }),
+    ...(source["disposition"] === undefined ? {} : { disposition: source["disposition"] as ArtefactDisposition }),
+    ...(source["content_path"] === undefined ? {} : { content_path: source["content_path"] as string }),
+    ...(source["expires_at"] === undefined ? {} : { expires_at: source["expires_at"] as string }),
+    ...(source["degraded"] === undefined ? {} : { degraded: decodeArtefactResourceDegradation(source["degraded"]) }),
+    trust: source["trust"] as ArtefactResourceTrust,
+    instruction_policy: source["instruction_policy"] as ArtefactResourceInstructionPolicy,
+  };
+}
+
+/**
+ * Decodes a validated ArtefactResourceDegradation.
+ */
+export function decodeArtefactResourceDegradation(value: unknown): ArtefactResourceDegradation {
+  const source = value as Record<string, unknown>;
+  return {
+    reason: source["reason"] as ArtefactResourceDegradationReason,
+    detail: source["detail"] as string,
+  };
+}
+
+/**
+ * Decodes a validated ArtefactStoreStatus.
+ */
+export function decodeArtefactStoreStatus(value: unknown): ArtefactStoreStatus {
+  const source = value as Record<string, unknown>;
+  return {
+    driver: source["driver"] as ArtefactStorageDriver,
+    available: source["available"] as boolean,
+    ...(source["detail"] === undefined ? {} : { detail: source["detail"] as string }),
+    artefact_count: source["artefact_count"] as number,
+    stored_bytes: source["stored_bytes"] as number,
+    ...(source["pending_bytes"] === undefined ? {} : { pending_bytes: source["pending_bytes"] as number }),
+  };
+}
+
+/**
+ * Decodes a validated ArtefactDeleted.
+ */
+export function decodeArtefactDeleted(value: unknown): ArtefactDeleted {
+  const source = value as Record<string, unknown>;
+  return {
+    artefact_id: source["artefact_id"] as string,
+    kind: source["kind"] as ArtefactKind,
+    ...(source["sha256"] === undefined ? {} : { sha256: source["sha256"] as string }),
+    ...(source["size_bytes"] === undefined ? {} : { size_bytes: source["size_bytes"] as number }),
+    bytes_removed: source["bytes_removed"] as boolean,
+    ...(source["reason"] === undefined ? {} : { reason: source["reason"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated ArtefactThumbnailGenerated.
+ */
+export function decodeArtefactThumbnailGenerated(value: unknown): ArtefactThumbnailGenerated {
+  const source = value as Record<string, unknown>;
+  return {
+    artefact_id: source["artefact_id"] as string,
+    state: source["state"] as ThumbnailState,
+    ...(source["thumbnail_artefact_id"] === undefined ? {} : { thumbnail_artefact_id: source["thumbnail_artefact_id"] as string }),
+    ...(source["content_rectangle"] === undefined ? {} : { content_rectangle: decodeContentRectangle(source["content_rectangle"]) }),
+    ...(source["reason"] === undefined ? {} : { reason: source["reason"] as string }),
   };
 }
 
@@ -294,6 +456,8 @@ export function decodeErrorDetails(value: unknown): ErrorDetails {
     ...(source["field"] === undefined ? {} : { field: source["field"] as string }),
     ...(source["missing_context"] === undefined ? {} : { missing_context: (source["missing_context"] as unknown[]).map((item) => item as string) }),
     ...(source["required_evidence"] === undefined ? {} : { required_evidence: (source["required_evidence"] as unknown[]).map((item) => item as string) }),
+    ...(source["allowed_transitions"] === undefined ? {} : { allowed_transitions: (source["allowed_transitions"] as unknown[]).map((item) => item as string) }),
+    ...(source["reason"] === undefined ? {} : { reason: source["reason"] as string }),
     ...(source["retry_after_ms"] === undefined ? {} : { retry_after_ms: source["retry_after_ms"] as number }),
   };
 }
@@ -320,6 +484,7 @@ export function decodeReviewCreateRequest(value: unknown): ReviewCreateRequest {
     title: source["title"] as string,
     ...(source["description"] === undefined ? {} : { description: source["description"] as string }),
     ...(source["status"] === undefined ? {} : { status: source["status"] as ReviewStatus }),
+    ...(source["priority"] === undefined ? {} : { priority: source["priority"] as ReviewPriority }),
     captured_branch: source["captured_branch"] as string,
     captured_commit: source["captured_commit"] as string,
     captured_workspace_id: source["captured_workspace_id"] as string,
@@ -338,6 +503,73 @@ export function decodeReviewUpdateRequest(value: unknown): ReviewUpdateRequest {
     ...(source["slug"] === undefined ? {} : { slug: source["slug"] as string }),
     ...(source["description"] === undefined ? {} : { description: source["description"] as string }),
     ...(source["status"] === undefined ? {} : { status: source["status"] as ReviewStatus }),
+    ...(source["priority"] === undefined ? {} : { priority: source["priority"] as ReviewPriority }),
+  };
+}
+
+/**
+ * Decodes a validated ReviewAssignRequest.
+ */
+export function decodeReviewAssignRequest(value: unknown): ReviewAssignRequest {
+  const source = value as Record<string, unknown>;
+  return {
+    expected_version: source["expected_version"] as number,
+    ...(source["assigned_user_id"] === undefined ? {} : { assigned_user_id: source["assigned_user_id"] as string }),
+    ...(source["assigned_agent_session_id"] === undefined ? {} : { assigned_agent_session_id: source["assigned_agent_session_id"] as string }),
+    ...(source["reason"] === undefined ? {} : { reason: source["reason"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated ReviewTransitionRequest.
+ */
+export function decodeReviewTransitionRequest(value: unknown): ReviewTransitionRequest {
+  const source = value as Record<string, unknown>;
+  return {
+    expected_version: source["expected_version"] as number,
+    ...(source["reason"] === undefined ? {} : { reason: source["reason"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated FindingClaimRequest.
+ */
+export function decodeFindingClaimRequest(value: unknown): FindingClaimRequest {
+  const source = value as Record<string, unknown>;
+  return {
+    expected_version: source["expected_version"] as number,
+  };
+}
+
+/**
+ * Decodes a validated FindingTransitionRequest.
+ */
+export function decodeFindingTransitionRequest(value: unknown): FindingTransitionRequest {
+  const source = value as Record<string, unknown>;
+  return {
+    expected_version: source["expected_version"] as number,
+    ...(source["reason"] === undefined ? {} : { reason: source["reason"] as string }),
+    ...(source["duplicate_of_finding_id"] === undefined ? {} : { duplicate_of_finding_id: source["duplicate_of_finding_id"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated CommentCreateRequest.
+ */
+export function decodeCommentCreateRequest(value: unknown): CommentCreateRequest {
+  const source = value as Record<string, unknown>;
+  return {
+    body: source["body"] as string,
+  };
+}
+
+/**
+ * Decodes a validated CommentUpdateRequest.
+ */
+export function decodeCommentUpdateRequest(value: unknown): CommentUpdateRequest {
+  const source = value as Record<string, unknown>;
+  return {
+    body: source["body"] as string,
   };
 }
 
@@ -350,7 +582,6 @@ export function decodeFindingCreateRequest(value: unknown): FindingCreateRequest
     title: source["title"] as string,
     ...(source["description"] === undefined ? {} : { description: source["description"] as string }),
     severity: source["severity"] as FindingSeverity,
-    source: source["source"] as FindingSource,
     url: source["url"] as string,
     viewport: decodeViewport(source["viewport"]),
     scroll_position: decodeScrollPosition(source["scroll_position"]),
@@ -475,11 +706,13 @@ export function decodeComment(value: unknown): Comment {
     id: source["id"] as string,
     ...(source["organisation_id"] === undefined ? {} : { organisation_id: source["organisation_id"] as string }),
     ...(source["project_id"] === undefined ? {} : { project_id: source["project_id"] as string }),
-    ...(source["review_id"] === undefined ? {} : { review_id: source["review_id"] as string }),
-    finding_id: source["finding_id"] as string,
+    review_id: source["review_id"] as string,
+    ...(source["finding_id"] === undefined ? {} : { finding_id: source["finding_id"] as string }),
     body: source["body"] as string,
     created_by: decodeActor(source["created_by"]),
     revision: source["revision"] as number,
+    ...(source["supersedes_comment_id"] === undefined ? {} : { supersedes_comment_id: source["supersedes_comment_id"] as string }),
+    ...(source["superseded_at"] === undefined ? {} : { superseded_at: source["superseded_at"] as string }),
     created_at: source["created_at"] as string,
   };
 }
@@ -530,6 +763,137 @@ export function decodeFindingCommentAdded(value: unknown): FindingCommentAdded {
   const source = value as Record<string, unknown>;
   return {
     comment: decodeComment(source["comment"]),
+  };
+}
+
+/**
+ * Decodes a validated ReviewCommentAdded.
+ */
+export function decodeReviewCommentAdded(value: unknown): ReviewCommentAdded {
+  const source = value as Record<string, unknown>;
+  return {
+    comment: decodeComment(source["comment"]),
+  };
+}
+
+/**
+ * Decodes a validated ReviewAssigned.
+ */
+export function decodeReviewAssigned(value: unknown): ReviewAssigned {
+  const source = value as Record<string, unknown>;
+  return {
+    review_id: source["review_id"] as string,
+    ...(source["assigned_user_id"] === undefined ? {} : { assigned_user_id: source["assigned_user_id"] as string }),
+    ...(source["assigned_agent_session_id"] === undefined ? {} : { assigned_agent_session_id: source["assigned_agent_session_id"] as string }),
+    ...(source["previous_assigned_user_id"] === undefined ? {} : { previous_assigned_user_id: source["previous_assigned_user_id"] as string }),
+    ...(source["previous_assigned_agent_session_id"] === undefined ? {} : { previous_assigned_agent_session_id: source["previous_assigned_agent_session_id"] as string }),
+    version: source["version"] as number,
+    ...(source["reason"] === undefined ? {} : { reason: source["reason"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated ReviewAccepted.
+ */
+export function decodeReviewAccepted(value: unknown): ReviewAccepted {
+  const source = value as Record<string, unknown>;
+  return {
+    review_id: source["review_id"] as string,
+    accepted_by: decodeActor(source["accepted_by"]),
+    version: source["version"] as number,
+    finding_count: source["finding_count"] as number,
+    human_finding_count: source["human_finding_count"] as number,
+    ...(source["reason"] === undefined ? {} : { reason: source["reason"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated ReviewReopened.
+ */
+export function decodeReviewReopened(value: unknown): ReviewReopened {
+  const source = value as Record<string, unknown>;
+  return {
+    review_id: source["review_id"] as string,
+    from: source["from"] as ReviewStatus,
+    to: source["to"] as ReviewStatus,
+    version: source["version"] as number,
+    reopen_count: source["reopen_count"] as number,
+    ...(source["reason"] === undefined ? {} : { reason: source["reason"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated ReviewArchived.
+ */
+export function decodeReviewArchived(value: unknown): ReviewArchived {
+  const source = value as Record<string, unknown>;
+  return {
+    review_id: source["review_id"] as string,
+    from: source["from"] as ReviewStatus,
+    version: source["version"] as number,
+    ...(source["reason"] === undefined ? {} : { reason: source["reason"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated FindingResolved.
+ */
+export function decodeFindingResolved(value: unknown): FindingResolved {
+  const source = value as Record<string, unknown>;
+  return {
+    finding_id: source["finding_id"] as string,
+    review_id: source["review_id"] as string,
+    disposition: source["disposition"] as FindingStatus,
+    source: source["source"] as FindingSource,
+    decided_by: decodeActor(source["decided_by"]),
+    version: source["version"] as number,
+    ...(source["duplicate_of_finding_id"] === undefined ? {} : { duplicate_of_finding_id: source["duplicate_of_finding_id"] as string }),
+    ...(source["reason"] === undefined ? {} : { reason: source["reason"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated ReviewStatusChangeDenied.
+ */
+export function decodeReviewStatusChangeDenied(value: unknown): ReviewStatusChangeDenied {
+  const source = value as Record<string, unknown>;
+  return {
+    review_id: source["review_id"] as string,
+    from: source["from"] as ReviewStatus,
+    requested: source["requested"] as ReviewStatus,
+    code: source["code"] as ErrorClass,
+    ...(source["reason"] === undefined ? {} : { reason: source["reason"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated FindingStatusChangeDenied.
+ */
+export function decodeFindingStatusChangeDenied(value: unknown): FindingStatusChangeDenied {
+  const source = value as Record<string, unknown>;
+  return {
+    finding_id: source["finding_id"] as string,
+    review_id: source["review_id"] as string,
+    from: source["from"] as FindingStatus,
+    requested: source["requested"] as FindingStatus,
+    source: source["source"] as FindingSource,
+    code: source["code"] as ErrorClass,
+    ...(source["reason"] === undefined ? {} : { reason: source["reason"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated FindingReopened.
+ */
+export function decodeFindingReopened(value: unknown): FindingReopened {
+  const source = value as Record<string, unknown>;
+  return {
+    finding_id: source["finding_id"] as string,
+    review_id: source["review_id"] as string,
+    from: source["from"] as FindingStatus,
+    version: source["version"] as number,
+    verification_count: source["verification_count"] as number,
+    ...(source["reason"] === undefined ? {} : { reason: source["reason"] as string }),
   };
 }
 

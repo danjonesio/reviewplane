@@ -169,6 +169,21 @@ members that need it.
 | `connector-ca` | api (read-only in tunnel-gateway) | The connector authority's certificate, published at startup (ADR-0014). Never the key. |
 | `dev-fixture-vite-src` | dev-fixture | The `development` profile fixture's own sources. |
 
+`artefact-data` is the whole of the `filesystem` driver's storage (ADR-0012).
+It holds one directory, `sha256/`, whose contents are content-addressed: a
+backup of a single-host installation is a database dump plus this directory,
+and nothing in it depends on a name a user chose. A `probe/` directory appears
+transiently while `reviewplane status` checks that the volume is writable; the
+probe removes what it wrote. The control-plane server is the only process that
+mounts it read-write; the MCP server mounts it read-only, because it serves
+evidence and never writes it. A deployment that splits the `jobs` role into its
+own container must mount it read-write there too: thumbnail generation writes a
+new artefact. The bundled Compose deployment runs `api` and `jobs` in one
+container, so the question does not arise there.
+
+The browser worker does not mount it at all: workers upload through the
+control-plane artefact API and hold no storage credentials (ADR-0012).
+
 Browser profiles use ephemeral container storage — tmpfs, per session, removed
 on termination — unless project policy enables reusable authentication state.
 
@@ -368,6 +383,7 @@ reviewplane serve              # the api role
 reviewplane jobs [--once]      # the jobs role
 reviewplane install-token      # mint the one-time administrator bootstrap token
 reviewplane status [--json]    # the deployment's health, capacity and storage
+reviewplane export-review      # write one review as a portable document
 reviewplane version            # the build this image carries
 ```
 
@@ -375,6 +391,20 @@ In the Compose stack, `deploy/compose/reviewplane` runs these inside the `api`
 container: `./reviewplane status` is `docker compose exec -T api reviewplane
 status`. With the stack down it falls back to a one-shot container, which can
 still answer `migrate` and `version`.
+
+Storage use counts each content-addressed key once. Two artefacts holding
+identical bytes are one stored object, so summing per artefact would overstate
+the volume an operator has to back up.
+
+`reviewplane export-review --project <id|slug> --review <slug|id> [--out FILE]`
+writes the portable review document of `docs/REVIEW_FORMAT.md` to a file or to
+standard output, and prints its SHA-256 when it writes a file. It is the
+operator's half of the export: `GET /api/v1/reviews/:reviewId/export` queues a
+durable job and stores an artefact, which is right for a reviewer clicking a
+button, while an operator with a shell on the control plane wants the document
+itself without an artefact grant to fetch it back through. Both build the same
+document from the same code. The command writes nothing and records no event —
+it only reads.
 
 ### First run: claiming the installation
 
@@ -463,6 +493,49 @@ The default installation stores artefacts on a local volume through the `filesys
 - CORS configured only when direct browser upload is used
 
 Application metadata remains authoritative for artefact availability.
+
+### What the driver implements today
+
+The `s3` driver is implemented and is run against the same conformance suite as
+`filesystem` (ADR-0012, `docs/TESTING.md` §10). It is **not yet a documented
+operator mode**: the Compose default is `filesystem`, and testing against a real
+external service is a later stage. An operator configuring it now should expect
+to validate it themselves.
+
+Settings, all read at startup:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `REVIEWPLANE_ARTEFACT_DRIVER` | `filesystem` | `filesystem` or `s3` |
+| `REVIEWPLANE_S3_ENDPOINT` | none | Base endpoint URL; required for `s3` |
+| `REVIEWPLANE_S3_BUCKET` | none | Bucket; required for `s3` |
+| `REVIEWPLANE_S3_REGION` | `us-east-1` | Signing region |
+| `REVIEWPLANE_S3_ACCESS_KEY` | none | Access key; required for `s3` |
+| `REVIEWPLANE_S3_SECRET_KEY` | none | Secret key; required for `s3` |
+| `REVIEWPLANE_S3_PATH_STYLE` | `true` | Path-style addressing |
+| `REVIEWPLANE_S3_PREFIX` | empty | Key prefix inside a shared bucket |
+
+Every required value is required rather than defaulted: a deployment that
+half-configures external storage fails to start rather than starting and then
+failing on the first screenshot. The credentials support the `_FILE` form
+(`docs/CONFIGURATION.md` §7).
+
+Two behaviours differ from the `filesystem` driver and matter to an operator.
+
+**Uploads are still proxied.** ADR-0012 permits a presigned upload URL and this
+build does not issue one, because the server is where content-type validation
+happens. CORS is therefore not required.
+
+**Retrieval uses a presigned URL** at the storage origin (ADR-0019), pinned to
+one object, one content type and one disposition, expiring in two minutes. A
+browser loading evidence therefore fetches from the storage origin rather than
+from the control plane, so the edge gateway's `img-src` policy and the bucket's
+own CORS rules have to admit it. That is part of what makes `s3` a later stage
+rather than a supported one now.
+
+Multipart upload is not implemented. The largest artefact this build accepts is
+`REVIEWPLANE_ARTEFACT_MAX_BYTES` (20 MiB by default), which a single `PUT`
+carries.
 
 ## 13. Connector installation
 

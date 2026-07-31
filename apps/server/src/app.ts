@@ -12,7 +12,7 @@ import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
 
 import { bearerToken, requireBootstrapAdministrator } from "./auth.ts";
-import type { LogDestination, ServerConfig } from "./config.ts";
+import type { Environment, LogDestination, ServerConfig } from "./config.ts";
 import type { Pool } from "./db/pool.ts";
 import { renderError } from "./errors.ts";
 import { registerEventStreamRoutes } from "./events/routes.ts";
@@ -28,8 +28,13 @@ import { WorkspaceStore } from "./modules/agents/workspaces.ts";
 import type { AgentArtefactPrincipal } from "./modules/artefacts/routes.ts";
 import { registerArtefactRoutes } from "./modules/artefacts/routes.ts";
 import { ArtefactService } from "./modules/artefacts/service.ts";
-import { FilesystemArtefactStore } from "./modules/artefacts/store.ts";
-import type { ArtefactStore } from "./modules/artefacts/store.ts";
+import { artefactJobHandlers } from "./modules/artefacts/jobs.ts";
+import {
+  loadArtefactStoreConfig,
+  loadRetentionWindows,
+} from "./modules/artefacts/config.ts";
+import { createArtefactStore } from "./modules/artefacts/store/index.ts";
+import type { ArtefactStore } from "./modules/artefacts/store/index.ts";
 import { registerBrowserSessionRoutes } from "./modules/browser-sessions/routes.ts";
 import { BrowserSessionService } from "./modules/browser-sessions/service.ts";
 import { BrowserWorkerClient } from "./modules/browser-sessions/worker-client.ts";
@@ -58,6 +63,7 @@ import { PublishedServiceBinder } from "./modules/published-services/session-bin
 import { PublishedServiceReconciler } from "./modules/published-services/reconciliation.ts";
 import { PublishedServiceService } from "./modules/published-services/service.ts";
 import type { RoutePublisher } from "./modules/published-services/service.ts";
+import { reviewExportHandler } from "./modules/reviews/export-job.ts";
 import { registerReviewRoutes } from "./modules/reviews/routes.ts";
 import { ReviewService } from "./modules/reviews/service.ts";
 
@@ -73,6 +79,13 @@ export interface BuildAppOptions {
    */
   readonly publisher?: RoutePublisher;
   readonly destinationPolicy?: DestinationPolicy;
+  /**
+   * Environment the **module** configurations are read from — the artefact
+   * driver and the retention windows. It defaults to the process environment,
+   * as `loadServerConfig` does; a test supplies its own so that a driver choice
+   * is a property of the case rather than of the machine running it.
+   */
+  readonly environment?: Environment;
   /** Injected by tests; the filesystem driver is the default (ADR-0012). */
   readonly artefactStore?: ArtefactStore;
   /** Injected by tests so the worker channel can be driven in-process. */
@@ -247,9 +260,25 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     ),
   );
 
-  const store = options.artefactStore ?? new FilesystemArtefactStore(config.artefactPath);
-  const artefacts = new ArtefactService(pool, store, config.artefactMaxBytes);
-  const reviews = new ReviewService(pool, artefacts);
+  // ADR-0012: the driver is chosen once, from configuration validated at
+  // startup, and nothing downstream can tell which one it got.
+  const environment = options.environment ?? process.env;
+  const store =
+    options.artefactStore ??
+    createArtefactStore(
+      loadArtefactStoreConfig(environment, {
+        path: config.artefactPath,
+        maxBytes: config.artefactMaxBytes,
+      }),
+    );
+  const artefacts = new ArtefactService(pool, store, config.artefactMaxBytes, {
+    retention: loadRetentionWindows(environment),
+    publisher: outbox,
+  });
+  // The logger is what makes a lost audit write visible. A denied transition is
+  // recorded outside the transaction that refused it, so a database failure at
+  // that moment loses the record silently unless somebody is told.
+  const reviews = new ReviewService(pool, artefacts, app.log);
   const workers = new WorkerRegistry(pool, config.workerCredential);
   const workerClient = new BrowserWorkerClient({
     endpoint: config.workerEndpoint,
@@ -400,7 +429,10 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     options.runJobs === true
       ? new JobRunner({
           pool,
-          handlers: {},
+          handlers: {
+            ...artefactJobHandlers(artefacts),
+            review_export: reviewExportHandler({ reviews, artefacts }),
+          },
           publisher: outbox,
           logger: {
             info: (fields, message) => {

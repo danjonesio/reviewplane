@@ -219,6 +219,8 @@ and `AGENTS.md` requires that to leave an audit record.
 - `artefact.upload_completed`
 - `artefact.upload_failed`
 - `artefact.access_granted`
+- `artefact.deleted`
+- `artefact.thumbnail_generated`
 - `artefact.redacted`
 - `artefact.expired`
 - `trace.finalised`
@@ -227,6 +229,22 @@ and `AGENTS.md` requires that to leave an audit record.
 bytes and until when (ADR-0019). Reading evidence is an access to the most
 sensitive data the product holds, and section 16 of `docs/SECURITY.md` requires
 it to leave a record.
+
+`artefact.deleted` records a removal. Its `bytes_removed` member says whether
+the stored object was actually removed, which is not the same question as
+whether the artefact was deleted: keys are content-addressed (ADR-0012), so two
+artefacts holding identical bytes are one stored object and the object survives
+until the last of them is gone. The metadata row is retained with `deleted_at`
+set, so the identifier in this event still resolves.
+
+`artefact.thumbnail_generated` records the outcome of the durable thumbnail job
+for **every** result, including the ones that produced no thumbnail.
+`docs/UX_FLOWS.md` section 18 requires a surface to be able to say which of
+not-yet, not-possible and failed applies, and an event written only on success
+would leave the other two indistinguishable.
+
+`artefact.redacted` and `artefact.expired` are not yet produced: no redaction
+and no expiry job run.
 
 ### Review
 
@@ -238,6 +256,8 @@ it to leave a record.
 - `review.accepted`
 - `review.reopened`
 - `review.archived`
+- `review.comment_added`
+- `review.status_change_denied`
 
 ### Finding
 
@@ -247,11 +267,47 @@ it to leave a record.
 - `finding.status_changed`
 - `finding.comment_added`
 - `finding.verification_submitted`
+- `finding.resolved`
+- `finding.reopened`
+- `finding.status_change_denied`
 
 `review.claimed` and `finding.claimed` are separate from the status change
 beside them, because assignment and lifecycle are different facts: a claim says
 who is working, and the status says what stage the work is at. A human reading
 the timeline needs both.
+
+`review.assigned` is separate from `review.claimed` for the same kind of reason:
+a human directing work and a worker taking it are different facts, and an auditor
+asking "was this given to the agent, or did it take it?" needs to be able to
+tell.
+
+`review.accepted`, `finding.resolved` and `finding.reopened` sit beside the
+status change rather than instead of it. The status says the record moved; these
+say a **human decided**, and name which human. That is the authority boundary of
+`AGENTS.md`, and an audit trail that recorded only a status would not say who
+crossed it. `review.accepted` also records how many findings the review held and
+how many of them a human authored, because acceptance rests on every one of those
+having reached a final disposition and the table will have moved on by the time
+anybody reads the event. `finding.reopened` records how many verifications the
+finding already holds, because reopening preserves that history rather than
+replacing it.
+
+`review.comment_added` is a separate type from `finding.comment_added` so that a
+consumer filtering one finding's timeline does not have to inspect a payload to
+decide whether an event belongs to it. An edited comment produces another
+`*.comment_added` for the new revision: an edit is an append with a
+back-reference, not a different kind of occurrence.
+
+`review.status_change_denied` and `finding.status_change_denied` record a
+transition a principal asked for and **may not make**. They are the only events
+in this catalogue written for something that did not happen, and they exist
+because the refusal is the invariant holding: `AGENTS.md` requires that an agent
+cannot finally accept a human-authored finding, and a Stage 1 exit criterion
+requires that the attempt is audited. The transaction the refusal happened in
+rolls back, taking any event written inside it, so these are written afterwards
+in their own transaction. They carry the status the record actually held, the
+status that was asked for, the finding's `source` where there is one, and the
+stable refusal code — and never any part of the request.
 
 `finding.verification_submitted` carries the whole claim — summary, branch,
 commit, tested viewports, checks and every artefact identifier — with status

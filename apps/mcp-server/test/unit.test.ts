@@ -16,7 +16,14 @@ import {
   decodeMcpToolResponse,
   type MessageType,
 } from "@reviewplane/protocol/mcp";
-import { requestDigest } from "@reviewplane/server/domain";
+import {
+  DEFAULT_ARTEFACT_MAX_BYTES,
+  DEFAULT_ARTEFACT_PATH,
+  loadArtefactStoreConfig,
+  requestDigest,
+} from "@reviewplane/server/domain";
+
+import { loadMcpServerConfig } from "../src/config.ts";
 
 import { STAGE_0_POLICY, negotiateCapabilities, readClientCapabilities } from "../src/context.ts";
 import { Warnings, refusalEnvelope, successEnvelope } from "../src/envelope.ts";
@@ -169,4 +176,32 @@ test("a cursor round-trips and a forged one is refused", () => {
   assert.deepEqual(decodeCursor(encodeCursor(cursor)), cursor);
   assert.equal(decodeCursor("not-a-cursor"), null);
   assert.equal(decodeCursor(Buffer.from("nonsense", "utf8").toString("base64url")), null);
+});
+
+test("the MCP server's artefact defaults are the artefact module's own", () => {
+  // `REVIEWPLANE_ARTEFACT_PATH` and `REVIEWPLANE_ARTEFACT_MAX_BYTES` have three
+  // readers: `apps/server/src/config.ts`, `apps/server/src/modules/artefacts/
+  // config.ts` and this package's `src/config.ts`. The artefact module owns the
+  // values and cannot be imported by the server's own configuration without an
+  // import cycle, and this package is separate again, so the duplication is
+  // real and a test is what stops it drifting.
+  // `apps/server/test/artefact-store-stage-1.test.ts` asserts the pair inside
+  // that package; this asserts the third.
+  //
+  // Drift here would be worse than untidy. The MCP server reads evidence the
+  // control plane wrote: two different defaults mean an agent reading an empty
+  // directory while the API serves the same artefact perfectly well.
+  const mcp = loadMcpServerConfig({
+    REVIEWPLANE_DATABASE_URL: "postgres://localhost/reviewplane",
+    REVIEWPLANE_WORKER_COMMAND_CREDENTIAL: "d".repeat(32),
+  });
+  assert.equal(mcp.artefactPath, DEFAULT_ARTEFACT_PATH);
+  assert.equal(mcp.artefactMaxBytes, DEFAULT_ARTEFACT_MAX_BYTES);
+
+  // And the driver the MCP server would build from the same environment is the
+  // one the artefact module resolves, so an `s3` deployment does not leave the
+  // agent surface reading a local directory.
+  const store = loadArtefactStoreConfig({});
+  assert.equal(store.path, mcp.artefactPath);
+  assert.equal(store.maxBytes, mcp.artefactMaxBytes);
 });

@@ -85,14 +85,46 @@ export { WorkspaceStore, type WorkspaceRecord } from "./modules/agents/workspace
 export {
   ARTEFACT_GRANT_TTL_SECONDS,
   ArtefactService,
+  UNRESTRICTED_SCOPE,
+  artefactIsActiveContent,
+  dispositionOf,
   type ArtefactGrant,
   type ArtefactRecord,
+  type ArtefactScope,
+  type ArtefactStoreStatus,
+  type ThumbnailState,
 } from "./modules/artefacts/service.ts";
 export {
+  loadArtefactStoreConfig,
+  loadRetentionWindows,
+  DEFAULT_ARTEFACT_MAX_BYTES,
+  DEFAULT_ARTEFACT_PATH,
+  DEFAULT_RETENTION_DAYS,
+  type ArtefactStoreConfig,
+  type RetentionWindows,
+} from "./modules/artefacts/config.ts";
+export { artefactJobHandlers } from "./modules/artefacts/jobs.ts";
+export {
+  acceptedContentTypes,
+  contentTypesForKind,
+  dispositionFor,
+  isActiveContentType,
+  STAGE_1_ARTEFACT_KINDS,
+  type ArtefactDisposition,
+} from "./modules/artefacts/kinds.ts";
+export {
+  ArtefactStoreError,
   FilesystemArtefactStore,
+  S3ArtefactStore,
+  createArtefactStore,
   keyForDigest,
+  temporaryArtefactStore,
+  type ArtefactStorageDriver,
   type ArtefactStore,
-} from "./modules/artefacts/store.ts";
+  type ArtefactStoreUsage,
+  type S3ArtefactStoreOptions,
+  type StoredObject,
+} from "./modules/artefacts/store/index.ts";
 
 export {
   BrowserSessionService,
@@ -103,17 +135,29 @@ export { BrowserWorkerClient } from "./modules/browser-sessions/worker-client.ts
 export { WorkerRegistry } from "./modules/browser-sessions/workers.ts";
 
 export {
+  ACTIVE_REVIEW_STATUSES,
+  AGENT_REVIEW_STATUSES,
   AGENT_TRANSITION_LABELS,
   agentTransitionsFrom,
   assertActorMayMoveFinding,
+  assertActorMayMoveReview,
   assertCompletionEvidence,
   assertExpectedVersion,
   assertFindingTransition,
+  assertReviewAcceptable,
+  assertReviewMutable,
   assertReviewTransition,
   assertVerificationCommitContext,
+  isHumanActor,
 } from "./modules/reviews/domain.ts";
+export { REVIEW_EXPORT_CONTENT_TYPE, reviewExportHandler } from "./modules/reviews/export-job.ts";
 export {
   ReviewService,
+  sourceForActor,
+  type AssignReviewInput,
+  type DisposeFindingInput,
+  type ReviewExport,
+  type ReviewTransitionInput,
   type Scope,
   type SubmitVerificationInput,
   type Verification,

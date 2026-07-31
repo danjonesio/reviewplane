@@ -71,6 +71,11 @@ const STATUS_BY_CODE: Readonly<Record<ApiErrorCode, number>> = {
   APPROVAL_REQUIRED: 403,
   EVIDENCE_REQUIRED: 422,
   ARTEFACT_UPLOAD_INCOMPLETE: 409,
+  // The artefact exists and may be perfectly well formed; the store cannot be
+  // reached. 503 rather than 409, because the resolution is to retry rather
+  // than to change the request — and `ARTEFACT_UPLOAD_INCOMPLETE` would send an
+  // operator looking at an upload that had in fact completed.
+  ARTEFACT_STORE_UNAVAILABLE: 503,
   UNSUPPORTED_CAPABILITY: 400,
   RATE_LIMITED: 429,
   INTERNAL_ERROR: 500,
@@ -135,18 +140,31 @@ export class ApiError extends Error {
   readonly code: ApiErrorCode;
   readonly status: number;
   readonly details: Readonly<Record<string, unknown>> | undefined;
+  /**
+   * The failure underneath, for the log and never for the caller.
+   *
+   * `docs/SECURITY.md` §18 requires a stable code rather than free text
+   * precisely so that a failure can be diagnosed without a response carrying
+   * request or deployment data. A driver error is exactly that kind of text: it
+   * names an absolute path, a bucket endpoint, or a fragment of somebody else's
+   * XML. It belongs in the operator's log, so it is carried here and rendered
+   * nowhere.
+   */
+  readonly diagnostic: string | undefined;
 
   constructor(
     code: ApiErrorCode,
     message: string,
     details?: Readonly<Record<string, unknown>>,
     status?: number,
+    diagnostic?: string,
   ) {
     super(message);
     this.name = "ApiError";
     this.code = code;
     this.status = status ?? STATUS_BY_CODE[code];
     this.details = details;
+    this.diagnostic = diagnostic;
   }
 }
 
@@ -179,6 +197,14 @@ interface ErrorReply {
  */
 export function renderError(error: unknown, request: ErrorRequest, reply: ErrorReply): void {
   if (error instanceof ApiError) {
+    if (error.diagnostic !== undefined) {
+      // The detail an operator needs, on the one side of the boundary it may
+      // be on. The response below carries the code and nothing else.
+      request.log.error(
+        { code: error.code, diagnostic: error.diagnostic, request_id: request.id },
+        "request refused with an internal diagnostic",
+      );
+    }
     void reply.code(error.status).send(apiError(error.code, error.message, request.id, error.details));
     return;
   }

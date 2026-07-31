@@ -181,7 +181,11 @@ export function toAnnotationView(annotation: Annotation): AnnotationView {
 export function toCommentView(comment: Comment): CommentView {
   return {
     id: comment.id,
-    finding_id: comment.finding_id,
+    // A comment on the review itself carries no finding, and this view is only
+    // ever built for a finding's comments. Falling back to the review keeps the
+    // member present rather than emitting an empty string, which a client would
+    // have to special-case (`docs/DOMAIN_MODEL.md` section 18).
+    finding_id: comment.finding_id ?? comment.review_id,
     body: comment.body,
     author: {
       type: comment.created_by.type,
@@ -206,9 +210,16 @@ export async function toArtefactLink(
   role: string | null,
   context: ViewContext,
 ): Promise<ArtefactLink | null> {
-  const record = await context.artefacts.get(artefactId).catch(() => null);
+  // The identifier, the session's project and its organisation are one
+  // predicate, so an artefact from another tenant is not returned and then
+  // filtered out (`docs/TESTING.md` section 10).
+  const record = await context.artefacts
+    .getInScope(artefactId, {
+      organisationId: context.session.organisationId,
+      projectIds: [context.session.projectId],
+    })
+    .catch(() => null);
   if (record === null) return null;
-  if (record.project_id !== context.session.projectId) return null;
 
   const base: ArtefactLink = {
     artefact_id: record.id,
@@ -238,7 +249,7 @@ export async function toArtefactLink(
   }
 
   const grant = await context.artefacts.grantAccess({
-    artefactId: record.id,
+    record,
     subjectType: "agent_session",
     subjectId: context.session.id,
     actor: { type: "agent_session", id: context.session.id, display: context.session.agentType },

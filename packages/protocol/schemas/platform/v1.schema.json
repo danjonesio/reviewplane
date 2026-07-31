@@ -159,6 +159,7 @@
       "APPROVAL_REQUIRED",
       "EVIDENCE_REQUIRED",
       "ARTEFACT_UPLOAD_INCOMPLETE",
+      "ARTEFACT_STORE_UNAVAILABLE",
       "UNSUPPORTED_CAPABILITY",
       "RATE_LIMITED",
       "INTERNAL_ERROR"
@@ -280,6 +281,9 @@
           "finding.verification_rejected",
           "finding.resolved",
           "finding.reopened",
+          "finding.status_change_denied",
+          "review.comment_added",
+          "review.status_change_denied",
           "job.enqueued",
           "job.succeeded",
           "job.failed"
@@ -406,6 +410,7 @@
         "APPROVAL_REQUIRED",
         "EVIDENCE_REQUIRED",
         "ARTEFACT_UPLOAD_INCOMPLETE",
+        "ARTEFACT_STORE_UNAVAILABLE",
         "UNSUPPORTED_CAPABILITY",
         "RATE_LIMITED",
         "INTERNAL_ERROR"
@@ -419,7 +424,13 @@
     "job_kind": {
       "type": "string",
       "description": "Durable background work the runner understands (docs/ARCHITECTURE.md section 4.8). It is an enumeration because an operator reading a failed job needs a name with a fixed meaning, not free text a caller chose.",
-      "enum": ["event_outbox_dispatch", "idempotency_key_expiry", "published_service_expiry"]
+      "enum": [
+        "event_outbox_dispatch",
+        "idempotency_key_expiry",
+        "published_service_expiry",
+        "artefact_thumbnail",
+        "review_export"
+      ]
     },
     "job_failure_reason": {
       "type": "string",

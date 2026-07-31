@@ -139,6 +139,27 @@ reported, as `host:port`. In the Compose stack it is the edge gateway, which the
 front of the stack clears it, and the section reports "not configured" rather
 than inventing a failure.
 
+The schema is read before the artefact figures, and the figures are not read at
+all while migrations are pending: against a database nobody has migrated the
+artefact table does not exist, and the operator needs to be told to run
+`reviewplane migrate` rather than shown a raw error from PostgreSQL.
+
+Artefact-store availability is a real round trip — a write, a read back and a
+removal, in a directory outside the content-addressed tree — rather than a check
+that a directory exists, because a read-only volume would pass the second and
+fail every upload. Storage use comes from PostgreSQL rather than from the
+driver, because application metadata is authoritative for availability
+(ADR-0012) and a driver total would also count objects belonging to deleted
+artefacts. Each content-addressed key is counted once: two artefacts with
+identical bytes are one stored object. Bytes declared by intents that have not
+completed verification are reported separately, because they are not evidence
+and may never become any.
+
+Connectors, browser capacity, sessions, queue depth and certificate expiry are
+reported alongside these. Where a figure is genuinely absent — no connector
+enrolled, no TLS endpoint configured — the section says so rather than printing a
+zero that reads as a measurement.
+
 ## 4. Structured logs
 
 JSON logs in production.
@@ -284,6 +305,17 @@ Failures retry and surface operationally. Metadata must not claim deletion befor
 - Backup status visible in UI or status command
 - Restore test scheduled regularly
 - Backup encryption documented
+
+Under the `filesystem` driver a complete backup is a database dump plus the
+`artefact-data` volume's `sha256/` directory. Nothing in that directory depends
+on a name a user chose, and every file in it is named by the digest of its own
+contents, so a restore can be verified by recomputing digests without consulting
+the database. `reviewplane status` reports how many bytes there are to copy.
+
+The two halves must be restored together. PostgreSQL is authoritative for
+availability (ADR-0012): a database restored ahead of the volume names artefacts
+whose bytes are not there yet, and a volume restored ahead of the database holds
+objects nothing references.
 
 ## 12. Upgrade operations
 
