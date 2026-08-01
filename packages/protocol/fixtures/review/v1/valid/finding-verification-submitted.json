@@ -44,7 +44,12 @@
         "accessibility_checked": false
       },
       "artefact_ids": ["art_01JHEROBEFORE", "art_01JHEROAFTER"],
-      "submitted_at": "2026-07-30T10:13:02.114Z"
-    }
+      "submitted_at": "2026-07-30T10:13:02.114Z",
+      "supersedes_verification_id": "ver_01JHEROFIRSTTRY"
+    },
+    "finding_id": "fin_01JHEROOVERLAPS",
+    "review_id": "rev_01JBUGSONHOMEPAGE",
+    "version": 5,
+    "supersedes_verification_id": "ver_01JHEROFIRSTTRY"
   }
 }

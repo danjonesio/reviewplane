@@ -1972,6 +1972,21 @@ export interface VerificationReference {
    * When a human decided.
    */
   readonly reviewed_at?: Timestamp;
+  /**
+   * The verification this one replaced as the current claim, where there was one. The
+   * earlier record is marked superseded rather than deleted, so a finding carries the
+   * whole history of what was claimed about it across reopen cycles (docs/DOMAIN_MODEL.md
+   * section 19).
+   */
+  readonly supersedes_verification_id?: Identifier;
+  /**
+   * The verification that replaced this one. Present only where status is superseded.
+   */
+  readonly superseded_by_verification_id?: Identifier;
+  /**
+   * When this record stopped being the current claim.
+   */
+  readonly superseded_at?: Timestamp;
 }
 
 /**
@@ -3046,13 +3061,36 @@ export interface FindingReopened {
 }
 
 /**
- * Payload of finding.verification_submitted.
+ * Payload of finding.verification_submitted. It carries the whole claim, and beside it the
+ * finding and the version that finding holds after the submission, so an auditor can order
+ * a claim against the status changes around it without a second read (docs/EVENTS.md
+ * section 7).
  */
 export interface FindingVerificationSubmitted {
   /**
    * The verification as submitted, with status submitted.
    */
   readonly verification: VerificationReference;
+  /**
+   * Finding the claim concerns, at the top level so a consumer filtering one finding's
+   * timeline need not open the claim to decide whether the event belongs to it.
+   */
+  readonly finding_id: Identifier;
+  /**
+   * Review the finding belongs to.
+   */
+  readonly review_id: Identifier;
+  /**
+   * Version the finding holds after the submission.
+   */
+  readonly version: VersionNumber;
+  /**
+   * The verification this submission replaced as the current claim, where there was one.
+   * Supersession is recorded on the submission that caused it rather than as an event of
+   * its own, in the same way an edited comment is recorded as another comment_added
+   * carrying a back-reference: one act, one occurrence.
+   */
+  readonly supersedes_verification_id?: Identifier;
 }
 
 /**

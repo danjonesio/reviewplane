@@ -1227,7 +1227,7 @@ export function validateVerificationReferenceArtefactIds(value: unknown, path: s
  * somewhere to land.
  */
 export function validateVerificationReference(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["verification_id", "finding_id", "status", "submitted_by", "summary", "branch", "commit", "before_artefact_id", "after_artefact_id", "tested_viewports", "checks", "artefact_ids", "submitted_at", "reviewed_at"], ["verification_id", "finding_id", "status", "submitted_by", "submitted_at"]);
+  const source = checkObject(value, path, out, ["verification_id", "finding_id", "status", "submitted_by", "summary", "branch", "commit", "before_artefact_id", "after_artefact_id", "tested_viewports", "checks", "artefact_ids", "submitted_at", "reviewed_at", "supersedes_verification_id", "superseded_by_verification_id", "superseded_at"], ["verification_id", "finding_id", "status", "submitted_by", "submitted_at"]);
   if (source === null) return;
   if (source["verification_id"] !== undefined) {
     validateIdentifier(source["verification_id"], `${path}.verification_id`, out);
@@ -1270,6 +1270,15 @@ export function validateVerificationReference(value: unknown, path: string, out:
   }
   if (source["reviewed_at"] !== undefined) {
     validateTimestamp(source["reviewed_at"], `${path}.reviewed_at`, out);
+  }
+  if (source["supersedes_verification_id"] !== undefined) {
+    validateIdentifier(source["supersedes_verification_id"], `${path}.supersedes_verification_id`, out);
+  }
+  if (source["superseded_by_verification_id"] !== undefined) {
+    validateIdentifier(source["superseded_by_verification_id"], `${path}.superseded_by_verification_id`, out);
+  }
+  if (source["superseded_at"] !== undefined) {
+    validateTimestamp(source["superseded_at"], `${path}.superseded_at`, out);
   }
 }
 
@@ -2335,13 +2344,28 @@ export function validateFindingReopened(value: unknown, path: string, out: Schem
 }
 
 /**
- * Payload of finding.verification_submitted.
+ * Payload of finding.verification_submitted. It carries the whole claim, and beside it the
+ * finding and the version that finding holds after the submission, so an auditor can order
+ * a claim against the status changes around it without a second read (docs/EVENTS.md
+ * section 7).
  */
 export function validateFindingVerificationSubmitted(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["verification"], ["verification"]);
+  const source = checkObject(value, path, out, ["verification", "finding_id", "review_id", "version", "supersedes_verification_id"], ["verification", "finding_id", "review_id", "version"]);
   if (source === null) return;
   if (source["verification"] !== undefined) {
     validateVerificationReference(source["verification"], `${path}.verification`, out);
+  }
+  if (source["finding_id"] !== undefined) {
+    validateIdentifier(source["finding_id"], `${path}.finding_id`, out);
+  }
+  if (source["review_id"] !== undefined) {
+    validateIdentifier(source["review_id"], `${path}.review_id`, out);
+  }
+  if (source["version"] !== undefined) {
+    validateVersionNumber(source["version"], `${path}.version`, out);
+  }
+  if (source["supersedes_verification_id"] !== undefined) {
+    validateIdentifier(source["supersedes_verification_id"], `${path}.supersedes_verification_id`, out);
   }
 }
 

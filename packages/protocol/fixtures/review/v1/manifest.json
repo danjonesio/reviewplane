@@ -134,7 +134,7 @@
       "kind": "review_event",
       "file": "valid/finding-verification-submitted.json",
       "message_type": "finding.verification_submitted",
-      "note": "The Stage 0 evidence event: summary, branch, commit, both artefacts and the viewports of AGENTS.md, with status submitted. Nothing here accepts the finding, and the commit differs from the one the finding was captured at because a fix cannot exist at the revision the defect was recorded from."
+      "note": "The evidence event: summary, branch, commit, both artefacts and the viewports of AGENTS.md, with status submitted. Nothing here accepts the finding, and the commit differs from the one the finding was captured at because a fix cannot exist at the revision the defect was recorded from. This is a second submission on the same finding, so it names the one it replaced in supersedes_verification_id: the earlier record is marked superseded and kept, and version 5 is what the finding holds after the claim."
     },
     {
       "name": "review-assigned",

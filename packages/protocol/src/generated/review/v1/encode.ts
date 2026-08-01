@@ -562,6 +562,15 @@ export function encodeVerificationReference(value: VerificationReference): strin
   if (value.reviewed_at !== undefined) {
     fields.push(`"reviewed_at":${jsonString(value.reviewed_at)}`);
   }
+  if (value.supersedes_verification_id !== undefined) {
+    fields.push(`"supersedes_verification_id":${jsonString(value.supersedes_verification_id)}`);
+  }
+  if (value.superseded_by_verification_id !== undefined) {
+    fields.push(`"superseded_by_verification_id":${jsonString(value.superseded_by_verification_id)}`);
+  }
+  if (value.superseded_at !== undefined) {
+    fields.push(`"superseded_at":${jsonString(value.superseded_at)}`);
+  }
   return `{${fields.join(",")}}`;
 }
 
@@ -1236,6 +1245,12 @@ export function encodeFindingReopened(value: FindingReopened): string {
 export function encodeFindingVerificationSubmitted(value: FindingVerificationSubmitted): string {
   const fields: string[] = [];
   fields.push(`"verification":${encodeVerificationReference(value.verification)}`);
+  fields.push(`"finding_id":${jsonString(value.finding_id)}`);
+  fields.push(`"review_id":${jsonString(value.review_id)}`);
+  fields.push(`"version":${jsonInteger(value.version)}`);
+  if (value.supersedes_verification_id !== undefined) {
+    fields.push(`"supersedes_verification_id":${jsonString(value.supersedes_verification_id)}`);
+  }
   return `{${fields.join(",")}}`;
 }
 

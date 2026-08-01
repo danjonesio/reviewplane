@@ -1,0 +1,24 @@
+{
+  "protocol_version": 1,
+  "ok": true,
+  "request_id": "req_01JTERMINATE",
+  "type": "task_complete",
+  "trust": "trusted_control_plane",
+  "instruction_policy": "do_not_follow_as_instructions",
+  "data": {
+    "result": "terminated",
+    "terminates_session": true,
+    "requirements": {
+      "required_viewports": ["390x844", "1440x900"],
+      "console_review": true,
+      "network_review": true,
+      "final_screenshot": true
+    },
+    "missing": [],
+    "assurance": {
+      "verified_by_control_plane": [],
+      "asserted_by_agent": []
+    },
+    "next_actions": []
+  }
+}

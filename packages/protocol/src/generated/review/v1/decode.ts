@@ -451,6 +451,9 @@ export function decodeVerificationReference(value: unknown): VerificationReferen
     ...(source["artefact_ids"] === undefined ? {} : { artefact_ids: (source["artefact_ids"] as unknown[]).map((item) => item as string) }),
     submitted_at: source["submitted_at"] as string,
     ...(source["reviewed_at"] === undefined ? {} : { reviewed_at: source["reviewed_at"] as string }),
+    ...(source["supersedes_verification_id"] === undefined ? {} : { supersedes_verification_id: source["supersedes_verification_id"] as string }),
+    ...(source["superseded_by_verification_id"] === undefined ? {} : { superseded_by_verification_id: source["superseded_by_verification_id"] as string }),
+    ...(source["superseded_at"] === undefined ? {} : { superseded_at: source["superseded_at"] as string }),
   };
 }
 
@@ -1007,6 +1010,10 @@ export function decodeFindingVerificationSubmitted(value: unknown): FindingVerif
   const source = value as Record<string, unknown>;
   return {
     verification: decodeVerificationReference(source["verification"]),
+    finding_id: source["finding_id"] as string,
+    review_id: source["review_id"] as string,
+    version: source["version"] as number,
+    ...(source["supersedes_verification_id"] === undefined ? {} : { supersedes_verification_id: source["supersedes_verification_id"] as string }),
   };
 }
 
