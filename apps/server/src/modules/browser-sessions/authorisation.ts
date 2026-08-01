@@ -39,7 +39,20 @@ import {
   type SessionStatus,
 } from "@reviewplane/protocol/browser";
 
-/** A refusal, in the vocabulary `docs/MCP_SPEC.md` section 12 fixes. */
+/**
+ * A refusal, in the vocabulary `docs/MCP_SPEC.md` section 12 fixes.
+ *
+ * Its `details` use the member names
+ * `packages/protocol/schemas/mcp/v1.schema.json` `$defs.error_details`
+ * declares.
+ *
+ * The names matter because that object is closed: a member the schema does not
+ * declare is dropped on the way to an agent rather than delivered, so a detail
+ * set here under a different name is a detail nobody receives. `status` was
+ * that member until RVP-30 — and `status` in a refusal that may concern a
+ * review, a finding or a browser session says nothing about which, so the
+ * schema names it `browser_session_status` and this does too.
+ */
 export interface CommandDenial {
   readonly code:
     | "RESOURCE_NOT_FOUND"
@@ -160,7 +173,7 @@ export function authoriseBrowserCommand(
         code: "BROWSER_SESSION_NOT_ACTIVE",
         message:
           "The browser session is paused. Resume it before issuing interactive commands; capture continues while paused.",
-        details: { status: context.status },
+        details: { browser_session_status: context.status },
         reason: "session_paused",
       };
     }
@@ -168,7 +181,7 @@ export function authoriseBrowserCommand(
     return {
       code: "BROWSER_SESSION_NOT_ACTIVE",
       message: `The browser session is ${context.status}.`,
-      details: { status: context.status },
+      details: { browser_session_status: context.status },
       reason: "session_not_active",
     };
   }

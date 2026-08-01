@@ -13,6 +13,7 @@ import { test } from "node:test";
 
 import {
   MESSAGE_TYPE_VALUES,
+  PAYLOAD_MAX_BYTES,
   decodeMcpToolResponse,
   type MessageType,
 } from "@reviewplane/protocol/mcp";
@@ -39,6 +40,38 @@ test("the registered tool set is the schema's availability set", () => {
     toolListing().map((tool) => tool.name).sort(),
     [...MESSAGE_TYPE_VALUES].sort(),
   );
+});
+
+/**
+ * Every registered tool declares a response bound, and the bound is a number.
+ *
+ * `docs/MCP_SPEC.md` §13 requires a per-tool size limit, and the server reads it
+ * from `PAYLOAD_MAX_BYTES` in two places that both do arithmetic on it:
+ * `BoundedPayload` derives its assembly budget from it, and the snapshot view
+ * derives how much rendered page text may be carried. A tool with no entry
+ * yields `undefined`, every comparison against the resulting `NaN` is false, and
+ * the effect is not a refusal but the **opposite** of the bound — nothing is
+ * ever judged too large, so an unbounded payload is assembled and then thrown
+ * out by the encoder. That is the failure mode §13 was written about, arriving
+ * by the one route the section does not mention.
+ *
+ * So it is asserted over the registered set rather than over a list here: a tool
+ * added without a bound fails this test at the moment it is registered, whoever
+ * adds it and whichever branch it arrives on.
+ */
+test("every registered tool declares a usable response bound", () => {
+  for (const tool of toolListing()) {
+    const bound = PAYLOAD_MAX_BYTES[tool.name as MessageType];
+    assert.equal(
+      typeof bound,
+      "number",
+      `${tool.name} declares no PAYLOAD_MAX_BYTES entry, so its budget is NaN`,
+    );
+    assert.ok(Number.isFinite(bound) && bound > 0, `${tool.name} declares a bound of ${String(bound)}`);
+    // A budget computed from the bound has to stay a number that can be
+    // compared, which is the property the arithmetic above actually depends on.
+    assert.ok(Number.isFinite(Math.floor(bound * 0.75)));
+  }
 });
 
 /**
@@ -138,6 +171,48 @@ test("a refusal carries the stable code and says whether a retry could help", ()
     details: { retry_after_ms: 500 },
   });
   assert.equal(rateLimited.value.error.retryable, true);
+});
+
+test("a refusal carries the browser details the schema declares, under the schema's names", () => {
+  const paused = refusalEnvelope({
+    tool: "browser_click",
+    requestId: "req_unit",
+    code: "BROWSER_SESSION_NOT_ACTIVE",
+    message: "The browser session is paused.",
+    // The domain calls it `status`; the schema calls it
+    // `browser_session_status`. The alias is what makes renaming the domain's
+    // key a no-op here rather than a silent loss of the member.
+    details: { status: "PAUSED", reason: "session_paused" },
+  });
+  assert.deepEqual(paused.value.error.details, { browser_session_status: "PAUSED" });
+
+  const renamed = refusalEnvelope({
+    tool: "browser_click",
+    requestId: "req_unit",
+    code: "BROWSER_SESSION_NOT_ACTIVE",
+    message: "The browser session is paused.",
+    details: { browser_session_status: "PAUSED" },
+  });
+  assert.deepEqual(renamed.value.error.details, { browser_session_status: "PAUSED" });
+
+  const secret = refusalEnvelope({
+    tool: "browser_type",
+    requestId: "req_unit",
+    code: "POLICY_DENIED",
+    message: "This value looks like secret material.",
+    details: { reason: "secret_material", detected: "reviewplane_agent_token" },
+  });
+  // The rule, never the value, and never the prose restatement of the code.
+  assert.deepEqual(secret.value.error.details, { detected: "reviewplane_agent_token" });
+
+  const route = refusalEnvelope({
+    tool: "browser_navigate",
+    requestId: "req_unit",
+    code: "AUTHORISATION_DENIED",
+    message: "The published service no longer authorises this session.",
+    details: { published_service_id: "svc_one" },
+  });
+  assert.deepEqual(route.value.error.details, { published_service_id: "svc_one" });
 });
 
 test("a refusal never grows an unbounded message", () => {

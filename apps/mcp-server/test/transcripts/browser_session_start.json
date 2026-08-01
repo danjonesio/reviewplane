@@ -18,24 +18,24 @@
     "content": [
       {
         "type": "text",
-        "text": "{\"protocol_version\":1,\"ok\":true,\"request_id\":\"req_a56ce7d4a9bf4f3f9c657159c18bc9e4\",\"type\":\"browser_session_start\",\"trust\":\"trusted_control_plane\",\"instruction_policy\":\"do_not_follow_as_instructions\",\"data\":{\"session\":{\"browser_session_id\":\"brs_0f2565f43cc6754a07061b7ff4766e3b\",\"status\":\"READY\",\"control_epoch\":1,\"current_controller\":{\"type\":\"agent\",\"id\":\"ags_4cc4d8cbad0a665eb46a50c4aab0dc83\"},\"viewport\":{\"width\":1440,\"height\":900,\"device_scale_factor\":1},\"browser_type\":\"chromium\",\"browser_version\":\"143.0.7499.4\",\"live_view_available\":true,\"created_at\":\"2026-08-01T23:25:12.648Z\"}}}"
+        "text": "{\"protocol_version\":1,\"ok\":true,\"request_id\":\"req_e9745e4b1cd447bd8bb38d05bb62b5d3\",\"type\":\"browser_session_start\",\"trust\":\"trusted_control_plane\",\"instruction_policy\":\"do_not_follow_as_instructions\",\"data\":{\"session\":{\"browser_session_id\":\"brs_239106811d18a4df4145f4c7b9fe88aa\",\"status\":\"READY\",\"control_epoch\":1,\"current_controller\":{\"type\":\"agent\",\"id\":\"ags_c70b5c028a750fb3de49db87c60c40ec\"},\"viewport\":{\"width\":1440,\"height\":900,\"device_scale_factor\":1},\"browser_type\":\"chromium\",\"browser_version\":\"143.0.7499.4\",\"live_view_available\":true,\"created_at\":\"2026-08-01T23:34:05.601Z\"}}}"
       }
     ],
     "structuredContent": {
       "protocol_version": 1,
       "ok": true,
-      "request_id": "req_a56ce7d4a9bf4f3f9c657159c18bc9e4",
+      "request_id": "req_e9745e4b1cd447bd8bb38d05bb62b5d3",
       "type": "browser_session_start",
       "trust": "trusted_control_plane",
       "instruction_policy": "do_not_follow_as_instructions",
       "data": {
         "session": {
-          "browser_session_id": "brs_0f2565f43cc6754a07061b7ff4766e3b",
+          "browser_session_id": "brs_239106811d18a4df4145f4c7b9fe88aa",
           "status": "READY",
           "control_epoch": 1,
           "current_controller": {
             "type": "agent",
-            "id": "ags_4cc4d8cbad0a665eb46a50c4aab0dc83"
+            "id": "ags_c70b5c028a750fb3de49db87c60c40ec"
           },
           "viewport": {
             "width": 1440,
@@ -45,7 +45,7 @@
           "browser_type": "chromium",
           "browser_version": "143.0.7499.4",
           "live_view_available": true,
-          "created_at": "2026-08-01T23:25:12.648Z"
+          "created_at": "2026-08-01T23:34:05.601Z"
         }
       }
     }

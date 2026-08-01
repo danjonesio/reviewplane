@@ -368,10 +368,14 @@ test("a paused session refuses interactive commands and still admits system capt
     headers: AUTH,
     payload: { control_epoch: 1, command: NAVIGATE },
   });
-  assert.equal(
-    (refused.json() as { error: { code: string } }).error.code,
-    "BROWSER_SESSION_NOT_ACTIVE",
-  );
+  const refusal = refused.json() as {
+    error: { code: string; details?: { browser_session_status?: string } };
+  };
+  assert.equal(refusal.error.code, "BROWSER_SESSION_NOT_ACTIVE");
+  // The detail is under the name `error_details` declares. A member the schema
+  // does not declare is dropped on the way to an agent, so a detail named
+  // anything else is a detail nobody receives.
+  assert.equal(refusal.error.details?.browser_session_status, "PAUSED");
   assert.equal(commandRequests(), 0);
   const recorded = await rejections(projectId);
   assert.equal(recorded.at(-1)?.["reason"], "session_paused");

@@ -280,7 +280,7 @@ export class BrowserSessionService {
       throw new ApiError(
         "BROWSER_SESSION_NOT_ACTIVE",
         "Only a reserved browser session can be allocated.",
-        { status: session.status },
+        { browser_session_status: session.status },
       );
     }
     if (session.worker_id === null) {
@@ -841,7 +841,7 @@ export class BrowserSessionService {
       throw new ApiError(
         "BROWSER_SESSION_NOT_ACTIVE",
         `The browser session is ${session.status}.`,
-        { status: session.status },
+        { browser_session_status: session.status },
       );
     }
     if (input.controlEpoch !== session.control_epoch) {
@@ -898,7 +898,7 @@ export class BrowserSessionService {
       throw new ApiError(
         "BROWSER_SESSION_NOT_ACTIVE",
         `The browser session is ${session.status}.`,
-        { status: session.status },
+        { browser_session_status: session.status },
       );
     }
     if (input.controller.type === "human") {
