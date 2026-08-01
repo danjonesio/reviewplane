@@ -59,6 +59,18 @@ func TestWorkspaceObservationRoundTripsToTheControlPlane(t *testing.T) {
 	// Reconciliation is the first frame on every established channel (section 8),
 	// so an observation must not overtake it. The connector's own log records
 	// both in the order it wrote them.
+	//
+	// Both markers have to exist before their order can be read, and neither is
+	// implied by the observation waited for at the top of this test: the
+	// connector sends the observation frame first and logs "workspace
+	// observations sent" afterwards, so the control plane can have recorded the
+	// observation while the line recording it does not exist yet. Waiting on the
+	// assertion's own subjects is what makes this deterministic (RVP-85).
+	harness.WaitUntil("both ordering markers to be logged", 20*time.Second, func() bool {
+		return len(harness.LogsContaining("reconciliation requested")) > 0 &&
+			len(harness.LogsContaining("workspace observations sent")) > 0
+	})
+
 	requested, observed := -1, -1
 	for index, line := range harness.LogLines() {
 		if requested < 0 && strings.Contains(line, "reconciliation requested") {

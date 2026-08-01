@@ -200,10 +200,16 @@ func TestUnknownRouteIsClosedOnReconnect(t *testing.T) {
 		t.Fatal("a revoked route still reached the development environment")
 	}
 
-	decisions := harness.LogsContaining("reconciliation decision", protocolsim.RouteID, "unknown_route")
-	if len(decisions) == 0 {
-		t.Fatal("no reconciliation decision was logged with the route identifier and its reason")
-	}
+	// The audit line is not implied by the withdrawal above. ApplyDesiredState
+	// removes the route from the table and only then logs the decision, so the
+	// wait at the top of this block is satisfied strictly before this line
+	// exists. Waiting on the assertion's own subject is what makes it
+	// deterministic rather than a race the loaded runner sometimes wins.
+	var decisions []string
+	harness.WaitUntil("the reconciliation decision to be logged", 10*time.Second, func() bool {
+		decisions = harness.LogsContaining("reconciliation decision", protocolsim.RouteID, "unknown_route")
+		return len(decisions) > 0
+	})
 	if !strings.Contains(decisions[0], harness.ConnectorID) {
 		t.Fatalf("the reconciliation log line does not carry the connector identity: %s", decisions[0])
 	}
