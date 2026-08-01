@@ -175,6 +175,7 @@ export function encodeWorkerHeartbeatAck(value: WorkerHeartbeatAck): string {
  */
 export function encodeWorkerContextsRequest(value: WorkerContextsRequest): string {
   const fields: string[] = [];
+  fields.push(`"requested_at":${jsonString(value.requested_at)}`);
   return `{${fields.join(",")}}`;
 }
 

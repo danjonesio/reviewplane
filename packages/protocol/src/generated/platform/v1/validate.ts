@@ -352,7 +352,7 @@ export function validateAgentSessionStatus(value: unknown, path: string, out: Sc
  * representation of a session must name what the session was permitted to do.
  */
 export function validateAgentCapability(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["project:read","review:read","review:write","finding:read","finding:write","verification:submit","browser:capture","service:publish","browser:control"] });
+  checkString(value, path, out, { values: ["project:read","review:read","review:write","finding:read","finding:write","verification:submit","browser:capture","browser:control"] });
 }
 
 /**

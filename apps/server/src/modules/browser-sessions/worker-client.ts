@@ -153,15 +153,15 @@ export class BrowserWorkerClient {
    * Asks the worker what browser contexts it is holding
    * (`docs/OPERATIONS.md` section 9).
    *
-   * The request names nothing: a reconciler that could name the sessions it
-   * expects would be told what it already believes, and the whole point is to
-   * compare the two independently derived sets.
+   * The request names no session, only when it was made: a reconciler that
+   * could name the sessions it expects would be told what it already believes,
+   * and the whole point is to compare two independently derived sets.
    */
   async contexts(workerId: string): Promise<WorkerContexts> {
     const frame = await this.#exchange("/internal/v1/contexts", {
       envelope: this.#envelope("worker.contexts.request", workerId, {}),
       type: "worker.contexts.request",
-      payload: {},
+      payload: { requested_at: new Date().toISOString() },
     });
     if (frame.type !== "worker.contexts") {
       throw new ApiError(

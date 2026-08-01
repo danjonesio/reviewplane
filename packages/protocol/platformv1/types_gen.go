@@ -358,12 +358,11 @@ const (
 	AgentCapabilityFindingWrite       AgentCapability = "finding:write"
 	AgentCapabilityVerificationSubmit AgentCapability = "verification:submit"
 	AgentCapabilityBrowserCapture     AgentCapability = "browser:capture"
-	AgentCapabilityServicePublish     AgentCapability = "service:publish"
 	AgentCapabilityBrowserControl     AgentCapability = "browser:control"
 )
 
 // AgentCapabilityValues lists every value in declaration order.
-var AgentCapabilityValues = []AgentCapability{AgentCapabilityProjectRead, AgentCapabilityReviewRead, AgentCapabilityReviewWrite, AgentCapabilityFindingRead, AgentCapabilityFindingWrite, AgentCapabilityVerificationSubmit, AgentCapabilityBrowserCapture, AgentCapabilityServicePublish, AgentCapabilityBrowserControl}
+var AgentCapabilityValues = []AgentCapability{AgentCapabilityProjectRead, AgentCapabilityReviewRead, AgentCapabilityReviewWrite, AgentCapabilityFindingRead, AgentCapabilityFindingWrite, AgentCapabilityVerificationSubmit, AgentCapabilityBrowserCapture, AgentCapabilityBrowserControl}
 
 // LoginMethod is defined by the connector protocol schema.
 //

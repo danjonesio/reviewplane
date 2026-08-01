@@ -178,6 +178,7 @@ export function decodeWorkerHeartbeatAck(value: unknown): WorkerHeartbeatAck {
 export function decodeWorkerContextsRequest(value: unknown): WorkerContextsRequest {
   const source = value as Record<string, unknown>;
   return {
+    requested_at: source["requested_at"] as string,
   };
 }
 

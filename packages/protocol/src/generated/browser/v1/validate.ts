@@ -715,12 +715,18 @@ export function validateWorkerHeartbeatAck(value: unknown, path: string, out: Sc
 }
 
 /**
- * Asks the worker what it is holding. It takes no arguments: a reconciler that could name
- * the sessions it expects would be told what it already believes.
+ * Asks the worker what it is holding. It names no session: a reconciler that could name
+ * the sessions it expects would be told what it already believes, and the whole point is
+ * to compare two independently derived sets. The only member is when the control plane
+ * asked, which is what lets a worker log a reconciliation pass without inferring it from
+ * an empty request.
  */
 export function validateWorkerContextsRequest(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, [], []);
+  const source = checkObject(value, path, out, ["requested_at"], ["requested_at"]);
   if (source === null) return;
+  if (source["requested_at"] !== undefined) {
+    validateTimestamp(source["requested_at"], `${path}.requested_at`, out);
+  }
 }
 
 /**

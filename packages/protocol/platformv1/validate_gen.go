@@ -289,7 +289,7 @@ func validateAgentSessionStatus(value any, path string, out *[]SchemaViolation) 
 // restated here because a control-plane representation of a session must name what the
 // session was permitted to do.
 func validateAgentCapability(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{values: []string{"project:read", "review:read", "review:write", "finding:read", "finding:write", "verification:submit", "browser:capture", "service:publish", "browser:control"}})
+	checkString(value, path, out, stringOpts{values: []string{"project:read", "review:read", "review:write", "finding:read", "finding:write", "verification:submit", "browser:capture", "browser:control"}})
 }
 
 // validateLoginMethod checks how a human authenticated. bootstrap_token is the

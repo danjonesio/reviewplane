@@ -395,7 +395,6 @@ export const AGENT_CAPABILITY_VALUES = [
   "finding:write",
   "verification:submit",
   "browser:capture",
-  "service:publish",
   "browser:control",
 ] as const;
 
@@ -407,7 +406,6 @@ export type AgentCapability =
   | "finding:write"
   | "verification:submit"
   | "browser:capture"
-  | "service:publish"
   | "browser:control";
 
 /**

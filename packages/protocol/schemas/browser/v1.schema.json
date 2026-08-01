@@ -843,11 +843,16 @@
     },
     "worker_contexts_request": {
       "type": "object",
-      "description": "Asks the worker what it is holding. It takes no arguments: a reconciler that could name the sessions it expects would be told what it already believes.",
+      "description": "Asks the worker what it is holding. It names no session: a reconciler that could name the sessions it expects would be told what it already believes, and the whole point is to compare two independently derived sets. The only member is when the control plane asked, which is what lets a worker log a reconciliation pass without inferring it from an empty request.",
       "additionalProperties": false,
       "x-max-bytes": 512,
-      "required": [],
-      "properties": {}
+      "required": ["requested_at"],
+      "properties": {
+        "requested_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the control plane asked."
+        }
+      }
     },
     "worker_context": {
       "type": "object",

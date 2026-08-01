@@ -877,10 +877,17 @@ export interface WorkerHeartbeatAck {
 }
 
 /**
- * Asks the worker what it is holding. It takes no arguments: a reconciler that could name
- * the sessions it expects would be told what it already believes.
+ * Asks the worker what it is holding. It names no session: a reconciler that could name
+ * the sessions it expects would be told what it already believes, and the whole point is
+ * to compare two independently derived sets. The only member is when the control plane
+ * asked, which is what lets a worker log a reconciliation pass without inferring it from
+ * an empty request.
  */
 export interface WorkerContextsRequest {
+  /**
+   * When the control plane asked.
+   */
+  readonly requested_at: Timestamp;
 }
 
 /**

@@ -60,7 +60,12 @@ test("the tool availability set is the message-type enumeration", () => {
   // docs/MCP_SPEC.md section 14: a client relies on negotiated availability. If
   // the two could differ, a tool could be advertised with no result schema.
   assert.deepEqual([...TOOL_AVAILABILITY], [...MESSAGE_TYPE_VALUES]);
-  assert.equal(MESSAGE_TYPE_VALUES.length, 20);
+  // The count is asserted so that a tool added to one enumeration and not the
+  // other is caught even when both lists happen to agree by accident. It is 34
+  // since RVP-30 added the fourteen browser lifecycle and interaction tools of
+  // docs/MCP_SPEC.md sections 7.3 and 7.4; docs/MCP_SPEC.md section 14.1 lists
+  // the same 34 and names the nine that remain absent.
+  assert.equal(MESSAGE_TYPE_VALUES.length, 34);
 });
 
 test("no tool names a secret, a completion gate or a visual inspection", () => {
