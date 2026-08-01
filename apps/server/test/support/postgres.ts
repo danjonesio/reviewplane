@@ -113,7 +113,7 @@ export async function startMigratedDatabase(): Promise<MigratedDatabase> {
 }
 
 const FIXTURE_TABLES = `idempotency_keys, review_exports, jobs, verification_artefacts, verifications, comments,
-              annotations, findings, reviews, artefact_access_grants, artefacts,
+              inbox_items, annotations, findings, reviews, artefact_access_grants, artefacts,
               control_leases, browser_sessions, browser_worker_projects,
               browser_workers, agent_sessions, agent_credentials, workspaces,
               viewer_sessions, route_capabilities, published_services, connectors,

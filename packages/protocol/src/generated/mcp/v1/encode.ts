@@ -15,6 +15,10 @@ import {
 } from "../../../canonical.ts";
 import type {
   ActorReference,
+  AgentInboxAcknowledgeInput,
+  AgentInboxAcknowledgeResult,
+  AgentInboxListInput,
+  AgentInboxListResult,
   AgentSessionStatusInput,
   AgentSessionStatusResult,
   AnnotationGeometry,
@@ -34,19 +38,29 @@ import type {
   FindingClaimInput,
   FindingGetInput,
   FindingGetResult,
+  FindingMarkBlockedInput,
   FindingMutationResult,
   FindingSubmitVerificationInput,
   FindingSubmitVerificationResult,
   FindingUpdateStatusInput,
   FindingView,
+  InboxItemView,
   PolicySummary,
   ProjectCurrentInput,
   ProjectCurrentResult,
   ProjectReference,
+  ReviewAddCommentInput,
+  ReviewAddCommentResult,
   ReviewClaimInput,
   ReviewGetInput,
   ReviewGetResult,
+  ReviewListInput,
+  ReviewListResult,
   ReviewMutationResult,
+  ReviewSearchInput,
+  ReviewSearchMatch,
+  ReviewSearchResult,
+  ReviewStaleness,
   ReviewUpdateStatusInput,
   ReviewView,
   ScrollPosition,
@@ -319,10 +333,78 @@ export function encodeAnnotationView(value: AnnotationView): string {
 export function encodeCommentView(value: CommentView): string {
   const fields: string[] = [];
   fields.push(`"id":${jsonString(value.id)}`);
-  fields.push(`"finding_id":${jsonString(value.finding_id)}`);
+  fields.push(`"review_id":${jsonString(value.review_id)}`);
+  if (value.finding_id !== undefined) {
+    fields.push(`"finding_id":${jsonString(value.finding_id)}`);
+  }
   fields.push(`"body":${jsonString(value.body)}`);
   fields.push(`"author":${encodeActorReference(value.author)}`);
   fields.push(`"created_at":${jsonString(value.created_at)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a InboxItemView.
+ */
+export function encodeInboxItemView(value: InboxItemView): string {
+  const fields: string[] = [];
+  fields.push(`"id":${jsonString(value.id)}`);
+  fields.push(`"project_id":${jsonString(value.project_id)}`);
+  fields.push(`"type":${jsonString(value.type)}`);
+  fields.push(`"title":${jsonString(value.title)}`);
+  fields.push(`"status":${jsonString(value.status)}`);
+  if (value.review_id !== undefined) {
+    fields.push(`"review_id":${jsonString(value.review_id)}`);
+  }
+  if (value.review_slug !== undefined) {
+    fields.push(`"review_slug":${jsonString(value.review_slug)}`);
+  }
+  if (value.finding_id !== undefined) {
+    fields.push(`"finding_id":${jsonString(value.finding_id)}`);
+  }
+  if (value.priority !== undefined) {
+    fields.push(`"priority":${jsonString(value.priority)}`);
+  }
+  if (value.finding_count !== undefined) {
+    fields.push(`"finding_count":${jsonInteger(value.finding_count)}`);
+  }
+  if (value.assigned_by !== undefined) {
+    fields.push(`"assigned_by":${encodeActorReference(value.assigned_by)}`);
+  }
+  fields.push(`"created_at":${jsonString(value.created_at)}`);
+  if (value.acknowledged_at !== undefined) {
+    fields.push(`"acknowledged_at":${jsonString(value.acknowledged_at)}`);
+  }
+  if (value.completed_at !== undefined) {
+    fields.push(`"completed_at":${jsonString(value.completed_at)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ReviewStaleness.
+ */
+export function encodeReviewStaleness(value: ReviewStaleness): string {
+  const fields: string[] = [];
+  fields.push(`"computed":${jsonBoolean(value.computed)}`);
+  fields.push(`"captured_branch":${jsonString(value.captured_branch)}`);
+  fields.push(`"captured_commit":${jsonString(value.captured_commit)}`);
+  if (value.workspace_branch !== undefined) {
+    fields.push(`"workspace_branch":${jsonString(value.workspace_branch)}`);
+  }
+  if (value.workspace_head_commit !== undefined) {
+    fields.push(`"workspace_head_commit":${jsonString(value.workspace_head_commit)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ReviewSearchMatch.
+ */
+export function encodeReviewSearchMatch(value: ReviewSearchMatch): string {
+  const fields: string[] = [];
+  fields.push(`"review":${encodeReviewView(value.review)}`);
+  fields.push(`"matched":${`[${value.matched.map((item) => jsonString(item)).join(",")}]`}`);
   return `{${fields.join(",")}}`;
 }
 
@@ -512,6 +594,71 @@ export function encodeAgentSessionStatusInput(value: AgentSessionStatusInput): s
 }
 
 /**
+ * Canonically encodes a AgentInboxListInput.
+ */
+export function encodeAgentInboxListInput(value: AgentInboxListInput): string {
+  const fields: string[] = [];
+  if (value.status !== undefined) {
+    fields.push(`"status":${`[${value.status.map((item) => jsonString(item)).join(",")}]`}`);
+  }
+  if (value.limit !== undefined) {
+    fields.push(`"limit":${jsonInteger(value.limit)}`);
+  }
+  if (value.cursor !== undefined) {
+    fields.push(`"cursor":${jsonString(value.cursor)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a AgentInboxAcknowledgeInput.
+ */
+export function encodeAgentInboxAcknowledgeInput(value: AgentInboxAcknowledgeInput): string {
+  const fields: string[] = [];
+  fields.push(`"inbox_item_id":${jsonString(value.inbox_item_id)}`);
+  fields.push(`"idempotency_key":${jsonString(value.idempotency_key)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ReviewListInput.
+ */
+export function encodeReviewListInput(value: ReviewListInput): string {
+  const fields: string[] = [];
+  if (value.status !== undefined) {
+    fields.push(`"status":${`[${value.status.map((item) => jsonString(item)).join(",")}]`}`);
+  }
+  if (value.assigned_to_me !== undefined) {
+    fields.push(`"assigned_to_me":${jsonBoolean(value.assigned_to_me)}`);
+  }
+  if (value.slug_prefix !== undefined) {
+    fields.push(`"slug_prefix":${jsonString(value.slug_prefix)}`);
+  }
+  if (value.updated_since !== undefined) {
+    fields.push(`"updated_since":${jsonString(value.updated_since)}`);
+  }
+  if (value.limit !== undefined) {
+    fields.push(`"limit":${jsonInteger(value.limit)}`);
+  }
+  if (value.cursor !== undefined) {
+    fields.push(`"cursor":${jsonString(value.cursor)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ReviewSearchInput.
+ */
+export function encodeReviewSearchInput(value: ReviewSearchInput): string {
+  const fields: string[] = [];
+  fields.push(`"query":${jsonString(value.query)}`);
+  if (value.limit !== undefined) {
+    fields.push(`"limit":${jsonInteger(value.limit)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
  * Canonically encodes a ReviewGetInput.
  */
 export function encodeReviewGetInput(value: ReviewGetInput): string {
@@ -525,6 +672,12 @@ export function encodeReviewGetInput(value: ReviewGetInput): string {
   }
   if (value.findings_cursor !== undefined) {
     fields.push(`"findings_cursor":${jsonString(value.findings_cursor)}`);
+  }
+  if (value.comments_limit !== undefined) {
+    fields.push(`"comments_limit":${jsonInteger(value.comments_limit)}`);
+  }
+  if (value.comments_cursor !== undefined) {
+    fields.push(`"comments_cursor":${jsonString(value.comments_cursor)}`);
   }
   return `{${fields.join(",")}}`;
 }
@@ -556,6 +709,17 @@ export function encodeReviewUpdateStatusInput(value: ReviewUpdateStatusInput): s
 }
 
 /**
+ * Canonically encodes a ReviewAddCommentInput.
+ */
+export function encodeReviewAddCommentInput(value: ReviewAddCommentInput): string {
+  const fields: string[] = [];
+  fields.push(`"review_id":${jsonString(value.review_id)}`);
+  fields.push(`"body":${jsonString(value.body)}`);
+  fields.push(`"idempotency_key":${jsonString(value.idempotency_key)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
  * Canonically encodes a FindingGetInput.
  */
 export function encodeFindingGetInput(value: FindingGetInput): string {
@@ -563,6 +727,12 @@ export function encodeFindingGetInput(value: FindingGetInput): string {
   fields.push(`"finding_id":${jsonString(value.finding_id)}`);
   if (value.include !== undefined) {
     fields.push(`"include":${`[${value.include.map((item) => jsonString(item)).join(",")}]`}`);
+  }
+  if (value.comments_limit !== undefined) {
+    fields.push(`"comments_limit":${jsonInteger(value.comments_limit)}`);
+  }
+  if (value.comments_cursor !== undefined) {
+    fields.push(`"comments_cursor":${jsonString(value.comments_cursor)}`);
   }
   return `{${fields.join(",")}}`;
 }
@@ -591,6 +761,21 @@ export function encodeFindingUpdateStatusInput(value: FindingUpdateStatusInput):
   }
   if (value.reason !== undefined) {
     fields.push(`"reason":${jsonString(value.reason)}`);
+  }
+  fields.push(`"idempotency_key":${jsonString(value.idempotency_key)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a FindingMarkBlockedInput.
+ */
+export function encodeFindingMarkBlockedInput(value: FindingMarkBlockedInput): string {
+  const fields: string[] = [];
+  fields.push(`"finding_id":${jsonString(value.finding_id)}`);
+  fields.push(`"expected_version":${jsonInteger(value.expected_version)}`);
+  fields.push(`"reason":${jsonString(value.reason)}`);
+  if (value.requested_human_action !== undefined) {
+    fields.push(`"requested_human_action":${jsonString(value.requested_human_action)}`);
   }
   fields.push(`"idempotency_key":${jsonString(value.idempotency_key)}`);
   return `{${fields.join(",")}}`;
@@ -673,6 +858,9 @@ export function encodeAgentSessionStatusResult(value: AgentSessionStatusResult):
   if (value.browser_sessions !== undefined) {
     fields.push(`"browser_sessions":${`[${value.browser_sessions.map((item) => encodeBrowserSessionView(item)).join(",")}]`}`);
   }
+  if (value.inbox_pending_count !== undefined) {
+    fields.push(`"inbox_pending_count":${jsonInteger(value.inbox_pending_count)}`);
+  }
   if (value.expires_at !== undefined) {
     fields.push(`"expires_at":${jsonString(value.expires_at)}`);
   }
@@ -693,6 +881,70 @@ export function encodeReviewGetResult(value: ReviewGetResult): string {
   }
   if (value.artefact_links !== undefined) {
     fields.push(`"artefact_links":${`[${value.artefact_links.map((item) => encodeArtefactLink(item)).join(",")}]`}`);
+  }
+  if (value.comments !== undefined) {
+    fields.push(`"comments":${`[${value.comments.map((item) => encodeCommentView(item)).join(",")}]`}`);
+  }
+  if (value.comments_next_cursor !== undefined) {
+    fields.push(`"comments_next_cursor":${jsonString(value.comments_next_cursor)}`);
+  }
+  if (value.staleness !== undefined) {
+    fields.push(`"staleness":${encodeReviewStaleness(value.staleness)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ReviewListResult.
+ */
+export function encodeReviewListResult(value: ReviewListResult): string {
+  const fields: string[] = [];
+  fields.push(`"reviews":${`[${value.reviews.map((item) => encodeReviewView(item)).join(",")}]`}`);
+  if (value.next_cursor !== undefined) {
+    fields.push(`"next_cursor":${jsonString(value.next_cursor)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ReviewSearchResult.
+ */
+export function encodeReviewSearchResult(value: ReviewSearchResult): string {
+  const fields: string[] = [];
+  fields.push(`"matches":${`[${value.matches.map((item) => encodeReviewSearchMatch(item)).join(",")}]`}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ReviewAddCommentResult.
+ */
+export function encodeReviewAddCommentResult(value: ReviewAddCommentResult): string {
+  const fields: string[] = [];
+  fields.push(`"comment":${encodeCommentView(value.comment)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a AgentInboxListResult.
+ */
+export function encodeAgentInboxListResult(value: AgentInboxListResult): string {
+  const fields: string[] = [];
+  fields.push(`"items":${`[${value.items.map((item) => encodeInboxItemView(item)).join(",")}]`}`);
+  fields.push(`"pending_count":${jsonInteger(value.pending_count)}`);
+  if (value.next_cursor !== undefined) {
+    fields.push(`"next_cursor":${jsonString(value.next_cursor)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a AgentInboxAcknowledgeResult.
+ */
+export function encodeAgentInboxAcknowledgeResult(value: AgentInboxAcknowledgeResult): string {
+  const fields: string[] = [];
+  fields.push(`"item":${encodeInboxItemView(value.item)}`);
+  if (value.previous_status !== undefined) {
+    fields.push(`"previous_status":${jsonString(value.previous_status)}`);
   }
   return `{${fields.join(",")}}`;
 }
@@ -720,6 +972,9 @@ export function encodeFindingGetResult(value: FindingGetResult): string {
   }
   if (value.comments !== undefined) {
     fields.push(`"comments":${`[${value.comments.map((item) => encodeCommentView(item)).join(",")}]`}`);
+  }
+  if (value.comments_next_cursor !== undefined) {
+    fields.push(`"comments_next_cursor":${jsonString(value.comments_next_cursor)}`);
   }
   if (value.artefact_links !== undefined) {
     fields.push(`"artefact_links":${`[${value.artefact_links.map((item) => encodeArtefactLink(item)).join(",")}]`}`);

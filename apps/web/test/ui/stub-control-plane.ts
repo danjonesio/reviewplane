@@ -79,6 +79,15 @@ export interface StubOptions {
    * `screenshot`, so a slider that moves visibly changes what is shown.
    */
   readonly afterScreenshot?: Uint8Array;
+  /**
+   * How far the review's delivery to an agent has got
+   * (`docs/UX_FLOWS.md` section 11). `none` is the default and means the review
+   * is assigned to nobody and no inbox item carries it, which is what the
+   * undelivered empty state is for; the other two also assign the review to
+   * `AGENT_SESSION_ID` and claim its first finding, because a delivery with no
+   * assignment behind it is not a state the control plane produces.
+   */
+  readonly inboxStatus?: "pending" | "acknowledged" | "none";
 }
 
 /**
@@ -204,6 +213,19 @@ export const REVIEW = {
   created_at: "2026-07-30T10:12:04.118Z",
   updated_at: "2026-07-30T10:12:44.310Z",
 };
+
+/**
+ * The agent session the review is delivered to, and the item that delivers it.
+ *
+ * The session identifier is the only name for it there is: nothing in the API
+ * resolves an agent session to a client's name, so a panel that printed one
+ * would have invented it. The acknowledgement time is fixed so the acknowledged
+ * case asserts on a value rather than on "some date appeared".
+ */
+export const AGENT_SESSION_ID = "ags_ui_suite";
+export const INBOX_ITEM_ID = "inb_ui_suite";
+export const INBOX_CREATED_AT = "2026-07-30T11:30:00.000Z";
+export const INBOX_ACKNOWLEDGED_AT = "2026-07-30T11:34:00.000Z";
 
 /**
  * The environment, connector and workspace a connector enrolment produces
@@ -538,6 +560,62 @@ export async function startStubControlPlane(options: StubOptions): Promise<StubC
     };
   }
 
+  // ------------------------------------------------------- agent delivery
+  const inboxStatus = options.inboxStatus ?? "none";
+  const delivered = inboxStatus !== "none";
+
+  /**
+   * The inbox item carrying this review, as the control plane answers it: every
+   * member it does not know is `null` rather than absent, so a page that only
+   * handled the absent spelling fails here rather than in a deployment.
+   */
+  function inboxItems(): Record<string, unknown>[] {
+    if (!delivered) return [];
+    return [
+      {
+        id: INBOX_ITEM_ID,
+        organisation_id: PROJECT.organisation_id,
+        project_id: PROJECT.id,
+        recipient_type: "agent_session",
+        recipient_id: AGENT_SESSION_ID,
+        type: "review_assigned",
+        title: REVIEW.title,
+        status: inboxStatus,
+        review_id: REVIEW.id,
+        review_slug: REVIEW.slug,
+        finding_id: null,
+        priority: "high",
+        finding_count: REVIEW.finding_count,
+        assigned_by: { type: "human_user", id: "vwr_ui", display: "Administrator" },
+        created_at: INBOX_CREATED_AT,
+        acknowledged_at: inboxStatus === "acknowledged" ? INBOX_ACKNOWLEDGED_AT : null,
+        completed_at: null,
+        expires_at: null,
+      },
+    ];
+  }
+
+  /** The review, assigned only where something has actually been delivered. */
+  function reviewRecord(): Record<string, unknown> {
+    return {
+      ...REVIEW,
+      ...(delivered ? { assigned_agent_session_id: AGENT_SESSION_ID } : {}),
+    };
+  }
+
+  /**
+   * The findings. The first is claimed once the review has been delivered,
+   * which is the per-finding half of `docs/UX_FLOWS.md` section 12; the others
+   * stay unclaimed, so the honest "Nobody" is on screen beside it.
+   */
+  function findingRecords(): Record<string, unknown>[] {
+    return FINDINGS.map((finding, index) =>
+      delivered && index === 0
+        ? { ...finding, claimed_by: { type: "agent_session", id: AGENT_SESSION_ID } }
+        : { ...finding },
+    );
+  }
+
   const server: Server = createServer((request, response) => {
     void handle(request, response).catch(() => {
       if (!response.headersSent) sendJson(response, 500, { error: { code: "INTERNAL_ERROR" } });
@@ -851,6 +929,7 @@ export async function startStubControlPlane(options: StubOptions): Promise<StubC
           routes_revoked: 2,
           sessions_disconnected: 1,
           channels_closed: 1,
+          agent_credentials_revoked: 1,
         },
       });
       return;
@@ -907,15 +986,36 @@ export async function startStubControlPlane(options: StubOptions): Promise<StubC
 
     // ------------------------------------------------------------ reviews
     if (path === `/api/v1/projects/${PROJECT.id}/reviews`) {
-      sendJson(response, 200, { data: [REVIEW] });
+      sendJson(response, 200, { data: [reviewRecord()] });
       return;
     }
     if (path === `/api/v1/reviews/${REVIEW.id}`) {
-      sendJson(response, 200, { data: REVIEW });
+      sendJson(response, 200, { data: reviewRecord() });
       return;
     }
     if (path === `/api/v1/reviews/${REVIEW.id}/findings`) {
-      sendJson(response, 200, { data: FINDINGS });
+      sendJson(response, 200, { data: findingRecords() });
+      return;
+    }
+
+    // ------------------------------------------------------------- inbox
+    const inboxMatch = /^\/api\/v1\/projects\/([^/]+)\/inbox$/u.exec(path);
+    if (inboxMatch !== null) {
+      const owner = inboxMatch[1] as string;
+      if (!projects.has(owner)) {
+        sendJson(response, 404, {
+          error: { code: "RESOURCE_NOT_FOUND", message: "The project was not found." },
+        });
+        return;
+      }
+      const items = owner === PROJECT.id ? inboxItems() : [];
+      sendJson(response, 200, {
+        data: items,
+        meta: {
+          request_id: "req_ui_inbox",
+          pending_count: items.filter((item) => item["status"] === "pending").length,
+        },
+      });
       return;
     }
     const annotationsMatch = /^\/api\/v1\/findings\/([^/]+)\/annotations$/u.exec(path);

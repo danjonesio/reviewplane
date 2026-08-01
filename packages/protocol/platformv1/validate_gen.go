@@ -273,6 +273,20 @@ func validateWorkspaceObservationSource(value any, path string, out *[]SchemaVio
 	checkString(value, path, out, stringOpts{values: []string{"connector_report", "administrative_registration"}})
 }
 
+// validateAgentSessionStatus checks agent-session status (docs/DOMAIN_MODEL.md section
+// 11).
+func validateAgentSessionStatus(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"STARTING", "ACTIVE", "WAITING", "BLOCKED", "DISCONNECTED", "COMPLETED", "FAILED", "CANCELLED"}})
+}
+
+// validateAgentCapability checks a capability an agent credential may carry
+// (docs/SECURITY.md section 6.3). It is the same vocabulary the MCP schema declares,
+// restated here because a control-plane representation of a session must name what the
+// session was permitted to do.
+func validateAgentCapability(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"project:read", "review:read", "review:write", "finding:read", "finding:write", "verification:submit", "browser:capture"}})
+}
+
 // validateLoginMethod checks how a human authenticated. bootstrap_token is the
 // ADR-0016 exchange, install_token is the one-time administrator bootstrap, and
 // password is a local account.
@@ -594,6 +608,68 @@ func validateHumanSession(value any, path string, out *[]SchemaViolation) {
 	}
 	if field, present := source["expires_at"]; present {
 		validateTimestamp(field, path+".expires_at", out)
+	}
+}
+
+// validateAgentSessionCapabilities checks capabilities the session holds. It cannot
+// exceed the set its credential carried when it opened.
+func validateAgentSessionCapabilities(value any, path string, out *[]SchemaViolation) {
+	items, ok := checkArray(value, path, out, 1, 16, true)
+	if !ok {
+		return
+	}
+	for index, item := range items {
+		validateAgentCapability(item, indexPath(path, index), out)
+	}
+}
+
+// validateAgentSession checks a AgentSession value.
+func validateAgentSession(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"id", "organisation_id", "project_id", "connector_id", "workspace_id", "agent_type", "agent_version", "capabilities", "branch", "head_commit", "status", "started_at", "last_seen_at", "ended_at"}, []string{"id", "project_id", "agent_type", "capabilities", "status", "started_at"})
+	if !ok {
+		return
+	}
+	if field, present := source["id"]; present {
+		validateIdentifier(field, path+".id", out)
+	}
+	if field, present := source["organisation_id"]; present {
+		validateIdentifier(field, path+".organisation_id", out)
+	}
+	if field, present := source["project_id"]; present {
+		validateIdentifier(field, path+".project_id", out)
+	}
+	if field, present := source["connector_id"]; present {
+		validateIdentifier(field, path+".connector_id", out)
+	}
+	if field, present := source["workspace_id"]; present {
+		validateIdentifier(field, path+".workspace_id", out)
+	}
+	if field, present := source["agent_type"]; present {
+		validateDisplayName(field, path+".agent_type", out)
+	}
+	if field, present := source["agent_version"]; present {
+		validateDisplayName(field, path+".agent_version", out)
+	}
+	if field, present := source["capabilities"]; present {
+		validateAgentSessionCapabilities(field, path+".capabilities", out)
+	}
+	if field, present := source["branch"]; present {
+		validateGitRefName(field, path+".branch", out)
+	}
+	if field, present := source["head_commit"]; present {
+		validateGitCommit(field, path+".head_commit", out)
+	}
+	if field, present := source["status"]; present {
+		validateAgentSessionStatus(field, path+".status", out)
+	}
+	if field, present := source["started_at"]; present {
+		validateTimestamp(field, path+".started_at", out)
+	}
+	if field, present := source["last_seen_at"]; present {
+		validateTimestamp(field, path+".last_seen_at", out)
+	}
+	if field, present := source["ended_at"]; present {
+		validateTimestamp(field, path+".ended_at", out)
 	}
 }
 
@@ -1233,9 +1309,17 @@ func validateConnectorRevokedPayloadChannelsClosed(value any, path string, out *
 	checkInteger(value, path, out, 0, 1024)
 }
 
+// validateConnectorRevokedPayloadAgentCredentialsRevoked checks how many live agent
+// credentials the connector had minted were revoked with it (ADR-0023). Refusing the
+// exchange closes only the next one, so this count is what closed the ones already
+// issued. Each also writes its own session.revoked with the reason connector_revoked.
+func validateConnectorRevokedPayloadAgentCredentialsRevoked(value any, path string, out *[]SchemaViolation) {
+	checkInteger(value, path, out, 0, 1024)
+}
+
 // validateConnectorRevokedPayload checks a ConnectorRevokedPayload value.
 func validateConnectorRevokedPayload(value any, path string, out *[]SchemaViolation) {
-	source, ok := checkObject(value, path, out, []string{"previous_status", "new_status", "routes_revoked", "sessions_disconnected", "channels_closed"}, []string{"previous_status", "new_status", "routes_revoked", "sessions_disconnected"})
+	source, ok := checkObject(value, path, out, []string{"previous_status", "new_status", "routes_revoked", "sessions_disconnected", "channels_closed", "agent_credentials_revoked"}, []string{"previous_status", "new_status", "routes_revoked", "sessions_disconnected"})
 	if !ok {
 		return
 	}
@@ -1253,6 +1337,9 @@ func validateConnectorRevokedPayload(value any, path string, out *[]SchemaViolat
 	}
 	if field, present := source["channels_closed"]; present {
 		validateConnectorRevokedPayloadChannelsClosed(field, path+".channels_closed", out)
+	}
+	if field, present := source["agent_credentials_revoked"]; present {
+		validateConnectorRevokedPayloadAgentCredentialsRevoked(field, path+".agent_credentials_revoked", out)
 	}
 }
 

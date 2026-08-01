@@ -10,7 +10,14 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 
-import { MESSAGE_TYPE_VALUES, decodeMcpToolResponse } from "@reviewplane/protocol/mcp";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+
+import {
+  MESSAGE_TYPE_VALUES,
+  McpResponseEncodeError,
+  decodeMcpToolResponse,
+} from "@reviewplane/protocol/mcp";
 import { validateArtefactResource } from "@reviewplane/protocol/review";
 import type { SchemaViolation } from "@reviewplane/protocol/review";
 import { startMigratedDatabase, truncateAll, type MigratedDatabase } from "@reviewplane/server/testing";
@@ -20,13 +27,17 @@ import {
   AFTER_SCREENSHOT,
   CAPTURED_COMMIT,
   FIXED_COMMIT,
+  WORKER_COMMAND_CREDENTIAL,
   connectAgent,
   envelopeOf,
   resourceLinksOf,
   startMcpHarness,
   type McpHarness,
 } from "./helpers/harness.ts";
+import { buildMcpApp } from "../src/app.ts";
+import { refusalFrom } from "../src/envelope.ts";
 import {
+  assignReviewToAgent,
   issueAgentCredential,
   seedProject,
   startBrowserSessionForAgent,
@@ -173,7 +184,7 @@ test("an ambiguous project association fails with PROJECT_CONTEXT_AMBIGUOUS and 
   }
 });
 
-test("the advertised tool set is exactly the Stage 0 availability set", async () => {
+test("the advertised tool set is exactly the schema's availability set", async () => {
   const agent = await connected();
   try {
     const listed = await agent.client.listTools();
@@ -183,6 +194,212 @@ test("the advertised tool set is exactly the Stage 0 availability set", async ()
       assert.equal(typeof tool.inputSchema, "object", `${tool.name} advertises no schema`);
       assert.doesNotMatch(tool.name, /secret/u);
     }
+  } finally {
+    await agent.close();
+  }
+});
+
+// ------------------------------------------------------------------ inbox
+
+test("assigning a review delivers one inbox item, and assigning twice delivers one", async () => {
+  const agent = await connected();
+  try {
+    const status = await call(agent.client, "agent_session_status", {});
+    const sessionId = dataOf(status.envelope)["agent_session_id"] as string;
+
+    const first = await assignReviewToAgent(harness, agent.seeded.reviewId, sessionId, 1);
+    assert.equal(first.status, 200);
+    const version = ((first.body as { data: { version: number } }).data).version;
+    // The same assignment again. A human clicking twice has assigned once.
+    await assignReviewToAgent(harness, agent.seeded.reviewId, sessionId, version);
+
+    const listed = await call(agent.client, "agent_inbox_list", {});
+    const items = dataOf(listed.envelope)["items"] as { review_slug: string; status: string }[];
+    assert.equal(items.length, 1, "a repeated assignment delivers one item");
+    assert.equal(items[0]?.review_slug, "bugs-on-homepage");
+    assert.equal(items[0]?.status, "pending");
+    assert.equal(dataOf(listed.envelope)["pending_count"], 1);
+
+    const created = await postgres.pool.query(
+      "SELECT count(*) AS count FROM events WHERE project_id = $1 AND type = 'inbox_item.created'",
+      [agent.seeded.projectId],
+    );
+    assert.equal(Number(created.rows[0].count), 1, "one delivery, one audit record");
+  } finally {
+    await agent.close();
+  }
+});
+
+test("inbox items are ordered oldest first, so assignment order is preserved", async () => {
+  const agent = await connected();
+  try {
+    const status = await call(agent.client, "agent_session_status", {});
+    const sessionId = dataOf(status.envelope)["agent_session_id"] as string;
+    await assignReviewToAgent(harness, agent.seeded.reviewId, sessionId, 1);
+
+    // A second, later review assigned to the same session.
+    const second = await harness.control.app.inject({
+      method: "POST",
+      url: `/api/v1/projects/${agent.seeded.projectId}/reviews`,
+      headers: ADMIN,
+      payload: {
+        slug: "later-review",
+        title: "Later review",
+        status: "READY",
+        captured_branch: "redesign",
+        captured_commit: CAPTURED_COMMIT,
+        captured_workspace_id: agent.seeded.workspaceId,
+        source_browser_session_id: agent.seeded.browserSessionId,
+      },
+    });
+    const secondId = (second.json() as { data: { id: string } }).data.id;
+    await assignReviewToAgent(harness, secondId, sessionId, 1);
+
+    const listed = await call(agent.client, "agent_inbox_list", {});
+    const items = dataOf(listed.envelope)["items"] as { review_slug: string }[];
+    assert.deepEqual(
+      items.map((item) => item.review_slug),
+      ["bugs-on-homepage", "later-review"],
+      "oldest first, because that is the order a human recorded the work in",
+    );
+  } finally {
+    await agent.close();
+  }
+});
+
+test("acknowledging records receipt, is idempotent under one key, and is not completion", async () => {
+  const agent = await connected();
+  try {
+    const status = await call(agent.client, "agent_session_status", {});
+    const sessionId = dataOf(status.envelope)["agent_session_id"] as string;
+    await assignReviewToAgent(harness, agent.seeded.reviewId, sessionId, 1);
+
+    const listed = await call(agent.client, "agent_inbox_list", {});
+    const itemId = (dataOf(listed.envelope)["items"] as { id: string }[])[0]?.id as string;
+
+    const acknowledged = await call(agent.client, "agent_inbox_acknowledge", {
+      inbox_item_id: itemId,
+      idempotency_key: "ack-once-1",
+    });
+    assert.equal(acknowledged.envelope["ok"], true, JSON.stringify(acknowledged.envelope));
+    const item = dataOf(acknowledged.envelope)["item"] as {
+      status: string;
+      acknowledged_at?: string;
+      completed_at?: string;
+    };
+    assert.equal(item.status, "acknowledged");
+    assert.ok(item.acknowledged_at !== undefined, "acknowledgement records when");
+    assert.equal(item.completed_at, undefined, "acknowledgement is not completion");
+
+    // The same key again. `docs/TESTING.md` section 11: a duplicate under one
+    // idempotency key acknowledges once.
+    const replayed = await call(agent.client, "agent_inbox_acknowledge", {
+      inbox_item_id: itemId,
+      idempotency_key: "ack-once-1",
+    });
+    assert.equal(replayed.envelope["ok"], true);
+    const events = await postgres.pool.query(
+      "SELECT count(*) AS count FROM events WHERE project_id = $1 AND type = 'inbox_item.acknowledged'",
+      [agent.seeded.projectId],
+    );
+    assert.equal(Number(events.rows[0].count), 1, "one acknowledgement, one event");
+
+    // And there is no agent-facing way to complete it. The completed status is
+    // reachable only through the human API.
+    const rows = await postgres.pool.query<{ status: string }>(
+      "SELECT status FROM inbox_items WHERE id = $1",
+      [itemId],
+    );
+    assert.equal(rows.rows[0]?.status, "acknowledged");
+    assert.ok(
+      !MESSAGE_TYPE_VALUES.some((tool) => /inbox.*complet/u.test(tool)),
+      "no agent tool completes an inbox item",
+    );
+  } finally {
+    await agent.close();
+  }
+});
+
+test("an inbox item delivered to another agent session is not found", async () => {
+  const agent = await connected();
+  const other = await connectAgent(harness, { token: agent.token });
+  try {
+    const otherStatus = await call(other.client, "agent_session_status", {});
+    const otherSessionId = dataOf(otherStatus.envelope)["agent_session_id"] as string;
+    await assignReviewToAgent(harness, agent.seeded.reviewId, otherSessionId, 1);
+
+    // The first session sees nothing: the recipient is the authenticated
+    // session and never an argument.
+    const listed = await call(agent.client, "agent_inbox_list", {});
+    assert.deepEqual(dataOf(listed.envelope)["items"], []);
+
+    const otherList = await call(other.client, "agent_inbox_list", {});
+    const itemId = (dataOf(otherList.envelope)["items"] as { id: string }[])[0]?.id as string;
+
+    const refused = await call(agent.client, "agent_inbox_acknowledge", {
+      inbox_item_id: itemId,
+      idempotency_key: "ack-foreign-1",
+    });
+    assert.equal(refused.envelope["ok"], false);
+    // Not found rather than forbidden: a distinct refusal would confirm that
+    // the identifier exists.
+    assert.equal(errorOf(refused.envelope).code, "RESOURCE_NOT_FOUND");
+  } finally {
+    await other.close();
+    await agent.close();
+  }
+});
+
+test("reopening a finding delivers a new inbox item to the session holding the review", async () => {
+  const agent = await connected();
+  try {
+    const status = await call(agent.client, "agent_session_status", {});
+    const sessionId = dataOf(status.envelope)["agent_session_id"] as string;
+    await assignReviewToAgent(harness, agent.seeded.reviewId, sessionId, 1);
+
+    // Walk the finding to a state a human can reopen from, then reopen it.
+    const claim = await call(agent.client, "finding_claim", {
+      finding_id: agent.seeded.findingId,
+      expected_version: 1,
+      idempotency_key: "claim-reopen-1",
+    });
+    const claimed = dataOf(claim.envelope)["finding"] as { version: number };
+    const progress = await call(agent.client, "finding_update_status", {
+      finding_id: agent.seeded.findingId,
+      expected_version: claimed.version,
+      status: "IN_PROGRESS",
+      idempotency_key: "progress-reopen-1",
+    });
+    const inProgress = dataOf(progress.envelope)["finding"] as { version: number };
+    const fixed = await call(agent.client, "finding_update_status", {
+      finding_id: agent.seeded.findingId,
+      expected_version: inProgress.version,
+      status: "FIXED_UNVERIFIED",
+      resolution_note: "Changed the collapse breakpoint to 900px.",
+      idempotency_key: "fixed-reopen-1",
+    });
+    const fixedVersion = (dataOf(fixed.envelope)["finding"] as { version: number }).version;
+    const awaiting = await call(agent.client, "finding_update_status", {
+      finding_id: agent.seeded.findingId,
+      expected_version: fixedVersion,
+      status: "AWAITING_HUMAN_REVIEW",
+      idempotency_key: "awaiting-reopen-1",
+    });
+    const awaitingVersion = (dataOf(awaiting.envelope)["finding"] as { version: number }).version;
+
+    const reopened = await harness.control.app.inject({
+      method: "POST",
+      url: `/api/v1/findings/${agent.seeded.findingId}/reopen`,
+      headers: ADMIN,
+      payload: { expected_version: awaitingVersion, reason: "Still overlaps at 820px." },
+    });
+    assert.equal(reopened.statusCode, 200);
+
+    const listed = await call(agent.client, "agent_inbox_list", {});
+    const items = dataOf(listed.envelope)["items"] as { type: string; finding_id?: string }[];
+    const reopen = items.find((item) => item.type === "finding_reopened");
+    assert.ok(reopen !== undefined, "a reopen delivers work");
+    assert.equal(reopen.finding_id, agent.seeded.findingId);
   } finally {
     await agent.close();
   }
@@ -242,6 +459,368 @@ test("a slug that exists only in another project resolves as not found", async (
   }
 });
 
+test("review_search cannot match another project's content", async () => {
+  // The other project's review carries a distinctive term. If the search were
+  // scoped by anything the caller controls, this is the query that would find
+  // it (`docs/MCP_SPEC.md` section 7.6, `docs/TESTING.md` section 10).
+  const other = await seedProject(harness, { reviewSlug: "orthogonal-tenant-review" });
+  await harness.control.app.inject({
+    method: "PATCH",
+    url: `/api/v1/reviews/${other.reviewId}`,
+    headers: ADMIN,
+    payload: { expected_version: 1, title: "Xenodochial pangolin regression" },
+  });
+
+  const agent = await connected();
+  try {
+    const foreign = await call(agent.client, "review_search", { query: "pangolin" });
+    assert.equal(foreign.envelope["ok"], true);
+    assert.deepEqual(dataOf(foreign.envelope)["matches"], [], "no cross-project match");
+
+    // The tool has no project argument at all, so the search cannot even be
+    // asked to look elsewhere.
+    const listed = await agent.client.listTools();
+    const search = listed.tools.find((tool) => tool.name === "review_search");
+    const properties = Object.keys(
+      (search?.inputSchema as { properties?: Record<string, unknown> }).properties ?? {},
+    );
+    assert.deepEqual(properties.sort(), ["limit", "query"]);
+
+    // Its own project's content is found, so the absence above is scoping and
+    // not a broken query.
+    const own = await call(agent.client, "review_search", { query: "homepage" });
+    const matches = dataOf(own.envelope)["matches"] as {
+      review: { id: string };
+      matched: string[];
+    }[];
+    assert.equal(matches.length, 1);
+    assert.equal(matches[0]?.review.id, agent.seeded.reviewId);
+    assert.ok(matches[0]?.matched.includes("title") === true);
+
+    // Finding text matches, and the response says so without returning it: an
+    // excerpt would carry page-derived bytes into a list response.
+    const byFinding = await call(agent.client, "review_search", { query: "breakpoint" });
+    const findingMatches = dataOf(byFinding.envelope)["matches"] as { matched: string[] }[];
+    assert.deepEqual(findingMatches[0]?.matched, ["finding"]);
+    assert.doesNotMatch(JSON.stringify(byFinding.envelope), /768px/u);
+  } finally {
+    await agent.close();
+  }
+});
+
+test("review_search treats a wildcard as a literal rather than as a scan", async () => {
+  const agent = await connected();
+  try {
+    const { envelope } = await call(agent.client, "review_search", { query: "%%" });
+    assert.equal(envelope["ok"], true);
+    assert.deepEqual(
+      dataOf(envelope)["matches"],
+      [],
+      "a pattern character matches literally, so it cannot return everything",
+    );
+  } finally {
+    await agent.close();
+  }
+});
+
+test("review_list narrows within the project and never beyond it", async () => {
+  const other = await seedProject(harness, { reviewSlug: "somebody-elses-review" });
+  const agent = await connected();
+  try {
+    const all = await call(agent.client, "review_list", {});
+    const reviews = dataOf(all.envelope)["reviews"] as { id: string; slug: string }[];
+    assert.deepEqual(
+      reviews.map((review) => review.id),
+      [agent.seeded.reviewId],
+      "another project's review is not listed",
+    );
+    assert.ok(!reviews.some((review) => review.id === other.reviewId));
+
+    const byPrefix = await call(agent.client, "review_list", { slug_prefix: "bugs" });
+    assert.equal((dataOf(byPrefix.envelope)["reviews"] as unknown[]).length, 1);
+    const noPrefix = await call(agent.client, "review_list", { slug_prefix: "zzz" });
+    assert.deepEqual(dataOf(noPrefix.envelope)["reviews"], []);
+
+    const byStatus = await call(agent.client, "review_list", { status: ["ACCEPTED"] });
+    assert.deepEqual(dataOf(byStatus.envelope)["reviews"], []);
+
+    const mine = await call(agent.client, "review_list", { assigned_to_me: true });
+    assert.deepEqual(dataOf(mine.envelope)["reviews"], [], "nothing assigned yet");
+  } finally {
+    await agent.close();
+  }
+});
+
+test("review_get returns the review's own comments and the captured context", async () => {
+  const agent = await connected();
+  try {
+    await harness.control.app.inject({
+      method: "POST",
+      url: `/api/v1/reviews/${agent.seeded.reviewId}/comments`,
+      headers: ADMIN,
+      payload: { body: "Please start with the navigation." },
+    });
+
+    const { envelope } = await call(agent.client, "review_get", {
+      review: "bugs-on-homepage",
+      include: ["comments", "staleness"],
+    });
+    assert.equal(envelope["ok"], true);
+    const comments = dataOf(envelope)["comments"] as {
+      review_id: string;
+      finding_id?: string;
+      author: { type: string };
+    }[];
+    assert.equal(comments.length, 1);
+    assert.equal(comments[0]?.review_id, agent.seeded.reviewId);
+    assert.equal(comments[0]?.finding_id, undefined, "a review comment carries no finding");
+    assert.equal(comments[0]?.author.type, "human_user");
+
+    const staleness = dataOf(envelope)["staleness"] as {
+      computed: boolean;
+      captured_commit: string;
+      workspace_branch?: string;
+    };
+    // The verdict is stated as absent rather than guessed
+    // (`docs/DOMAIN_MODEL.md` section 24).
+    assert.equal(staleness.computed, false);
+    assert.equal(staleness.captured_commit, CAPTURED_COMMIT);
+    assert.equal(staleness.workspace_branch, "redesign");
+    const warnings = (envelope["warnings"] ?? []) as { code: string }[];
+    assert.ok(warnings.some((warning) => warning.code === "staleness_unavailable"));
+  } finally {
+    await agent.close();
+  }
+});
+
+test("review_add_comment is attributed to the agent session and cannot claim a human author", async () => {
+  const agent = await connected();
+  try {
+    const { envelope } = await call(agent.client, "review_add_comment", {
+      review_id: agent.seeded.reviewId,
+      body: "Starting on the navigation overlap now.",
+      idempotency_key: "comment-once-1",
+    });
+    assert.equal(envelope["ok"], true);
+    const comment = dataOf(envelope)["comment"] as {
+      review_id: string;
+      author: { type: string; id: string };
+    };
+    assert.equal(comment.review_id, agent.seeded.reviewId);
+    assert.equal(comment.author.type, "agent_session");
+
+    // There is no argument that could have named a different author.
+    const listed = await agent.client.listTools();
+    const tool = listed.tools.find((entry) => entry.name === "review_add_comment");
+    const properties = Object.keys(
+      (tool?.inputSchema as { properties?: Record<string, unknown> }).properties ?? {},
+    );
+    assert.deepEqual(properties.sort(), ["body", "idempotency_key", "review_id"]);
+  } finally {
+    await agent.close();
+  }
+});
+
+test("finding_mark_blocked requires a reason and records the block", async () => {
+  const agent = await connected();
+  try {
+    const claim = await call(agent.client, "finding_claim", {
+      finding_id: agent.seeded.findingId,
+      expected_version: 1,
+      idempotency_key: "claim-block-01",
+    });
+    const claimed = (dataOf(claim.envelope)["finding"] as { version: number }).version;
+    const progress = await call(agent.client, "finding_update_status", {
+      finding_id: agent.seeded.findingId,
+      expected_version: claimed,
+      status: "IN_PROGRESS",
+      idempotency_key: "progress-block-1",
+    });
+    const version = (dataOf(progress.envelope)["finding"] as { version: number }).version;
+
+    // A block with no reason is refused by the schema, before any domain code
+    // runs: the argument is required rather than checked.
+    const missing = await call(agent.client, "finding_mark_blocked", {
+      finding_id: agent.seeded.findingId,
+      expected_version: version,
+      idempotency_key: "block-missing-1",
+    });
+    assert.equal(missing.envelope["ok"], false);
+    assert.equal(errorOf(missing.envelope).code, "UNSUPPORTED_CAPABILITY");
+
+    const blocked = await call(agent.client, "finding_mark_blocked", {
+      finding_id: agent.seeded.findingId,
+      expected_version: version,
+      reason: "The staging database rejects the migration.",
+      requested_human_action: "Run the migration against staging.",
+      idempotency_key: "block-once-01",
+    });
+    assert.equal(blocked.envelope["ok"], true, JSON.stringify(blocked.envelope));
+    const finding = dataOf(blocked.envelope)["finding"] as { status: string };
+    assert.equal(finding.status, "BLOCKED");
+
+    const events = await postgres.pool.query<{ payload: { reason?: string } }>(
+      `SELECT payload FROM events
+        WHERE project_id = $1 AND type = 'finding.status_changed'
+          AND payload ->> 'to' = 'BLOCKED'`,
+      [agent.seeded.projectId],
+    );
+    assert.equal(events.rowCount, 1);
+    assert.match(events.rows[0]?.payload.reason ?? "", /staging database/u);
+    assert.match(events.rows[0]?.payload.reason ?? "", /Requested of a human/u);
+  } finally {
+    await agent.close();
+  }
+});
+
+test("a control plane that becomes unavailable mid-session refuses with a retryable code", async () => {
+  // `docs/TESTING.md` section 11: with the database unavailable, state changes
+  // are denied and there is no unaudited continuation. The refusal has to be a
+  // stable code an agent can act on rather than a hang or a broken connection.
+  const seeded = await seedProject(harness);
+  const credential = await issueAgentCredential(harness, {
+    organisationId: seeded.organisationId,
+    projectIds: [seeded.projectId],
+  });
+
+  let unavailable = false;
+  const failing = new Proxy(postgres.pool, {
+    get(target, property, receiver) {
+      if (property === "query") {
+        return async (...args: unknown[]) => {
+          if (unavailable) throw new Error("connection terminated unexpectedly");
+          return (Reflect.get(target, property, receiver) as (...rest: unknown[]) => unknown).apply(
+            target,
+            args,
+          );
+        };
+      }
+      return Reflect.get(target, property, receiver) as unknown;
+    },
+  });
+
+  const isolated = await buildMcpApp({
+    config: {
+      listenAddress: "127.0.0.1",
+      port: 0,
+      databaseUrl: "unused-in-tests",
+      workerCommandCredential: WORKER_COMMAND_CREDENTIAL,
+      workerEndpoint: "http://browser-worker.invalid",
+      workerRequestTimeoutMs: 5000,
+      artefactPath: harness.artefactRoot,
+      artefactMaxBytes: 20971520,
+      apiPathPrefix: "/api/v1",
+      mcpPath: "/mcp/v1",
+    },
+    pool: failing,
+  });
+  await isolated.app.ready();
+  const origin = await isolated.app.listen({ host: "127.0.0.1", port: 0 });
+
+  const client = new Client({ name: "claude-code", version: "test" });
+  const transport = new StreamableHTTPClientTransport(new URL(`${origin}/mcp/v1`), {
+    requestInit: { headers: { authorization: `Bearer ${credential.token}` } },
+  });
+  await client.connect(transport as unknown as Parameters<typeof client.connect>[0]);
+
+  const sessionRows = await postgres.pool.query<{ id: string }>(
+    "SELECT id FROM agent_sessions ORDER BY started_at DESC LIMIT 1",
+  );
+  const agentSessionId = sessionRows.rows[0]?.id as string;
+
+  try {
+    unavailable = true;
+    // The refusal arrives below the envelope, and that is the honest place for
+    // it: the credential is re-resolved on every request, so with the store
+    // unreachable the server does not know whose session to answer in
+    // (`docs/MCP_SPEC.md` section 5). It carries the stable section 12 code
+    // rather than `AUTHENTICATION_REQUIRED`, which would report a database
+    // outage as a rejected credential and send an operator to the wrong place.
+    await assert.rejects(
+      () =>
+        client.callTool({
+          name: "finding_claim",
+          arguments: {
+            finding_id: seeded.findingId,
+            expected_version: 1,
+            idempotency_key: "outage-claim-1",
+          },
+        }),
+      (error: Error) => {
+        assert.match(error.message, /INTERNAL_ERROR/u);
+        assert.doesNotMatch(error.message, /AUTHENTICATION_REQUIRED/u);
+        return true;
+      },
+    );
+
+    unavailable = false;
+    const finding = await postgres.pool.query<{ status: string; version: string }>(
+      "SELECT status, version FROM findings WHERE id = $1",
+      [seeded.findingId],
+    );
+    assert.equal(finding.rows[0]?.status, "OPEN", "nothing was half-written");
+    assert.equal(Number(finding.rows[0]?.version), 1);
+
+    // The same call now succeeds, so the outage refused rather than poisoned
+    // the session.
+    const retried = await client.callTool({
+      name: "finding_claim",
+      arguments: {
+        finding_id: seeded.findingId,
+        expected_version: 1,
+        idempotency_key: "outage-claim-2",
+      },
+    });
+    assert.equal(envelopeOf(retried)["ok"], true);
+  } finally {
+    unavailable = false;
+    // Closing the server is the control plane going away. The session is
+    // recorded as disconnected rather than completed.
+    await isolated.close().catch(() => undefined);
+    await client.close().catch(() => undefined);
+  }
+
+  const ended = await postgres.pool.query<{ status: string }>(
+    "SELECT status FROM agent_sessions WHERE id = $1",
+    [agentSessionId],
+  );
+  assert.equal(ended.rows[0]?.status, "DISCONNECTED");
+  const events = await postgres.pool.query(
+    "SELECT type FROM events WHERE project_id = $1 AND type = 'agent_session.disconnected'",
+    [seeded.projectId],
+  );
+  assert.equal(events.rowCount, 1, "the disconnection is audited");
+});
+
+test("two sessions claiming one finding produce one claim and one VERSION_CONFLICT", async () => {
+  const agent = await connected();
+  const second = await connectAgent(harness, { token: agent.token });
+  try {
+    const [first, other] = await Promise.all([
+      call(agent.client, "finding_claim", {
+        finding_id: agent.seeded.findingId,
+        expected_version: 1,
+        idempotency_key: "race-key-aaa",
+      }),
+      call(second.client, "finding_claim", {
+        finding_id: agent.seeded.findingId,
+        expected_version: 1,
+        idempotency_key: "race-key-bbb",
+      }),
+    ]);
+    const outcomes = [first.envelope, other.envelope];
+    const succeeded = outcomes.filter((envelope) => envelope["ok"] === true);
+    const refused = outcomes.filter((envelope) => envelope["ok"] === false);
+    assert.equal(succeeded.length, 1, `one claim, not ${JSON.stringify(outcomes)}`);
+    assert.equal(refused.length, 1, "and one refusal");
+    const error = errorOf(refused[0] as Record<string, unknown>);
+    assert.equal(error.code, "VERSION_CONFLICT");
+  } finally {
+    await second.close();
+    await agent.close();
+  }
+});
+
 test("a review with many findings paginates", async () => {
   const agent = await connected();
   try {
@@ -295,6 +874,210 @@ test("a review with many findings paginates", async () => {
   } finally {
     await agent.close();
   }
+});
+
+/**
+ * The three thresholds an adversarial review measured, each of which used to
+ * make the tool fail outright and stay failed.
+ *
+ * `docs/MCP_SPEC.md` §13 requires pagination and per-tool size limits. Before
+ * `BoundedPayload`, the limit was enforced only by the encoder throwing, so
+ * ordinary content — findings with full-length text, or comments of the length
+ * the human API permits — locked an agent out of the review it had been
+ * assigned. Worse, the refusal was `INTERNAL_ERROR`, which this server marks
+ * retryable, so a conforming agent retried for ever.
+ *
+ * Each case asserts the same three things: the call succeeds, the page is
+ * shorter than what was asked for, and a cursor reaches the rest.
+ */
+const LONG_TEXT = "x".repeat(3900);
+
+async function addFindings(agent: Connected, count: number, long: boolean): Promise<void> {
+  for (let index = 0; index < count; index += 1) {
+    const artefactId = await uploadScreenshot(
+      harness,
+      agent.seeded.projectId,
+      agent.seeded.browserSessionId,
+      Buffer.from(AFTER_SCREENSHOT.subarray(0)),
+    );
+    await harness.control.app.inject({
+      method: "POST",
+      url: `/api/v1/reviews/${agent.seeded.reviewId}/findings`,
+      headers: ADMIN,
+      payload: {
+        title: `Finding ${String(index)}`,
+        ...(long ? { description: LONG_TEXT, acceptance_criteria: LONG_TEXT } : {}),
+        severity: "low",
+        url: `https://route-id.internal.invalid/?n=${String(index)}`,
+        viewport: { width: 390, height: 844, device_scale_factor: 2 },
+        scroll_position: { x: 0, y: 0 },
+        captured_commit: CAPTURED_COMMIT,
+        screenshot_artefact_id: artefactId,
+      },
+    });
+  }
+}
+
+async function addReviewComments(agent: Connected, count: number): Promise<void> {
+  for (let index = 0; index < count; index += 1) {
+    const response = await harness.control.app.inject({
+      method: "POST",
+      url: `/api/v1/reviews/${agent.seeded.reviewId}/comments`,
+      headers: ADMIN,
+      payload: { body: `${String(index)} ${LONG_TEXT}` },
+    });
+    assert.equal(response.statusCode, 201, response.body);
+  }
+}
+
+test("review_get degrades to a bounded page rather than failing on 13 long findings", async () => {
+  const agent = await connected();
+  try {
+    // The measured threshold: with default arguments the response used to
+    // exceed review_get's 65536-byte bound at thirteen findings.
+    await addFindings(agent, 16, true);
+    const { envelope } = await call(agent.client, "review_get", { review: "bugs-on-homepage" });
+    assert.equal(envelope["ok"], true, JSON.stringify(envelope).slice(0, 400));
+    const findings = dataOf(envelope)["findings"] as unknown[];
+    assert.ok(findings.length > 0, "the page carries something");
+    assert.ok(findings.length < 17, "and less than everything");
+    const warnings = (envelope["warnings"] ?? []) as { code: string }[];
+    assert.ok(warnings.some((warning) => warning.code === "findings_truncated"));
+
+    // The cursor names the finding after the last one that fitted, so nothing
+    // between the pages is skipped.
+    const cursor = dataOf(envelope)["findings_next_cursor"] as string;
+    assert.equal(typeof cursor, "string");
+    const next = await call(agent.client, "review_get", {
+      review: "bugs-on-homepage",
+      findings_cursor: cursor,
+    });
+    assert.equal(next.envelope["ok"], true);
+    const firstIds = (findings as { id: string }[]).map((finding) => finding.id);
+    const nextIds = ((dataOf(next.envelope)["findings"] ?? []) as { id: string }[]).map(
+      (finding) => finding.id,
+    );
+    assert.equal(
+      firstIds.filter((id) => nextIds.includes(id)).length,
+      0,
+      "the second page does not repeat the first",
+    );
+  } finally {
+    await agent.close();
+  }
+});
+
+test("review_get degrades to a bounded page rather than failing on 16 long comments", async () => {
+  const agent = await connected();
+  try {
+    // Created through the ordinary human API, which permits 4000 characters.
+    // Sixteen of these was the measured threshold at which review_get threw.
+    await addReviewComments(agent, 16);
+    const sixteen = await call(agent.client, "review_get", {
+      review: "bugs-on-homepage",
+      include: ["comments"],
+    });
+    assert.equal(sixteen.envelope["ok"], true, JSON.stringify(sixteen.envelope).slice(0, 400));
+    // It succeeds whole now, because a comment body is truncated to the view's
+    // limit like every other free text. The bound is reached later rather than
+    // never, so the paging path is exercised below with a larger page.
+    assert.equal((dataOf(sixteen.envelope)["comments"] as unknown[]).length, 16);
+    const warned = (sixteen.envelope["warnings"] ?? []) as { code: string }[];
+    assert.ok(warned.some((warning) => warning.code === "text_truncated"));
+
+    await addReviewComments(agent, 34);
+    const { envelope } = await call(agent.client, "review_get", {
+      review: "bugs-on-homepage",
+      include: ["comments"],
+      comments_limit: 50,
+    });
+    assert.equal(envelope["ok"], true, JSON.stringify(envelope).slice(0, 400));
+    const comments = dataOf(envelope)["comments"] as { id: string }[];
+    assert.ok(comments.length > 0 && comments.length < 50, `page of ${String(comments.length)}`);
+    const cursor = dataOf(envelope)["comments_next_cursor"] as string;
+    assert.equal(typeof cursor, "string", "a shortened page names where the next one starts");
+
+    const next = await call(agent.client, "review_get", {
+      review: "bugs-on-homepage",
+      include: ["comments"],
+      comments_limit: 50,
+      comments_cursor: cursor,
+    });
+    assert.equal(next.envelope["ok"], true);
+    const nextIds = ((dataOf(next.envelope)["comments"] ?? []) as { id: string }[]).map(
+      (comment) => comment.id,
+    );
+    assert.equal(
+      comments.map((comment) => comment.id).filter((id) => nextIds.includes(id)).length,
+      0,
+      "the boundary comment appears in exactly one page",
+    );
+  } finally {
+    await agent.close();
+  }
+});
+
+test("finding_get degrades to a bounded page rather than failing on 8 long comments", async () => {
+  const agent = await connected();
+  try {
+    for (let index = 0; index < 12; index += 1) {
+      const response = await harness.control.app.inject({
+        method: "POST",
+        url: `/api/v1/findings/${agent.seeded.findingId}/comments`,
+        headers: ADMIN,
+        payload: { body: `${String(index)} ${LONG_TEXT}` },
+      });
+      assert.equal(response.statusCode, 201, response.body);
+    }
+    const { envelope } = await call(agent.client, "finding_get", {
+      finding_id: agent.seeded.findingId,
+      include: ["comments", "artefact_links"],
+    });
+    assert.equal(envelope["ok"], true, JSON.stringify(envelope).slice(0, 400));
+    const data = dataOf(envelope);
+    // The finding itself and its evidence survive: they are what an agent needs
+    // in order to act, and a long comment thread must not displace them.
+    assert.ok(data["finding"] !== undefined);
+    assert.ok(data["artefact_links"] !== undefined);
+    const comments = (data["comments"] ?? []) as { id: string }[];
+    assert.ok(comments.length < 12, `page of ${String(comments.length)}`);
+    assert.equal(typeof data["comments_next_cursor"], "string");
+  } finally {
+    await agent.close();
+  }
+});
+
+test("a comment an agent wrote itself cannot lock it out of its own review", async () => {
+  // The self-inflicted form of the same defect: sixteen review_add_comment
+  // calls used to make review_get unusable for ever.
+  const agent = await connected();
+  try {
+    for (let index = 0; index < 16; index += 1) {
+      const written = await call(agent.client, "review_add_comment", {
+        review_id: agent.seeded.reviewId,
+        body: `${String(index)} ${LONG_TEXT}`,
+        idempotency_key: `self-comment-${String(index).padStart(4, "0")}`,
+      });
+      assert.equal(written.envelope["ok"], true);
+    }
+    const { envelope } = await call(agent.client, "review_get", {
+      review: "bugs-on-homepage",
+      include: ["findings", "comments", "artefact_links", "staleness"],
+    });
+    assert.equal(envelope["ok"], true, JSON.stringify(envelope).slice(0, 400));
+    assert.ok((dataOf(envelope)["review"] as { id: string }).id === agent.seeded.reviewId);
+  } finally {
+    await agent.close();
+  }
+});
+
+test("a response that does not fit is never reported as retryable", async () => {
+  // Belt and braces on the failure mode that made this severe: whatever the
+  // cause, a size refusal must not invite a retry loop.
+  const refusal = refusalFrom("review_get", "req_unit", new McpResponseEncodeError("too big"));
+  assert.equal(refusal.value.ok, false);
+  assert.equal(refusal.value.error.retryable, false);
+  assert.notEqual(refusal.value.error.code, "INTERNAL_ERROR");
 });
 
 // ---------------------------------------------------------------- claiming
@@ -545,19 +1328,27 @@ test("no agent path exists to accepted or resolved for a human-authored finding"
       assert.ok(!statuses.includes(forbidden), `${forbidden} is advertised as reachable`);
     }
 
-    // And asking anyway is refused, because the domain layer beneath does not
-    // rely on the schema having been enforced.
-    const refused = await call(agent.client, "finding_update_status", {
-      finding_id: agent.seeded.findingId,
-      expected_version: 1,
-      status: "RESOLVED",
-      idempotency_key: "accept-attempt-0001",
-    });
-    assert.equal(refused.envelope["ok"], false);
-    assert.equal(errorOf(refused.envelope).code, "UNSUPPORTED_CAPABILITY");
-    process.stdout.write(
-      `denied agent acceptance: ${JSON.stringify(errorOf(refused.envelope))}\n`,
-    );
+    // And asking anyway is refused, with the code docs/MCP_SPEC.md section 7.7
+    // promises for exactly this case. UNSUPPORTED_CAPABILITY would tell an
+    // agent its client is out of date rather than that it asked for something
+    // only a human may decide.
+    for (const forbidden of ["RESOLVED", "WONT_FIX", "DUPLICATE", "ACCEPTED"]) {
+      const refused = await call(agent.client, "finding_update_status", {
+        finding_id: agent.seeded.findingId,
+        expected_version: 1,
+        status: forbidden,
+        idempotency_key: `accept-attempt-${forbidden.toLowerCase()}`,
+      });
+      assert.equal(refused.envelope["ok"], false);
+      assert.equal(
+        errorOf(refused.envelope).code,
+        "AUTHORISATION_DENIED",
+        `${forbidden}: ${JSON.stringify(errorOf(refused.envelope))}`,
+      );
+      process.stdout.write(
+        `denied agent acceptance: ${JSON.stringify(errorOf(refused.envelope))}\n`,
+      );
+    }
 
     const review = await call(agent.client, "review_update_status", {
       review_id: agent.seeded.reviewId,
@@ -566,7 +1357,74 @@ test("no agent path exists to accepted or resolved for a human-authored finding"
       idempotency_key: "accept-review-0001",
     });
     assert.equal(review.envelope["ok"], false);
-    assert.equal(errorOf(review.envelope).code, "UNSUPPORTED_CAPABILITY");
+    assert.equal(errorOf(review.envelope).code, "AUTHORISATION_DENIED");
+
+    // The Stage 1 exit criterion is not "an agent cannot accept a human's
+    // finding" but "an agent cannot accept a human's finding AND the attempt is
+    // audited" (docs/DOMAIN_MODEL.md section 15). The schema refuses these
+    // before any domain code runs, so the domain cannot write the record and
+    // the layer that saw the attempt does.
+    const findingDenials = await postgres.pool.query<{ payload: Record<string, unknown>; actor_type: string }>(
+      `SELECT payload, actor_type FROM events
+        WHERE project_id = $1 AND type = 'finding.status_change_denied'
+        ORDER BY sequence`,
+      [agent.seeded.projectId],
+    );
+    assert.equal(findingDenials.rowCount, 4, "one record per attempt");
+    assert.deepEqual(
+      findingDenials.rows.map((row) => row.payload["requested"]),
+      ["RESOLVED", "WONT_FIX", "DUPLICATE", "ACCEPTED"],
+    );
+    for (const row of findingDenials.rows) {
+      assert.equal(row.actor_type, "agent_session", "the attempt is attributed to the agent");
+      assert.equal(row.payload["code"], "AUTHORISATION_DENIED");
+      // The status the row actually held, read rather than taken from the
+      // caller, and the authorship the authority rule turns on.
+      assert.equal(row.payload["from"], "OPEN");
+      assert.equal(row.payload["source"], "human");
+    }
+    process.stdout.write(
+      `finding.status_change_denied: ${JSON.stringify(findingDenials.rows[0]?.payload)}\n`,
+    );
+
+    const reviewDenials = await postgres.pool.query<{ payload: Record<string, unknown> }>(
+      `SELECT payload FROM events
+        WHERE project_id = $1 AND type = 'review.status_change_denied'`,
+      [agent.seeded.projectId],
+    );
+    assert.equal(reviewDenials.rowCount, 1);
+    assert.equal(reviewDenials.rows[0]?.payload["requested"], "ACCEPTED");
+
+    // The refusal changed nothing.
+    const after = await postgres.pool.query<{ status: string; version: string }>(
+      "SELECT status, version FROM findings WHERE id = $1",
+      [agent.seeded.findingId],
+    );
+    assert.equal(after.rows[0]?.status, "OPEN");
+    assert.equal(Number(after.rows[0]?.version), 1);
+  } finally {
+    await agent.close();
+  }
+});
+
+test("an attempted acceptance against another project's finding records nothing", async () => {
+  // The audit is written from the refusal path, so it has to carry the same
+  // scoping every other read does: an agent must not be able to append to
+  // another project's audit trail by guessing identifiers.
+  const other = await seedProject(harness, { reviewSlug: "not-yours" });
+  const agent = await connected();
+  try {
+    const refused = await call(agent.client, "finding_update_status", {
+      finding_id: other.findingId,
+      expected_version: 1,
+      status: "RESOLVED",
+      idempotency_key: "foreign-accept-0001",
+    });
+    assert.equal(refused.envelope["ok"], false);
+    const denials = await postgres.pool.query(
+      "SELECT id FROM events WHERE type = 'finding.status_change_denied'",
+    );
+    assert.equal(denials.rowCount, 0, "no record in either project");
   } finally {
     await agent.close();
   }

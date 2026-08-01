@@ -25,6 +25,7 @@ import type {
   ArtefactService,
   BrowserSessionService,
   IdempotencyStore,
+  InboxStore,
   ProjectReference,
   ReviewService,
   Scope,
@@ -45,6 +46,7 @@ export interface McpServices {
   readonly agentSessions: AgentSessionStore;
   readonly workspaces: WorkspaceStore;
   readonly idempotency: IdempotencyStore;
+  readonly inbox: InboxStore;
 }
 
 /** What the client said it can consume (`docs/MCP_SPEC.md` section 4). */
@@ -96,8 +98,11 @@ export function readClientCapabilities(query: URLSearchParams): ClientCapabiliti
  * `image_resources` is the negotiated result and not a property of the server:
  * a client that declared no image capability is told so here, and every later
  * degradation is a consequence a client can plan for rather than a surprise.
- * `review_inbox` is false because Stage 0 exposes no inbox tools at all, which
- * is more honest than advertising an empty one.
+ * `review_inbox` is true because `agent_inbox_list` and
+ * `agent_inbox_acknowledge` are advertised; `managed_messages` stays false
+ * because nothing is pushed to an agent, which is why the inbox workflow of
+ * `docs/MCP_SPEC.md` section 9 is a poll and an explicit acknowledgement rather
+ * than a delivery.
  */
 export function negotiateCapabilities(
   client: ClientCapabilities,
@@ -106,7 +111,7 @@ export function negotiateCapabilities(
     browser_live: true,
     image_resources: client.resources && client.image_content,
     human_takeover: true,
-    review_inbox: false,
+    review_inbox: true,
     managed_messages: false,
     session_resume: false,
   };

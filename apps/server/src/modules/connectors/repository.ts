@@ -583,11 +583,16 @@ export async function revokeConnector(
     eventType: "connector.revoked",
     touchRevokedAt: true,
     actor,
-    // `routes_revoked` and `sessions_disconnected` are what revocation reached
-    // beyond the identity, and reaching them is `modules/connectors/revocation.ts`.
-    // This entry point changes the record alone, so it reports zero rather than
-    // omitting the counts and leaving a reader to guess whether the routes were
-    // closed or merely unrecorded.
-    payload: { routes_revoked: 0, sessions_disconnected: 0, channels_closed: 0 },
+    // The counts are what revocation reached beyond the identity, and reaching
+    // any of them is `modules/connectors/revocation.ts`. This entry point
+    // changes the record alone, so it reports zero rather than omitting the
+    // counts and leaving a reader to guess whether the routes were closed, or
+    // the minted agent credentials, or whether they were merely unrecorded.
+    payload: {
+      routes_revoked: 0,
+      sessions_disconnected: 0,
+      channels_closed: 0,
+      agent_credentials_revoked: 0,
+    },
   });
 }

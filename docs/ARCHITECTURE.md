@@ -495,11 +495,12 @@ Supported connection forms:
 
 The local bridge is preferred where the CLI client handles local MCP configuration more reliably. It authenticates to the control plane using scoped device or session credentials.
 
-Stage 0 ships the remote endpoint only (ADR-0020). The connector exists, but it
-publishes development services and carries tunnelled bytes; it issues no agent
-credential, so there is nothing for a local bridge to obtain one from yet. The
-bridge, when it arrives, authenticates to the same endpoint with the same
-credentials; it is a transport in front of this interface and not a second one.
+Both forms are implemented. The remote endpoint is ADR-0020; the local bridge is
+`reviewplane-connector mcp`, which exchanges the connector's device identity for
+a short-lived, single-project agent credential (ADR-0023) and proxies JSON-RPC
+between the agent's stdin and stdout and that same endpoint. The bridge is a
+transport in front of this interface and not a second one: it presents the same
+credential kind, meets the same authorisation, and receives the same envelopes.
 
 ### 8.2 Agent knowledge
 
@@ -528,17 +529,23 @@ Agent sessions advertise capabilities such as:
 
 The control plane must degrade clearly when a client cannot consume image resources or managed notifications.
 
-Stage 0 negotiates through query parameters on the MCP endpoint URL, because
-MCP's own handshake has nowhere to carry them (`docs/MCP_SPEC.md` section 3.2),
-and reports the negotiated result back in `agent_session_status`. Degradation is
+Negotiation is through query parameters on the MCP endpoint URL, because MCP's
+own handshake has nowhere to carry them (`docs/MCP_SPEC.md` section 3.2), and
+the negotiated result is reported back in `agent_session_status`. Degradation is
 a warning on a successful call and never a failure: a client that cannot consume
 image content still retrieves the review, still claims the finding, still
 captures the after screenshot and still submits verification, receiving resource
 links, digests and an `image_content_unsupported` warning instead of pixels
 (`docs/MCP_SPEC.md` section 14.2).
 
-`managed_messages` is `false` and `review_inbox` is `false` in Stage 0. Both are
-stated rather than left to be discovered.
+Degradation is per capability. `review_inbox` is `true` whatever the client's
+image capability, because an inbox item carries a title and identifiers rather
+than pixels: a client without image support still receives its work.
+
+`managed_messages` is `false`. Nothing is pushed to an agent, which is why the
+inbox workflow of `docs/MCP_SPEC.md` section 9 is a poll at named checkpoints
+and an explicit acknowledgement rather than a delivery. It is stated rather than
+left to be discovered.
 
 ## 9. Review architecture
 

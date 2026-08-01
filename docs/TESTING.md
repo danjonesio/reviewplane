@@ -125,12 +125,14 @@ reachable peer is its database, with a unique name per run.
 Steps 1 to 4 need the connector, and steps 13 to 15 need human acceptance and
 review export; both arrive in Stage 1.
 
-These three harnesses build images and run Chromium, so they run nightly and on
-demand in `.github/workflows/container-harnesses.yml` rather than on every pull
-request; a pull request that needs their evidence carries the `ci:harnesses`
-label. The root gates of `docs/DEVELOPMENT.md` section 5 run on every pull
-request in `.github/workflows/ci.yml`. Neither workflow gates a release yet: see
-section 16.
+These three harnesses build images and run Chromium, so they run in
+`.github/workflows/container-harnesses.yml` rather than in the root gate
+workflow. That workflow runs nightly, on demand, and on every pull request whose
+change is not documentation-only; the `ci:harnesses` label forces it to run on a
+pull request the filter exempted. Section 16 records the trigger rules and why
+they are shaped this way. The root gates of `docs/DEVELOPMENT.md` section 5 run
+on every pull request in `.github/workflows/ci.yml`. Neither workflow gates a
+release yet: see section 16.
 
 ## 4. Domain tests
 
@@ -307,25 +309,58 @@ published come from the suite rather than from a separate benchmark.
 - Resource authorisation
 - Bounded snapshots
 - Trust labels on page content
-- Agent forbidden transitions
+- Agent forbidden transitions, refused **and audited**
 - Idempotency conflict
 - Capability degradation for clients without image support
 - Inbox acknowledgement semantics
 - Completion-gate missing evidence response
 
-Every item on this list except the last two is covered by
+Every item on this list except the last is covered by
 `apps/mcp-server/test/mcp.test.ts`, which drives the endpoint with the official
-MCP TypeScript SDK client against a real database. Inbox semantics and
-completion gates arrive with the tools they test, in Stage 1.
+MCP TypeScript SDK client against a real database. The completion gate arrives
+with the tools it tests.
 
-The suite also holds the properties that are specific to the Stage 0 agent
-surface: the advertised tool set equals the schema's availability set; no
-advertised status enumeration can express a final disposition; a slug from
-another project resolves as not found; an agent credential is refused by the
+The suite also holds the properties that are specific to the agent surface: the
+advertised tool set equals the schema's availability set; no advertised status
+enumeration can express a final disposition; a slug from another project
+resolves as not found; `review_search` cannot match another project's content
+and has no project argument to widen it with; a wildcard in a search query is
+matched literally rather than as a scan; an agent credential is refused by the
 administrative API; a human session cookie is refused as agent authentication; a
 credential that expires mid-session refuses the next call rather than executing
 part of it; a transport session identifier is not a credential; and no tool
 response carries a credential.
+
+Two properties are asserted with the thresholds an adversarial review measured
+rather than with a convenient fixture, because the convenient fixture is what
+hid them. The bounded-response cases build a review with sixteen findings
+carrying full-length text, twenty review comments of 3900 characters, and twelve
+comments on one finding — the shapes at which `review_get` and `finding_get`
+used to throw — and assert a shorter page, a cursor that reaches the rest with
+no overlap, and that the finding and its evidence survive a long comment thread.
+The authority cases assert one `finding.status_change_denied` per attempted
+final disposition with the agent session as actor, one
+`review.status_change_denied` for an attempted acceptance, and **no** record at
+all when the attempt names another project's finding.
+
+Inbox semantics are asserted at both ends. `apps/mcp-server/test/mcp.test.ts`
+covers the agent's: an assignment delivers one item and a repeated assignment
+delivers one; items are ordered oldest first; acknowledgement records receipt,
+replays under one idempotency key and never sets a completion time; an item
+delivered to another agent session answers `RESOURCE_NOT_FOUND`; and a reopened
+finding delivers new work. `apps/server/test/inbox.test.ts` covers the human's:
+acknowledgement and completion write different events, a cookie request with no
+CSRF token changes nothing, an agent credential reaches none of the four routes,
+and another project's item answers byte for byte as an unknown one does.
+
+`apps/server/test/connector-agent-credentials.test.ts` covers the credential
+exchange of ADR-0023 over real mutual TLS — `app.inject` cannot be used, because
+the route's whole authentication is the verified client certificate on the
+socket. `services/connector/internal/mcpbridge` covers the bridge's own half:
+the notification's documented form, its refusal to carry a control character,
+the status file's permissions and bound, the endpoint derivation, the proxy's
+session capture, its JSON-RPC answer to an unreachable control plane, and its
+refusal of an oversized message.
 
 `apps/mcp-server/test/unit.test.ts` holds the contract snapshot of the
 advertised tool schemas, so a breaking tool change cannot land silently
@@ -350,10 +385,12 @@ advertised tool schemas, so a breaking tool change cannot land silently
 
 - Organisation A cannot enumerate organisation B IDs
 - Project A agent cannot access project B review
+- Project A agent cannot **search** project B's reviews or findings
 - Worker session credentials cannot call admin API
 - Connector token cannot become human session
 - A connector cannot report a workspace into a project it was not enrolled for
 - A connector cannot claim a workspace identifier another project holds
+- A connector cannot exchange its identity for a credential to another environment's workspace
 
 `apps/server/test/connector-lifecycle.test.ts` covers the connector surface's
 share of this: a foreign connector identifier and an unknown one produce
@@ -478,6 +515,11 @@ Setting `REVIEWPLANE_TEST_S3_ENDPOINT`, `_BUCKET`, `_ACCESS_KEY` and
 | Filesystem artefact volume full or read-only | Driver reports it; nothing recorded available; upload retryable |
 | Human takeover during agent click | Ordered lease transition, no concurrent input |
 | Duplicate verification request | One verification record through idempotency |
+| Control plane unavailable mid-agent-session | The call is refused with a stable code below the envelope rather than reported as a rejected credential; nothing is half-written; the same call succeeds once the database returns; the session ends `DISCONNECTED` rather than `COMPLETED` |
+| Connector restart during a bridge session | The bridge ends with it and the next one requests a fresh credential; no token was stored to replay |
+| Duplicate `agent_inbox_acknowledge` under one key | One acknowledgement and one event |
+| Two agent sessions claiming one finding | One claim and one `VERSION_CONFLICT` |
+| A review or finding whose ordinary content exceeds a tool's response bound | A shorter page and a cursor that reaches the rest, never a thrown error and never a retryable refusal |
 | Retention deletion partial failure | Retry, metadata not falsely tombstoned |
 | Development service closes a WebSocket | Closure reaches the browser with the service's close code and reason |
 | Connector disconnect during an open WebSocket | Connection closed, route answers `CONNECTOR_OFFLINE` |
@@ -637,6 +679,26 @@ browser declined would be a page a keyboard user could not finish
 workspace's branch, commit and dirty state, and names the absence of a workspace
 rather than showing nothing.
 
+Agent delivery state is proved in `apps/web/test/ui/agent-delivery.browser.test.ts`,
+which owns the review page's Agent delivery section (`UX_FLOWS.md` §11 and §15).
+Its three delivery-state cases run at both required viewports and it is built
+around the three ways that section can lie. A
+delivered review must state the agent-session identifier it was assigned to, its
+inbox status as a word beside the badge, and "not yet received" while the item is
+pending — an assignment is not a collection, and asserting the third alongside
+the first is what keeps them apart. An acknowledged item must state the time it
+was collected, which is why the browser context pins both locale and time zone:
+an unpinned zone would make the assertion depend on where the container thinks
+it is. An undelivered review must render its named empty state and must state
+none of the five inbox statuses anywhere in the section, so a status invented out
+of an absence fails rather than passing quietly. One further case proves the
+command block and its copy control are reachable by keyboard with visible focus
+and that the announced outcome is one of the two honest ones, and another proves
+that a browser with no clipboard gets a disabled control and the keyboard route
+rather than a thrown error. Every case also asserts that the page states
+ReviewPlane does not type into an agent's terminal, because §11's prohibition is
+on a claim and only an affirmative sentence can be tested for.
+
 These live in `apps/web/test/ui/` and run with `pnpm test:ui`, which builds the
 bundle and drives it in a real Chromium against a stub control plane that
 speaks the generated live-view protocol. They are separate from `pnpm test` for
@@ -671,20 +733,56 @@ A release cannot ship when:
 - Critical dependency vulnerability lacks documented mitigation
 - Protocol compatibility tests fail
 
-No release pipeline enforces this list yet, but one of the conditions now has an
-owner that runs on every pull request: **"migration or restore test fails"** is
-`apps/server/test/upgrade-stage0.test.ts` and `apps/server/test/backup.test.ts`,
-both inside `pnpm test`. A migration that breaks the committed Stage 0 fixture,
-and a restore that stops reproducing what it was given, fail the build rather
-than the release.
+No release pipeline enforces this list yet, and the list is not a description of
+what gates a change. The two workflows that exist are change gates, and they run
+as follows.
 
-`.github/workflows/ci.yml` runs the
-root gates of `docs/DEVELOPMENT.md` section 5 on every pull request, which
-covers the protocol compatibility check, and
-`.github/workflows/container-harnesses.yml` runs the end-to-end, browser and
-installation harnesses nightly. `pnpm test:install` owns two of the conditions
-above: it runs `docs/DEPLOYMENT.md` section 8 verbatim from a clean checkout to a
-rendered login page, which is the Stage 1 exit criterion "fresh installation from
+### 16.1 What runs on a change today
+
+| Suites | Workflow and rolled-up check | When it runs |
+|---|---|---|
+| `pnpm lint`, `pnpm typecheck`, `pnpm build`, `pnpm protocol:check`, `pnpm test`, and `go vet ./...`, `go test ./...` and `go test -race ./...` in each Go module | `.github/workflows/ci.yml`, reported as `CI gates` | Every pull request, every push to `main`, and on demand |
+| `pnpm test:browser`, `pnpm test:ui`, `pnpm test:integration`, `pnpm test:e2e`, `pnpm test:edge`, `pnpm test:install` | `.github/workflows/container-harnesses.yml`, reported as `Harness gates` | Every pull request whose change is not documentation-only; nightly against `main`; on demand; and on any pull request carrying the `ci:harnesses` label |
+
+The root gates cover the protocol compatibility condition above. The automated
+parts of the primary end-to-end scenario — steps 1 to 6 as `pnpm test:e2e` and
+steps 9 to 12 as `pnpm test:integration` — now run on the change that could break
+them rather than reporting the next morning.
+
+One of the conditions above now has an owner that runs on every pull request:
+**"migration or restore test fails"** is `apps/server/test/upgrade-stage0.test.ts`
+and `apps/server/test/backup.test.ts`, both inside `pnpm test`. A migration that
+breaks the committed Stage 0 fixture, and a restore that stops reproducing what it
+was given, fail the build rather than the release.
+
+A pull request is **documentation-only** when every file it changes is a Markdown
+document or lives under `docs/`. Every other change runs every harness: a schema,
+an application source or test tree, a Go service, the Compose stack, a
+Dockerfile, a lockfile or a workflow file. The exemption MUST stay expressed that
+way round. An allowlist of code paths omits whichever directory is added after it
+was written, and omitting a path means not running — which is the failure this
+rule exists to prevent. RVP-73 records the instance: a request-schema change
+merged without the harnesses and left `pnpm test:integration` failing on `main`
+until an unrelated pull request happened to carry the label.
+
+The filter is evaluated in a job inside the workflow, and MUST NOT be moved into
+an `on.pull_request.paths` condition. A workflow that `paths` filters out does
+not run, so it reports nothing, and an absent check cannot be told apart from a
+check nobody added. Deciding inside the workflow means `Harness gates` reports on
+every pull request: green when every harness passed, green when the change was
+documentation-only — recording in the run summary which files led to that — and
+red when a harness the change required did not run or did not succeed.
+
+The `ci:harnesses` label remains a manual override. It forces the harnesses onto
+a pull request the filter exempted; it is no longer how they are obtained.
+
+`CI gates` and `Harness gates` are the two status checks to require on `main`
+(AGENTS.md, "Change delivery"). The `protect main` ruleset does not list them
+yet, so today they report rather than block, and a maintainer who merges past a
+red one is doing so knowingly.
+
+`pnpm test:install` owns two of the conditions above: it runs
+`docs/DEPLOYMENT.md` section 8 verbatim from a clean checkout to arendered login page, which is the Stage 1 exit criterion "fresh installation from
 release artefacts in one documented flow", and it asserts that the browser worker
 is not running with unsupported insecure defaults — non-root, sandbox enabled as
 the worker itself reported it at registration, no Docker socket, no database or

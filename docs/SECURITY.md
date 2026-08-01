@@ -228,13 +228,33 @@ Agent credentials are:
 
 An agent token must not access administrative APIs.
 
-Stage 0 implements every line of this list (ADR-0020). An agent credential is a
+Every line of this list is implemented (ADR-0020). An agent credential is a
 bearer token prefixed `rpa_`, stored only as a SHA-256 digest, bound to one
 organisation and a non-empty set of projects, carrying a non-empty capability
 set from a fixed vocabulary, and expiring at most 24 hours after issue — the
 database refuses a longer life, so a long-lived agent token cannot be produced
-by omitting a field. It is issued by an administrator and returned exactly once;
-no route re-shows it.
+by omitting a field. It is returned exactly once; no route re-shows it.
+
+There are **two issuance paths** and one credential shape.
+
+An administrator issues one through
+`POST /api/v1/organisations/:organisationId/agent-credentials`, for a remote MCP
+client that is not behind a connector.
+
+A connector exchanges its X.509 device identity for one through
+`POST /connector/v1/agent-credentials` on the mutually authenticated connector
+listener, for the local MCP bridge of `docs/MCP_SPEC.md` §3.1 (ADR-0023). That
+credential is **narrower** than an administrator's: one project, decided by the
+workspace the agent is in rather than by the caller; one hour rather than a day;
+and the workflow capabilities only. It is never written to disk — the bridge
+holds it in memory for the life of the command — which is the form
+`docs/CONNECTOR_PROTOCOL.md` §14's "avoid storing long-lived agent tokens"
+takes. A revoked connector identity is refused, and answers exactly as an
+unknown one does.
+
+The capability vocabulary contains **no administrative capability**. That is why
+"the bridge must not grant the agent connector-administrator privileges" holds
+because no capability could express it, rather than because a check removes one.
 
 The administrative refusal is **by token shape rather than by lookup**: a bearer
 token with the `rpa_` prefix is refused with `AUTHORISATION_DENIED` before
@@ -253,7 +273,10 @@ with `AUTHENTICATION_REQUIRED` rather than allowing an open session to continue.
 An agent credential is accepted on exactly one route outside the MCP endpoint:
 `GET /api/v1/artefact-content/:grantId`, and only for a grant minted for a
 session that credential owns (ADR-0019). It cannot create, complete or overwrite
-an artefact.
+an artefact, and it cannot reach the review API or the inbox API: both refuse it
+by actor type before any lookup, and both say so rather than reporting it as
+unauthenticated, because the request authenticated perfectly well and is simply
+not allowed.
 
 ### 6.4 Worker authentication
 

@@ -165,31 +165,47 @@ func writeConfig(t *testing.T, workspacePath string) string {
 }
 
 // docs/CONNECTOR_PROTOCOL.md section 14: the local MCP bridge resolves the
-// workspace and project for the environment it is run in. This build stops
-// there, and says so with a stable message rather than inventing the credential
-// exchange that follows (RVP-49).
-func TestMCPResolvesTheWorkspaceAndThenRefuses(t *testing.T) {
+// workspace and project for the environment it is run in. `--describe` prints
+// what it resolved and stops there, which is the form an operator runs by hand:
+// without it stdout is the agent's JSON-RPC channel and carries nothing else.
+func TestMCPDescribesTheResolvedWorkspace(t *testing.T) {
 	workspacePath := t.TempDir()
 	code, stdout, stderr := capture(t, "mcp",
+		"--describe",
 		"--config", writeConfig(t, workspacePath),
 		"--data-dir", enrolledEnvironment(t),
 		"--directory", filepath.Join(workspacePath, "src", "components"),
 	)
-	if code != exitRefused {
-		t.Fatalf("exit code = %d, want %d\nstderr: %s", code, exitRefused, stderr)
+	if code != exitOK {
+		t.Fatalf("exit code = %d, want %d\nstderr: %s", code, exitOK, stderr)
 	}
-	if !strings.Contains(stderr, bridgeUnavailable) {
-		t.Fatalf("stderr = %q, want the stable refusal message", stderr)
-	}
-	if !strings.Contains(stderr, "RVP-49") {
-		t.Fatal("the refusal must name the issue that tracks the missing exchange")
-	}
-	// What was resolved is reported, so that "the bridge does not exist yet" is
-	// distinguishable from "the bridge cannot see my project".
 	for _, expected := range []string{"con_mcptest", "wsp_refresh_surplus", "refresh-surplus"} {
 		if !strings.Contains(stdout, expected) {
 			t.Errorf("stdout = %q, want it to name %s", stdout, expected)
 		}
+	}
+}
+
+// Without a usable device identity the bridge does not proxy. Proxying without
+// a credential would hand the agent whatever authority the connector holds,
+// which section 14 forbids in terms, so the command fails before it reads a
+// single byte from the agent — and it writes nothing to stdout, which in this
+// mode is the agent's JSON-RPC channel rather than an operator's terminal.
+func TestMCPDoesNotProxyWithoutACredential(t *testing.T) {
+	workspacePath := t.TempDir()
+	code, stdout, stderr := capture(t, "mcp",
+		"--config", writeConfig(t, workspacePath),
+		"--data-dir", enrolledEnvironment(t),
+		"--directory", workspacePath,
+	)
+	if code == exitOK {
+		t.Fatalf("exit code = %d; the bridge must not start without a credential\nstderr: %s", code, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q; stdout is the agent's JSON-RPC channel and must carry nothing else", stdout)
+	}
+	if strings.Contains(stderr, "rpa_") {
+		t.Fatalf("stderr = %q; a refusal must never carry a credential", stderr)
 	}
 }
 
@@ -206,7 +222,7 @@ func TestMCPRefusesAnUnenrolledEnvironment(t *testing.T) {
 	if !strings.Contains(stderr, "enrol") {
 		t.Fatalf("stderr = %q", stderr)
 	}
-	if strings.Contains(stderr, bridgeUnavailable) {
+	if strings.Contains(stderr, "agent credential") {
 		t.Fatal("an unenrolled environment must not be told about the credential exchange first")
 	}
 }

@@ -10,6 +10,9 @@
 import type {
   Actor,
   ActorType,
+  AgentCapability,
+  AgentSession,
+  AgentSessionStatus,
   ApiError,
   ApiErrorDetails,
   ApiErrorResponse,
@@ -191,6 +194,29 @@ export function decodeHumanSession(value: unknown): HumanSession {
     display: source["display"] as string,
     ...(source["project_ids"] === undefined ? {} : { project_ids: (source["project_ids"] as unknown[]).map((item) => item as string) }),
     expires_at: source["expires_at"] as string,
+  };
+}
+
+/**
+ * Decodes a validated AgentSession.
+ */
+export function decodeAgentSession(value: unknown): AgentSession {
+  const source = value as Record<string, unknown>;
+  return {
+    id: source["id"] as string,
+    ...(source["organisation_id"] === undefined ? {} : { organisation_id: source["organisation_id"] as string }),
+    project_id: source["project_id"] as string,
+    ...(source["connector_id"] === undefined ? {} : { connector_id: source["connector_id"] as string }),
+    ...(source["workspace_id"] === undefined ? {} : { workspace_id: source["workspace_id"] as string }),
+    agent_type: source["agent_type"] as string,
+    ...(source["agent_version"] === undefined ? {} : { agent_version: source["agent_version"] as string }),
+    capabilities: (source["capabilities"] as unknown[]).map((item) => item as AgentCapability),
+    ...(source["branch"] === undefined ? {} : { branch: source["branch"] as string }),
+    ...(source["head_commit"] === undefined ? {} : { head_commit: source["head_commit"] as string }),
+    status: source["status"] as AgentSessionStatus,
+    started_at: source["started_at"] as string,
+    ...(source["last_seen_at"] === undefined ? {} : { last_seen_at: source["last_seen_at"] as string }),
+    ...(source["ended_at"] === undefined ? {} : { ended_at: source["ended_at"] as string }),
   };
 }
 
@@ -496,6 +522,7 @@ export function decodeConnectorRevokedPayload(value: unknown): ConnectorRevokedP
     routes_revoked: source["routes_revoked"] as number,
     sessions_disconnected: source["sessions_disconnected"] as number,
     ...(source["channels_closed"] === undefined ? {} : { channels_closed: source["channels_closed"] as number }),
+    ...(source["agent_credentials_revoked"] === undefined ? {} : { agent_credentials_revoked: source["agent_credentials_revoked"] as number }),
   };
 }
 

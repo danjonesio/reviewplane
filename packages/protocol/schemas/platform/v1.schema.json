@@ -327,6 +327,11 @@
           "finding.status_change_denied",
           "review.comment_added",
           "review.status_change_denied",
+          "inbox_item.created",
+          "inbox_item.acknowledged",
+          "inbox_item.completed",
+          "inbox_item.dismissed",
+          "inbox_item.expired",
           "job.enqueued",
           "job.succeeded",
           "job.failed",
@@ -378,6 +383,7 @@
       "annotation": "ann_",
       "artefact": "art_",
       "artefact_grant": "agr_",
+      "inbox_item": "inb_",
       "verification": "ver_",
       "event": "evt_",
       "job": "job_",
@@ -814,6 +820,78 @@
           "items": { "$ref": "#/$defs/identifier", "description": "One project the session is scoped to." }
         },
         "expires_at": { "$ref": "#/$defs/timestamp", "description": "When the session stops being usable without revocation." }
+      }
+    },
+    "agent_session_status": {
+      "type": "string",
+      "description": "Agent-session status (docs/DOMAIN_MODEL.md section 11).",
+      "enum": [
+        "STARTING",
+        "ACTIVE",
+        "WAITING",
+        "BLOCKED",
+        "DISCONNECTED",
+        "COMPLETED",
+        "FAILED",
+        "CANCELLED"
+      ]
+    },
+    "agent_capability": {
+      "type": "string",
+      "description": "A capability an agent credential may carry (docs/SECURITY.md section 6.3). It is the same vocabulary the MCP schema declares, restated here because a control-plane representation of a session must name what the session was permitted to do.",
+      "enum": [
+        "project:read",
+        "review:read",
+        "review:write",
+        "finding:read",
+        "finding:write",
+        "verification:submit",
+        "browser:capture"
+      ]
+    },
+    "agent_session": {
+      "type": "object",
+      "description": "A bounded agent execution context (docs/DOMAIN_MODEL.md section 11), as a human interface shows it. project_id is required because an agent session is bound to exactly one project and a half-resolved one is not representable (ADR-0020). capabilities is what the session was granted when it opened and not what its credential carries now, so a record of what an agent was allowed to do survives a later revocation. No member of this shape can carry a credential: the token is never part of a session representation.",
+      "additionalProperties": false,
+      "x-max-bytes": 4096,
+      "required": ["id", "project_id", "agent_type", "capabilities", "status", "started_at"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier", "description": "Agent-session identity, conventionally prefixed ags_." },
+        "organisation_id": { "$ref": "#/$defs/identifier", "description": "Owning organisation." },
+        "project_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Project the session is bound to. Exactly one, always."
+        },
+        "connector_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Connector the session reached the control plane through, where it came through the local bridge."
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Workspace the session resolved, where the project has one."
+        },
+        "agent_type": {
+          "$ref": "#/$defs/display_name",
+          "description": "Client's self-reported name. It is description and never an authorisation input: the credential decides what the session may do."
+        },
+        "agent_version": {
+          "$ref": "#/$defs/display_name",
+          "description": "Client's self-reported version."
+        },
+        "capabilities": {
+          "type": "array",
+          "description": "Capabilities the session holds. It cannot exceed the set its credential carried when it opened.",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/agent_capability", "description": "One capability." }
+        },
+        "branch": { "$ref": "#/$defs/git_ref_name", "description": "Branch the workspace was on when the session started." },
+        "head_commit": { "$ref": "#/$defs/git_commit", "description": "Head commit at that moment." },
+        "status": { "$ref": "#/$defs/agent_session_status", "description": "Session status." },
+        "started_at": { "$ref": "#/$defs/timestamp", "description": "When the session opened." },
+        "last_seen_at": { "$ref": "#/$defs/timestamp", "description": "When the control plane last handled a request from it." },
+        "ended_at": { "$ref": "#/$defs/timestamp", "description": "When it ended, where it has." }
       }
     },
     "environment": {
@@ -1389,7 +1467,7 @@
     },
     "connector_revoked_payload": {
       "type": "object",
-      "description": "Payload of connector.revoked. It records what revocation reached, because docs/CONNECTOR_PROTOCOL.md section 18 makes revocation five things at once and an auditor needs to see that all five happened.",
+      "description": "Payload of connector.revoked. It records what revocation reached, because docs/CONNECTOR_PROTOCOL.md section 18 makes revocation six things at once and an auditor needs to see that all six happened.",
       "additionalProperties": false,
       "x-max-bytes": 512,
       "required": ["previous_status", "new_status", "routes_revoked", "sessions_disconnected"],
@@ -1411,6 +1489,12 @@
         "channels_closed": {
           "type": "integer",
           "description": "How many live connector channels were closed. Zero when the connector held none.",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "agent_credentials_revoked": {
+          "type": "integer",
+          "description": "How many live agent credentials the connector had minted were revoked with it (ADR-0023). Refusing the exchange closes only the next one, so this count is what closed the ones already issued. Each also writes its own session.revoked with the reason connector_revoked.",
           "minimum": 0,
           "maximum": 1024
         }
