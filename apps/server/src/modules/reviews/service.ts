@@ -2081,7 +2081,7 @@ export class ReviewService {
     const review = await this.getReview(scope, finding.review_id);
     assertReviewMutable(review.status, { fields: ["verification"] });
 
-    const evidence = await this.#requireOwnedEvidence(scope, input.artefactIds);
+    const evidence = await this.#requireOwnedEvidence(scope, input.artefactIds, findingId);
     const screenshots = evidence.filter((artefact) => artefact.kind === "screenshot");
     if (screenshots.length === 0) {
       throw new ApiError(
@@ -3255,6 +3255,7 @@ export class ReviewService {
   async #requireOwnedEvidence(
     scope: Scope,
     artefactIds: readonly string[],
+    forFindingId?: string,
   ): Promise<{ id: string; kind: string }[]> {
     const unique = [...new Set(artefactIds)];
     const rows = await this.#pool.query<{
@@ -3263,6 +3264,7 @@ export class ReviewService {
       state: string;
       browser_session_id: string | null;
       session_project_id: string | null;
+      original_of_finding_id: string | null;
     }>(
       // The tenant terms are in the predicate rather than compared afterwards.
       // Comparing after the read is the shape that produced a live
@@ -3271,7 +3273,12 @@ export class ReviewService {
       // reject it. Here a row from another project or organisation is simply
       // not returned, so it cannot be reached by forgetting a comparison.
       `SELECT a.id, a.kind, a.state, a.browser_session_id,
-              b.project_id AS session_project_id
+              b.project_id AS session_project_id,
+              (SELECT f.id FROM findings f
+                WHERE f.screenshot_artefact_id = a.id
+                  AND f.organisation_id = a.organisation_id
+                  AND f.project_id = a.project_id
+                LIMIT 1) AS original_of_finding_id
          FROM artefacts a
          LEFT JOIN browser_sessions b ON b.id = a.browser_session_id
         WHERE a.id = ANY($1) AND a.project_id = $2 AND a.organisation_id = $3`,
@@ -3291,6 +3298,30 @@ export class ReviewService {
         throw new ApiError(
           "ARTEFACT_UPLOAD_INCOMPLETE",
           `Artefact ${artefactId} has not been verified, so it cannot be submitted as evidence.`,
+          { field: "artefact_ids" },
+        );
+      }
+      // Another finding's original annotated screenshot is not this finding's
+      // evidence. The project check above does not catch it — both findings are
+      // in the same project, so the artefact is legitimately reachable — and
+      // without this a submission could present the recorded *before* state of
+      // somebody else's defect as the *after* state of its own, which is a
+      // completion claim resting on a picture of a different problem.
+      //
+      // This one is refused as a policy denial rather than as not found. The
+      // enumeration argument that makes a foreign project's artefact "not
+      // found" does not apply: the caller can already list this project's
+      // findings and their screenshots, so a distinct refusal discloses
+      // nothing it did not already have, and telling it plainly is more useful
+      // than pretending the identifier does not exist.
+      if (
+        forFindingId !== undefined &&
+        row.original_of_finding_id !== null &&
+        row.original_of_finding_id !== forFindingId
+      ) {
+        throw new ApiError(
+          "POLICY_DENIED",
+          `Artefact ${artefactId} is the original screenshot of finding ${row.original_of_finding_id} and cannot be submitted as evidence for another finding.`,
           { field: "artefact_ids" },
         );
       }

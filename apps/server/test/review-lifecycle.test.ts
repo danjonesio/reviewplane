@@ -65,6 +65,86 @@ interface Fixture {
   readonly projectId: string;
   readonly browserSessionId: string;
   readonly artefactId: string;
+  /** A second verified screenshot, for the after half of a verification. */
+  readonly afterArtefactId: string;
+}
+
+/**
+ * The evidence an agent must now carry to reach AWAITING_HUMAN_REVIEW
+ * (RVP-53, `docs/MCP_SPEC.md` section 7.8). Before that gate existed these
+ * tests moved a finding there with a resolution note and nothing else, which is
+ * the completion claim without evidence `AGENTS.md` forbids.
+ */
+const FIXED_COMMIT = "b4c5d6e7f809192a3b4c5d6e7f809192a3b4c5d6";
+const REQUIRED_VIEWPORTS = [
+  { width: 390, height: 844, device_scale_factor: 2 },
+  { width: 1440, height: 900, device_scale_factor: 1 },
+];
+const VERIFICATION_CHECKS = {
+  reproduced_before: true,
+  console_errors_reviewed: true,
+  network_failures_reviewed: true,
+};
+
+async function uploadScreenshot(
+  fixture: { projectId: string; browserSessionId: string },
+  bytes: Buffer,
+): Promise<string> {
+  const app = harness.built.app;
+  const intent = await app.inject({
+    method: "POST",
+    url: `/api/v1/projects/${fixture.projectId}/artefacts/uploads`,
+    headers: { authorization: `Bearer ${WORKER_CREDENTIAL}` },
+    payload: {
+      kind: "screenshot",
+      content_type: "image/png",
+      size_bytes: bytes.byteLength,
+      sha256: sha256(bytes),
+      retention_class: "verification_evidence",
+      browser_session_id: fixture.browserSessionId,
+      filename: "capture.png",
+    },
+  });
+  assert.equal(intent.statusCode, 201, intent.body);
+  const { artefact_id: artefactId, upload_path: uploadPath } = (
+    intent.json() as { data: { artefact_id: string; upload_path: string } }
+  ).data;
+  await app.inject({
+    method: "POST",
+    url: uploadPath,
+    headers: { authorization: `Bearer ${WORKER_CREDENTIAL}`, "content-type": "image/png" },
+    payload: bytes,
+  });
+  const completed = await app.inject({
+    method: "POST",
+    url: `/api/v1/artefacts/${artefactId}/complete`,
+    headers: { authorization: `Bearer ${WORKER_CREDENTIAL}` },
+    payload: { sha256: sha256(bytes), size_bytes: bytes.byteLength },
+  });
+  assert.equal(completed.statusCode, 200, completed.body);
+  return artefactId;
+}
+
+/** Submits the evidence the gate requires, so a hand-over is permitted. */
+async function submitFullEvidence(
+  fixture: Fixture,
+  findingId: string,
+  actor: { type: "agent_session"; id: string; display: string },
+): Promise<void> {
+  await harness.built.reviews.submitVerification(
+    scopeOf(fixture),
+    findingId,
+    {
+      summary: "Raised the collapse breakpoint to 900px.",
+      branch: "redesign",
+      commit: FIXED_COMMIT,
+      testedViewports: REQUIRED_VIEWPORTS,
+      checks: VERIFICATION_CHECKS,
+      artefactIds: [fixture.afterArtefactId],
+      workspaceBranch: null,
+    },
+    actor,
+  );
 }
 
 async function seedFixture(): Promise<Fixture> {
@@ -113,7 +193,11 @@ async function seedFixture(): Promise<Fixture> {
     payload: { sha256: sha256(SCREENSHOT), size_bytes: SCREENSHOT.byteLength },
   });
   assert.equal(completed.statusCode, 200, completed.body);
-  return { organisationId, projectId, browserSessionId, artefactId };
+  const afterArtefactId = await uploadScreenshot(
+    { projectId, browserSessionId },
+    encodePng(781, 1688),
+  );
+  return { organisationId, projectId, browserSessionId, artefactId, afterArtefactId };
 }
 
 function scopeOf(fixture: Fixture): { organisationId: string; projectId: string } {
@@ -407,10 +491,14 @@ test("a finding travels open to awaiting human review and every step is evented"
     },
     agent,
   );
+  // The hand-over now requires the evidence the project configures (RVP-53).
+  // Until that gate existed this step passed on a resolution note alone, which
+  // is the completion claim without evidence AGENTS.md forbids.
+  await submitFullEvidence(fixture, finding.id, agent);
   const submitted = await reviews.updateFinding(
     scope,
     finding.id,
-    { expectedVersion: 4, status: "AWAITING_HUMAN_REVIEW" },
+    { expectedVersion: 5, status: "AWAITING_HUMAN_REVIEW" },
     agent,
   );
   assert.equal(submitted.status, "AWAITING_HUMAN_REVIEW");
@@ -745,16 +833,17 @@ test("an agent actor is refused in the domain layer and the attempt is audited",
     { expectedVersion: 3, status: "FIXED_UNVERIFIED", resolutionNote: "Fixed." },
     agent,
   );
+  await submitFullEvidence(fixture, finding.id, agent);
   await reviews.updateFinding(
     scope,
     finding.id,
-    { expectedVersion: 4, status: "AWAITING_HUMAN_REVIEW" },
+    { expectedVersion: 5, status: "AWAITING_HUMAN_REVIEW" },
     agent,
   );
 
   for (const status of ["RESOLVED", "WONT_FIX", "DUPLICATE"] as const) {
     const denial = await reviews
-      .updateFinding(scope, finding.id, { expectedVersion: 5, status }, agent)
+      .updateFinding(scope, finding.id, { expectedVersion: 6, status }, agent)
       .then(() => null)
       .catch((error: unknown) => error as { code: string; message: string });
     assert.equal(denial?.code, "AUTHORISATION_DENIED", `an agent reached ${status}`);

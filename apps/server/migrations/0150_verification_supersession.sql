@@ -49,8 +49,19 @@ ALTER TABLE verifications
     ADD CONSTRAINT verifications_superseded_by_is_another_verification CHECK (
         superseded_by_verification_id IS NULL OR superseded_by_verification_id <> id
     ),
+    -- Deferred to commit, because the two writes happen in the only order the
+    -- unique index below permits. The predecessor must leave `submitted`
+    -- *before* the successor enters it, or the index sees two current claims
+    -- and refuses the insert; but at the moment the predecessor is updated the
+    -- successor does not exist yet, so an immediately-checked forward reference
+    -- would refuse the update instead. Deferring resolves the deadlock without
+    -- weakening anything: at commit both rows exist and the reference is
+    -- checked exactly as it would have been.
     ADD CONSTRAINT verifications_superseded_by_fk
-        FOREIGN KEY (superseded_by_verification_id) REFERENCES verifications (id) ON DELETE RESTRICT,
+        FOREIGN KEY (superseded_by_verification_id) REFERENCES verifications (id)
+        ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    -- Backward-looking, so it is checked immediately like every other reference
+    -- in this schema: the row it names is always already there.
     ADD CONSTRAINT verifications_supersedes_fk
         FOREIGN KEY (supersedes_verification_id) REFERENCES verifications (id) ON DELETE RESTRICT;
 

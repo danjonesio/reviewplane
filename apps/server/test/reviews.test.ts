@@ -492,17 +492,53 @@ test("an agent cannot resolve a human-authored finding through the domain servic
     },
     agent,
   );
+  // The hand-over is itself evidence-gated (RVP-53): a resolution note is not a
+  // verification, and until one carrying the project's required viewports and
+  // an after screenshot exists, the agent cannot ask a human to look.
+  const withoutVerification = await reviews
+    .updateFinding(scope, findingId, { expectedVersion: 4, status: "AWAITING_HUMAN_REVIEW" }, agent)
+    .then(() => null)
+    .catch((error: unknown) => error as { code: string; message: string });
+  assert.equal(withoutVerification?.code, "EVIDENCE_REQUIRED");
+
+  const afterArtefactId = await uploadScreenshot(
+    fixture.projectId,
+    fixture.browserSessionId,
+    encodePng(781, 1688),
+  );
+  await reviews.submitVerification(
+    scope,
+    findingId,
+    {
+      summary: "Raised the collapse breakpoint to 900px.",
+      branch: "redesign",
+      commit: "b4c5d6e7f809192a3b4c5d6e7f809192a3b4c5d6",
+      testedViewports: [
+        { width: 390, height: 844, device_scale_factor: 2 },
+        { width: 1440, height: 900, device_scale_factor: 1 },
+      ],
+      checks: {
+        reproduced_before: true,
+        console_errors_reviewed: true,
+        network_failures_reviewed: true,
+      },
+      artefactIds: [afterArtefactId],
+      workspaceBranch: null,
+    },
+    agent,
+  );
+
   const submitted = await reviews.updateFinding(
     scope,
     findingId,
-    { expectedVersion: 4, status: "AWAITING_HUMAN_REVIEW" },
+    { expectedVersion: 5, status: "AWAITING_HUMAN_REVIEW" },
     agent,
   );
   assert.equal(submitted.status, "AWAITING_HUMAN_REVIEW");
 
   // And then it stops. This is the product invariant of `AGENTS.md`.
   const denial = await reviews
-    .updateFinding(scope, findingId, { expectedVersion: 5, status: "RESOLVED" }, agent)
+    .updateFinding(scope, findingId, { expectedVersion: 6, status: "RESOLVED" }, agent)
     .then(() => null)
     .catch((error: unknown) => error as { code: string; message: string });
   assert.equal(denial?.code, "AUTHORISATION_DENIED");
@@ -511,13 +547,13 @@ test("an agent cannot resolve a human-authored finding through the domain servic
   // Nothing was written: the finding is still awaiting a human.
   const unchanged = await reviews.getFinding(scope, findingId);
   assert.equal(unchanged.status, "AWAITING_HUMAN_REVIEW");
-  assert.equal(unchanged.version, 5);
+  assert.equal(unchanged.version, 6);
 
   // A human completes the same transition.
   const accepted = await reviews.updateFinding(
     scope,
     findingId,
-    { expectedVersion: 5, status: "RESOLVED" },
+    { expectedVersion: 6, status: "RESOLVED" },
     { type: "human_user", id: "bootstrap", display: "bootstrap administrator" },
   );
   assert.equal(accepted.status, "RESOLVED");
