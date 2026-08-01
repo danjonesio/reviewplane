@@ -740,6 +740,16 @@ export class BrowserSessionService {
         projectId: stream.projectId,
         actor: input.actor,
         correlation: { browser_session_id: session.id },
+        // The member names here are deliberately unprefixed, unlike the
+        // refusal `details` object where `status` became
+        // `browser_session_status`. The two cases are opposites. `details` is
+        // one object serving reviews, findings and browser sessions, so a bare
+        // `status` there says nothing about which record it describes. This
+        // payload is correlated to `browser_session_id`, so everything in it is
+        // about that one session by construction — `current_epoch` is the
+        // session's epoch and is not called `browser_session_control_epoch`,
+        // and prefixing only the status would make it the odd field out in its
+        // own record. `docs/EVENTS.md` section 7 names these fields.
         payload: {
           command: input.command.command,
           reason_code: denial.code,

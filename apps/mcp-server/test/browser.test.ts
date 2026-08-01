@@ -681,6 +681,10 @@ test("a superseded control epoch is refused with the epoch that is current", asy
     assert.equal(rejected.rows[0]?.payload["reason_code"], "CONTROL_EPOCH_STALE");
     assert.equal(rejected.rows[0]?.payload["presented_epoch"], started.epoch);
     assert.equal(rejected.rows[0]?.payload["current_epoch"], current);
+    // The same-project record *does* carry the session's state, under the name
+    // the event payload uses. Asserted positively so that the absence asserted
+    // in the cross-project test above cannot go vacuous behind a rename.
+    assert.equal(rejected.rows[0]?.payload["session_status"], "READY");
 
     // The current epoch now belongs to somebody else, so presenting it is a
     // different refusal — and the agent is told which.
@@ -787,10 +791,30 @@ test("another project's browser session is refused exactly as an unknown one is"
       assert.equal(row.payload["reason"], "project_mismatch");
       assert.equal(row.payload["cross_project"], true);
       assert.equal(row.payload["reason_code"], "RESOURCE_NOT_FOUND");
-      // The record says nothing about the session it named. The actor is not
-      // entitled to the other project's state, so neither is its audit trail.
-      assert.equal(row.payload["current_epoch"], undefined);
-      assert.equal(row.payload["session_status"], undefined);
+      // The whole key set, not a handful of absences.
+      //
+      // "The record says nothing about the session it named" is the property
+      // that matters — the actor is not entitled to the other project's state,
+      // so neither is its audit trail — and asserting `payload["session_status"]
+      // === undefined` is a *vacuous* way to check it: rename the field and the
+      // assertion still passes while the value it was guarding starts leaking
+      // under the new name. Nothing validates event payload names (there is no
+      // per-type payload schema for `browser.command_rejected`), so this is the
+      // only place that can notice. An addition to an append-only audit record
+      // is worth failing a test over and looking at.
+      assert.deepEqual(
+        Object.keys(row.payload).sort(),
+        [
+          "command",
+          "cross_project",
+          "interactive",
+          "presented_controller_type",
+          "presented_epoch",
+          "reason",
+          "reason_code",
+        ],
+        "the cross-project audit payload changed shape",
+      );
     }
     assert.deepEqual(
       audited.rows.map((row) => row.payload["command"]),

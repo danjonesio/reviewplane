@@ -351,6 +351,22 @@ of the denials in the command path was — so an auditor asking whether anything
 had tried to drive a terminated session received the same answer as if nothing
 had.
 
+The payload members are `command`, `reason_code`, `reason`, `interactive`,
+`presented_epoch` and `presented_controller_type` on every rejection;
+`current_epoch` and `session_status` where the actor was entitled to know them;
+and `cross_project` where it was not. They are named without a prefix because
+the record is correlated to `browser_session_id`, so every member is about that
+one session by construction — which is the opposite of the refusal `details`
+object of `API.md` §5, one object serving reviews, findings and sessions, where
+a bare `status` would say nothing about which record it described.
+
+Nothing validates these names. There is no per-type payload schema for
+`browser.command_rejected`, so `pnpm protocol:check` and typecheck are both
+blind to a renamed or missing member; only an assertion against the event store
+catches one. Tests that read this payload therefore assert the **exact key set**
+rather than the absence of a member: "no `session_status`" is satisfied just as
+well by a field that has been renamed and is leaking under the new name.
+
 A payload here never carries the command's arguments. A refused `browser_type`
 is exactly the command whose argument must not enter an append-only table.
 
