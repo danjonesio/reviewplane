@@ -145,6 +145,13 @@ type Harness struct {
 	reconcileMu sync.Mutex
 	reconcile   func(connectorID string, request connectorv1.ReconnectRequest) connectorv1.ReconnectResponse
 
+	// reconcileSeq counts the reconciliations the control plane has answered;
+	// reconcileBaseline is its value when the connection was last broken. A
+	// route is only servable again once a reconciliation newer than the break
+	// has re-admitted it, so WaitForRoute compares the two.
+	reconcileSeq      atomic.Uint64
+	reconcileBaseline atomic.Uint64
+
 	streamSeq atomic.Uint64
 	cancel    context.CancelFunc
 	stopped   chan struct{}
@@ -218,7 +225,12 @@ func Start(t *testing.T, options Options) *Harness {
 			harness.reconcileMu.Lock()
 			answer := harness.reconcile
 			harness.reconcileMu.Unlock()
-			return answer(connectorID, request)
+			response := answer(connectorID, request)
+			// The connector has already drained its table by the time this
+			// request arrives, so counting answers here is what lets
+			// WaitForRoute tell a re-admitted route from the pre-break entry.
+			harness.reconcileSeq.Add(1)
+			return response
 		},
 	})
 
@@ -601,6 +613,7 @@ func classify(err error) string {
 // the control channel: a connector that has gone away, with its own process
 // still running and still retrying.
 func (h *Harness) Partition() {
+	h.reconcileBaseline.Store(h.reconcileSeq.Load())
 	h.acceptingData.Store(false)
 	h.sessionMu.Lock()
 	session := h.session
@@ -617,7 +630,10 @@ func (h *Harness) Partition() {
 func (h *Harness) Heal() { h.acceptingData.Store(true) }
 
 // SeverControlOnly drops the control channel and leaves the data channel alone.
-func (h *Harness) SeverControlOnly() int { return h.ControlPlane.Sever() }
+func (h *Harness) SeverControlOnly() int {
+	h.reconcileBaseline.Store(h.reconcileSeq.Load())
+	return h.ControlPlane.Sever()
+}
 
 // DataChannelLive reports whether a data channel is terminated for the connector.
 func (h *Harness) DataChannelLive() bool {
@@ -637,10 +653,22 @@ func (h *Harness) DataChannelLive() bool {
 
 // WaitForRoute blocks until the connector is serving the authorised route again
 // over a live data channel.
+//
+// A live data channel and a carried route are not on their own enough to make
+// the route servable. BeginReconciliation drains the whole table before it asks
+// the control plane what to keep (docs/CONNECTOR_PROTOCOL.md section 17), and
+// re-admits only once the answer arrives. Waiting on carriage alone is
+// therefore satisfied by the entry left over from before the break, which the
+// drain is about to remove — and a request issued in that window is correctly
+// answered ROUTE_EXPIRED. Requiring a reconciliation newer than the break means
+// the carried route can only be one this reconciliation re-admitted.
 func (h *Harness) WaitForRoute(within time.Duration) {
 	h.T.Helper()
 	h.WaitUntil("the connector to resume "+RouteID, within, func() bool {
 		if !h.DataChannelLive() {
+			return false
+		}
+		if h.reconcileSeq.Load() <= h.reconcileBaseline.Load() {
 			return false
 		}
 		_, carried := h.Manager.Table().Get(RouteID)
