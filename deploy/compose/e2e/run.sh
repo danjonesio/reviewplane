@@ -378,17 +378,36 @@ api PUT "/api/v1/browser-workers/${WORKER_ID}/assignments" "{\"project_ids\":[\"
   || fail "could not assign the worker to the project"
 info "assigned browser worker ${WORKER_ID} to ${PROJECT_ID}"
 
-# The worker learns its assignments in the registration acknowledgement and
-# holds them in memory; the heartbeat carries no acknowledgement to update them
-# with. Restarting it is how the assignment reaches it. That is a real gap
-# rather than a scenario quirk — a worker assigned to a new project mid-flight
-# would not notice until it restarted — and it is recorded as such in the pull
-# request rather than papered over here.
-"${COMPOSE[@]}" restart browser-worker >/dev/null 2>&1 \
-  || fail "could not restart the browser worker"
-"${COMPOSE[@]}" up -d --wait --wait-timeout 120 browser-worker \
-  || fail "the browser worker did not become healthy after the assignment"
-info "browser worker re-registered with its assignment"
+# The worker picks the assignment up from its next heartbeat acknowledgement
+# (ADR-0026), so no restart is needed. This used to restart the container,
+# because the assignment was delivered once at registration and cached for the
+# life of the process — which also meant a *revocation* took effect only at
+# restart, and that is an authorisation gap rather than an inconvenience
+# (RVP-60).
+#
+# The wait is on the assignment actually being served, not on a fixed delay: it
+# reserves a session, which the control plane refuses with
+# PROJECT_CONTEXT_MISMATCH until the assignment exists. Waiting out the
+# heartbeat interval instead would be waiting on a proxy for the thing being
+# asserted.
+await_worker_assignment() {
+  local deadline=$((SECONDS + 90)) probe probe_id
+  while (( SECONDS < deadline )); do
+    probe="$(api POST "/api/v1/projects/${PROJECT_ID}/browser-sessions" \
+      '{"viewport":{"width":1440,"height":900,"device_scale_factor":1},"allocate":false}' 2>/dev/null || true)"
+    if printf '%s' "${probe}" | grep -q 'REQUESTED'; then
+      # The probe reserved a real session. End it so it does not sit in the
+      # capacity pool for the rest of the run.
+      probe_id="$(field "${probe}" 'data["id"]')" || return 0
+      api POST "/api/v1/browser-sessions/${probe_id}/terminate" '{}' >/dev/null 2>&1 || true
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+await_worker_assignment || fail "the browser worker did not pick up its assignment from a heartbeat"
+info "browser worker picked up its assignment from a heartbeat, with no restart"
 
 # ---------------------------------------------------------------------------
 step "4. Reserve a browser session, then publish the service (step 4)"
