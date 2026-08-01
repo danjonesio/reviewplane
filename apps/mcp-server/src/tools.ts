@@ -1623,9 +1623,13 @@ const TOOLS: readonly ToolDefinition[] = [
     validate: validateBrowserSessionControlInput,
     async run(args, context) {
       const { connection, services } = context;
-      const record = await resolveBrowserSession(args["browser_session_id"] as string, context);
+      const browserSessionId = args["browser_session_id"] as string;
+      // The project, the epoch and the lease are the service's to check, and it
+      // refuses a session in another project as not found. Only the ownership
+      // rule is this layer's, and it runs only once the project has matched.
+      await browserSessionIfPermitted(browserSessionId, context);
       const paused = await services.browserSessions.pause({
-        browserSessionId: record.id,
+        browserSessionId,
         projectId: connection.project.id,
         controller: agentController(context),
         controlEpoch: args["control_epoch"] as number,
@@ -1645,9 +1649,10 @@ const TOOLS: readonly ToolDefinition[] = [
     validate: validateBrowserSessionControlInput,
     async run(args, context) {
       const { connection, services } = context;
-      const record = await resolveBrowserSession(args["browser_session_id"] as string, context);
+      const browserSessionId = args["browser_session_id"] as string;
+      await browserSessionIfPermitted(browserSessionId, context);
       const resumed = await services.browserSessions.resume({
-        browserSessionId: record.id,
+        browserSessionId,
         projectId: connection.project.id,
         controller: agentController(context),
         controlEpoch: args["control_epoch"] as number,
@@ -1667,15 +1672,22 @@ const TOOLS: readonly ToolDefinition[] = [
     validate: validateBrowserSessionControlInput,
     async run(args, context) {
       const { connection, services } = context;
-      const record = await resolveBrowserSession(args["browser_session_id"] as string, context);
-      requireControlOfSession(record, args["control_epoch"] as number, context);
-      const ended = await services.browserSessions.terminate(
-        record.id,
+      const browserSessionId = args["browser_session_id"] as string;
+      await browserSessionIfPermitted(browserSessionId, context);
+      // `end`, not `terminate`. The second applies no epoch and no lease check
+      // — it is the reconciler's and the worker report's door. This is the
+      // controller-facing one, and §7.3 puts ending a session under the same
+      // rules as pausing it.
+      const ended = await services.browserSessions.end({
+        browserSessionId,
+        projectId: connection.project.id,
+        controller: agentController(context),
+        controlEpoch: args["control_epoch"] as number,
         // The agent asked; it is not a capacity, policy or failure termination,
         // and the reason is what the timeline will carry for ever.
-        "requested",
-        agentActor(connection.session, connection.client.name),
-      );
+        reason: "requested",
+        actor: agentActor(connection.session, connection.client.name),
+      });
       return {
         trust: "trusted_control_plane",
         data: { session: await toBrowserSessionView(ended, context, { includeUrl: false }) },
