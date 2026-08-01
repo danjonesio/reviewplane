@@ -323,10 +323,15 @@ export async function registerLiveRoutes(
       );
     }
     if (session.status === "TERMINATED" || session.status === "FAILED") {
+      // `browser_session_status` and not `status`: it is the member name
+      // `error_details` declares in the protocol schema, and one route
+      // answering `BROWSER_SESSION_NOT_ACTIVE` with a different member name
+      // from every other route is a client that learns the name in one place
+      // and cannot find it in the next.
       throw new ApiError(
         "BROWSER_SESSION_NOT_ACTIVE",
         `The browser session is ${session.status}.`,
-        { status: session.status },
+        { browser_session_status: session.status },
       );
     }
 

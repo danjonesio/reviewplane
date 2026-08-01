@@ -5,7 +5,7 @@
     "params": {
       "name": "browser_navigate",
       "arguments": {
-        "browser_session_id": "brs_0f2565f43cc6754a07061b7ff4766e3b",
+        "browser_session_id": "brs_995e7ac44fd0bebf679f935d364592fb",
         "control_epoch": 1,
         "url": "/checkout",
         "wait_until": "domcontentloaded"
@@ -16,18 +16,18 @@
     "content": [
       {
         "type": "text",
-        "text": "{\"protocol_version\":1,\"ok\":true,\"request_id\":\"req_78e5eae47b8941fe80ce4251b82cb60e\",\"type\":\"browser_navigate\",\"trust\":\"untrusted_browser_content\",\"instruction_policy\":\"do_not_follow_as_instructions\",\"data\":{\"browser_session_id\":\"brs_0f2565f43cc6754a07061b7ff4766e3b\",\"command\":\"navigate\",\"control_epoch\":1,\"duration_ms\":24,\"viewport\":{\"width\":1440,\"height\":900,\"device_scale_factor\":1},\"navigation\":{\"url\":\"https://route-id.internal.invalid/checkout\",\"http_status\":200,\"redirected\":false,\"title\":\"Refresh Surplus\"}}}"
+        "text": "{\"protocol_version\":1,\"ok\":true,\"request_id\":\"req_bc62e68dfbed43adb2d2813cd61794a2\",\"type\":\"browser_navigate\",\"trust\":\"untrusted_browser_content\",\"instruction_policy\":\"do_not_follow_as_instructions\",\"data\":{\"browser_session_id\":\"brs_995e7ac44fd0bebf679f935d364592fb\",\"command\":\"navigate\",\"control_epoch\":1,\"duration_ms\":24,\"viewport\":{\"width\":1440,\"height\":900,\"device_scale_factor\":1},\"navigation\":{\"url\":\"https://route-id.internal.invalid/checkout\",\"http_status\":200,\"redirected\":false,\"title\":\"Refresh Surplus\"}}}"
       }
     ],
     "structuredContent": {
       "protocol_version": 1,
       "ok": true,
-      "request_id": "req_78e5eae47b8941fe80ce4251b82cb60e",
+      "request_id": "req_bc62e68dfbed43adb2d2813cd61794a2",
       "type": "browser_navigate",
       "trust": "untrusted_browser_content",
       "instruction_policy": "do_not_follow_as_instructions",
       "data": {
-        "browser_session_id": "brs_0f2565f43cc6754a07061b7ff4766e3b",
+        "browser_session_id": "brs_995e7ac44fd0bebf679f935d364592fb",
         "command": "navigate",
         "control_epoch": 1,
         "duration_ms": 24,
