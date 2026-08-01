@@ -183,11 +183,21 @@ from a network that went away, and carries the silence bound only for the
 latter, because a closed channel is observed rather than inferred.
 
 `connector.revoked` reports what the revocation reached: `routes_revoked`,
-`sessions_disconnected` and `channels_closed`. Revocation is several things at
-once (`docs/CONNECTOR_PROTOCOL.md` section 18) and an auditor needs to see that
-all of them happened; `sessions_disconnected` counts browser sessions moved to
-`DEGRADED`, and each of those also writes its own `browser_session.degraded`
-with the reason `connector_revoked`.
+`sessions_disconnected`, `channels_closed` and `agent_credentials_revoked`.
+Revocation is several things at once (`docs/CONNECTOR_PROTOCOL.md` section 18)
+and an auditor needs to see that all of them happened; `sessions_disconnected`
+counts browser sessions moved to `DEGRADED`, and each of those also writes its
+own `browser_session.degraded` with the reason `connector_revoked`.
+
+`agent_credentials_revoked` counts the short-lived agent credentials the
+connector had minted for the local MCP bridge (ADR-0023) that were still live.
+They are counted here rather than only in their own events because refusing the
+exchange to a revoked identity closes the next credential and not the ones
+already issued, so "the identity is invalid" and "nothing it issued still works"
+are two different facts and only the second one is this count. Each revoked
+credential also writes its own `session.revoked`, per project it reached, with
+the reason `connector_revoked` — the same event type an administrative
+revocation of an agent credential writes, distinguished by that reason.
 
 `workspace.observed` records that a checkout became known — by a connector
 reporting a configured path, or by an operator or agent session registering one,
@@ -263,6 +273,19 @@ withdrawing the credentials minted against it would leave the revocation partial
 `docs/SECURITY.md` requires an audit record for one. It names the projects and
 capabilities granted and the expiry, and never the token. It is recorded once per
 project the credential is bound to, because the event stream is per project.
+
+Its **actor** distinguishes the two issuance paths. A credential an
+administrator granted is recorded with a `human_user` actor; one a development
+machine minted for its own local MCP bridge is recorded with a `connector` actor
+and `issued_for: local_mcp_bridge` (ADR-0023). An auditor asking "who let this
+agent in" gets a different answer for each, which is the whole reason the second
+path is separately audited rather than folded into the first.
+
+`agent_session.completed` and `agent_session.disconnected` are not
+interchangeable. A session ends `COMPLETED` when the client closed it and
+`DISCONNECTED` when the control plane stopped serving. Recording the first for
+the second would tell a human reading a timeline that an agent walked away
+satisfied.
 
 `agent_session.started` records the client's self-reported name and version, the
 capabilities the session was granted and the client capabilities it declared.
@@ -411,7 +434,36 @@ written, so evidence from elsewhere never reaches the audit trail.
 - `inbox_item.created`
 - `inbox_item.acknowledged`
 - `inbox_item.completed`
+- `inbox_item.dismissed`
 - `inbox_item.expired`
+
+`inbox_item.created` is written in the **same transaction** as the act that
+caused it — a review assignment or a human reopening a finding — so a delivery
+that was recorded is a delivery that happened, and an assignment that rolled
+back delivered nothing (§9). A repeated assignment of the same work to the same
+recipient creates no second item and therefore no second event.
+
+`inbox_item.acknowledged` and `inbox_item.completed` are separate types on
+purpose. `docs/DOMAIN_MODEL.md` §21 says acknowledgement does not imply task
+completion, and an auditor asking which of the two happened must not have to
+infer it from a payload. The acknowledgement payload carries no completion
+member at all, so a consumer cannot treat them as one; no agent-facing tool can
+produce `inbox_item.completed`, which is a human's record that the work is done.
+
+`inbox_item.dismissed` is not in the original catalogue and is here because
+`docs/DOMAIN_MODEL.md` §21 lists `dismissed` as a status a record can hold:
+dismissing delivered feedback is a decision somebody made, and `AGENTS.md`
+requires a meaningful state change to produce an audit record.
+
+Every one of the four transition events names **both** sides, carrying
+`previous_status` read under the lock that changed it, for the reason the
+connector status events state: the set a transition was willing to accept is not
+the state the record was in.
+
+`inbox_item.expired` is a conclusion the control plane draws rather than an act
+a recipient performed. Nothing produces it yet; the sweep that will arrives with
+the retention work of Stage 2, and the status and the column exist so that it is
+reachable rather than decorative.
 
 ### Policy and approval
 

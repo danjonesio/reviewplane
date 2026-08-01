@@ -65,6 +65,15 @@ import type {
   FindingTransitionRequest,
   FindingUpdateRequest,
   FindingVerificationSubmitted,
+  InboxItem,
+  InboxItemAcknowledged,
+  InboxItemCompleted,
+  InboxItemCreated,
+  InboxItemDismissed,
+  InboxItemExpired,
+  InboxItemRecipientType,
+  InboxItemStatus,
+  InboxItemType,
   MediaType,
   MessageType,
   RedactionState,
@@ -714,6 +723,100 @@ export function decodeComment(value: unknown): Comment {
     ...(source["supersedes_comment_id"] === undefined ? {} : { supersedes_comment_id: source["supersedes_comment_id"] as string }),
     ...(source["superseded_at"] === undefined ? {} : { superseded_at: source["superseded_at"] as string }),
     created_at: source["created_at"] as string,
+  };
+}
+
+/**
+ * Decodes a validated InboxItem.
+ */
+export function decodeInboxItem(value: unknown): InboxItem {
+  const source = value as Record<string, unknown>;
+  return {
+    id: source["id"] as string,
+    ...(source["organisation_id"] === undefined ? {} : { organisation_id: source["organisation_id"] as string }),
+    project_id: source["project_id"] as string,
+    recipient_type: source["recipient_type"] as InboxItemRecipientType,
+    ...(source["recipient_id"] === undefined ? {} : { recipient_id: source["recipient_id"] as string }),
+    type: source["type"] as InboxItemType,
+    title: source["title"] as string,
+    status: source["status"] as InboxItemStatus,
+    ...(source["review_id"] === undefined ? {} : { review_id: source["review_id"] as string }),
+    ...(source["review_slug"] === undefined ? {} : { review_slug: source["review_slug"] as string }),
+    ...(source["finding_id"] === undefined ? {} : { finding_id: source["finding_id"] as string }),
+    ...(source["priority"] === undefined ? {} : { priority: source["priority"] as ReviewPriority }),
+    ...(source["finding_count"] === undefined ? {} : { finding_count: source["finding_count"] as number }),
+    ...(source["assigned_by"] === undefined ? {} : { assigned_by: decodeActor(source["assigned_by"]) }),
+    created_at: source["created_at"] as string,
+    ...(source["acknowledged_at"] === undefined ? {} : { acknowledged_at: source["acknowledged_at"] as string }),
+    ...(source["completed_at"] === undefined ? {} : { completed_at: source["completed_at"] as string }),
+    ...(source["expires_at"] === undefined ? {} : { expires_at: source["expires_at"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated InboxItemCreated.
+ */
+export function decodeInboxItemCreated(value: unknown): InboxItemCreated {
+  const source = value as Record<string, unknown>;
+  return {
+    inbox_item_id: source["inbox_item_id"] as string,
+    recipient_type: source["recipient_type"] as InboxItemRecipientType,
+    ...(source["recipient_id"] === undefined ? {} : { recipient_id: source["recipient_id"] as string }),
+    type: source["type"] as InboxItemType,
+    status: source["status"] as InboxItemStatus,
+    ...(source["review_id"] === undefined ? {} : { review_id: source["review_id"] as string }),
+    ...(source["finding_id"] === undefined ? {} : { finding_id: source["finding_id"] as string }),
+    ...(source["finding_count"] === undefined ? {} : { finding_count: source["finding_count"] as number }),
+    ...(source["priority"] === undefined ? {} : { priority: source["priority"] as ReviewPriority }),
+  };
+}
+
+/**
+ * Decodes a validated InboxItemAcknowledged.
+ */
+export function decodeInboxItemAcknowledged(value: unknown): InboxItemAcknowledged {
+  const source = value as Record<string, unknown>;
+  return {
+    inbox_item_id: source["inbox_item_id"] as string,
+    previous_status: source["previous_status"] as InboxItemStatus,
+    ...(source["review_id"] === undefined ? {} : { review_id: source["review_id"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated InboxItemCompleted.
+ */
+export function decodeInboxItemCompleted(value: unknown): InboxItemCompleted {
+  const source = value as Record<string, unknown>;
+  return {
+    inbox_item_id: source["inbox_item_id"] as string,
+    previous_status: source["previous_status"] as InboxItemStatus,
+    ...(source["review_id"] === undefined ? {} : { review_id: source["review_id"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated InboxItemDismissed.
+ */
+export function decodeInboxItemDismissed(value: unknown): InboxItemDismissed {
+  const source = value as Record<string, unknown>;
+  return {
+    inbox_item_id: source["inbox_item_id"] as string,
+    previous_status: source["previous_status"] as InboxItemStatus,
+    ...(source["review_id"] === undefined ? {} : { review_id: source["review_id"] as string }),
+    ...(source["reason"] === undefined ? {} : { reason: source["reason"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated InboxItemExpired.
+ */
+export function decodeInboxItemExpired(value: unknown): InboxItemExpired {
+  const source = value as Record<string, unknown>;
+  return {
+    inbox_item_id: source["inbox_item_id"] as string,
+    previous_status: source["previous_status"] as InboxItemStatus,
+    ...(source["review_id"] === undefined ? {} : { review_id: source["review_id"] as string }),
   };
 }
 

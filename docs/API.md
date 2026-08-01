@@ -625,19 +625,22 @@ connector identity rather than restoring this one.
     "routes_revoked": 2,
     "sessions_disconnected": 1,
     "channels_closed": 1,
+    "agent_credentials_revoked": 1,
     "already_revoked": false
   },
   "meta": { "request_id": "req_..." }
 }
 ```
 
-The three counts say what the revocation actually reached, so a screen can
+The four counts say what the revocation actually reached, so a screen can
 report it rather than implying more or less than happened; `sessions_disconnected`
 counts browser sessions moved to `DEGRADED`, which is what losing a connector
-does to a session (`DOMAIN_MODEL.md` §12). Revoking an already-revoked connector
-is not an error: it answers `already_revoked: true` and changes nothing, so a
-retried request cannot produce a second set of counts for work that happened
-once.
+does to a session (`DOMAIN_MODEL.md` §12), and `agent_credentials_revoked`
+counts the live agent credentials the connector had minted for a local MCP
+bridge (`CONNECTOR_PROTOCOL.md` §18, ADR-0023), which stay usable until
+something revokes them. Revoking an already-revoked connector is not an error:
+it answers `already_revoked: true` and changes nothing, so a retried request
+cannot produce a second set of counts for work that happened once.
 
 ### Administrative authentication on this surface
 
@@ -1268,6 +1271,36 @@ POST /api/v1/inbox/:itemId/acknowledge
 POST /api/v1/inbox/:itemId/complete
 POST /api/v1/inbox/:itemId/dismiss
 ```
+
+These are the **human** half of the inbox. An agent reads and acknowledges its
+own items through `agent_inbox_list` and `agent_inbox_acknowledge` on
+`/mcp/v1`; both surfaces call one store, so "acknowledgement is not completion"
+(`docs/DOMAIN_MODEL.md` §21) has one implementation and two callers.
+
+`GET` accepts repeated `status` parameters from `pending`, `acknowledged`,
+`completed`, `dismissed` and `expired`, defaulting to the first two, plus the
+`cursor` and `limit` of §6. It returns items **oldest first**, so assignment
+order is preserved, and `meta.pending_count` beside the page. It writes nothing:
+retrieval is idempotent, which §21 requires and which a method that issues no
+`UPDATE` is the strongest form of.
+
+The three `POST` routes change state and therefore require the session's CSRF
+token (§4.0), checked before the body is decoded and before the record is
+looked up. Completing or dismissing delivered feedback is the quietest way to
+make a review disappear, so a request another origin caused must not reach it.
+
+An **agent credential is refused on all four**, by actor type and before any
+lookup, exactly as it is on the review routes: `docs/SECURITY.md` §6.3 says an
+agent token must not reach administrative APIs, and an inbox is where work is
+directed. A browser-worker credential is refused the same way.
+
+`POST /api/v1/inbox/:itemId/complete` is the **only** way an item reaches
+`completed`. There is no agent tool that can, which is what makes the rule
+structural rather than conditional.
+
+An item of another project answers exactly as an unknown identifier does: the
+identifier, the session's project scope and the session's organisation travel in
+one query, so the pair is not an existence oracle (§5).
 
 ## 17. Policy and approval endpoints
 

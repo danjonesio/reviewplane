@@ -206,6 +206,68 @@ func EncodeHumanSession(value HumanSession) ([]byte, error) {
 	return w.result()
 }
 
+// encodeAgentSessionInto writes the canonical encoding of a AgentSession.
+func encodeAgentSessionInto(w *canonicalWriter, value AgentSession) {
+	w.beginObject()
+	w.key("id")
+	w.string(value.ID)
+	if value.OrganisationID != nil {
+		w.key("organisation_id")
+		w.string((*value.OrganisationID))
+	}
+	w.key("project_id")
+	w.string(value.ProjectID)
+	if value.ConnectorID != nil {
+		w.key("connector_id")
+		w.string((*value.ConnectorID))
+	}
+	if value.WorkspaceID != nil {
+		w.key("workspace_id")
+		w.string((*value.WorkspaceID))
+	}
+	w.key("agent_type")
+	w.string(value.AgentType)
+	if value.AgentVersion != nil {
+		w.key("agent_version")
+		w.string((*value.AgentVersion))
+	}
+	w.key("capabilities")
+	w.beginArray()
+	for _, item := range value.Capabilities {
+		w.item()
+		w.string(string(item))
+	}
+	w.endArray()
+	if value.Branch != nil {
+		w.key("branch")
+		w.string((*value.Branch))
+	}
+	if value.HeadCommit != nil {
+		w.key("head_commit")
+		w.string((*value.HeadCommit))
+	}
+	w.key("status")
+	w.string(string(value.Status))
+	w.key("started_at")
+	w.string(value.StartedAt)
+	if value.LastSeenAt != nil {
+		w.key("last_seen_at")
+		w.string((*value.LastSeenAt))
+	}
+	if value.EndedAt != nil {
+		w.key("ended_at")
+		w.string((*value.EndedAt))
+	}
+	w.endObject()
+}
+
+// EncodeAgentSession returns the canonical encoding of a AgentSession.
+func EncodeAgentSession(value AgentSession) ([]byte, error) {
+	var w canonicalWriter
+	encodeAgentSessionInto(&w, value)
+	return w.result()
+}
+
 // encodeEnvironmentInto writes the canonical encoding of a Environment.
 func encodeEnvironmentInto(w *canonicalWriter, value Environment) {
 	w.beginObject()
@@ -823,6 +885,10 @@ func encodeConnectorRevokedPayloadInto(w *canonicalWriter, value ConnectorRevoke
 	if value.ChannelsClosed != nil {
 		w.key("channels_closed")
 		w.integer((*value.ChannelsClosed))
+	}
+	if value.AgentCredentialsRevoked != nil {
+		w.key("agent_credentials_revoked")
+		w.integer((*value.AgentCredentialsRevoked))
 	}
 	w.endObject()
 }

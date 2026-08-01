@@ -22,7 +22,7 @@
       "kind": "mcp_tool_response",
       "file": "valid/agent-session-status.json",
       "message_type": "agent_session_status",
-      "note": "Session identity, the negotiated capability set including review_inbox: false, and the browser session with the control epoch a capture must present."
+      "note": "Session identity, the negotiated capability set including review_inbox: true, and the browser session with the control epoch a capture must present."
     },
     {
       "name": "browser-take-screenshot",

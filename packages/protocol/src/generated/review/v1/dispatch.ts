@@ -24,6 +24,11 @@ import type {
   FindingStatusChangeDenied,
   FindingStatusChanged,
   FindingVerificationSubmitted,
+  InboxItemAcknowledged,
+  InboxItemCompleted,
+  InboxItemCreated,
+  InboxItemDismissed,
+  InboxItemExpired,
   MessageType,
   ReviewAccepted,
   ReviewArchived,
@@ -54,6 +59,11 @@ import {
   decodeFindingStatusChangeDenied,
   decodeFindingStatusChanged,
   decodeFindingVerificationSubmitted,
+  decodeInboxItemAcknowledged,
+  decodeInboxItemCompleted,
+  decodeInboxItemCreated,
+  decodeInboxItemDismissed,
+  decodeInboxItemExpired,
   decodeReviewAccepted,
   decodeReviewArchived,
   decodeReviewAssigned,
@@ -82,6 +92,11 @@ import {
   encodeFindingStatusChangeDenied,
   encodeFindingStatusChanged,
   encodeFindingVerificationSubmitted,
+  encodeInboxItemAcknowledged,
+  encodeInboxItemCompleted,
+  encodeInboxItemCreated,
+  encodeInboxItemDismissed,
+  encodeInboxItemExpired,
   encodeReviewAccepted,
   encodeReviewArchived,
   encodeReviewAssigned,
@@ -110,6 +125,11 @@ import {
   validateFindingStatusChangeDenied,
   validateFindingStatusChanged,
   validateFindingVerificationSubmitted,
+  validateInboxItemAcknowledged,
+  validateInboxItemCompleted,
+  validateInboxItemCreated,
+  validateInboxItemDismissed,
+  validateInboxItemExpired,
   validateReviewAccepted,
   validateReviewArchived,
   validateReviewAssigned,
@@ -146,6 +166,11 @@ export type ReviewPayload =
   | FindingReopened
   | ReviewStatusChangeDenied
   | FindingStatusChangeDenied
+  | InboxItemCreated
+  | InboxItemAcknowledged
+  | InboxItemCompleted
+  | InboxItemDismissed
+  | InboxItemExpired
   | ArtefactUploadStarted
   | ArtefactUploadCompleted
   | ArtefactUploadFailed
@@ -216,6 +241,21 @@ export function validatePayload(type: MessageType, value: unknown, path: string,
     case "finding.status_change_denied":
       validateFindingStatusChangeDenied(value, path, out);
       return;
+    case "inbox_item.created":
+      validateInboxItemCreated(value, path, out);
+      return;
+    case "inbox_item.acknowledged":
+      validateInboxItemAcknowledged(value, path, out);
+      return;
+    case "inbox_item.completed":
+      validateInboxItemCompleted(value, path, out);
+      return;
+    case "inbox_item.dismissed":
+      validateInboxItemDismissed(value, path, out);
+      return;
+    case "inbox_item.expired":
+      validateInboxItemExpired(value, path, out);
+      return;
     case "artefact.upload_started":
       validateArtefactUploadStarted(value, path, out);
       return;
@@ -283,6 +323,16 @@ export function decodeFrame(envelope: Envelope, value: unknown): ReviewFrame {
       return { envelope, type: "review.status_change_denied", payload: decodeReviewStatusChangeDenied(value) };
     case "finding.status_change_denied":
       return { envelope, type: "finding.status_change_denied", payload: decodeFindingStatusChangeDenied(value) };
+    case "inbox_item.created":
+      return { envelope, type: "inbox_item.created", payload: decodeInboxItemCreated(value) };
+    case "inbox_item.acknowledged":
+      return { envelope, type: "inbox_item.acknowledged", payload: decodeInboxItemAcknowledged(value) };
+    case "inbox_item.completed":
+      return { envelope, type: "inbox_item.completed", payload: decodeInboxItemCompleted(value) };
+    case "inbox_item.dismissed":
+      return { envelope, type: "inbox_item.dismissed", payload: decodeInboxItemDismissed(value) };
+    case "inbox_item.expired":
+      return { envelope, type: "inbox_item.expired", payload: decodeInboxItemExpired(value) };
     case "artefact.upload_started":
       return { envelope, type: "artefact.upload_started", payload: decodeArtefactUploadStarted(value) };
     case "artefact.upload_completed":
@@ -343,6 +393,16 @@ export function encodeFramePayload(frame: ReviewFrame): string {
       return encodeReviewStatusChangeDenied(frame.payload);
     case "finding.status_change_denied":
       return encodeFindingStatusChangeDenied(frame.payload);
+    case "inbox_item.created":
+      return encodeInboxItemCreated(frame.payload);
+    case "inbox_item.acknowledged":
+      return encodeInboxItemAcknowledged(frame.payload);
+    case "inbox_item.completed":
+      return encodeInboxItemCompleted(frame.payload);
+    case "inbox_item.dismissed":
+      return encodeInboxItemDismissed(frame.payload);
+    case "inbox_item.expired":
+      return encodeInboxItemExpired(frame.payload);
     case "artefact.upload_started":
       return encodeArtefactUploadStarted(frame.payload);
     case "artefact.upload_completed":

@@ -60,15 +60,25 @@ test("the tool availability set is the message-type enumeration", () => {
   // docs/MCP_SPEC.md section 14: a client relies on negotiated availability. If
   // the two could differ, a tool could be advertised with no result schema.
   assert.deepEqual([...TOOL_AVAILABILITY], [...MESSAGE_TYPE_VALUES]);
-  assert.equal(MESSAGE_TYPE_VALUES.length, 14);
+  assert.equal(MESSAGE_TYPE_VALUES.length, 20);
 });
 
-test("no available tool names a secret, an inbox, a completion gate or a listing", () => {
+test("no tool names a secret, a completion gate or a visual inspection", () => {
   // The strongest form of "no secret value is returned" is that no tool exists
-  // that could return one (docs/SECURITY.md section 12.1).
+  // that could return one (docs/SECURITY.md section 12.1). The completion gate
+  // and the visual inspection are absent for the weaker reason that they are
+  // not implemented, and are absent rather than advertised and failing.
   for (const tool of MESSAGE_TYPE_VALUES) {
-    assert.doesNotMatch(tool, /secret|inbox|task_|visual_inspect|review_list|review_search/u, tool);
+    assert.doesNotMatch(tool, /secret|task_|visual_inspect/u, tool);
   }
+});
+
+test("the inbox tools are the two of section 9 and neither of them completes work", () => {
+  // docs/DOMAIN_MODEL.md section 21: acknowledgement does not imply completion.
+  // There is no agent tool that completes an inbox item, so the rule is not a
+  // check somebody could forget — the act cannot be requested.
+  const inbox = MESSAGE_TYPE_VALUES.filter((tool) => tool.startsWith("agent_inbox_"));
+  assert.deepEqual([...inbox], ["agent_inbox_list", "agent_inbox_acknowledge"]);
 });
 
 test("every tool declares a response bound", () => {

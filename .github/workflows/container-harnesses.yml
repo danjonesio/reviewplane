@@ -6,11 +6,22 @@ name: Container harnesses
 # the whole Compose stack, so they cost minutes where the gates in `ci.yml` cost
 # seconds.
 #
-# They therefore do not block every pull request yet. They run nightly, on
-# demand, and on a pull request that carries the `ci:harnesses` label — which is
-# how to get the evidence before asking for a merge. Making the primary
-# end-to-end scenario and the rest of `docs/TESTING.md` section 16 into standing
-# release gates is RVP-57; this workflow only schedules what exists today.
+# They run nightly, on demand, and on any pull request that is not
+# documentation-only. RVP-73: the earlier trigger set ran them on a pull request
+# only when it carried the `ci:harnesses` label, which failed open — a protocol
+# change merged without them and left `pnpm test:integration` broken on `main`
+# until an unrelated pull request happened to carry the label. Remembering a
+# label is not a control, so the default is now to run them and the exemption is
+# narrow and mechanical.
+#
+# The filter is computed in the `scope` job rather than declared as
+# `on.pull_request.paths`, deliberately. A workflow that `paths` filters out
+# does not run at all, so it reports nothing, and a check that reports nothing
+# cannot be distinguished from a check nobody added. Deciding inside the
+# workflow means the `Harness gates` job below reports a conclusion on every
+# pull request: green when the harnesses passed, green when the change could not
+# have affected them and says which files led to that, and red when a harness
+# that was required did not run or did not succeed.
 #
 # Every action is pinned to a commit for the reason `ci.yml` gives.
 
@@ -21,6 +32,8 @@ on:
     - cron: "17 3 * * *"
   workflow_dispatch:
   pull_request:
+    # `labeled` stays in the list so that adding `ci:harnesses` to a pull request
+    # the filter exempted runs them without an empty commit.
     types: [opened, reopened, synchronize, labeled]
 
 concurrency:
@@ -35,10 +48,99 @@ defaults:
     shell: bash
 
 jobs:
+  scope:
+    name: Decide scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+      reason: ${{ steps.decide.outputs.reason }}
+    steps:
+      # Only a pull request needs the history: every other event runs
+      # everything, and fetching for it would be work done to reach a conclusion
+      # already known.
+      - if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The three-dot diff below needs the merge base, so the full history
+          # of both parents of the merge commit has to be present.
+          fetch-depth: 0
+
+      - id: decide
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          LABELLED: ${{ contains(github.event.pull_request.labels.*.name, 'ci:harnesses') }}
+        run: |
+          set -euo pipefail
+
+          decide() {
+            printf 'run=%s\n' "$1" >> "${GITHUB_OUTPUT}"
+            printf 'reason=%s\n' "$2" >> "${GITHUB_OUTPUT}"
+            printf '**Harnesses run: %s.** %s\n' "$1" "$2" >> "${GITHUB_STEP_SUMMARY}"
+            printf '%s\n' "$2"
+            exit 0
+          }
+
+          if [[ "${EVENT_NAME}" != "pull_request" ]]; then
+            decide true "A ${EVENT_NAME} run exercises every harness."
+          fi
+
+          if [[ "${LABELLED}" == "true" ]]; then
+            decide true "The pull request carries the ci:harnesses label."
+          fi
+
+          # A diff that cannot be computed decides towards running the
+          # harnesses. The failure this workflow exists to prevent is a harness
+          # that silently did not run, so every uncertain case costs runner
+          # minutes rather than assurance.
+          if ! CHANGED="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" 2>&1)"; then
+            printf '%s\n' "${CHANGED}" >&2
+            decide true "The changed-file list could not be computed, so the harnesses run."
+          fi
+
+          if [[ -z "${CHANGED}" ]]; then
+            decide false "The pull request changes no files."
+          fi
+
+          # Documentation is the only exemption, and it is expressed as
+          # everything the harnesses cannot read rather than as a list of the
+          # trees they can. An allowlist of code paths is wrong the day someone
+          # adds a directory it does not name, and being wrong that way means
+          # not running — which is the defect this replaces. No harness reads a
+          # tracked Markdown file or anything under `docs/`; every other path,
+          # including `.github/workflows/`, `package.json`, `pnpm-lock.yaml`,
+          # `.gitignore` (which decides what `pnpm test:install` copies into its
+          # clean checkout) and every Dockerfile, can change what they do.
+          # Every file is reported with the verdict it was given, so that a
+          # decision anybody disagrees with can be argued about from the run
+          # rather than reconstructed from the patterns.
+          printf '### Changed files\n\n' >> "${GITHUB_STEP_SUMMARY}"
+          CODE=""
+          while IFS= read -r file; do
+            [[ -n "${file}" ]] || continue
+            case "${file}" in
+              # Every tracked Markdown document, wherever it lives, and
+              # everything under `docs/`, including its evidence images.
+              *.md|docs/*) kind=documentation ;;
+              *) kind=code; CODE+="${file}"$'\n' ;;
+            esac
+            printf -- '- %s — %s\n' "${file}" "${kind}" >> "${GITHUB_STEP_SUMMARY}"
+          done <<< "${CHANGED}"
+          printf '\n' >> "${GITHUB_STEP_SUMMARY}"
+
+          if [[ -z "${CODE}" ]]; then
+            decide false "Documentation only: every changed file is a Markdown document or lives under docs/."
+          fi
+
+          COUNT="$(printf '%s' "${CODE}" | grep -c . || true)"
+          FIRST="$(printf '%s' "${CODE}" | head -n 1)"
+          decide true "${COUNT} changed file(s) are not documentation, starting with ${FIRST}."
+
   browser:
-    # A pull request runs these only when it asks for them. Every job repeats
-    # the condition because a workflow-level trigger cannot express it.
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:harnesses')
+    needs: scope
+    if: needs.scope.outputs.run == 'true'
     name: pnpm test:browser
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -57,7 +159,8 @@ jobs:
       - run: pnpm test:browser
 
   ui:
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:harnesses')
+    needs: scope
+    if: needs.scope.outputs.run == 'true'
     name: pnpm test:ui
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -74,7 +177,8 @@ jobs:
       - run: pnpm test:ui
 
   integration:
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:harnesses')
+    needs: scope
+    if: needs.scope.outputs.run == 'true'
     name: pnpm test:integration
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -92,7 +196,8 @@ jobs:
       - run: pnpm test:integration
 
   e2e:
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:harnesses')
+    needs: scope
+    if: needs.scope.outputs.run == 'true'
     name: pnpm test:e2e
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -110,7 +215,8 @@ jobs:
       - run: pnpm test:e2e
 
   edge:
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:harnesses')
+    needs: scope
+    if: needs.scope.outputs.run == 'true'
     name: pnpm test:edge
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -129,7 +235,8 @@ jobs:
       - run: pnpm test:edge
 
   install:
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:harnesses')
+    needs: scope
+    if: needs.scope.outputs.run == 'true'
     name: pnpm test:install
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -155,3 +262,58 @@ jobs:
           name: install-evidence
           path: deploy/compose/e2e/evidence-install
           if-no-files-found: ignore
+
+  gates:
+    # One check that reports on every run, so that a harness which did not run
+    # is a visible red rather than an absence nobody reads. It is green only
+    # when every harness that was required succeeded, and green without them
+    # only when `scope` recorded why they were not required. It is the status
+    # check to require on `main` alongside `CI gates` (AGENTS.md, "Change
+    # delivery"), so that adding a harness does not mean editing the ruleset.
+    name: Harness gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: always()
+    needs: [scope, browser, ui, integration, e2e, edge, install]
+    steps:
+      - name: Refuse a run in which a required harness did not succeed
+        env:
+          REQUIRED: ${{ needs.scope.outputs.run }}
+          REASON: ${{ needs.scope.outputs.reason }}
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+
+          printf 'Scope: %s\n' "${REASON:-the scope job recorded no reason}"
+          jq -r 'to_entries[] | "  \(.key): \(.value.result)"' <<< "${RESULTS}"
+
+          # Without a scope decision nothing below can be interpreted: a skipped
+          # harness could mean "not required" or "the decision crashed".
+          if [[ "$(jq -r '.scope.result' <<< "${RESULTS}")" != "success" ]]; then
+            echo "::error::The scope job did not succeed, so no harness can be shown to have run for the right reason."
+            exit 1
+          fi
+
+          status=0
+          while IFS='=' read -r job result; do
+            case "${result}" in
+              success)
+                ;;
+              skipped)
+                if [[ "${REQUIRED}" == "true" ]]; then
+                  echo "::error::${job} did not run, and this change is one the harnesses cover."
+                  status=1
+                fi
+                ;;
+              *)
+                echo "::error::${job} reported ${result}."
+                status=1
+                ;;
+            esac
+          done < <(jq -r 'del(.scope) | to_entries[] | "\(.key)=\(.value.result)"' <<< "${RESULTS}")
+
+          if [[ "${status}" -eq 0 && "${REQUIRED}" != "true" ]]; then
+            printf 'No harness was required: %s\n' "${REASON}"
+          fi
+
+          exit "${status}"

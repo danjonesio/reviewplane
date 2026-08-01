@@ -72,6 +72,37 @@ export interface IssuedAgentCredential extends AgentCredential {
   readonly token: string;
 }
 
+/**
+ * What a credential was at the moment it was revoked.
+ *
+ * Revocation is a permission change and `docs/SECURITY.md` section 16 requires
+ * an audit record for one, which has to name the projects the credential
+ * reached. Those are gone from the caller's view once the row is revoked, so
+ * they are reported by the revocation rather than looked up after it.
+ */
+export interface RevokedAgentCredential {
+  readonly id: string;
+  readonly organisationId: string;
+  readonly projectIds: readonly string[];
+  readonly label: string;
+}
+
+interface RevokedRow {
+  id: string;
+  organisation_id: string;
+  project_ids: string[];
+  label: string;
+}
+
+function toRevoked(row: RevokedRow): RevokedAgentCredential {
+  return {
+    id: row.id,
+    organisationId: row.organisation_id,
+    projectIds: row.project_ids,
+    label: row.label,
+  };
+}
+
 function digest(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
 }
@@ -228,33 +259,49 @@ export class AgentCredentialStore {
   }
 
   /**
-   * Revokes a credential, reporting what it was so the caller can audit it.
+   * Revokes one credential, reporting what it was so the caller can audit it.
    *
-   * Revocation is a permission change, and `docs/SECURITY.md` section 16
-   * requires an audit record for one. The record has to name the projects the
-   * credential reached, which are gone from the caller's view once the row is
-   * revoked — so they are returned here rather than looked up afterwards.
    * `null` means there was nothing live to revoke, and a second call therefore
    * produces no second event.
    */
-  async revoke(credentialId: string): Promise<{
-    readonly organisationId: string;
-    readonly projectIds: readonly string[];
-    readonly label: string;
-  } | null> {
-    const rows = await this.#pool.query<{
-      organisation_id: string;
-      project_ids: string[];
-      label: string;
-    }>(
+  async revoke(credentialId: string): Promise<RevokedAgentCredential | null> {
+    const rows = await this.#pool.query<RevokedRow>(
       `UPDATE agent_credentials SET revoked_at = now()
         WHERE id = $1 AND revoked_at IS NULL
-        RETURNING organisation_id, project_ids, label`,
+        RETURNING id, organisation_id, project_ids, label`,
       [credentialId],
     );
     const row = rows.rows[0];
-    if (row === undefined) return null;
-    return { organisationId: row.organisation_id, projectIds: row.project_ids, label: row.label };
+    return row === undefined ? null : toRevoked(row);
+  }
+
+  /**
+   * Revokes every live credential one client was issued.
+   *
+   * `issued_to_client` holds the connector identifier for a credential the
+   * bridge exchange minted (ADR-0023), so this is how revoking a connector
+   * identity reaches the credentials that identity produced. ADR-0023 accepts
+   * that a compromised connector can mint agent credentials "for as long as its
+   * identity is valid" precisely because revocation closes them; until this
+   * existed, it did not.
+   *
+   * It is one statement rather than a loop over {@link revoke}, because the set
+   * has to be closed at a single instant: a credential minted between two
+   * iterations would survive the revocation that was meant to include it.
+   *
+   * A credential that has already expired is left alone. {@link resolve}
+   * refuses it now and would go on refusing it, so revoking it would add an
+   * audit record for a permission that had already ended and would inflate the
+   * count `connector.revoked` reports as work the revocation did.
+   */
+  async revokeIssuedToClient(clientId: string): Promise<readonly RevokedAgentCredential[]> {
+    const rows = await this.#pool.query<RevokedRow>(
+      `UPDATE agent_credentials SET revoked_at = now()
+        WHERE issued_to_client = $1 AND revoked_at IS NULL AND expires_at > now()
+        RETURNING id, organisation_id, project_ids, label`,
+      [clientId],
+    );
+    return rows.rows.map(toRevoked);
   }
 
   /**

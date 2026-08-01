@@ -22,6 +22,7 @@
 
 import {
   ACTIVE_REVIEW_STATUS_VALUES,
+  FINAL_DISPOSITIONS,
   FINDING_TRANSITIONS,
   REVIEW_TRANSITIONS,
   checkGeometryForType,
@@ -228,7 +229,39 @@ export function assertActorMayCloseReview(actorType: ActorType, to: ReviewStatus
 }
 
 /** The review statuses that close a review to further work. */
-const CLOSING_REVIEW_STATUSES: readonly ReviewStatus[] = ["ACCEPTED", "CANCELLED", "ARCHIVED"];
+export const CLOSING_REVIEW_STATUSES: readonly ReviewStatus[] = [
+  "ACCEPTED",
+  "CANCELLED",
+  "ARCHIVED",
+];
+
+/**
+ * Whether a status names a decision the authority rules reserve to a human.
+ *
+ * It is the union of the final finding dispositions and the closing review
+ * statuses — the two sets `assertActorMayDispose` and `assertActorMayCloseReview`
+ * refuse an agent from **any** status, rather than the wider set of transitions
+ * an agent merely cannot make from where it happens to be.
+ *
+ * It exists because a layer above the domain has to answer the same question
+ * without being able to call the domain. The MCP layer's tool schemas do not
+ * contain these values at all (ADR-0020), so a request naming one is refused by
+ * the generated validator before any domain code runs — and a refusal the
+ * domain never sees is a refusal the domain cannot audit. That layer asks this
+ * predicate so the two agree by construction rather than by a second list
+ * somebody keeps in step (ADR-0024).
+ *
+ * The membership is read from `packages/protocol` on both sides: the
+ * dispositions from the review schema's `final_finding_dispositions`
+ * vocabulary, and the closing statuses from the rows of
+ * `review_status_transitions` that name only `human_user`.
+ */
+export function isHumanReservedStatus(requested: string): boolean {
+  return (
+    (FINAL_DISPOSITIONS as readonly string[]).includes(requested) ||
+    (CLOSING_REVIEW_STATUSES as readonly string[]).includes(requested)
+  );
+}
 
 export function assertFindingTransition(from: FindingStatus, to: FindingStatus): void {
   if (from === to) return;

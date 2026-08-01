@@ -12,6 +12,10 @@ import type {
   ActorType,
   AgentCapability,
   AgentFindingStatus,
+  AgentInboxAcknowledgeInput,
+  AgentInboxAcknowledgeResult,
+  AgentInboxListInput,
+  AgentInboxListResult,
   AgentReviewStatus,
   AgentSessionState,
   AgentSessionStatusInput,
@@ -44,6 +48,7 @@ import type {
   FindingGetInput,
   FindingGetResult,
   FindingInclude,
+  FindingMarkBlockedInput,
   FindingMutationResult,
   FindingSeverity,
   FindingSource,
@@ -52,6 +57,9 @@ import type {
   FindingSubmitVerificationResult,
   FindingUpdateStatusInput,
   FindingView,
+  InboxItemStatus,
+  InboxItemType,
+  InboxItemView,
   InstructionPolicy,
   MediaType,
   MessageType,
@@ -60,11 +68,21 @@ import type {
   ProjectCurrentResult,
   ProjectReference,
   PublishedServiceStatus,
+  ReviewAddCommentInput,
+  ReviewAddCommentResult,
   ReviewClaimInput,
   ReviewGetInput,
   ReviewGetResult,
   ReviewInclude,
+  ReviewListInput,
+  ReviewListResult,
   ReviewMutationResult,
+  ReviewPriority,
+  ReviewSearchField,
+  ReviewSearchInput,
+  ReviewSearchMatch,
+  ReviewSearchResult,
+  ReviewStaleness,
   ReviewStatus,
   ReviewUpdateStatusInput,
   ReviewView,
@@ -299,10 +317,59 @@ export function decodeCommentView(value: unknown): CommentView {
   const source = value as Record<string, unknown>;
   return {
     id: source["id"] as string,
-    finding_id: source["finding_id"] as string,
+    review_id: source["review_id"] as string,
+    ...(source["finding_id"] === undefined ? {} : { finding_id: source["finding_id"] as string }),
     body: source["body"] as string,
     author: decodeActorReference(source["author"]),
     created_at: source["created_at"] as string,
+  };
+}
+
+/**
+ * Decodes a validated InboxItemView.
+ */
+export function decodeInboxItemView(value: unknown): InboxItemView {
+  const source = value as Record<string, unknown>;
+  return {
+    id: source["id"] as string,
+    project_id: source["project_id"] as string,
+    type: source["type"] as InboxItemType,
+    title: source["title"] as string,
+    status: source["status"] as InboxItemStatus,
+    ...(source["review_id"] === undefined ? {} : { review_id: source["review_id"] as string }),
+    ...(source["review_slug"] === undefined ? {} : { review_slug: source["review_slug"] as string }),
+    ...(source["finding_id"] === undefined ? {} : { finding_id: source["finding_id"] as string }),
+    ...(source["priority"] === undefined ? {} : { priority: source["priority"] as ReviewPriority }),
+    ...(source["finding_count"] === undefined ? {} : { finding_count: source["finding_count"] as number }),
+    ...(source["assigned_by"] === undefined ? {} : { assigned_by: decodeActorReference(source["assigned_by"]) }),
+    created_at: source["created_at"] as string,
+    ...(source["acknowledged_at"] === undefined ? {} : { acknowledged_at: source["acknowledged_at"] as string }),
+    ...(source["completed_at"] === undefined ? {} : { completed_at: source["completed_at"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated ReviewStaleness.
+ */
+export function decodeReviewStaleness(value: unknown): ReviewStaleness {
+  const source = value as Record<string, unknown>;
+  return {
+    computed: source["computed"] as boolean,
+    captured_branch: source["captured_branch"] as string,
+    captured_commit: source["captured_commit"] as string,
+    ...(source["workspace_branch"] === undefined ? {} : { workspace_branch: source["workspace_branch"] as string }),
+    ...(source["workspace_head_commit"] === undefined ? {} : { workspace_head_commit: source["workspace_head_commit"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated ReviewSearchMatch.
+ */
+export function decodeReviewSearchMatch(value: unknown): ReviewSearchMatch {
+  const source = value as Record<string, unknown>;
+  return {
+    review: decodeReviewView(source["review"]),
+    matched: (source["matched"] as unknown[]).map((item) => item as ReviewSearchField),
   };
 }
 
@@ -466,6 +533,55 @@ export function decodeAgentSessionStatusInput(value: unknown): AgentSessionStatu
 }
 
 /**
+ * Decodes a validated AgentInboxListInput.
+ */
+export function decodeAgentInboxListInput(value: unknown): AgentInboxListInput {
+  const source = value as Record<string, unknown>;
+  return {
+    ...(source["status"] === undefined ? {} : { status: (source["status"] as unknown[]).map((item) => item as InboxItemStatus) }),
+    ...(source["limit"] === undefined ? {} : { limit: source["limit"] as number }),
+    ...(source["cursor"] === undefined ? {} : { cursor: source["cursor"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated AgentInboxAcknowledgeInput.
+ */
+export function decodeAgentInboxAcknowledgeInput(value: unknown): AgentInboxAcknowledgeInput {
+  const source = value as Record<string, unknown>;
+  return {
+    inbox_item_id: source["inbox_item_id"] as string,
+    idempotency_key: source["idempotency_key"] as string,
+  };
+}
+
+/**
+ * Decodes a validated ReviewListInput.
+ */
+export function decodeReviewListInput(value: unknown): ReviewListInput {
+  const source = value as Record<string, unknown>;
+  return {
+    ...(source["status"] === undefined ? {} : { status: (source["status"] as unknown[]).map((item) => item as ReviewStatus) }),
+    ...(source["assigned_to_me"] === undefined ? {} : { assigned_to_me: source["assigned_to_me"] as boolean }),
+    ...(source["slug_prefix"] === undefined ? {} : { slug_prefix: source["slug_prefix"] as string }),
+    ...(source["updated_since"] === undefined ? {} : { updated_since: source["updated_since"] as string }),
+    ...(source["limit"] === undefined ? {} : { limit: source["limit"] as number }),
+    ...(source["cursor"] === undefined ? {} : { cursor: source["cursor"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated ReviewSearchInput.
+ */
+export function decodeReviewSearchInput(value: unknown): ReviewSearchInput {
+  const source = value as Record<string, unknown>;
+  return {
+    query: source["query"] as string,
+    ...(source["limit"] === undefined ? {} : { limit: source["limit"] as number }),
+  };
+}
+
+/**
  * Decodes a validated ReviewGetInput.
  */
 export function decodeReviewGetInput(value: unknown): ReviewGetInput {
@@ -475,6 +591,8 @@ export function decodeReviewGetInput(value: unknown): ReviewGetInput {
     ...(source["include"] === undefined ? {} : { include: (source["include"] as unknown[]).map((item) => item as ReviewInclude) }),
     ...(source["findings_limit"] === undefined ? {} : { findings_limit: source["findings_limit"] as number }),
     ...(source["findings_cursor"] === undefined ? {} : { findings_cursor: source["findings_cursor"] as string }),
+    ...(source["comments_limit"] === undefined ? {} : { comments_limit: source["comments_limit"] as number }),
+    ...(source["comments_cursor"] === undefined ? {} : { comments_cursor: source["comments_cursor"] as string }),
   };
 }
 
@@ -505,6 +623,18 @@ export function decodeReviewUpdateStatusInput(value: unknown): ReviewUpdateStatu
 }
 
 /**
+ * Decodes a validated ReviewAddCommentInput.
+ */
+export function decodeReviewAddCommentInput(value: unknown): ReviewAddCommentInput {
+  const source = value as Record<string, unknown>;
+  return {
+    review_id: source["review_id"] as string,
+    body: source["body"] as string,
+    idempotency_key: source["idempotency_key"] as string,
+  };
+}
+
+/**
  * Decodes a validated FindingGetInput.
  */
 export function decodeFindingGetInput(value: unknown): FindingGetInput {
@@ -512,6 +642,8 @@ export function decodeFindingGetInput(value: unknown): FindingGetInput {
   return {
     finding_id: source["finding_id"] as string,
     ...(source["include"] === undefined ? {} : { include: (source["include"] as unknown[]).map((item) => item as FindingInclude) }),
+    ...(source["comments_limit"] === undefined ? {} : { comments_limit: source["comments_limit"] as number }),
+    ...(source["comments_cursor"] === undefined ? {} : { comments_cursor: source["comments_cursor"] as string }),
   };
 }
 
@@ -538,6 +670,20 @@ export function decodeFindingUpdateStatusInput(value: unknown): FindingUpdateSta
     status: source["status"] as AgentFindingStatus,
     ...(source["resolution_note"] === undefined ? {} : { resolution_note: source["resolution_note"] as string }),
     ...(source["reason"] === undefined ? {} : { reason: source["reason"] as string }),
+    idempotency_key: source["idempotency_key"] as string,
+  };
+}
+
+/**
+ * Decodes a validated FindingMarkBlockedInput.
+ */
+export function decodeFindingMarkBlockedInput(value: unknown): FindingMarkBlockedInput {
+  const source = value as Record<string, unknown>;
+  return {
+    finding_id: source["finding_id"] as string,
+    expected_version: source["expected_version"] as number,
+    reason: source["reason"] as string,
+    ...(source["requested_human_action"] === undefined ? {} : { requested_human_action: source["requested_human_action"] as string }),
     idempotency_key: source["idempotency_key"] as string,
   };
 }
@@ -612,6 +758,7 @@ export function decodeAgentSessionStatusResult(value: unknown): AgentSessionStat
     capabilities: decodeServerCapabilities(source["capabilities"]),
     granted_capabilities: (source["granted_capabilities"] as unknown[]).map((item) => item as AgentCapability),
     ...(source["browser_sessions"] === undefined ? {} : { browser_sessions: (source["browser_sessions"] as unknown[]).map((item) => decodeBrowserSessionView(item)) }),
+    ...(source["inbox_pending_count"] === undefined ? {} : { inbox_pending_count: source["inbox_pending_count"] as number }),
     ...(source["expires_at"] === undefined ? {} : { expires_at: source["expires_at"] as string }),
   };
 }
@@ -626,6 +773,63 @@ export function decodeReviewGetResult(value: unknown): ReviewGetResult {
     ...(source["findings"] === undefined ? {} : { findings: (source["findings"] as unknown[]).map((item) => decodeFindingView(item)) }),
     ...(source["findings_next_cursor"] === undefined ? {} : { findings_next_cursor: source["findings_next_cursor"] as string }),
     ...(source["artefact_links"] === undefined ? {} : { artefact_links: (source["artefact_links"] as unknown[]).map((item) => decodeArtefactLink(item)) }),
+    ...(source["comments"] === undefined ? {} : { comments: (source["comments"] as unknown[]).map((item) => decodeCommentView(item)) }),
+    ...(source["comments_next_cursor"] === undefined ? {} : { comments_next_cursor: source["comments_next_cursor"] as string }),
+    ...(source["staleness"] === undefined ? {} : { staleness: decodeReviewStaleness(source["staleness"]) }),
+  };
+}
+
+/**
+ * Decodes a validated ReviewListResult.
+ */
+export function decodeReviewListResult(value: unknown): ReviewListResult {
+  const source = value as Record<string, unknown>;
+  return {
+    reviews: (source["reviews"] as unknown[]).map((item) => decodeReviewView(item)),
+    ...(source["next_cursor"] === undefined ? {} : { next_cursor: source["next_cursor"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated ReviewSearchResult.
+ */
+export function decodeReviewSearchResult(value: unknown): ReviewSearchResult {
+  const source = value as Record<string, unknown>;
+  return {
+    matches: (source["matches"] as unknown[]).map((item) => decodeReviewSearchMatch(item)),
+  };
+}
+
+/**
+ * Decodes a validated ReviewAddCommentResult.
+ */
+export function decodeReviewAddCommentResult(value: unknown): ReviewAddCommentResult {
+  const source = value as Record<string, unknown>;
+  return {
+    comment: decodeCommentView(source["comment"]),
+  };
+}
+
+/**
+ * Decodes a validated AgentInboxListResult.
+ */
+export function decodeAgentInboxListResult(value: unknown): AgentInboxListResult {
+  const source = value as Record<string, unknown>;
+  return {
+    items: (source["items"] as unknown[]).map((item) => decodeInboxItemView(item)),
+    pending_count: source["pending_count"] as number,
+    ...(source["next_cursor"] === undefined ? {} : { next_cursor: source["next_cursor"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated AgentInboxAcknowledgeResult.
+ */
+export function decodeAgentInboxAcknowledgeResult(value: unknown): AgentInboxAcknowledgeResult {
+  const source = value as Record<string, unknown>;
+  return {
+    item: decodeInboxItemView(source["item"]),
+    ...(source["previous_status"] === undefined ? {} : { previous_status: source["previous_status"] as InboxItemStatus }),
   };
 }
 
@@ -649,6 +853,7 @@ export function decodeFindingGetResult(value: unknown): FindingGetResult {
     finding: decodeFindingView(source["finding"]),
     ...(source["annotations"] === undefined ? {} : { annotations: (source["annotations"] as unknown[]).map((item) => decodeAnnotationView(item)) }),
     ...(source["comments"] === undefined ? {} : { comments: (source["comments"] as unknown[]).map((item) => decodeCommentView(item)) }),
+    ...(source["comments_next_cursor"] === undefined ? {} : { comments_next_cursor: source["comments_next_cursor"] as string }),
     ...(source["artefact_links"] === undefined ? {} : { artefact_links: (source["artefact_links"] as unknown[]).map((item) => decodeArtefactLink(item)) }),
     ...(source["latest_verification"] === undefined ? {} : { latest_verification: decodeVerificationView(source["latest_verification"]) }),
   };

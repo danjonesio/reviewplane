@@ -174,10 +174,13 @@ released, because a refusal is not a result to replay for ever.
 
 ## Follow-up
 
-- The stdio bridge of `docs/MCP_SPEC.md` §3.1, obtaining these credentials from
-  the connector (Stage 1).
-- Inbox tools and the §9 workflow (Stage 1), at which point
-  `review_inbox` becomes `true`.
+- ~~The stdio bridge of `docs/MCP_SPEC.md` §3.1, obtaining these credentials from
+  the connector (Stage 1).~~ Delivered by RVP-49. The credential the bridge
+  obtains is issued by the connector rather than by an administrator, which is
+  its own decision and is recorded as ADR-0023.
+- ~~Inbox tools and the §9 workflow (Stage 1), at which point
+  `review_inbox` becomes `true`.~~ Delivered by RVP-49; `review_inbox` is now
+  negotiated `true`.
 - A shared agent-session store when a second MCP replica is deployed.
 - An expiry sweep for `agent_credentials` and `idempotency_keys`, with the
   retention work of Stage 2.

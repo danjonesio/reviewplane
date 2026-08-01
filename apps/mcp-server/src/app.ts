@@ -39,6 +39,7 @@ import {
   BrowserWorkerClient,
   IdempotencyStore,
   HttpTunnelGateway,
+  InboxStore,
   PublishedServiceService,
   ReviewService,
   STAGE_0_DESTINATION_POLICY,
@@ -146,6 +147,7 @@ export async function buildMcpApp(options: BuildMcpAppOptions): Promise<BuiltMcp
   const workspaces = new WorkspaceStore(pool);
   const agentSessions = new AgentSessionStore(pool, workspaces);
   const idempotency = new IdempotencyStore(pool);
+  const inbox = new InboxStore(pool);
 
   // Published development services (`docs/MCP_SPEC.md` section 7.2).
   //
@@ -191,6 +193,7 @@ export async function buildMcpApp(options: BuildMcpAppOptions): Promise<BuiltMcp
     workspaces,
     idempotency,
     developmentServices,
+    inbox,
   };
 
   const live = new Map<string, LiveConnection>();
@@ -358,7 +361,24 @@ export async function buildMcpApp(options: BuildMcpAppOptions): Promise<BuiltMcp
     services,
     connections,
     async close() {
-      for (const [, entry] of live) await entry.transport.close().catch(() => undefined);
+      // The control plane going away is, from the agent's side, the session
+      // being disconnected — not completed. `docs/EVENTS.md` section 7 has both
+      // names and they mean different things: a completed session finished its
+      // work, and a disconnected one stopped mid-flight with whatever it was
+      // doing unfinished. Recording the wrong one would tell a human reading the
+      // timeline that an agent walked away satisfied.
+      //
+      // The write is best effort. If the database is what went away, the
+      // session cannot be stamped and the loss is logged rather than allowed to
+      // stop a shutdown.
+      for (const [, entry] of live) {
+        await agentSessions
+          .end(entry.connection.session.id, "DISCONNECTED", "the control plane stopped serving")
+          .catch((error: unknown) => {
+            app.log.warn({ err: error }, "agent session could not be marked disconnected");
+          });
+        await entry.transport.close().catch(() => undefined);
+      }
       live.clear();
       connections.clear();
       await app.close();

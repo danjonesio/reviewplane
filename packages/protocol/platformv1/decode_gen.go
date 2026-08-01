@@ -116,6 +116,51 @@ func DecodeHumanSession(value any) HumanSession {
 	return out
 }
 
+// DecodeAgentSession builds a AgentSession from a validated tree.
+func DecodeAgentSession(value any) AgentSession {
+	source, _ := value.(map[string]any)
+	var out AgentSession
+	out.ID = decodeString(source["id"])
+	if field, present := source["organisation_id"]; present {
+		decoded := decodeString(field)
+		out.OrganisationID = &decoded
+	}
+	out.ProjectID = decodeString(source["project_id"])
+	if field, present := source["connector_id"]; present {
+		decoded := decodeString(field)
+		out.ConnectorID = &decoded
+	}
+	if field, present := source["workspace_id"]; present {
+		decoded := decodeString(field)
+		out.WorkspaceID = &decoded
+	}
+	out.AgentType = decodeString(source["agent_type"])
+	if field, present := source["agent_version"]; present {
+		decoded := decodeString(field)
+		out.AgentVersion = &decoded
+	}
+	out.Capabilities = decodeSlice(source["capabilities"], func(item any) AgentCapability { return AgentCapability(decodeString(item)) })
+	if field, present := source["branch"]; present {
+		decoded := decodeString(field)
+		out.Branch = &decoded
+	}
+	if field, present := source["head_commit"]; present {
+		decoded := decodeString(field)
+		out.HeadCommit = &decoded
+	}
+	out.Status = AgentSessionStatus(decodeString(source["status"]))
+	out.StartedAt = decodeString(source["started_at"])
+	if field, present := source["last_seen_at"]; present {
+		decoded := decodeString(field)
+		out.LastSeenAt = &decoded
+	}
+	if field, present := source["ended_at"]; present {
+		decoded := decodeString(field)
+		out.EndedAt = &decoded
+	}
+	return out
+}
+
 // DecodeEnvironment builds a Environment from a validated tree.
 func DecodeEnvironment(value any) Environment {
 	source, _ := value.(map[string]any)
@@ -496,6 +541,10 @@ func DecodeConnectorRevokedPayload(value any) ConnectorRevokedPayload {
 	if field, present := source["channels_closed"]; present {
 		decoded := decodeInt(field)
 		out.ChannelsClosed = &decoded
+	}
+	if field, present := source["agent_credentials_revoked"]; present {
+		decoded := decodeInt(field)
+		out.AgentCredentialsRevoked = &decoded
 	}
 	return out
 }

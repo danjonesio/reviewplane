@@ -36,6 +36,7 @@ ADRs record decisions that materially affect architecture, security, protocols o
 | [0020](0020-remote-mcp-endpoint-and-agent-credentials.md) | Serve the agent interface as a remote authenticated MCP endpoint with scoped agent credentials | Accepted |
 | [0021](0021-two-phase-route-publication.md) | Publish a development service in two phases, requested by any control-plane process and completed by the one holding the connector's channel | Accepted |
 | [0022](0022-connector-workspace-observation.md) | Report workspace Git context as its own bounded message on the connector `events` channel | Accepted |
+| [0023](0023-connector-issued-agent-credentials.md) | A connector exchanges its device identity for a short-lived, single-project agent credential | Accepted |
 | [0024](0024-transition-tables-as-protocol-data.md) | The review and finding transition tables, with their authority column, are protocol data | Accepted |
 
 ## Pending decisions

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/danjonesio/reviewplane/schemas/mcp/v1.schema.json",
   "title": "ReviewPlane MCP interface, version 1",
-  "description": "Single source for the agent-facing contract of docs/MCP_SPEC.md: the tool arguments and results, the common response envelope of section 5, the trust labels of section 6, the resource URI forms of section 8, the stable error codes of section 12 and the tool availability set of section 14. x-protocol.messages is keyed by tool name, so the generated MESSAGE_TYPE_VALUES is the negotiated tool set and PAYLOAD_MAX_BYTES is the per-tool response bound section 13 requires. TypeScript models and validators are generated from this file; a hand-maintained equivalent in apps/mcp-server is a review failure.",
+  "description": "Single source for the agent-facing contract of docs/MCP_SPEC.md: the tool arguments and results, the common response envelope of section 5, the trust labels of section 6, the inbox records of section 9, the resource URI forms of section 8, the stable error codes of section 12 and the tool availability set of section 14. x-protocol.messages is keyed by tool name, so the generated MESSAGE_TYPE_VALUES is the negotiated tool set and PAYLOAD_MAX_BYTES is the per-tool response bound section 13 requires. TypeScript models and validators are generated from this file; a hand-maintained equivalent in apps/mcp-server is a review failure.",
   "x-protocol": {
     "name": "mcp",
     "version": 1,
@@ -15,6 +15,7 @@
     "envelope_payload_property": "data",
     "channels": {
       "session": "Project and agent-session identity (docs/MCP_SPEC.md section 7.1).",
+      "inbox": "Durable delivery of assigned work and its acknowledgement (section 7.1 and section 9).",
       "review": "Named review retrieval and review lifecycle (section 7.6).",
       "finding": "Finding lifecycle, comments and verification (section 7.7).",
       "browser": "Bounded browser capture (section 7.4).",
@@ -36,6 +37,30 @@
         "payload": "agent_session_status_result",
         "description": "Agent-session identity, negotiated capabilities and associated browser sessions (section 7.1). The browser sessions carry the control epoch a capture must present."
       },
+      "agent_inbox_list": {
+        "channel": "inbox",
+        "direction": "server_to_client",
+        "payload": "agent_inbox_list_result",
+        "description": "The current project's inbox items for this agent session, oldest first so assignment order is preserved (sections 7.1 and 9). Retrieval is idempotent and changes nothing; acknowledgement is a separate, explicit call."
+      },
+      "agent_inbox_acknowledge": {
+        "channel": "inbox",
+        "direction": "server_to_client",
+        "payload": "agent_inbox_acknowledge_result",
+        "description": "The inbox item after acknowledgement. Acknowledgement records receipt and never completion of the underlying work (docs/DOMAIN_MODEL.md section 21)."
+      },
+      "review_list": {
+        "channel": "review",
+        "direction": "server_to_client",
+        "payload": "review_list_result",
+        "description": "One bounded page of the current project's reviews, filtered by status, assignment or slug prefix (section 7.6). It never reaches another project."
+      },
+      "review_search": {
+        "channel": "review",
+        "direction": "server_to_client",
+        "payload": "review_search_result",
+        "description": "Reviews of the current project whose title, slug or finding text matches a query (section 7.6). Cross-project and organisation-wide search do not exist here: the query is bound to this session's project in the same statement that reads the rows."
+      },
       "review_get": {
         "channel": "review",
         "direction": "server_to_client",
@@ -54,6 +79,12 @@
         "payload": "review_mutation_result",
         "description": "The review after an agent-permitted status change. An agent may not set a review to ACCEPTED; the status enumeration this tool accepts does not contain it."
       },
+      "review_add_comment": {
+        "channel": "review",
+        "direction": "server_to_client",
+        "payload": "review_add_comment_result",
+        "description": "The review comment as recorded, attributed to the agent session (section 7.6, docs/DOMAIN_MODEL.md section 18)."
+      },
       "finding_get": {
         "channel": "finding",
         "direction": "server_to_client",
@@ -71,6 +102,12 @@
         "direction": "server_to_client",
         "payload": "finding_mutation_result",
         "description": "The finding after an agent-permitted transition of section 7.7. The terminal state available to an agent is AWAITING_HUMAN_REVIEW."
+      },
+      "finding_mark_blocked": {
+        "channel": "finding",
+        "direction": "server_to_client",
+        "payload": "finding_mutation_result",
+        "description": "The finding after it was marked BLOCKED with a reason and an optional requested human action (section 7.7). It is finding_update_status with the target fixed by the tool, so a block always carries the reason a human has to act on."
       },
       "finding_add_comment": {
         "channel": "finding",
@@ -135,6 +172,30 @@
         "max_bytes_limit": "max_mcp_request_bytes",
         "description": "Arguments of agent_session_status."
       },
+      "agent_inbox_list_input": {
+        "channel": "command",
+        "def": "agent_inbox_list_input",
+        "max_bytes_limit": "max_mcp_request_bytes",
+        "description": "Arguments of agent_inbox_list. Retrieval is idempotent, so this call carries no idempotency key: reading an inbox twice reads the same inbox."
+      },
+      "agent_inbox_acknowledge_input": {
+        "channel": "command",
+        "def": "agent_inbox_acknowledge_input",
+        "max_bytes_limit": "max_mcp_request_bytes",
+        "description": "Arguments of agent_inbox_acknowledge. The idempotency key is required, so a retried acknowledgement acknowledges once."
+      },
+      "review_list_input": {
+        "channel": "command",
+        "def": "review_list_input",
+        "max_bytes_limit": "max_mcp_request_bytes",
+        "description": "Arguments of review_list. Every filter narrows within the current project; none of them can widen beyond it."
+      },
+      "review_search_input": {
+        "channel": "command",
+        "def": "review_search_input",
+        "max_bytes_limit": "max_mcp_request_bytes",
+        "description": "Arguments of review_search. There is no project argument: the project is the session's, so a cross-project search cannot be requested."
+      },
       "review_get_input": {
         "channel": "command",
         "def": "review_get_input",
@@ -153,6 +214,12 @@
         "max_bytes_limit": "max_mcp_request_bytes",
         "description": "Arguments of review_update_status."
       },
+      "review_add_comment_input": {
+        "channel": "command",
+        "def": "review_add_comment_input",
+        "max_bytes_limit": "max_mcp_request_bytes",
+        "description": "Arguments of review_add_comment."
+      },
       "finding_get_input": {
         "channel": "command",
         "def": "finding_get_input",
@@ -170,6 +237,12 @@
         "def": "finding_update_status_input",
         "max_bytes_limit": "max_mcp_request_bytes",
         "description": "Arguments of finding_update_status. The status enumeration is the agent-permitted set of section 7.7 and structurally excludes every final disposition."
+      },
+      "finding_mark_blocked_input": {
+        "channel": "command",
+        "def": "finding_mark_blocked_input",
+        "max_bytes_limit": "max_mcp_request_bytes",
+        "description": "Arguments of finding_mark_blocked. reason is required by the schema rather than by a handler, so a block that says nothing cannot be sent."
       },
       "finding_add_comment_input": {
         "channel": "command",
@@ -298,16 +371,22 @@
         ]
       },
       "tool_availability": {
-        "description": "The tool availability set docs/MCP_SPEC.md section 14 requires a client to be able to rely on. It equals x-protocol.messages, so a tool cannot be advertised without a result schema. Everything else in the section 7 catalogue is unavailable and is absent from tools/list rather than present and failing: no inbox tools, no visual inspection, no completion gates, no secret tools and no review listing or search. The development-service tools joined it with RVP-24.",
+        "description": "The tool availability set docs/MCP_SPEC.md section 14 requires a client to be able to rely on. It equals x-protocol.messages, so a tool cannot be advertised without a result schema. Everything else in the section 7 catalogue is unavailable and is absent from tools/list rather than present and failing: no browser lifecycle or interaction tools, no visual inspection, no completion gates and — the row that matters most — no secret tool of any kind, which is the strongest available form of the rule that no raw secret reaches an agent (docs/SECURITY.md section 12.1). The inbox tools joined it with RVP-49 and the development-service tools with RVP-24.",
         "values": [
           "project_current",
           "agent_session_status",
+          "agent_inbox_list",
+          "agent_inbox_acknowledge",
+          "review_list",
+          "review_search",
           "review_get",
           "review_claim",
           "review_update_status",
+          "review_add_comment",
           "finding_get",
           "finding_claim",
           "finding_update_status",
+          "finding_mark_blocked",
           "finding_add_comment",
           "finding_submit_verification",
           "browser_take_screenshot",
@@ -598,6 +677,7 @@
         "verification_branch_uncorroborated",
         "staleness_unavailable",
         "inbox_unavailable",
+        "results_truncated",
         "idempotent_replay"
       ]
     },
@@ -636,12 +716,18 @@
       "enum": [
         "project_current",
         "agent_session_status",
+        "agent_inbox_list",
+        "agent_inbox_acknowledge",
+        "review_list",
+        "review_search",
         "review_get",
         "review_claim",
         "review_update_status",
+        "review_add_comment",
         "finding_get",
         "finding_claim",
         "finding_update_status",
+        "finding_mark_blocked",
         "finding_add_comment",
         "finding_submit_verification",
         "browser_take_screenshot",
@@ -677,6 +763,28 @@
         "FAILED",
         "CANCELLED"
       ]
+    },
+    "review_priority": {
+      "type": "string",
+      "description": "How a review is ordered in a queue (docs/DOMAIN_MODEL.md section 14). It orders and gates nothing: an urgent review and a routine one obey the same lifecycle and the same authority rules.",
+      "enum": ["critical", "high", "medium", "low"]
+    },
+    "search_query": {
+      "type": "string",
+      "description": "A search term. It is matched literally against the current project's review titles, slugs, descriptions and finding text; it is never interpreted as a pattern, and it carries no project of its own because the project is the session's.",
+      "minLength": 2,
+      "maxLength": 128,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "inbox_item_status": {
+      "type": "string",
+      "description": "Inbox-item status (docs/DOMAIN_MODEL.md section 21). acknowledged means the recipient has seen the item and never that the work is done; completed is the separate later fact.",
+      "enum": ["pending", "acknowledged", "completed", "dismissed", "expired"]
+    },
+    "inbox_item_type": {
+      "type": "string",
+      "description": "Why an inbox item exists. review_assigned is created when a review is assigned to a recipient; finding_reopened is created when a human reopens a finding the recipient worked on. Both are durable: an agent learns what a human wants changed by retrieving them rather than by guessing (docs/MCP_SPEC.md section 9).",
+      "enum": ["review_assigned", "finding_reopened"]
     },
     "review_status": {
       "type": "string",
@@ -763,8 +871,13 @@
     },
     "review_include": {
       "type": "string",
-      "description": "Optional sections of a review response. staleness is deliberately absent: staleness calculation is Stage 2, and a field that would have to be guessed is omitted rather than falsely reported (docs/DOMAIN_MODEL.md section 24).",
-      "enum": ["findings", "artefact_links"]
+      "description": "Optional sections of a review response. staleness reports the branch and commit the review was captured at and nothing else: the calculation of docs/DOMAIN_MODEL.md section 24 is Stage 2, so the section reports what was recorded and states that no verdict was computed rather than guessing one.",
+      "enum": ["findings", "comments", "artefact_links", "staleness"]
+    },
+    "review_search_field": {
+      "type": "string",
+      "description": "Which part of a review a search query matched. It is reported so an agent can tell a title match from a match inside a finding a page supplied text for.",
+      "enum": ["title", "slug", "description", "finding"]
     },
     "finding_include": {
       "type": "string",
@@ -994,7 +1107,7 @@
         },
         "review_inbox": {
           "type": "boolean",
-          "description": "Whether inbox tools are available. False in Stage 0: the inbox workflow of section 9 is Stage 1, and the tools are absent rather than present and empty."
+          "description": "Whether the inbox workflow of section 9 is available. True where agent_inbox_list and agent_inbox_acknowledge are advertised; a deployment that withdrew them would report false rather than advertise a tool that refuses."
         },
         "managed_messages": {
           "type": "boolean",
@@ -1230,17 +1343,21 @@
     },
     "comment_view": {
       "type": "object",
-      "description": "One comment on a finding (docs/DOMAIN_MODEL.md section 18). Comments are append-only and the author type is always explicit.",
+      "description": "One comment on a review or on one of its findings (docs/DOMAIN_MODEL.md section 18). Comments are append-only and the author type is always explicit. review_id is always present and finding_id is absent for a comment on the review itself, which is the same shape the control-plane record carries.",
       "additionalProperties": false,
-      "required": ["id", "finding_id", "body", "author", "created_at"],
+      "required": ["id", "review_id", "body", "author", "created_at"],
       "properties": {
         "id": {
           "$ref": "#/$defs/identifier",
           "description": "Comment identifier."
         },
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review the comment belongs to, directly or through its finding."
+        },
         "finding_id": {
           "$ref": "#/$defs/identifier",
-          "description": "Finding the comment belongs to."
+          "description": "Finding the comment is on. Absent when the comment is on the review itself."
         },
         "body": {
           "$ref": "#/$defs/body_text",
@@ -1253,6 +1370,122 @@
         "created_at": {
           "$ref": "#/$defs/timestamp",
           "description": "When it was written."
+        }
+      }
+    },
+    "inbox_item_view": {
+      "type": "object",
+      "description": "One durable work notification (docs/DOMAIN_MODEL.md section 21). It names the work rather than carrying it: a review reference and a count, not the review's findings, so an inbox read cannot become an unbounded delivery. status distinguishes receipt from completion, which is the whole reason the record is durable.",
+      "additionalProperties": false,
+      "required": ["id", "project_id", "type", "title", "status", "created_at"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Inbox-item identifier."
+        },
+        "project_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Owning project. It is always this session's project."
+        },
+        "type": {
+          "$ref": "#/$defs/inbox_item_type",
+          "description": "Why the item exists."
+        },
+        "title": {
+          "$ref": "#/$defs/title_text",
+          "description": "What a human called the work. It is human-authored text and never an instruction to follow blindly."
+        },
+        "status": {
+          "$ref": "#/$defs/inbox_item_status",
+          "description": "Delivery status. acknowledged means received; it never means the work is done."
+        },
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review the item is about, where there is one."
+        },
+        "review_slug": {
+          "$ref": "#/$defs/slug",
+          "description": "Project-scoped name of that review, which is what review_get accepts."
+        },
+        "finding_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Finding the item is about, for a reopened finding."
+        },
+        "priority": {
+          "$ref": "#/$defs/review_priority",
+          "description": "Priority of the work. It orders a queue and gates nothing (docs/DOMAIN_MODEL.md section 14)."
+        },
+        "finding_count": {
+          "$ref": "#/$defs/record_count",
+          "description": "Findings in the referenced review when the item was created."
+        },
+        "assigned_by": {
+          "$ref": "#/$defs/actor_reference",
+          "description": "Who caused the item. A human assignment and an automatic reopen are distinguishable here."
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the item was created. The list is ordered by this, oldest first."
+        },
+        "acknowledged_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When receipt was acknowledged, where it has been."
+        },
+        "completed_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the work the item delivered was recorded complete, which is a separate later fact."
+        }
+      }
+    },
+    "review_staleness": {
+      "type": "object",
+      "description": "The source context a review was captured at (docs/DOMAIN_MODEL.md section 24). computed is always false in this stage and is present rather than omitted, so a reader is told that no comparison was made instead of being left to infer it from a missing field. A verdict that had to be guessed would be worse than none: it would either close feedback nobody decided to close, or send an agent to reproduce against the wrong revision.",
+      "additionalProperties": false,
+      "required": ["computed", "captured_branch", "captured_commit"],
+      "properties": {
+        "computed": {
+          "type": "boolean",
+          "description": "Whether a staleness comparison was performed. False here.",
+          "const": false
+        },
+        "captured_branch": {
+          "$ref": "#/$defs/branch_name",
+          "description": "Branch the review was captured from."
+        },
+        "captured_commit": {
+          "$ref": "#/$defs/commit_sha",
+          "description": "Commit the review was captured from."
+        },
+        "workspace_branch": {
+          "$ref": "#/$defs/branch_name",
+          "description": "Branch the session's workspace is on, where one is registered. It is reported, not compared."
+        },
+        "workspace_head_commit": {
+          "$ref": "#/$defs/commit_sha",
+          "description": "Head commit of that workspace, where one is registered."
+        }
+      }
+    },
+    "review_search_match": {
+      "type": "object",
+      "description": "One review a search matched, with which part of it matched. The excerpt is deliberately absent: a finding's text can carry page-derived content, and returning a fragment of it here would smuggle untrusted bytes into a list response. An agent that wants the text reads the review.",
+      "additionalProperties": false,
+      "required": ["review", "matched"],
+      "properties": {
+        "review": {
+          "$ref": "#/$defs/review_view",
+          "description": "The matching review."
+        },
+        "matched": {
+          "type": "array",
+          "description": "Which parts of the review matched the query.",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/review_search_field",
+            "description": "One matched part."
+          }
         }
       }
     },
@@ -1691,6 +1924,108 @@
         }
       }
     },
+    "agent_inbox_list_input": {
+      "type": "object",
+      "description": "Arguments of agent_inbox_list. There is no idempotency key because retrieval changes nothing: reading an inbox twice reads the same inbox (docs/DOMAIN_MODEL.md section 21).",
+      "additionalProperties": false,
+      "x-max-bytes": 1024,
+      "required": [],
+      "properties": {
+        "status": {
+          "type": "array",
+          "description": "Statuses to include. Defaults to pending and acknowledged, which is the work an agent still has in hand.",
+          "minItems": 1,
+          "maxItems": 5,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/inbox_item_status",
+            "description": "One status."
+          }
+        },
+        "limit": {
+          "$ref": "#/$defs/page_limit",
+          "description": "Maximum items in this page. Defaults to 20 and is capped at the schema maximum."
+        },
+        "cursor": {
+          "$ref": "#/$defs/cursor",
+          "description": "Cursor from a previous page."
+        }
+      }
+    },
+    "agent_inbox_acknowledge_input": {
+      "type": "object",
+      "description": "Arguments of agent_inbox_acknowledge. Acknowledging records receipt; there is no argument that could record completion, because completing the work is a different act with different evidence.",
+      "additionalProperties": false,
+      "x-max-bytes": 1024,
+      "required": ["inbox_item_id", "idempotency_key"],
+      "properties": {
+        "inbox_item_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Item to acknowledge."
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/idempotency_key",
+          "description": "Key for this acknowledgement, so a retry acknowledges once."
+        }
+      }
+    },
+    "review_list_input": {
+      "type": "object",
+      "description": "Arguments of review_list. Every member narrows within the session's project; none of them names a project, so none of them can widen beyond it.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": [],
+      "properties": {
+        "status": {
+          "type": "array",
+          "description": "Statuses to include. Defaults to every active status.",
+          "minItems": 1,
+          "maxItems": 9,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/review_status",
+            "description": "One status."
+          }
+        },
+        "assigned_to_me": {
+          "type": "boolean",
+          "description": "Only reviews assigned to or claimed by this agent session."
+        },
+        "slug_prefix": {
+          "$ref": "#/$defs/slug",
+          "description": "Only reviews whose slug starts with this prefix."
+        },
+        "updated_since": {
+          "$ref": "#/$defs/timestamp",
+          "description": "Only reviews updated at or after this time."
+        },
+        "limit": {
+          "$ref": "#/$defs/page_limit",
+          "description": "Maximum reviews in this page. Defaults to 20 and is capped at the schema maximum."
+        },
+        "cursor": {
+          "$ref": "#/$defs/cursor",
+          "description": "Cursor from a previous page."
+        }
+      }
+    },
+    "review_search_input": {
+      "type": "object",
+      "description": "Arguments of review_search. The absence of a project argument is the security property: the statement that reads the rows is bound to this session's project, so a cross-project search is not something a caller can ask for and be refused — it is something there is no way to express (docs/MCP_SPEC.md section 7.6).",
+      "additionalProperties": false,
+      "x-max-bytes": 1024,
+      "required": ["query"],
+      "properties": {
+        "query": {
+          "$ref": "#/$defs/search_query",
+          "description": "Term to match against titles, slugs, descriptions and finding text of this project."
+        },
+        "limit": {
+          "$ref": "#/$defs/page_limit",
+          "description": "Maximum matches. Defaults to 10 and is capped at 25."
+        }
+      }
+    },
     "review_get_input": {
       "type": "object",
       "description": "Arguments of review_get. The review is resolved inside the current project only: a slug that exists in another project is not found, and no cross-project search happens (docs/MCP_SPEC.md section 7.6).",
@@ -1720,6 +2055,14 @@
         "findings_cursor": {
           "$ref": "#/$defs/cursor",
           "description": "Cursor from a previous page."
+        },
+        "comments_limit": {
+          "$ref": "#/$defs/page_limit",
+          "description": "Maximum comments on the review itself in this page. Defaults to 20."
+        },
+        "comments_cursor": {
+          "$ref": "#/$defs/cursor",
+          "description": "Cursor from a previous page of comments."
         }
       }
     },
@@ -1773,6 +2116,27 @@
         }
       }
     },
+    "review_add_comment_input": {
+      "type": "object",
+      "description": "Arguments of review_add_comment. The author is the agent session and is never a field: a caller able to name an author could write in a human's name.",
+      "additionalProperties": false,
+      "x-max-bytes": 8192,
+      "required": ["review_id", "body", "idempotency_key"],
+      "properties": {
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review to comment on."
+        },
+        "body": {
+          "$ref": "#/$defs/body_text",
+          "description": "Comment text. It is stored and rendered as text."
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/idempotency_key",
+          "description": "Key for this comment, so a retried call does not produce two."
+        }
+      }
+    },
     "finding_get_input": {
       "type": "object",
       "description": "Arguments of finding_get.",
@@ -1794,6 +2158,14 @@
             "$ref": "#/$defs/finding_include",
             "description": "One section."
           }
+        },
+        "comments_limit": {
+          "$ref": "#/$defs/page_limit",
+          "description": "Maximum comments in this page. Defaults to 20."
+        },
+        "comments_cursor": {
+          "$ref": "#/$defs/cursor",
+          "description": "Cursor from a previous page of comments."
         }
       }
     },
@@ -1857,6 +2229,35 @@
           "detail": "A blocked finding must say what is blocking it, because a human has to act on it."
         }
       ]
+    },
+    "finding_mark_blocked_input": {
+      "type": "object",
+      "description": "Arguments of finding_mark_blocked. There is no status argument: the tool is the status, which is why reason can be required by the schema rather than checked afterwards. requested_human_action is what a human is being asked to do about it, and is optional because an agent does not always know.",
+      "additionalProperties": false,
+      "x-max-bytes": 8192,
+      "required": ["finding_id", "expected_version", "reason", "idempotency_key"],
+      "properties": {
+        "finding_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Finding to block."
+        },
+        "expected_version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version the agent last read."
+        },
+        "reason": {
+          "$ref": "#/$defs/reason_text",
+          "description": "What is blocking the work. Required, because a block a human cannot act on is a status change and not a request."
+        },
+        "requested_human_action": {
+          "$ref": "#/$defs/reason_text",
+          "description": "What the agent is asking a human to do."
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/idempotency_key",
+          "description": "Key for this transition."
+        }
+      }
     },
     "finding_add_comment_input": {
       "type": "object",
@@ -2047,6 +2448,10 @@
             "description": "One browser session."
           }
         },
+        "inbox_pending_count": {
+          "$ref": "#/$defs/record_count",
+          "description": "Inbox items still pending for this session. It is a count and never the items: an agent that wants them calls agent_inbox_list, so a status call cannot become an unbounded delivery."
+        },
         "expires_at": {
           "$ref": "#/$defs/timestamp",
           "description": "When the credential expires."
@@ -2087,6 +2492,123 @@
             "$ref": "#/$defs/artefact_link",
             "description": "One evidence link."
           }
+        },
+        "comments": {
+          "type": "array",
+          "description": "One bounded page of comments on the review itself, oldest first. Comments on a finding are read through finding_get. The page may be shorter than comments_limit asked for: members are added while they fit the response bound of section 13, and comments_next_cursor then names where the next page starts.",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": {
+            "$ref": "#/$defs/comment_view",
+            "description": "One comment."
+          }
+        },
+        "comments_next_cursor": {
+          "$ref": "#/$defs/cursor",
+          "description": "Cursor for the next page of comments, present only when more remain."
+        },
+        "staleness": {
+          "$ref": "#/$defs/review_staleness",
+          "description": "The captured context, with no verdict. Present only when asked for."
+        }
+      }
+    },
+    "review_list_result": {
+      "type": "object",
+      "description": "Payload of review_list: one bounded page of the current project's reviews.",
+      "additionalProperties": false,
+      "x-max-bytes": 32768,
+      "required": ["reviews"],
+      "properties": {
+        "reviews": {
+          "type": "array",
+          "description": "The page, newest first. An empty project answers with an empty array rather than a refusal.",
+          "minItems": 0,
+          "maxItems": 50,
+          "items": {
+            "$ref": "#/$defs/review_view",
+            "description": "One review."
+          }
+        },
+        "next_cursor": {
+          "$ref": "#/$defs/cursor",
+          "description": "Cursor for the next page, present only when more reviews remain."
+        }
+      }
+    },
+    "review_search_result": {
+      "type": "object",
+      "description": "Payload of review_search: reviews of the current project that matched. The project is never a member of this shape, because it is never a choice the caller had.",
+      "additionalProperties": false,
+      "x-max-bytes": 32768,
+      "required": ["matches"],
+      "properties": {
+        "matches": {
+          "type": "array",
+          "description": "Matching reviews, most recently updated first.",
+          "minItems": 0,
+          "maxItems": 25,
+          "items": {
+            "$ref": "#/$defs/review_search_match",
+            "description": "One match."
+          }
+        }
+      }
+    },
+    "review_add_comment_result": {
+      "type": "object",
+      "description": "Payload of review_add_comment.",
+      "additionalProperties": false,
+      "x-max-bytes": 8192,
+      "required": ["comment"],
+      "properties": {
+        "comment": {
+          "$ref": "#/$defs/comment_view",
+          "description": "The comment as recorded, attributed to the agent session."
+        }
+      }
+    },
+    "agent_inbox_list_result": {
+      "type": "object",
+      "description": "Payload of agent_inbox_list. Items are oldest first so that assignment order is preserved, and the page is bounded like every other response (docs/MCP_SPEC.md section 13).",
+      "additionalProperties": false,
+      "x-max-bytes": 32768,
+      "required": ["items", "pending_count"],
+      "properties": {
+        "items": {
+          "type": "array",
+          "description": "The page, oldest first.",
+          "minItems": 0,
+          "maxItems": 50,
+          "items": {
+            "$ref": "#/$defs/inbox_item_view",
+            "description": "One inbox item."
+          }
+        },
+        "pending_count": {
+          "$ref": "#/$defs/record_count",
+          "description": "Items still pending for this session, which is not the number returned in this page."
+        },
+        "next_cursor": {
+          "$ref": "#/$defs/cursor",
+          "description": "Cursor for the next page, present only when more items remain."
+        }
+      }
+    },
+    "agent_inbox_acknowledge_result": {
+      "type": "object",
+      "description": "Payload of agent_inbox_acknowledge. The item is returned as it now stands, still naming the work it delivered: acknowledgement is receipt and never completion.",
+      "additionalProperties": false,
+      "x-max-bytes": 8192,
+      "required": ["item"],
+      "properties": {
+        "item": {
+          "$ref": "#/$defs/inbox_item_view",
+          "description": "The item after acknowledgement."
+        },
+        "previous_status": {
+          "$ref": "#/$defs/inbox_item_status",
+          "description": "Status before the change, absent when nothing moved."
         }
       }
     },
@@ -2130,13 +2652,17 @@
         },
         "comments": {
           "type": "array",
-          "description": "Comments on the finding, oldest first.",
+          "description": "Comments on the finding, oldest first. The page may be shorter than comments_limit asked for: members are added while they fit the response bound of section 13, and comments_next_cursor then names where the next page starts.",
           "minItems": 1,
           "maxItems": 20,
           "items": {
             "$ref": "#/$defs/comment_view",
             "description": "One comment."
           }
+        },
+        "comments_next_cursor": {
+          "$ref": "#/$defs/cursor",
+          "description": "Cursor for the next page of comments, present only when more remain."
         },
         "artefact_links": {
           "type": "array",

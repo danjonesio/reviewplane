@@ -26,7 +26,7 @@ The primary workflow is:
 2. The control plane allocates an isolated central browser session.
 3. The agent uses MCP tools to inspect and operate the application.
 4. A human watches, annotates or creates a named review.
-5. The agent retrieves that review, resolves findings and submits verification evidence.
+5. The agent retrieves that review, resolves findings and submits verification evidence. It learns what was assigned to it from its inbox (`agent_inbox_list`), which it checks at session start, before a new task, after a coding phase, before reporting completion and after a human returns control — nothing is pushed to it, and acknowledging an item records receipt and never completion.
 6. A human accepts or reopens human-authored findings.
 
 Do not implement features that bypass this loop without an explicit ADR.

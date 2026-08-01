@@ -17,6 +17,7 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 import type { ReactElement } from "react";
 
 import { api, type Annotation, type Finding } from "../api/client.ts";
+import { AgentDeliveryPanel } from "../components/AgentDelivery.tsx";
 import { ArtefactViewer } from "../components/ArtefactViewer.tsx";
 import { StatusBadge, type Tone } from "../components/StatusBadge.tsx";
 import { rootRoute } from "./root.tsx";
@@ -45,6 +46,9 @@ function FindingPanel({
     queryKey: ["finding-verification", finding.id],
     queryFn: () => api.findingVerification(finding.id),
   });
+  // Absence arrives as `null` from the API and as an absent member in the
+  // schema, and both mean nobody has claimed this finding.
+  const claimedBy = finding.claimed_by ?? null;
   return (
     <li
       data-finding={finding.id}
@@ -90,6 +94,19 @@ function FindingPanel({
         <div>
           <dt className="text-slate-600 dark:text-slate-400">Reported by</dt>
           <dd>{finding.source === "human" ? "a human" : "an agent"}</dd>
+        </div>
+        <div className="min-w-0">
+          <dt className="text-slate-600 dark:text-slate-400">Worked by</dt>
+          {/*
+            Who holds the claim, as the actor the control plane recorded
+            (`docs/UX_FLOWS.md` section 12). Nothing resolves an actor
+            identifier to a name, so the identifier is what is shown.
+          */}
+          <dd className="break-all font-mono" data-finding-claim={finding.id}>
+            {claimedBy === null
+              ? "Nobody"
+              : `${claimedBy.type}${claimedBy.id === undefined ? "" : ` ${claimedBy.id}`}`}
+          </dd>
         </div>
       </dl>
 
@@ -180,6 +197,8 @@ function ReviewDetail(): ReactElement {
           <dd className="truncate font-mono">{review.data.source_browser_session_id}</dd>
         </div>
       </dl>
+
+      <AgentDeliveryPanel review={review.data} />
 
       <h2 className="mt-6 text-lg font-semibold">Findings</h2>
       {findings.isPending ? <p role="status">Loading findings.</p> : null}

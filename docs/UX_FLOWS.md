@@ -381,6 +381,49 @@ Finding 1 in progress
 
 Do not claim that the control plane has injected text into the terminal unless a managed adapter actually supports it.
 
+### Implemented behaviour
+
+The review page carries an **Agent delivery** section between the review's facts
+and its findings (`apps/web/src/components/AgentDelivery.tsx`). It states three
+things and derives none of them from another, because each answers a different
+question and the wrong inference is the confident one:
+
+- **Assigned to** — `assigned_agent_session_id`, or failing that
+  `assigned_user_id`, as the identifier the control plane holds. No endpoint
+  resolves an agent session to a client's name, so the surface MUST render the
+  identifier and MUST NOT print a client name it inferred. Where neither member
+  is set, the cell says "Not assigned".
+- **Inbox** — the status of the inbox item carrying this review, read from
+  `GET /api/v1/projects/:projectId/inbox` (`API.md` §16) and matched on
+  `review_id`. All five statuses are requested explicitly, because the endpoint
+  answers with the live ones alone when none is named and a completed or
+  dismissed delivery would otherwise be indistinguishable from one that never
+  happened. The status is a word beside its badge and never a colour alone.
+  Where no item carries the review, the cell says "No inbox item".
+- **Agent acknowledgement** — "not yet received" until the item carries an
+  `acknowledged_at`, and that time once it does. It is read from the timestamp
+  and never from the status, because an item may be completed by a recipient
+  that never acknowledged it (`DOMAIN_MODEL.md` §21) and "not yet received" is
+  then the true reading rather than the tidy one.
+
+Where the review is assigned to nobody and no item carries it, the section
+renders one named empty state in place of the three cells. Three absences
+presented as three cells would read as a delivery state, which is exactly the
+claim there is no evidence for.
+
+The per-finding half of §12 is on the finding card: a **Worked by** cell states
+`claimed_by`'s actor type and identifier, or "Nobody". The finding's own status
+is already on the card beside its severity. Nothing records the time a review
+was claimed — the review entity carries no such member — and there is no
+per-finding progress beyond the finding's status, so the surface states neither
+rather than assembling the second block of this section out of values it does
+not have.
+
+Nothing on this surface injects anything anywhere, and it says so rather than
+leaving the reader to assume: the copy control of §15 is accompanied by the
+statement that ReviewPlane does not type into an agent's terminal and that
+nothing reaches the agent until the reader runs the command there.
+
 ## 12. Agent finding workflow in UI
 
 Finding card displays:
@@ -464,6 +507,26 @@ Inbox item shows:
 - Acknowledgement state
 
 Users can copy a CLI command for manual prompting.
+
+### Implemented behaviour
+
+The manual-prompting half is implemented, on the review page's Agent delivery
+section rather than on an inbox screen: the item list above is not built yet,
+and the review page is where a person deciding to prompt an agent already is.
+
+The command is rendered as text in a focusable, selectable `pre` — the bridge
+command of `CONNECTOR_PROTOCOL.md` §14 followed by a shell comment naming the
+review by its slug, so the whole block can be pasted at a prompt without the
+prose breaking it. A button beside it copies the block with
+`navigator.clipboard.writeText`, and the outcome is announced in a polite live
+region: either that the command is on the clipboard, or that the browser refused
+the write. A browser that exposes no clipboard at all gets a disabled control
+and is told to copy the command from the keyboard instead, because a control
+that throws when pressed teaches the reader nothing.
+
+The copy is the reader's own act and the wording says so. The section MUST NOT
+describe the copy as delivering anything: no adapter here reaches a terminal,
+and §11 forbids implying one does.
 
 ## 16. Review search
 

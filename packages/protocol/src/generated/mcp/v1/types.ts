@@ -25,6 +25,7 @@ export const LIMITS = {
  */
 export const CHANNELS = [
   "session",
+  "inbox",
   "review",
   "finding",
   "browser",
@@ -40,6 +41,7 @@ export type Channel = (typeof CHANNELS)[number];
  */
 export const CHANNEL_DESCRIPTIONS: Readonly<Record<Channel, string>> = {
   "session": "Project and agent-session identity (docs/MCP_SPEC.md section 7.1).",
+  "inbox": "Durable delivery of assigned work and its acknowledgement (section 7.1 and section 9).",
   "review": "Named review retrieval and review lifecycle (section 7.6).",
   "finding": "Finding lifecycle, comments and verification (section 7.7).",
   "browser": "Bounded browser capture (section 7.4).",
@@ -110,6 +112,7 @@ export const WARNING_CODE_VALUES = [
   "verification_branch_uncorroborated",
   "staleness_unavailable",
   "inbox_unavailable",
+  "results_truncated",
   "idempotent_replay",
 ] as const;
 
@@ -122,6 +125,7 @@ export type WarningCode =
   | "verification_branch_uncorroborated"
   | "staleness_unavailable"
   | "inbox_unavailable"
+  | "results_truncated"
   | "idempotent_replay";
 
 /**
@@ -188,12 +192,18 @@ export type ErrorClass =
 export const MESSAGE_TYPE_VALUES = [
   "project_current",
   "agent_session_status",
+  "agent_inbox_list",
+  "agent_inbox_acknowledge",
+  "review_list",
+  "review_search",
   "review_get",
   "review_claim",
   "review_update_status",
+  "review_add_comment",
   "finding_get",
   "finding_claim",
   "finding_update_status",
+  "finding_mark_blocked",
   "finding_add_comment",
   "finding_submit_verification",
   "browser_take_screenshot",
@@ -205,12 +215,18 @@ export const MESSAGE_TYPE_VALUES = [
 export type MessageType =
   | "project_current"
   | "agent_session_status"
+  | "agent_inbox_list"
+  | "agent_inbox_acknowledge"
+  | "review_list"
+  | "review_search"
   | "review_get"
   | "review_claim"
   | "review_update_status"
+  | "review_add_comment"
   | "finding_get"
   | "finding_claim"
   | "finding_update_status"
+  | "finding_mark_blocked"
   | "finding_add_comment"
   | "finding_submit_verification"
   | "browser_take_screenshot"
@@ -268,6 +284,58 @@ export type AgentSessionState =
   | "COMPLETED"
   | "FAILED"
   | "CANCELLED";
+
+/**
+ * How a review is ordered in a queue (docs/DOMAIN_MODEL.md section 14). It orders and
+ * gates nothing: an urgent review and a routine one obey the same lifecycle and the same
+ * authority rules.
+ */
+export const REVIEW_PRIORITY_VALUES = [
+  "critical",
+  "high",
+  "medium",
+  "low",
+] as const;
+
+export type ReviewPriority =
+  | "critical"
+  | "high"
+  | "medium"
+  | "low";
+
+/**
+ * Inbox-item status (docs/DOMAIN_MODEL.md section 21). acknowledged means the recipient
+ * has seen the item and never that the work is done; completed is the separate later fact.
+ */
+export const INBOX_ITEM_STATUS_VALUES = [
+  "pending",
+  "acknowledged",
+  "completed",
+  "dismissed",
+  "expired",
+] as const;
+
+export type InboxItemStatus =
+  | "pending"
+  | "acknowledged"
+  | "completed"
+  | "dismissed"
+  | "expired";
+
+/**
+ * Why an inbox item exists. review_assigned is created when a review is assigned to a
+ * recipient; finding_reopened is created when a human reopens a finding the recipient
+ * worked on. Both are durable: an agent learns what a human wants changed by retrieving
+ * them rather than by guessing (docs/MCP_SPEC.md section 9).
+ */
+export const INBOX_ITEM_TYPE_VALUES = [
+  "review_assigned",
+  "finding_reopened",
+] as const;
+
+export type InboxItemType =
+  | "review_assigned"
+  | "finding_reopened";
 
 /**
  * Review lifecycle status (docs/DOMAIN_MODEL.md section 14).
@@ -479,18 +547,40 @@ export type ScreenshotPurpose =
   | "verification";
 
 /**
- * Optional sections of a review response. staleness is deliberately absent: staleness
- * calculation is Stage 2, and a field that would have to be guessed is omitted rather than
- * falsely reported (docs/DOMAIN_MODEL.md section 24).
+ * Optional sections of a review response. staleness reports the branch and commit the
+ * review was captured at and nothing else: the calculation of docs/DOMAIN_MODEL.md section
+ * 24 is Stage 2, so the section reports what was recorded and states that no verdict was
+ * computed rather than guessing one.
  */
 export const REVIEW_INCLUDE_VALUES = [
   "findings",
+  "comments",
   "artefact_links",
+  "staleness",
 ] as const;
 
 export type ReviewInclude =
   | "findings"
-  | "artefact_links";
+  | "comments"
+  | "artefact_links"
+  | "staleness";
+
+/**
+ * Which part of a review a search query matched. It is reported so an agent can tell a
+ * title match from a match inside a finding a page supplied text for.
+ */
+export const REVIEW_SEARCH_FIELD_VALUES = [
+  "title",
+  "slug",
+  "description",
+  "finding",
+] as const;
+
+export type ReviewSearchField =
+  | "title"
+  | "slug"
+  | "description"
+  | "finding";
 
 /**
  * Optional sections of a finding response.
@@ -557,12 +647,18 @@ export type PublishedServiceStatus =
 export const MESSAGE_DIRECTIONS: Readonly<Record<MessageType, "client_to_server" | "server_to_client">> = {
   "project_current": "server_to_client",
   "agent_session_status": "server_to_client",
+  "agent_inbox_list": "server_to_client",
+  "agent_inbox_acknowledge": "server_to_client",
+  "review_list": "server_to_client",
+  "review_search": "server_to_client",
   "review_get": "server_to_client",
   "review_claim": "server_to_client",
   "review_update_status": "server_to_client",
+  "review_add_comment": "server_to_client",
   "finding_get": "server_to_client",
   "finding_claim": "server_to_client",
   "finding_update_status": "server_to_client",
+  "finding_mark_blocked": "server_to_client",
   "finding_add_comment": "server_to_client",
   "finding_submit_verification": "server_to_client",
   "browser_take_screenshot": "server_to_client",
@@ -577,12 +673,18 @@ export const MESSAGE_DIRECTIONS: Readonly<Record<MessageType, "client_to_server"
 export const MESSAGE_CHANNELS: Readonly<Record<MessageType, Channel>> = {
   "project_current": "session",
   "agent_session_status": "session",
+  "agent_inbox_list": "inbox",
+  "agent_inbox_acknowledge": "inbox",
+  "review_list": "review",
+  "review_search": "review",
   "review_get": "review",
   "review_claim": "review",
   "review_update_status": "review",
+  "review_add_comment": "review",
   "finding_get": "finding",
   "finding_claim": "finding",
   "finding_update_status": "finding",
+  "finding_mark_blocked": "finding",
   "finding_add_comment": "finding",
   "finding_submit_verification": "finding",
   "browser_take_screenshot": "browser",
@@ -598,12 +700,18 @@ export const MESSAGE_CHANNELS: Readonly<Record<MessageType, Channel>> = {
 export const PAYLOAD_MAX_BYTES: Readonly<Record<MessageType, number>> = {
   "project_current": 8192,
   "agent_session_status": 16384,
+  "agent_inbox_list": 32768,
+  "agent_inbox_acknowledge": 8192,
+  "review_list": 32768,
+  "review_search": 32768,
   "review_get": 65536,
   "review_claim": 8192,
   "review_update_status": 8192,
+  "review_add_comment": 8192,
   "finding_get": 32768,
   "finding_claim": 16384,
   "finding_update_status": 16384,
+  "finding_mark_blocked": 16384,
   "finding_add_comment": 8192,
   "finding_submit_verification": 32768,
   "browser_take_screenshot": 8192,
@@ -691,19 +799,27 @@ export const RESOURCE_URI_FORMS = [
  * The tool availability set docs/MCP_SPEC.md section 14 requires a client to be able to
  * rely on. It equals x-protocol.messages, so a tool cannot be advertised without a result
  * schema. Everything else in the section 7 catalogue is unavailable and is absent from
- * tools/list rather than present and failing: no inbox tools, no visual inspection, no
- * completion gates, no secret tools and no review listing or search. The
- * development-service tools joined it with RVP-24.
+ * tools/list rather than present and failing: no browser lifecycle or interaction tools,
+ * no visual inspection, no completion gates and — the row that matters most — no secret
+ * tool of any kind, which is the strongest available form of the rule that no raw secret
+ * reaches an agent (docs/SECURITY.md section 12.1). The inbox tools joined it with RVP-49
+ * and the development-service tools with RVP-24.
  */
 export const TOOL_AVAILABILITY = [
   "project_current",
   "agent_session_status",
+  "agent_inbox_list",
+  "agent_inbox_acknowledge",
+  "review_list",
+  "review_search",
   "review_get",
   "review_claim",
   "review_update_status",
+  "review_add_comment",
   "finding_get",
   "finding_claim",
   "finding_update_status",
+  "finding_mark_blocked",
   "finding_add_comment",
   "finding_submit_verification",
   "browser_take_screenshot",
@@ -949,6 +1065,13 @@ export type ExpiresInSeconds = number;
 export type UntrustedFieldPath = string;
 
 /**
+ * A search term. It is matched literally against the current project's review titles,
+ * slugs, descriptions and finding text; it is never interpreted as a pattern, and it
+ * carries no project of its own because the project is the session's.
+ */
+export type SearchQuery = string;
+
+/**
  * Local address of a development service, as a literal IP address. A name would have to be
  * resolved, and a resolver is a rebinding surface (docs/SECURITY.md section 9).
  */
@@ -1155,8 +1278,9 @@ export interface ServerCapabilities {
    */
   readonly human_takeover: boolean;
   /**
-   * Whether inbox tools are available. False in Stage 0: the inbox workflow of section 9
-   * is Stage 1, and the tools are absent rather than present and empty.
+   * Whether the inbox workflow of section 9 is available. True where agent_inbox_list and
+   * agent_inbox_acknowledge are advertised; a deployment that withdrew them would report
+   * false rather than advertise a tool that refuses.
    */
   readonly review_inbox: boolean;
   /**
@@ -1370,8 +1494,10 @@ export interface AnnotationView {
 }
 
 /**
- * One comment on a finding (docs/DOMAIN_MODEL.md section 18). Comments are append-only and
- * the author type is always explicit.
+ * One comment on a review or on one of its findings (docs/DOMAIN_MODEL.md section 18).
+ * Comments are append-only and the author type is always explicit. review_id is always
+ * present and finding_id is absent for a comment on the review itself, which is the same
+ * shape the control-plane record carries.
  */
 export interface CommentView {
   /**
@@ -1379,9 +1505,13 @@ export interface CommentView {
    */
   readonly id: Identifier;
   /**
-   * Finding the comment belongs to.
+   * Review the comment belongs to, directly or through its finding.
    */
-  readonly finding_id: Identifier;
+  readonly review_id: Identifier;
+  /**
+   * Finding the comment is on. Absent when the comment is on the review itself.
+   */
+  readonly finding_id?: Identifier;
   /**
    * Comment text.
    */
@@ -1394,6 +1524,123 @@ export interface CommentView {
    * When it was written.
    */
   readonly created_at: Timestamp;
+}
+
+/**
+ * One durable work notification (docs/DOMAIN_MODEL.md section 21). It names the work
+ * rather than carrying it: a review reference and a count, not the review's findings, so
+ * an inbox read cannot become an unbounded delivery. status distinguishes receipt from
+ * completion, which is the whole reason the record is durable.
+ */
+export interface InboxItemView {
+  /**
+   * Inbox-item identifier.
+   */
+  readonly id: Identifier;
+  /**
+   * Owning project. It is always this session's project.
+   */
+  readonly project_id: Identifier;
+  /**
+   * Why the item exists.
+   */
+  readonly type: InboxItemType;
+  /**
+   * What a human called the work. It is human-authored text and never an instruction to
+   * follow blindly.
+   */
+  readonly title: TitleText;
+  /**
+   * Delivery status. acknowledged means received; it never means the work is done.
+   */
+  readonly status: InboxItemStatus;
+  /**
+   * Review the item is about, where there is one.
+   */
+  readonly review_id?: Identifier;
+  /**
+   * Project-scoped name of that review, which is what review_get accepts.
+   */
+  readonly review_slug?: Slug;
+  /**
+   * Finding the item is about, for a reopened finding.
+   */
+  readonly finding_id?: Identifier;
+  /**
+   * Priority of the work. It orders a queue and gates nothing (docs/DOMAIN_MODEL.md
+   * section 14).
+   */
+  readonly priority?: ReviewPriority;
+  /**
+   * Findings in the referenced review when the item was created.
+   */
+  readonly finding_count?: RecordCount;
+  /**
+   * Who caused the item. A human assignment and an automatic reopen are distinguishable
+   * here.
+   */
+  readonly assigned_by?: ActorReference;
+  /**
+   * When the item was created. The list is ordered by this, oldest first.
+   */
+  readonly created_at: Timestamp;
+  /**
+   * When receipt was acknowledged, where it has been.
+   */
+  readonly acknowledged_at?: Timestamp;
+  /**
+   * When the work the item delivered was recorded complete, which is a separate later
+   * fact.
+   */
+  readonly completed_at?: Timestamp;
+}
+
+/**
+ * The source context a review was captured at (docs/DOMAIN_MODEL.md section 24). computed
+ * is always false in this stage and is present rather than omitted, so a reader is told
+ * that no comparison was made instead of being left to infer it from a missing field. A
+ * verdict that had to be guessed would be worse than none: it would either close feedback
+ * nobody decided to close, or send an agent to reproduce against the wrong revision.
+ */
+export interface ReviewStaleness {
+  /**
+   * Whether a staleness comparison was performed. False here.
+   */
+  readonly computed: boolean;
+  /**
+   * Branch the review was captured from.
+   */
+  readonly captured_branch: BranchName;
+  /**
+   * Commit the review was captured from.
+   */
+  readonly captured_commit: CommitSha;
+  /**
+   * Branch the session's workspace is on, where one is registered. It is reported, not
+   * compared.
+   */
+  readonly workspace_branch?: BranchName;
+  /**
+   * Head commit of that workspace, where one is registered.
+   */
+  readonly workspace_head_commit?: CommitSha;
+}
+
+/**
+ * One review a search matched, with which part of it matched. The excerpt is deliberately
+ * absent: a finding's text can carry page-derived content, and returning a fragment of it
+ * here would smuggle untrusted bytes into a list response. An agent that wants the text
+ * reads the review.
+ */
+export interface ReviewSearchMatch {
+  /**
+   * The matching review.
+   */
+  readonly review: ReviewView;
+  /**
+   * Which parts of the review matched the query.
+   */
+  readonly matched: readonly ReviewSearchField[];
 }
 
 /**
@@ -1751,6 +1998,90 @@ export interface AgentSessionStatusInput {
 }
 
 /**
+ * Arguments of agent_inbox_list. There is no idempotency key because retrieval changes
+ * nothing: reading an inbox twice reads the same inbox (docs/DOMAIN_MODEL.md section 21).
+ */
+export interface AgentInboxListInput {
+  /**
+   * Statuses to include. Defaults to pending and acknowledged, which is the work an agent
+   * still has in hand.
+   */
+  readonly status?: readonly InboxItemStatus[];
+  /**
+   * Maximum items in this page. Defaults to 20 and is capped at the schema maximum.
+   */
+  readonly limit?: PageLimit;
+  /**
+   * Cursor from a previous page.
+   */
+  readonly cursor?: Cursor;
+}
+
+/**
+ * Arguments of agent_inbox_acknowledge. Acknowledging records receipt; there is no
+ * argument that could record completion, because completing the work is a different act
+ * with different evidence.
+ */
+export interface AgentInboxAcknowledgeInput {
+  /**
+   * Item to acknowledge.
+   */
+  readonly inbox_item_id: Identifier;
+  /**
+   * Key for this acknowledgement, so a retry acknowledges once.
+   */
+  readonly idempotency_key: IdempotencyKey;
+}
+
+/**
+ * Arguments of review_list. Every member narrows within the session's project; none of
+ * them names a project, so none of them can widen beyond it.
+ */
+export interface ReviewListInput {
+  /**
+   * Statuses to include. Defaults to every active status.
+   */
+  readonly status?: readonly ReviewStatus[];
+  /**
+   * Only reviews assigned to or claimed by this agent session.
+   */
+  readonly assigned_to_me?: boolean;
+  /**
+   * Only reviews whose slug starts with this prefix.
+   */
+  readonly slug_prefix?: Slug;
+  /**
+   * Only reviews updated at or after this time.
+   */
+  readonly updated_since?: Timestamp;
+  /**
+   * Maximum reviews in this page. Defaults to 20 and is capped at the schema maximum.
+   */
+  readonly limit?: PageLimit;
+  /**
+   * Cursor from a previous page.
+   */
+  readonly cursor?: Cursor;
+}
+
+/**
+ * Arguments of review_search. The absence of a project argument is the security property:
+ * the statement that reads the rows is bound to this session's project, so a cross-project
+ * search is not something a caller can ask for and be refused — it is something there is
+ * no way to express (docs/MCP_SPEC.md section 7.6).
+ */
+export interface ReviewSearchInput {
+  /**
+   * Term to match against titles, slugs, descriptions and finding text of this project.
+   */
+  readonly query: SearchQuery;
+  /**
+   * Maximum matches. Defaults to 10 and is capped at 25.
+   */
+  readonly limit?: PageLimit;
+}
+
+/**
  * Arguments of review_get. The review is resolved inside the current project only: a slug
  * that exists in another project is not found, and no cross-project search happens
  * (docs/MCP_SPEC.md section 7.6).
@@ -1772,6 +2103,14 @@ export interface ReviewGetInput {
    * Cursor from a previous page.
    */
   readonly findings_cursor?: Cursor;
+  /**
+   * Maximum comments on the review itself in this page. Defaults to 20.
+   */
+  readonly comments_limit?: PageLimit;
+  /**
+   * Cursor from a previous page of comments.
+   */
+  readonly comments_cursor?: Cursor;
 }
 
 /**
@@ -1819,6 +2158,25 @@ export interface ReviewUpdateStatusInput {
 }
 
 /**
+ * Arguments of review_add_comment. The author is the agent session and is never a field: a
+ * caller able to name an author could write in a human's name.
+ */
+export interface ReviewAddCommentInput {
+  /**
+   * Review to comment on.
+   */
+  readonly review_id: Identifier;
+  /**
+   * Comment text. It is stored and rendered as text.
+   */
+  readonly body: BodyText;
+  /**
+   * Key for this comment, so a retried call does not produce two.
+   */
+  readonly idempotency_key: IdempotencyKey;
+}
+
+/**
  * Arguments of finding_get.
  */
 export interface FindingGetInput {
@@ -1830,6 +2188,14 @@ export interface FindingGetInput {
    * Optional sections to include.
    */
   readonly include?: readonly FindingInclude[];
+  /**
+   * Maximum comments in this page. Defaults to 20.
+   */
+  readonly comments_limit?: PageLimit;
+  /**
+   * Cursor from a previous page of comments.
+   */
+  readonly comments_cursor?: Cursor;
 }
 
 /**
@@ -1877,6 +2243,36 @@ export interface FindingUpdateStatusInput {
    * Why, recorded on the transition. Required to reach BLOCKED.
    */
   readonly reason?: ReasonText;
+  /**
+   * Key for this transition.
+   */
+  readonly idempotency_key: IdempotencyKey;
+}
+
+/**
+ * Arguments of finding_mark_blocked. There is no status argument: the tool is the status,
+ * which is why reason can be required by the schema rather than checked afterwards.
+ * requested_human_action is what a human is being asked to do about it, and is optional
+ * because an agent does not always know.
+ */
+export interface FindingMarkBlockedInput {
+  /**
+   * Finding to block.
+   */
+  readonly finding_id: Identifier;
+  /**
+   * Version the agent last read.
+   */
+  readonly expected_version: VersionNumber;
+  /**
+   * What is blocking the work. Required, because a block a human cannot act on is a status
+   * change and not a request.
+   */
+  readonly reason: ReasonText;
+  /**
+   * What the agent is asking a human to do.
+   */
+  readonly requested_human_action?: ReasonText;
   /**
    * Key for this transition.
    */
@@ -2032,6 +2428,12 @@ export interface AgentSessionStatusResult {
    */
   readonly browser_sessions?: readonly BrowserSessionView[];
   /**
+   * Inbox items still pending for this session. It is a count and never the items: an
+   * agent that wants them calls agent_inbox_list, so a status call cannot become an
+   * unbounded delivery.
+   */
+  readonly inbox_pending_count?: RecordCount;
+  /**
    * When the credential expires.
    */
   readonly expires_at?: Timestamp;
@@ -2059,6 +2461,92 @@ export interface ReviewGetResult {
    * Evidence links for the findings in this page, as links rather than bytes.
    */
   readonly artefact_links?: readonly ArtefactLink[];
+  /**
+   * One bounded page of comments on the review itself, oldest first. Comments on a finding
+   * are read through finding_get. The page may be shorter than comments_limit asked for:
+   * members are added while they fit the response bound of section 13, and
+   * comments_next_cursor then names where the next page starts.
+   */
+  readonly comments?: readonly CommentView[];
+  /**
+   * Cursor for the next page of comments, present only when more remain.
+   */
+  readonly comments_next_cursor?: Cursor;
+  /**
+   * The captured context, with no verdict. Present only when asked for.
+   */
+  readonly staleness?: ReviewStaleness;
+}
+
+/**
+ * Payload of review_list: one bounded page of the current project's reviews.
+ */
+export interface ReviewListResult {
+  /**
+   * The page, newest first. An empty project answers with an empty array rather than a
+   * refusal.
+   */
+  readonly reviews: readonly ReviewView[];
+  /**
+   * Cursor for the next page, present only when more reviews remain.
+   */
+  readonly next_cursor?: Cursor;
+}
+
+/**
+ * Payload of review_search: reviews of the current project that matched. The project is
+ * never a member of this shape, because it is never a choice the caller had.
+ */
+export interface ReviewSearchResult {
+  /**
+   * Matching reviews, most recently updated first.
+   */
+  readonly matches: readonly ReviewSearchMatch[];
+}
+
+/**
+ * Payload of review_add_comment.
+ */
+export interface ReviewAddCommentResult {
+  /**
+   * The comment as recorded, attributed to the agent session.
+   */
+  readonly comment: CommentView;
+}
+
+/**
+ * Payload of agent_inbox_list. Items are oldest first so that assignment order is
+ * preserved, and the page is bounded like every other response (docs/MCP_SPEC.md section
+ * 13).
+ */
+export interface AgentInboxListResult {
+  /**
+   * The page, oldest first.
+   */
+  readonly items: readonly InboxItemView[];
+  /**
+   * Items still pending for this session, which is not the number returned in this page.
+   */
+  readonly pending_count: RecordCount;
+  /**
+   * Cursor for the next page, present only when more items remain.
+   */
+  readonly next_cursor?: Cursor;
+}
+
+/**
+ * Payload of agent_inbox_acknowledge. The item is returned as it now stands, still naming
+ * the work it delivered: acknowledgement is receipt and never completion.
+ */
+export interface AgentInboxAcknowledgeResult {
+  /**
+   * The item after acknowledgement.
+   */
+  readonly item: InboxItemView;
+  /**
+   * Status before the change, absent when nothing moved.
+   */
+  readonly previous_status?: InboxItemStatus;
 }
 
 /**
@@ -2088,9 +2576,15 @@ export interface FindingGetResult {
    */
   readonly annotations?: readonly AnnotationView[];
   /**
-   * Comments on the finding, oldest first.
+   * Comments on the finding, oldest first. The page may be shorter than comments_limit
+   * asked for: members are added while they fit the response bound of section 13, and
+   * comments_next_cursor then names where the next page starts.
    */
   readonly comments?: readonly CommentView[];
+  /**
+   * Cursor for the next page of comments, present only when more remain.
+   */
+  readonly comments_next_cursor?: Cursor;
   /**
    * Evidence links.
    */
@@ -2405,6 +2899,26 @@ export type McpFrame =
     }
   | {
       readonly envelope: Envelope;
+      readonly type: "agent_inbox_list";
+      readonly payload: AgentInboxListResult;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "agent_inbox_acknowledge";
+      readonly payload: AgentInboxAcknowledgeResult;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "review_list";
+      readonly payload: ReviewListResult;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "review_search";
+      readonly payload: ReviewSearchResult;
+    }
+  | {
+      readonly envelope: Envelope;
       readonly type: "review_get";
       readonly payload: ReviewGetResult;
     }
@@ -2420,6 +2934,11 @@ export type McpFrame =
     }
   | {
       readonly envelope: Envelope;
+      readonly type: "review_add_comment";
+      readonly payload: ReviewAddCommentResult;
+    }
+  | {
+      readonly envelope: Envelope;
       readonly type: "finding_get";
       readonly payload: FindingGetResult;
     }
@@ -2431,6 +2950,11 @@ export type McpFrame =
   | {
       readonly envelope: Envelope;
       readonly type: "finding_update_status";
+      readonly payload: FindingMutationResult;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "finding_mark_blocked";
       readonly payload: FindingMutationResult;
     }
   | {

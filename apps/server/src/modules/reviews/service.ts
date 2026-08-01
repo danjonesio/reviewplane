@@ -44,6 +44,7 @@ import { ApiError, notFound } from "../../errors.ts";
 import { appendEvent, type EventActor } from "../../events/append.ts";
 import { newId } from "../../ids.ts";
 import { enqueueJob } from "../../jobs/runner.ts";
+import { InboxStore } from "../agents/inbox.ts";
 import type { ArtefactService } from "../artefacts/service.ts";
 import {
   ACTIVE_REVIEW_STATUSES,
@@ -138,6 +139,23 @@ export interface RepositoryPage<T> {
 }
 
 /** The position after the last row a caller has seen. */
+/** Which part of a review a search matched (`docs/MCP_SPEC.md` section 7.6). */
+export type ReviewSearchField = "title" | "slug" | "description" | "finding";
+
+/**
+ * Narrowing applied to a review listing.
+ *
+ * Every member narrows within the scope the caller already holds. None of them
+ * names a project or an organisation, so no filter can widen a listing beyond
+ * the scope its caller was authenticated for.
+ */
+export interface ReviewListFilter {
+  readonly statuses?: readonly ReviewStatus[];
+  readonly assignedAgentSessionId?: string;
+  readonly slugPrefix?: string;
+  readonly updatedSince?: string;
+}
+
 export interface PageCursor {
   readonly limit: number;
   readonly after: { readonly sortKey: string; readonly id: string } | null;
@@ -566,13 +584,22 @@ export class ReviewService {
    * appears at the front rather than shifting the page boundaries and losing a
    * row, which is what an offset would do.
    */
-  async listReviewsPage(scope: Scope, page: PageCursor): Promise<RepositoryPage<Review>> {
+  async listReviewsPage(
+    scope: Scope,
+    page: PageCursor,
+    filter: ReviewListFilter = {},
+  ): Promise<RepositoryPage<Review>> {
     const rows = await this.#pool.query(
       `SELECT r.*, (SELECT count(*) FROM findings f WHERE f.review_id = r.id) AS finding_count
          FROM reviews r
         WHERE r.organisation_id = $1 AND r.project_id = $2
-          AND ($3::timestamptz IS NULL OR (r.created_at, r.id) < ($3::timestamptz, $4::text))
-        ORDER BY r.created_at DESC, r.id DESC
+          AND ($3::timestamptz IS NULL
+               OR (date_trunc('milliseconds', r.created_at), r.id) < ($3::timestamptz, $4::text))
+          AND ($6::text[] IS NULL OR r.status = ANY($6))
+          AND ($7::text IS NULL OR r.assigned_agent_session_id = $7)
+          AND ($8::text IS NULL OR r.slug LIKE $8 || '%')
+          AND ($9::timestamptz IS NULL OR r.updated_at >= $9::timestamptz)
+        ORDER BY date_trunc('milliseconds', r.created_at) DESC, r.id DESC
         LIMIT $5`,
       [
         scope.organisationId,
@@ -580,6 +607,10 @@ export class ReviewService {
         page.after?.sortKey ?? null,
         page.after?.id ?? null,
         page.limit + 1,
+        filter.statuses === undefined ? null : [...filter.statuses],
+        filter.assignedAgentSessionId ?? null,
+        filter.slugPrefix ?? null,
+        filter.updatedSince ?? null,
       ],
     );
     const all = rows.rows.map((row) =>
@@ -597,6 +628,75 @@ export class ReviewService {
           ? { sortKey: last.created_at, id: last.id }
           : null,
     };
+  }
+
+  /**
+   * Reviews of **one project** whose title, slug, description or finding text
+   * contains a term (`docs/MCP_SPEC.md` section 7.6, `docs/UX_FLOWS.md`
+   * section 16).
+   *
+   * The organisation and the project are the first two terms of the `WHERE`
+   * clause and are not derived from anything the caller sent. There is no
+   * parameter that could widen the search, which is the form
+   * "`review_search` MUST NOT perform cross-project search" has to take: a
+   * filter applied after the rows are read is one edit away from being
+   * forgotten, and a search is precisely the operation whose whole job is to
+   * find rows the caller could not name.
+   *
+   * The term is matched literally. `%` and `_` in the query are escaped, so a
+   * caller cannot turn a search into a scan of everything by sending one
+   * character — which would be an unbounded response as well as a surprise.
+   *
+   * The finding text is matched but never returned: an excerpt would carry
+   * page-derived bytes into a list response, and `review_search` answers with
+   * which part matched rather than with the matching text.
+   */
+  async searchReviews(
+    scope: Scope,
+    query: string,
+    limit = 10,
+  ): Promise<readonly { review: Review; matched: readonly ReviewSearchField[] }[]> {
+    const pattern = `%${query.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
+    const rows = await this.#pool.query(
+      `SELECT r.*,
+              (SELECT count(*) FROM findings f WHERE f.review_id = r.id) AS finding_count,
+              (r.title ILIKE $3) AS matched_title,
+              (r.slug ILIKE $3) AS matched_slug,
+              (r.description IS NOT NULL AND r.description ILIKE $3) AS matched_description,
+              EXISTS (
+                SELECT 1 FROM findings f
+                 WHERE f.review_id = r.id
+                   AND (f.title ILIKE $3 OR f.description ILIKE $3)
+              ) AS matched_finding
+         FROM reviews r
+        WHERE r.organisation_id = $1 AND r.project_id = $2
+          AND (
+            r.title ILIKE $3 OR r.slug ILIKE $3 OR r.description ILIKE $3
+            OR EXISTS (
+              SELECT 1 FROM findings f
+               WHERE f.review_id = r.id
+                 AND (f.title ILIKE $3 OR f.description ILIKE $3)
+            )
+          )
+        ORDER BY r.updated_at DESC, r.id DESC
+        LIMIT $4`,
+      [scope.organisationId, scope.projectId, pattern, Math.min(Math.max(limit, 1), 25)],
+    );
+    return rows.rows.map((raw) => {
+      const row = raw as Record<string, unknown>;
+      const matched: ReviewSearchField[] = [];
+      if (row["matched_title"] === true) matched.push("title");
+      if (row["matched_slug"] === true) matched.push("slug");
+      if (row["matched_description"] === true) matched.push("description");
+      if (row["matched_finding"] === true) matched.push("finding");
+      return {
+        review: toReview(row, Number(row["finding_count"])),
+        // The predicate above guarantees at least one match, but a row that
+        // somehow reported none would violate the result schema's minItems
+        // rather than be quietly returned with an empty list.
+        matched: matched.length === 0 ? (["title"] as ReviewSearchField[]) : matched,
+      };
+    });
   }
 
   async updateReview(
@@ -895,6 +995,40 @@ export class ReviewService {
             reason: "assigned",
           },
         });
+      }
+
+      // The delivery, in the same transaction as the assignment. An assignment
+      // that committed without one would be work a human believes they handed
+      // over and an agent has no way to discover (`docs/DOMAIN_MODEL.md`
+      // section 21). Assigning to nobody delivers nothing: there is no
+      // recipient to deliver to.
+      const recipient =
+        input.assignedAgentSessionId !== undefined
+          ? ({ type: "agent_session" as const, id: input.assignedAgentSessionId })
+          : input.assignedUserId !== undefined
+            ? ({ type: "human_user" as const, id: input.assignedUserId })
+            : null;
+      if (recipient !== null) {
+        const findingCount = await client.query<{ count: string }>(
+          "SELECT count(*) AS count FROM findings WHERE review_id = $1",
+          [reviewId],
+        );
+        await InboxStore.create(
+          client,
+          {
+            organisationId: scope.organisationId,
+            projectId: scope.projectId,
+            recipientType: recipient.type,
+            recipientId: recipient.id,
+            type: "review_assigned",
+            title: review.title,
+            reviewId,
+            reviewSlug: review.slug,
+            priority: review.priority ?? null,
+            findingCount: Number(findingCount.rows[0]?.count ?? 0),
+          },
+          actor,
+        );
       }
       return review;
     });
@@ -1301,6 +1435,49 @@ export class ReviewService {
             ...(input.reason === undefined ? {} : { reason: input.reason }),
           },
         });
+        // A reopen is new work for whoever holds the review, and it is
+        // delivered in the same transaction as the reopen itself
+        // (`docs/UX_FLOWS.md` section 13, `docs/DOMAIN_MODEL.md` section 21).
+        // Where nobody holds it the item is addressed to the project's agents
+        // with no recipient identifier, so the next session to look finds it
+        // rather than the work waiting for a session that never returns.
+        const review = await client.query<{
+          title: string;
+          slug: string;
+          priority: string | null;
+          assigned_user_id: string | null;
+          assigned_agent_session_id: string | null;
+        }>(
+          `SELECT title, slug, priority, assigned_user_id, assigned_agent_session_id
+             FROM reviews WHERE id = $1 AND organisation_id = $2 AND project_id = $3`,
+          [finding.review_id, scope.organisationId, scope.projectId],
+        );
+        const holder = review.rows[0];
+        if (holder !== undefined) {
+          await InboxStore.create(
+            client,
+            {
+              organisationId: scope.organisationId,
+              projectId: scope.projectId,
+              recipientType:
+                holder.assigned_user_id !== null && holder.assigned_agent_session_id === null
+                  ? "human_user"
+                  : "agent_session",
+              recipientId:
+                holder.assigned_agent_session_id ?? holder.assigned_user_id ?? null,
+              type: "finding_reopened",
+              title: finding.title,
+              reviewId: finding.review_id,
+              findingId,
+              reviewSlug: holder.slug,
+              priority: holder.priority,
+              // The title above is this finding's title, so who authored the
+              // finding decides how a response carrying it may be labelled.
+              findingSource: finding.source,
+            },
+            actor,
+          );
+        }
       }
       return finding;
       });
@@ -1500,8 +1677,9 @@ export class ReviewService {
                      WHERE a.finding_id = f.id AND a.deleted_at IS NULL) AS annotation_count
          FROM findings f
         WHERE f.review_id = $1 AND f.organisation_id = $2 AND f.project_id = $3
-          AND ($4::timestamptz IS NULL OR (f.created_at, f.id) > ($4::timestamptz, $5::text))
-        ORDER BY f.created_at, f.id
+          AND ($4::timestamptz IS NULL
+               OR (date_trunc('milliseconds', f.created_at), f.id) > ($4::timestamptz, $5::text))
+        ORDER BY date_trunc('milliseconds', f.created_at), f.id
         LIMIT $6`,
       [
         reviewId,
@@ -1638,6 +1816,61 @@ export class ReviewService {
       [findingId, scope.organisationId, scope.projectId, Math.min(Math.max(limit, 1), 20)],
     );
     return rows.rows.map((row) => toComment(row as Record<string, unknown>));
+  }
+
+  /**
+   * One keyset page of the current comments on a review or a finding, oldest
+   * first (`docs/API.md` section 6, `docs/MCP_SPEC.md` section 13).
+   *
+   * `listComments` and `listCommentsFor` both cap a page and neither offers a
+   * way to reach the next one, which is a bound rather than pagination: an
+   * agent handed the first twenty comments of a long discussion had no way to
+   * read the twenty-first. The cursor is `(created_at, id)` for the reason the
+   * review listing gives — it is stable under insertion, and a comment added
+   * while somebody is paging appears at the end rather than shifting the page
+   * boundaries.
+   *
+   * Superseded revisions are excluded, so the page is the current text. The
+   * history is still readable through `listCommentsFor` with
+   * `revisions: "all"`, which is where a reader judging a changed instruction
+   * goes.
+   */
+  async listCommentsPage(
+    scope: Scope,
+    target: { readonly reviewId: string; readonly findingId?: string },
+    page: { readonly limit?: number; readonly cursor?: { createdAt: string; id: string } } = {},
+  ): Promise<{ comments: readonly Comment[]; nextCursor: { createdAt: string; id: string } | null }> {
+    const limit = Math.min(Math.max(page.limit ?? 20, 1), 50);
+    const rows = await this.#pool.query(
+      `SELECT * FROM comments
+        WHERE organisation_id = $1 AND project_id = $2 AND review_id = $3
+          AND ($4::text IS NULL OR finding_id = $4)
+          AND ($4::text IS NOT NULL OR finding_id IS NULL)
+          AND superseded_at IS NULL
+          AND ($5::timestamptz IS NULL
+               OR (date_trunc('milliseconds', created_at), id) > ($5::timestamptz, $6::text))
+        ORDER BY date_trunc('milliseconds', created_at), id
+        LIMIT $7`,
+      [
+        scope.organisationId,
+        scope.projectId,
+        target.reviewId,
+        target.findingId ?? null,
+        page.cursor?.createdAt ?? null,
+        page.cursor?.id ?? null,
+        limit + 1,
+      ],
+    );
+    const all = rows.rows.map((row) => toComment(row as Record<string, unknown>));
+    const comments = all.slice(0, limit);
+    const last = comments[comments.length - 1];
+    return {
+      comments,
+      nextCursor:
+        all.length > limit && last !== undefined
+          ? { createdAt: last.created_at, id: last.id }
+          : null,
+    };
   }
 
   /**
@@ -2295,6 +2528,98 @@ export class ReviewService {
         },
         "the audit record for a refused transition could not be written",
       );
+    }
+  }
+
+  /**
+   * Records a transition a caller asked for and was refused **before this
+   * service was reached at all**.
+   *
+   * `docs/DOMAIN_MODEL.md` section 15 requires **every** refused transition to
+   * be audited, and states why in terms this method exists to satisfy: "an
+   * attempt with no record is indistinguishable from one that never happened,
+   * and the Stage 1 exit criterion is that the attempt leaves a trail".
+   *
+   * `#recordDenial` covers the refusals this service raises. It cannot cover
+   * the one that matters most. The agent-facing tool schemas do not contain
+   * `RESOLVED`, `WONT_FIX`, `DUPLICATE` or `ACCEPTED` at all (ADR-0020), so an
+   * agent asking for one is refused by the generated validator before any
+   * domain code runs — which meant the single attempt an auditor would go
+   * looking for, *did an agent try to accept a human's finding*, was precisely
+   * the one that left no trace. The structural denial is the stronger control
+   * and stays; what it cannot do is write the record, so the layer that saw the
+   * attempt hands it here.
+   *
+   * The current status is read rather than supplied, so `from` is what the row
+   * actually holds and not what a caller claimed. The read carries the scope,
+   * so an attempt against a record the caller cannot see records nothing: it
+   * is not an attempt on that record, and writing one would let a caller append
+   * to another project's audit trail by guessing identifiers.
+   *
+   * A failure to write is logged and never raised. The refusal has already
+   * happened and stands; losing its record is an operational fact rather than a
+   * reason to answer the caller differently.
+   */
+  async recordTransitionDenied(
+    scope: Scope,
+    input: {
+      readonly kind: "review" | "finding";
+      readonly id: string;
+      readonly requested: string;
+      readonly code: string;
+      readonly reason: string;
+    },
+    actor: EventActor,
+  ): Promise<boolean> {
+    try {
+      const current =
+        input.kind === "review"
+          ? await this.getReview(scope, input.id).catch(() => null)
+          : await this.getFinding(scope, input.id).catch(() => null);
+      if (current === null) return false;
+      const isReview = input.kind === "review";
+      await inTransaction(this.#pool, async (client) => {
+        await appendEvent(client, {
+          type: isReview ? "review.status_change_denied" : "finding.status_change_denied",
+          organisationId: scope.organisationId,
+          projectId: scope.projectId,
+          actor,
+          correlation: isReview
+            ? { review_id: input.id }
+            : { review_id: (current as Finding).review_id, finding_id: input.id },
+          payload: {
+            ...(isReview
+              ? { review_id: input.id }
+              : { finding_id: input.id, review_id: (current as Finding).review_id }),
+            from: current.status,
+            requested: input.requested,
+            ...(isReview ? {} : { source: (current as Finding).source }),
+            code: input.code,
+            // The refusal's own message, never the request.
+            reason: input.reason.slice(0, 500),
+          },
+        });
+      });
+      return true;
+    } catch (failure) {
+      this.#logger?.error(
+        {
+          event_type:
+            input.kind === "review"
+              ? "review.status_change_denied"
+              : "finding.status_change_denied",
+          organisation_id: scope.organisationId,
+          project_id: scope.projectId,
+          actor_type: actor.type,
+          actor_id: actor.id ?? null,
+          record_id: input.id,
+          requested: input.requested,
+          refusal_code: input.code,
+          err: failure instanceof Error ? failure.message : String(failure),
+        },
+        "the audit record for a refused transition could not be written",
+      );
+      return false;
     }
   }
 
