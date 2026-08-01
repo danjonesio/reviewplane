@@ -26,6 +26,7 @@ import {
   type BrowserCommand,
   type BrowserCommandResult,
   type BrowserFrame,
+  type ControllerIdentity,
   type SnapshotResult,
   type Viewport,
 } from "@reviewplane/protocol/browser";
@@ -76,6 +77,12 @@ export const STUB_SNAPSHOT_TEXT = [
   '  - link "Browse products" [ref=e12]',
 ].join("\n");
 
+/** One command the stub worker was asked to run, and who it arrived from. */
+export interface IssuedCommand {
+  readonly command: BrowserCommand;
+  readonly controller: ControllerIdentity;
+}
+
 export interface McpHarness {
   readonly control: BuiltApp;
   readonly mcp: BuiltMcpApp;
@@ -89,8 +96,13 @@ export interface McpHarness {
    * hostile page — one whose element names read as instructions — sets it here.
    */
   snapshotText: string;
-  /** Every command the stub worker was asked to run, in order. */
-  readonly commands: readonly BrowserCommand[];
+  /**
+   * Every command the stub worker was asked to run, in order, with the
+   * controller the control plane issued it as. The controller is recorded
+   * because it is a security property rather than plumbing: a capture must
+   * arrive as `system` and an interactive command as `agent`.
+   */
+  readonly commands: readonly IssuedCommand[];
   controlOrigin(): Promise<string>;
   mcpOrigin(): Promise<string>;
   stop(): Promise<void>;
@@ -144,7 +156,7 @@ export async function startMcpHarness(pool: Pool): Promise<McpHarness> {
     snapshotText: string;
     snapshots: number;
     viewport: Viewport;
-    commands: BrowserCommand[];
+    commands: IssuedCommand[];
   } = {
     capture: AFTER_SCREENSHOT,
     workerFailure: null,
@@ -233,7 +245,10 @@ export async function startMcpHarness(pool: Pool): Promise<McpHarness> {
     if (frame.type === "browser.command") {
       const sessionId = envelope.browser_session_id as string;
       const command = frame.payload;
-      state.commands.push(command);
+      state.commands.push({
+        command,
+        controller: envelope.controller as ControllerIdentity,
+      });
       const base = {
         command: command.command,
         sequence: envelope.sequence as number,

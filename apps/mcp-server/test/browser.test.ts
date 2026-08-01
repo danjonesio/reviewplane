@@ -387,6 +387,12 @@ test("a published service cannot yet be bound from the MCP endpoint, and says so
     assert.equal(started.envelope["ok"], false, JSON.stringify(started.envelope));
     assert.equal(errorOf(started.envelope).code, "UNSUPPORTED_CAPABILITY");
     assert.equal(errorOf(started.envelope).retryable, false);
+    // The message says which limitation this is. The domain's own wording —
+    // "this control plane cannot bind a published service" — reads to an agent
+    // as a broken deployment, and an agent that concludes that files a fault
+    // instead of working round a boundary that is deliberate.
+    assert.match(errorOf(started.envelope).message, /signing key/u);
+    assert.match(errorOf(started.envelope).message, /not a fault in the deployment/u);
 
     // And it holds no browser slot. Allocation reserves the session row before
     // it can resolve the route, so a start that fails after the reservation
@@ -507,6 +513,64 @@ test("a navigation and a snapshot reach the agent labelled untrusted_browser_con
       { name: "browser_snapshot", arguments: snapshotArgs },
       snapshotResult,
     );
+  } finally {
+    await agent.close();
+  }
+});
+
+test("a capture is issued as the system controller and never steals the lease", async () => {
+  const agent = await connected();
+  try {
+    const started = await startSession(agent);
+    const status = await call(agent.client, "agent_session_status", {});
+    const agentSessionId = dataOf(status.envelope)["agent_session_id"] as string;
+
+    await call(agent.client, "browser_snapshot", {
+      browser_session_id: started.id,
+      control_epoch: started.epoch,
+    });
+    const captured = await call(agent.client, "browser_take_screenshot", {
+      browser_session_id: started.id,
+      control_epoch: started.epoch,
+      purpose: "verification",
+      idempotency_key: key("capture"),
+    });
+    assert.equal(captured.envelope["ok"], true, JSON.stringify(captured.envelope));
+    await call(agent.client, "browser_click", {
+      browser_session_id: started.id,
+      control_epoch: started.epoch,
+      snapshot_id: "snp_stub0001",
+      ref: "e2",
+    });
+
+    // What the worker was actually told. A capture arrives as the system
+    // controller, which the authorisation matrix admits without the interactive
+    // lease; an interactive command arrives as the agent, which must hold it.
+    // Issuing a capture as the lease holder would be acting in somebody else's
+    // name for no gain.
+    assert.deepEqual(
+      harness.commands.map((issued) => [issued.command.command, issued.controller.type]),
+      [
+        ["snapshot", "system"],
+        ["take_screenshot", "system"],
+        ["click", "agent"],
+      ],
+    );
+    // The system identity is derived from the agent session, so the audit trail
+    // still names who captured, and it is never taken from an argument.
+    assert.equal(harness.commands[0]?.controller.id, `sys_${agentSessionId}`);
+    assert.deepEqual(harness.commands[2]?.controller, { type: "agent", id: agentSessionId });
+
+    // And the lease is exactly where it was: same holder, same epoch
+    // (`docs/TESTING.md` section 5).
+    const after = await call(agent.client, "browser_session_status", {
+      browser_session_id: started.id,
+    });
+    assert.deepEqual(sessionOf(after.envelope)["current_controller"], {
+      type: "agent",
+      id: agentSessionId,
+    });
+    assert.equal(sessionOf(after.envelope)["control_epoch"], started.epoch);
   } finally {
     await agent.close();
   }
@@ -692,8 +756,8 @@ test("another project's browser session is refused exactly as an unknown one is"
       );
     }
 
-    // And nothing was written to the other project's timeline by the attempt:
-    // the actor has no authority there, so it may not add rows to a stream it
+    // Nothing was written to the other project's timeline by the attempt: the
+    // actor has no authority there, so it may not add rows to a stream it
     // cannot read.
     const foreignEvents = await postgres.pool.query(
       `SELECT 1 FROM events
@@ -702,6 +766,32 @@ test("another project's browser session is refused exactly as an unknown one is"
       [other.projectId, other.browserSessionId],
     );
     assert.equal(foreignEvents.rowCount, 0);
+
+    // It was written to the **actor's** project instead, because a refusal
+    // nobody recorded is indistinguishable from an attempt nobody made. Only
+    // the two command tools produce one: `browser_session_status` has no domain
+    // command behind it to refuse, and an unknown identifier names no session
+    // to correlate a record with.
+    const audited = await postgres.pool.query<{ payload: Record<string, unknown> }>(
+      `SELECT payload FROM events
+        WHERE project_id = $1 AND type = 'browser.command_rejected'
+        ORDER BY sequence`,
+      [agent.seeded.projectId],
+    );
+    assert.equal(audited.rowCount, 2, "the cross-project attempts were not recorded");
+    for (const row of audited.rows) {
+      assert.equal(row.payload["reason"], "project_mismatch");
+      assert.equal(row.payload["cross_project"], true);
+      assert.equal(row.payload["reason_code"], "RESOURCE_NOT_FOUND");
+      // The record says nothing about the session it named. The actor is not
+      // entitled to the other project's state, so neither is its audit trail.
+      assert.equal(row.payload["current_epoch"], undefined);
+      assert.equal(row.payload["session_status"], undefined);
+    }
+    assert.deepEqual(
+      audited.rows.map((row) => row.payload["command"]),
+      ["navigate", "snapshot"],
+    );
   } finally {
     await agent.close();
   }
@@ -904,7 +994,7 @@ test("a bounded wait is bounded, and a command timeout is a stable code", async 
       selector: "#checkout-total",
     });
     assert.equal(waited.envelope["ok"], true, JSON.stringify(waited.envelope));
-    const sent = harness.commands[harness.commands.length - 1];
+    const sent = harness.commands[harness.commands.length - 1]?.command;
     assert.equal(sent?.command, "wait");
     // Every condition carries a timeout; there is no unbounded sleep.
     assert.ok((sent?.timeout_ms ?? 0) > 0 && (sent?.timeout_ms ?? 0) <= 120000);
