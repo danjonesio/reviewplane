@@ -818,6 +818,18 @@ worker that crashed after uploading and before completing resumes the artefact
 it already created rather than starting a second one; a worker that crashed
 before uploading retries the whole flow and gets the first intent back.
 
+"Keep finding verification incomplete" applies at submission as well as at
+upload, and applies to a store that has gone away *since* the upload succeeded.
+The artefact rows say the bytes were verified when they arrived; they do not say
+the store can be reached now. `finding_submit_verification` therefore proves the
+store answers a round trip before it records anything, and refuses with
+`ARTEFACT_STORE_UNAVAILABLE` when it does not: no verification row, no event,
+and the finding keeps the status it had. Recording the claim optimistically
+would produce a completion claim whose before-and-after pair nobody can open,
+which is the one thing the record exists to make possible. The same submission
+succeeds unchanged once the store returns, and the refusal names no path or
+bucket.
+
 ### Database unavailable
 
 - Reject state-changing actions safely
