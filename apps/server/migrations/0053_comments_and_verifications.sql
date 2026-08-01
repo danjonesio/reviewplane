@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Comments and verifications (docs/DOMAIN_MODEL.md sections 18 and 19).
 --
 -- A verification is "a submitted claim with evidence that a finding is

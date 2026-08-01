@@ -118,6 +118,38 @@ export interface StorageStatus {
   readonly detail: string | null;
 }
 
+/**
+ * When this installation last recorded a backup
+ * (`docs/OPERATIONS.md` section 11: "backup status visible in UI or status
+ * command").
+ *
+ * The source is the `backup.created` audit event, not a file on disk. A status
+ * command cannot see the operator's backup volume — the whole point of an
+ * archive is that it is copied somewhere else — and what it can answer
+ * truthfully is whether a backup was taken *from this installation* and what it
+ * carried. An operator whose archives are produced by their own tooling
+ * therefore sees "never recorded", which is the honest answer to "can this
+ * installation prove it is backed up".
+ */
+export interface BackupStatus {
+  /** `false` when no backup has ever been recorded, which is not a failure. */
+  readonly recorded: boolean;
+  readonly last_backup_at: string | null;
+  readonly age_hours: number | null;
+  readonly mode: string | null;
+  /**
+   * Reviews this installation holds.
+   *
+   * It is reported beside the backup because it is what makes the absence of
+   * one mean something. A fresh installation has no reviews and nothing to
+   * lose; an installation with reviews and no recorded backup is one review
+   * away from losing its system of record, and only the second is worth a
+   * warning ("zero is not a failure", section 3 of `docs/OPERATIONS.md`).
+   */
+  readonly reviews: number | null;
+  readonly detail: string | null;
+}
+
 export interface CertificateStatus {
   /** `false` when no endpoint is configured, which is not a failure. */
   readonly checked: boolean;
@@ -159,6 +191,7 @@ export interface StatusReport {
   readonly sessions: SessionStatus;
   readonly queue: QueueStatus;
   readonly storage: StorageStatus;
+  readonly backup: BackupStatus;
   readonly certificate: CertificateStatus;
   readonly warnings: readonly string[];
 }
@@ -192,7 +225,7 @@ export async function gatherStatus(options: StatusOptions): Promise<StatusReport
   const now = options.now ?? new Date();
 
   const database = await databaseStatus(options.pool);
-  const [artefactStore, connectors, browserCapacity, sessions, queue, storage, certificate] =
+  const [artefactStore, connectors, browserCapacity, sessions, queue, storage, backup, certificate] =
     await Promise.all([
       artefactStoreStatus(options.artefactPath, options.artefactProbeTimeoutMs),
       connectorStatus(options.pool),
@@ -200,6 +233,7 @@ export async function gatherStatus(options: StatusOptions): Promise<StatusReport
       sessionStatus(options.pool),
       queueStatus(options.pool),
       storageStatus(options.pool, options.artefactPath),
+      backupStatus(options.pool, now),
       certificateStatus(options.tlsEndpoint, options.tlsServerName, now),
     ]);
 
@@ -230,6 +264,24 @@ export async function gatherStatus(options: StatusOptions): Promise<StatusReport
       "a registered browser worker reports the Chromium sandbox disabled; this is a high-risk configuration (docs/SECURITY.md section 10)",
     );
   }
+  // A fresh installation has nothing to lose, and warning it about a backup it
+  // does not need yet would train an operator to ignore the command — the same
+  // reason zero connectors is not a failure. An installation that holds reviews
+  // and has never recorded a backup is a different fact: the review is the
+  // system of record (ADR-0004), and losing it is what a backup exists to
+  // prevent. It is a warning rather than a failure because the schedule is the
+  // operator's (`docs/OPERATIONS.md` section 11).
+  if (
+    database.reachable &&
+    database.pending_migrations === 0 &&
+    backup.detail === null &&
+    !backup.recorded &&
+    (backup.reviews ?? 0) > 0
+  ) {
+    warnings.push(
+      `this installation holds ${String(backup.reviews)} review(s) and has never recorded a backup; run reviewplane backup (docs/OPERATIONS.md section 11)`,
+    );
+  }
   if (certificate.warning !== null) warnings.push(certificate.warning);
 
   // Only the three things a deployment cannot work without are failures.
@@ -254,9 +306,63 @@ export async function gatherStatus(options: StatusOptions): Promise<StatusReport
     sessions,
     queue,
     storage,
+    backup,
     certificate,
     warnings,
   };
+}
+
+/**
+ * The age of the newest `backup.created` event.
+ *
+ * It is read like the artefact figures and for the same reason: against a
+ * database nobody has migrated the events table does not exist, and the
+ * operator needs to be told to run `reviewplane migrate` rather than shown a
+ * raw error from PostgreSQL. The index this uses is the one the events table
+ * has carried since `0001`, on `(type, recorded_at desc)`.
+ */
+async function backupStatus(pool: Pool, now: Date): Promise<BackupStatus> {
+  const absent = (detail: string | null, reviews: number | null): BackupStatus => ({
+    recorded: false,
+    last_backup_at: null,
+    age_hours: null,
+    mode: null,
+    reviews,
+    detail,
+  });
+  try {
+    const present = await pool.query<{ events: boolean; reviews: boolean }>(
+      `select to_regclass('events') is not null as events,
+              to_regclass('reviews') is not null as reviews`,
+    );
+    if (present.rows[0]?.events !== true) return absent("the schema has no event table yet", null);
+    const reviews =
+      present.rows[0]?.reviews === true
+        ? Number(
+            (await pool.query<{ count: string }>("select count(*)::text as count from reviews"))
+              .rows[0]?.count ?? "0",
+          )
+        : 0;
+    const { rows } = await pool.query<{ recorded_at: Date; mode: string | null }>(
+      `select recorded_at, payload ->> 'mode' as mode
+         from events
+        where type = 'backup.created'
+        order by recorded_at desc
+        limit 1`,
+    );
+    const row = rows[0];
+    if (row === undefined) return absent(null, reviews);
+    return {
+      recorded: true,
+      last_backup_at: row.recorded_at.toISOString(),
+      age_hours: Number(((now.getTime() - row.recorded_at.getTime()) / 3_600_000).toFixed(2)),
+      mode: row.mode,
+      reviews,
+      detail: null,
+    };
+  } catch (error) {
+    return absent(describeFailure(error), null);
+  }
 }
 
 async function databaseStatus(pool: Pool): Promise<DatabaseStatus> {
@@ -713,6 +819,14 @@ export function renderStatus(report: StatusReport): string {
   row(
     "storage",
     `artefacts ${formatBytes(report.storage.artefact_bytes)} in ${String(report.storage.artefact_objects)} object(s), database ${formatBytes(report.storage.database_bytes)}, volume ${formatBytes(report.storage.volume_free_bytes)} free of ${formatBytes(report.storage.volume_total_bytes)}`,
+  );
+  row(
+    "backup",
+    report.backup.detail !== null
+      ? `unavailable: ${report.backup.detail}`
+      : report.backup.recorded
+        ? `last ${report.backup.mode ?? "unknown"} backup ${report.backup.last_backup_at ?? ""} (${String(report.backup.age_hours)} hour(s) ago), ${String(report.backup.reviews)} review(s) held`
+        : `never recorded, ${String(report.backup.reviews ?? 0)} review(s) held`,
   );
   row(
     "certificate",

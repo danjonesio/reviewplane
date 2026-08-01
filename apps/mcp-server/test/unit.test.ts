@@ -41,6 +41,22 @@ test("the registered tool set is the schema's availability set", () => {
   );
 });
 
+/**
+ * `docs/SECURITY.md` §20: restore is a privileged local operation and is
+ * reachable through no network interface — including this one.
+ *
+ * It is asserted here, against the tool table the server actually registers,
+ * rather than by reading the file for a pattern. An agent that could restore an
+ * installation could replace every review in it with rows of its own choosing,
+ * which is the authority boundary `docs/MCP_SPEC.md` exists to hold.
+ */
+test("no tool exposes backup or restore", () => {
+  const named = toolListing()
+    .map((tool) => tool.name)
+    .filter((name) => /backup|restore|migrate|rotate|truncate/iu.test(name));
+  assert.deepEqual(named, [], `the MCP surface exposes ${named.join(", ")}`);
+});
+
 test("the advertised tool schemas match the committed contract snapshot", () => {
   // docs/TESTING.md section 2 "Contract": a breaking tool change cannot land
   // silently. Regenerate deliberately with REVIEWPLANE_UPDATE_SNAPSHOT=1 and

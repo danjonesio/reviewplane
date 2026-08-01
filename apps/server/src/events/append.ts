@@ -67,6 +67,12 @@ export interface AppendEventInput {
   readonly correlation?: EventCorrelation;
   readonly payload?: Record<string, unknown>;
   readonly occurredAt?: Date;
+  /**
+   * Whether to enqueue the delivery obligation. Defaults to true, and is only
+   * ever false for an event written against a schema that predates
+   * `event_outbox` — see the call site of the insert below.
+   */
+  readonly enqueueOutbox?: boolean;
 }
 
 export interface AppendedEvent {
@@ -188,11 +194,27 @@ export async function appendEvent(client: PoolClient, input: AppendEventInput): 
   );
 
   // The obligation to fan out, committed with the event it describes.
-  await client.query(
-    `insert into event_outbox (event_id, stream_key, sequence) values ($1, $2, $3)
-     on conflict (event_id) do nothing`,
-    [id, streamKey, sequence],
-  );
+  //
+  // `enqueueOutbox` is false only where the schema being written has no
+  // `event_outbox`, which arrives at migration `0056`. Two callers reach that:
+  // a backup taken against an older schema, which is how upgrading from Stage 0
+  // begins, and a restore *to* an older schema, which is how rolling back to it
+  // ends. The audit record `docs/SECURITY.md` §16 requires must be writable in
+  // both, while an obligation to deliver it through machinery the schema does
+  // not have would be an obligation nothing could discharge.
+  //
+  // The first version of this comment said "in exactly one place: a backup",
+  // and the reasoning stopped at backup — so restore was written without the
+  // flag, and against a Stage 0 archive it failed after the load had committed.
+  // Every other caller enqueues, and none of them may pass false to skip
+  // delivery of an event a subscriber is entitled to.
+  if (input.enqueueOutbox !== false) {
+    await client.query(
+      `insert into event_outbox (event_id, stream_key, sequence) values ($1, $2, $3)
+       on conflict (event_id) do nothing`,
+      [id, streamKey, sequence],
+    );
+  }
 
   return { id, sequence, type: input.type, streamKey };
 }

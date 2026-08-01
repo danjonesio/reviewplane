@@ -565,6 +565,13 @@ describe("event records", () => {
       ["modules/published-services/repository.ts", "row access for the published-service service, which appends the events"],
       ["modules/agents/workspaces.ts", "workspace observation is evented by the connector reconciliation that reports it"],
       ["modules/agents/credentials.ts", "row access for the agent-credential routes, which append agent_credential.issued and session.revoked"],
+      // The restore loader. A restore is one occurrence, not one per row: it
+      // reproduces an archive an operator already holds, and per-row events
+      // would fabricate a history the rows never had — the archive's own
+      // `events` are among the rows being loaded. `backup.restored` is appended
+      // by `modules/backup/restore.ts` after the load commits, and
+      // `docs/SECURITY.md` section 16 asks for exactly that one record.
+      ["modules/backup/tables.ts", "the restore loader; a restore is one audited occurrence, recorded as backup.restored by restore.ts once the load commits"],
     ]);
 
     const { readdir, readFile } = await import("node:fs/promises");

@@ -1039,6 +1039,265 @@ func EncodeJobFailedPayload(value JobFailedPayload) ([]byte, error) {
 	return w.result()
 }
 
+// encodeBackupProductInto writes the canonical encoding of a BackupProduct.
+func encodeBackupProductInto(w *canonicalWriter, value BackupProduct) {
+	w.beginObject()
+	w.key("version")
+	w.string(value.Version)
+	w.key("revision")
+	w.string(value.Revision)
+	w.key("built_at")
+	w.string(value.BuiltAt)
+	w.endObject()
+}
+
+// EncodeBackupProduct returns the canonical encoding of a BackupProduct.
+func EncodeBackupProduct(value BackupProduct) ([]byte, error) {
+	var w canonicalWriter
+	encodeBackupProductInto(&w, value)
+	return w.result()
+}
+
+// encodeBackupSourceInto writes the canonical encoding of a BackupSource.
+func encodeBackupSourceInto(w *canonicalWriter, value BackupSource) {
+	w.beginObject()
+	if value.Hostname != nil {
+		w.key("hostname")
+		w.string((*value.Hostname))
+	}
+	w.key("artefact_driver")
+	w.string(string(value.ArtefactDriver))
+	w.endObject()
+}
+
+// EncodeBackupSource returns the canonical encoding of a BackupSource.
+func EncodeBackupSource(value BackupSource) ([]byte, error) {
+	var w canonicalWriter
+	encodeBackupSourceInto(&w, value)
+	return w.result()
+}
+
+// encodeBackupTableInto writes the canonical encoding of a BackupTable.
+func encodeBackupTableInto(w *canonicalWriter, value BackupTable) {
+	w.beginObject()
+	w.key("name")
+	w.string(value.Name)
+	w.key("rows")
+	w.integer(value.Rows)
+	w.endObject()
+}
+
+// EncodeBackupTable returns the canonical encoding of a BackupTable.
+func EncodeBackupTable(value BackupTable) ([]byte, error) {
+	var w canonicalWriter
+	encodeBackupTableInto(&w, value)
+	return w.result()
+}
+
+// encodeBackupEntryInto writes the canonical encoding of a BackupEntry.
+func encodeBackupEntryInto(w *canonicalWriter, value BackupEntry) {
+	w.beginObject()
+	w.key("path")
+	w.string(value.Path)
+	w.key("bytes")
+	w.integer(value.Bytes)
+	w.key("sha256")
+	w.string(value.Sha256)
+	w.endObject()
+}
+
+// EncodeBackupEntry returns the canonical encoding of a BackupEntry.
+func EncodeBackupEntry(value BackupEntry) ([]byte, error) {
+	var w canonicalWriter
+	encodeBackupEntryInto(&w, value)
+	return w.result()
+}
+
+// encodeBackupKeyMaterialInto writes the canonical encoding of a BackupKeyMaterial.
+func encodeBackupKeyMaterialInto(w *canonicalWriter, value BackupKeyMaterial) {
+	w.beginObject()
+	w.key("included")
+	w.boolean(value.Included)
+	w.key("excluded_tables")
+	w.beginArray()
+	for _, item := range value.ExcludedTables {
+		w.item()
+		w.string(item)
+	}
+	w.endArray()
+	w.endObject()
+}
+
+// EncodeBackupKeyMaterial returns the canonical encoding of a BackupKeyMaterial.
+func EncodeBackupKeyMaterial(value BackupKeyMaterial) ([]byte, error) {
+	var w canonicalWriter
+	encodeBackupKeyMaterialInto(&w, value)
+	return w.result()
+}
+
+// encodeBackupManifestInto writes the canonical encoding of a BackupManifest.
+func encodeBackupManifestInto(w *canonicalWriter, value BackupManifest) {
+	w.beginObject()
+	w.key("manifest_version")
+	w.integer(value.ManifestVersion)
+	w.key("created_at")
+	w.string(value.CreatedAt)
+	w.key("mode")
+	w.string(string(value.Mode))
+	w.key("product")
+	encodeBackupProductInto(w, value.Product)
+	w.key("schema_version")
+	w.string(value.SchemaVersion)
+	w.key("source")
+	encodeBackupSourceInto(w, value.Source)
+	w.key("tables")
+	w.beginArray()
+	for _, item := range value.Tables {
+		w.item()
+		encodeBackupTableInto(w, item)
+	}
+	w.endArray()
+	w.key("artefact_objects")
+	w.integer(value.ArtefactObjects)
+	w.key("artefact_bytes")
+	w.integer(value.ArtefactBytes)
+	if value.ArtefactsMissing != nil {
+		w.key("artefacts_missing")
+		w.beginArray()
+		for _, item := range value.ArtefactsMissing {
+			w.item()
+			w.string(item)
+		}
+		w.endArray()
+	}
+	w.key("key_material")
+	encodeBackupKeyMaterialInto(w, value.KeyMaterial)
+	w.key("key_references")
+	w.beginArray()
+	for _, item := range value.KeyReferences {
+		w.item()
+		w.string(item)
+	}
+	w.endArray()
+	if value.ConfigurationIncluded != nil {
+		w.key("configuration_included")
+		w.boolean((*value.ConfigurationIncluded))
+	}
+	w.key("checksum_algorithm")
+	w.string(string(value.ChecksumAlgorithm))
+	w.key("entries")
+	w.beginArray()
+	for _, item := range value.Entries {
+		w.item()
+		encodeBackupEntryInto(w, item)
+	}
+	w.endArray()
+	w.endObject()
+}
+
+// EncodeBackupManifest returns the canonical encoding of a BackupManifest.
+func EncodeBackupManifest(value BackupManifest) ([]byte, error) {
+	var w canonicalWriter
+	encodeBackupManifestInto(&w, value)
+	return w.result()
+}
+
+// encodeMigrationRecordInto writes the canonical encoding of a MigrationRecord.
+func encodeMigrationRecordInto(w *canonicalWriter, value MigrationRecord) {
+	w.beginObject()
+	w.key("filename")
+	w.string(value.Filename)
+	w.key("downgrade")
+	w.string(string(value.Downgrade))
+	if value.Note != nil {
+		w.key("note")
+		w.string((*value.Note))
+	}
+	w.endObject()
+}
+
+// EncodeMigrationRecord returns the canonical encoding of a MigrationRecord.
+func EncodeMigrationRecord(value MigrationRecord) ([]byte, error) {
+	var w canonicalWriter
+	encodeMigrationRecordInto(&w, value)
+	return w.result()
+}
+
+// encodeMigrationStateInto writes the canonical encoding of a MigrationState.
+func encodeMigrationStateInto(w *canonicalWriter, value MigrationState) {
+	w.beginObject()
+	if value.SchemaVersion != nil {
+		w.key("schema_version")
+		w.string((*value.SchemaVersion))
+	}
+	w.key("applied")
+	w.beginArray()
+	for _, item := range value.Applied {
+		w.item()
+		encodeMigrationRecordInto(w, item)
+	}
+	w.endArray()
+	w.key("pending")
+	w.beginArray()
+	for _, item := range value.Pending {
+		w.item()
+		encodeMigrationRecordInto(w, item)
+	}
+	w.endArray()
+	w.endObject()
+}
+
+// EncodeMigrationState returns the canonical encoding of a MigrationState.
+func EncodeMigrationState(value MigrationState) ([]byte, error) {
+	var w canonicalWriter
+	encodeMigrationStateInto(&w, value)
+	return w.result()
+}
+
+// encodeCompatibilityCheckInto writes the canonical encoding of a CompatibilityCheck.
+func encodeCompatibilityCheckInto(w *canonicalWriter, value CompatibilityCheck) {
+	w.beginObject()
+	w.key("name")
+	w.string(string(value.Name))
+	w.key("status")
+	w.string(string(value.Status))
+	w.key("detail")
+	w.string(value.Detail)
+	w.endObject()
+}
+
+// EncodeCompatibilityCheck returns the canonical encoding of a CompatibilityCheck.
+func EncodeCompatibilityCheck(value CompatibilityCheck) ([]byte, error) {
+	var w canonicalWriter
+	encodeCompatibilityCheckInto(&w, value)
+	return w.result()
+}
+
+// encodeCompatibilityReportInto writes the canonical encoding of a
+// CompatibilityReport.
+func encodeCompatibilityReportInto(w *canonicalWriter, value CompatibilityReport) {
+	w.beginObject()
+	w.key("ok")
+	w.boolean(value.Ok)
+	w.key("checked_at")
+	w.string(value.CheckedAt)
+	w.key("checks")
+	w.beginArray()
+	for _, item := range value.Checks {
+		w.item()
+		encodeCompatibilityCheckInto(w, item)
+	}
+	w.endArray()
+	w.endObject()
+}
+
+// EncodeCompatibilityReport returns the canonical encoding of a CompatibilityReport.
+func EncodeCompatibilityReport(value CompatibilityReport) ([]byte, error) {
+	var w canonicalWriter
+	encodeCompatibilityReportInto(&w, value)
+	return w.result()
+}
+
 // encodeStreamSubscribeInto writes the canonical encoding of a StreamSubscribe.
 func encodeStreamSubscribeInto(w *canonicalWriter, value StreamSubscribe) {
 	w.beginObject()

@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Human sessions: the ADR-0016 viewer session grows a user, a CSRF token and a
 -- rotation lineage (docs/SECURITY.md section 6.1, docs/API.md section 4).
 --

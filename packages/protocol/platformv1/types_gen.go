@@ -413,6 +413,99 @@ const (
 // SessionRevocationReasonValues lists every value in declaration order.
 var SessionRevocationReasonValues = []SessionRevocationReason{SessionRevocationReasonSignOut, SessionRevocationReasonRotated, SessionRevocationReasonRevokedByUser, SessionRevocationReasonRevokedByAdministrator}
 
+// BackupMode is defined by the connector protocol schema.
+//
+// What a backup archive carries (docs/DEPLOYMENT.md section 16). full is the database
+// together with the artefact objects the filesystem driver holds, which under ADR-0012
+// is a complete single-host backup. database is the database alone, for an
+// installation whose artefacts live in external storage the operator protects
+// separately. The mode is recorded rather than inferred, so a restore that finds no
+// artefact members can tell a deliberate database-only archive from a truncated one.
+type BackupMode string
+
+const (
+	BackupModeFull     BackupMode = "full"
+	BackupModeDatabase BackupMode = "database"
+)
+
+// BackupModeValues lists every value in declaration order.
+var BackupModeValues = []BackupMode{BackupModeFull, BackupModeDatabase}
+
+// BackupArtefactDriver is defined by the connector protocol schema.
+//
+// The artefact store the backed-up installation was running (ADR-0012).
+type BackupArtefactDriver string
+
+const (
+	BackupArtefactDriverFilesystem BackupArtefactDriver = "filesystem"
+	BackupArtefactDriverS3         BackupArtefactDriver = "s3"
+)
+
+// BackupArtefactDriverValues lists every value in declaration order.
+var BackupArtefactDriverValues = []BackupArtefactDriver{BackupArtefactDriverFilesystem, BackupArtefactDriverS3}
+
+// BackupManifestChecksumAlgorithm is defined by the connector protocol schema.
+//
+// Algorithm every digest in this manifest uses.
+type BackupManifestChecksumAlgorithm string
+
+const (
+	BackupManifestChecksumAlgorithmSha256 BackupManifestChecksumAlgorithm = "sha256"
+)
+
+// BackupManifestChecksumAlgorithmValues lists every value in declaration order.
+var BackupManifestChecksumAlgorithmValues = []BackupManifestChecksumAlgorithm{BackupManifestChecksumAlgorithmSha256}
+
+// MigrationDowngrade is defined by the connector protocol schema.
+//
+// Whether a migration can be undone (docs/DEPLOYMENT.md section 15). Every migration
+// states one; the repository default is forward-only, and Stage 1 implements no
+// automated downgrade, so not_supported means the rollback path is restoring the
+// backup taken before the upgrade.
+type MigrationDowngrade string
+
+const (
+	MigrationDowngradeSupported    MigrationDowngrade = "supported"
+	MigrationDowngradeNotSupported MigrationDowngrade = "not_supported"
+)
+
+// MigrationDowngradeValues lists every value in declaration order.
+var MigrationDowngradeValues = []MigrationDowngrade{MigrationDowngradeSupported, MigrationDowngradeNotSupported}
+
+// CompatibilityStatus is defined by the connector protocol schema.
+//
+// Outcome of one preflight check. fail stops the upgrade; warn is reported and does
+// not.
+type CompatibilityStatus string
+
+const (
+	CompatibilityStatusPass CompatibilityStatus = "pass"
+	CompatibilityStatusWarn CompatibilityStatus = "warn"
+	CompatibilityStatusFail CompatibilityStatus = "fail"
+)
+
+// CompatibilityStatusValues lists every value in declaration order.
+var CompatibilityStatusValues = []CompatibilityStatus{CompatibilityStatusPass, CompatibilityStatusWarn, CompatibilityStatusFail}
+
+// CompatibilityCheckName is defined by the connector protocol schema.
+//
+// The preflight checks of docs/OPERATIONS.md section 12. The set is closed so that a
+// report with a check missing is detectable rather than being read as a check that
+// passed.
+type CompatibilityCheckName string
+
+const (
+	CompatibilityCheckNameSourceVersion          CompatibilityCheckName = "source_version"
+	CompatibilityCheckNameBackupFreshness        CompatibilityCheckName = "backup_freshness"
+	CompatibilityCheckNameDiskSpace              CompatibilityCheckName = "disk_space"
+	CompatibilityCheckNameConnectorCompatibility CompatibilityCheckName = "connector_compatibility"
+	CompatibilityCheckNameWorkerCompatibility    CompatibilityCheckName = "worker_compatibility"
+	CompatibilityCheckNameMigrationLock          CompatibilityCheckName = "migration_lock"
+)
+
+// CompatibilityCheckNameValues lists every value in declaration order.
+var CompatibilityCheckNameValues = []CompatibilityCheckName{CompatibilityCheckNameSourceVersion, CompatibilityCheckNameBackupFreshness, CompatibilityCheckNameDiskSpace, CompatibilityCheckNameConnectorCompatibility, CompatibilityCheckNameWorkerCompatibility, CompatibilityCheckNameMigrationLock}
+
 // StreamSubscribeType is defined by the connector protocol schema.
 //
 // Message discriminator.
@@ -730,7 +823,7 @@ type SchemaViolation struct {
 // schema version, which is why the envelope's type field bounds a name's shape rather
 // than enumerating it. A consumer that does not recognise a name MUST ignore the event
 // rather than fail.
-var EventTypes = []string{"organisation.created", "user.invited", "user.credentials_set", "authentication.login_succeeded", "authentication.login_failed", "session.revoked", "project.created", "project.updated", "project.repository_changed", "project.archived", "connector.enrolled", "connector.connected", "connector.degraded", "connector.disconnected", "connector.revoked", "workspace.observed", "workspace.head_changed", "published_service.requested", "published_service.ready", "published_service.failed", "published_service.expired", "published_service.revoked", "agent_credential.issued", "agent_session.started", "agent_session.waiting", "agent_session.blocked", "agent_session.completed", "agent_session.failed", "agent_session.disconnected", "browser_session.requested", "browser_session.allocated", "browser_session.ready", "browser_session.navigated", "browser_session.paused", "browser_session.resumed", "browser_session.degraded", "browser_session.terminated", "browser_session.failed", "browser.control_requested", "browser.control_transferred", "browser.control_released", "browser.command_rejected", "browser.command_executed", "browser.live_view_started", "browser.live_view_stopped", "screenshot.captured", "artefact.upload_started", "artefact.upload_completed", "artefact.upload_failed", "artefact.access_granted", "artefact.redacted", "artefact.expired", "review.created", "review.named", "review.assigned", "review.claimed", "review.status_changed", "review.accepted", "review.reopened", "review.archived", "finding.created", "finding.annotated", "finding.claimed", "finding.status_changed", "finding.comment_added", "finding.verification_submitted", "finding.verification_accepted", "finding.verification_rejected", "finding.resolved", "finding.reopened", "finding.status_change_denied", "review.comment_added", "review.status_change_denied", "inbox_item.created", "inbox_item.acknowledged", "inbox_item.completed", "inbox_item.dismissed", "inbox_item.expired", "job.enqueued", "job.succeeded", "job.failed"}
+var EventTypes = []string{"organisation.created", "user.invited", "user.credentials_set", "authentication.login_succeeded", "authentication.login_failed", "session.revoked", "project.created", "project.updated", "project.repository_changed", "project.archived", "connector.enrolled", "connector.connected", "connector.degraded", "connector.disconnected", "connector.revoked", "workspace.observed", "workspace.head_changed", "published_service.requested", "published_service.ready", "published_service.failed", "published_service.expired", "published_service.revoked", "agent_credential.issued", "agent_session.started", "agent_session.waiting", "agent_session.blocked", "agent_session.completed", "agent_session.failed", "agent_session.disconnected", "browser_session.requested", "browser_session.allocated", "browser_session.ready", "browser_session.navigated", "browser_session.paused", "browser_session.resumed", "browser_session.degraded", "browser_session.terminated", "browser_session.failed", "browser.control_requested", "browser.control_transferred", "browser.control_released", "browser.command_rejected", "browser.command_executed", "browser.live_view_started", "browser.live_view_stopped", "screenshot.captured", "artefact.upload_started", "artefact.upload_completed", "artefact.upload_failed", "artefact.access_granted", "artefact.redacted", "artefact.expired", "review.created", "review.named", "review.assigned", "review.claimed", "review.status_changed", "review.accepted", "review.reopened", "review.archived", "finding.created", "finding.annotated", "finding.claimed", "finding.status_changed", "finding.comment_added", "finding.verification_submitted", "finding.verification_accepted", "finding.verification_rejected", "finding.resolved", "finding.reopened", "finding.status_change_denied", "review.comment_added", "review.status_change_denied", "inbox_item.created", "inbox_item.acknowledged", "inbox_item.completed", "inbox_item.dismissed", "inbox_item.expired", "job.enqueued", "job.succeeded", "job.failed", "backup.created", "backup.restored"}
 
 // StreamMessageTypes lists the discriminator values carried by the stream control
 // messages of docs/API.md section 18.1. An event envelope carries its own event type
@@ -911,6 +1004,21 @@ type WorkspaceDisplayLabel = string
 // A commit identifier, lowercase hexadecimal. Bounded so that an abbreviated and a
 // full identifier are both accepted and nothing else is.
 type GitCommit = string
+
+// Sha256Digest is defined by the connector protocol schema.
+//
+// A SHA-256 digest in lower-case hexadecimal. It is the only checksum algorithm this
+// version defines, so a reader never has to negotiate one.
+type Sha256Digest = string
+
+// ArchiveMemberPath is defined by the connector protocol schema.
+//
+// A path inside a backup archive, always relative and always forward-slashed. The
+// character set excludes a leading slash and a backslash; a member whose path
+// traverses upwards is refused by the reader rather than by this pattern, because a
+// regular expression that has to be read as a security control is one nobody can
+// check.
+type ArchiveMemberPath = string
 
 // PublicAlias is defined by the connector protocol schema.
 //
@@ -1659,6 +1767,192 @@ type JobFailedPayload struct {
 	Retrying bool `json:"retrying"`
 	// When the next attempt becomes claimable. Absent when no attempt will follow.
 	NextAttemptAt *string `json:"next_attempt_at,omitempty"`
+}
+
+// BackupProduct is defined by the connector protocol schema.
+//
+// The build that produced the archive (docs/DEPLOYMENT.md section 16). Recorded so a
+// restore can state which release wrote the data it is about to load.
+type BackupProduct struct {
+	// Product version the image reports.
+	Version string `json:"version"`
+	// Source revision the image was built from, or unknown when the build did not stamp
+	// one.
+	Revision string `json:"revision"`
+	// Build time the image reports, or unknown. It is a free string rather than a
+	// timestamp because an unstamped development build has no build time and inventing
+	// one would be a lie in an audit record.
+	BuiltAt string `json:"built_at"`
+}
+
+// BackupSource is defined by the connector protocol schema.
+//
+// Where the archive came from. hostname is what makes a restore to a new host visible:
+// a restore that changes it says so and states which credentials it invalidated
+// (docs/DEPLOYMENT.md section 17).
+type BackupSource struct {
+	// The gateway hostname the installation was serving, when it was configured. Absent
+	// when the deployment terminates TLS in front of the stack and the control plane was
+	// never told a hostname.
+	Hostname *string `json:"hostname,omitempty"`
+	// Artefact store the installation was running.
+	ArtefactDriver BackupArtefactDriver `json:"artefact_driver"`
+}
+
+// BackupTable is defined by the connector protocol schema.
+//
+// One backed-up table and the number of rows the archive carries for it. The count is
+// what a restore compares its own result against, so a load that silently dropped rows
+// fails rather than reporting success.
+type BackupTable struct {
+	// Table name in the public schema.
+	Name string `json:"name"`
+	// Rows written for this table.
+	Rows int64 `json:"rows"`
+}
+
+// BackupEntry is defined by the connector protocol schema.
+//
+// One member of the archive, with the digest and size the manifest binds it to. Every
+// member but the manifest itself appears here, so a member that was truncated, altered
+// or omitted is detected before anything is written.
+type BackupEntry struct {
+	// Path of the member inside the archive.
+	Path string `json:"path"`
+	// Uncompressed size of the member.
+	Bytes int64 `json:"bytes"`
+	// Digest of the member's bytes.
+	Sha256 string `json:"sha256"`
+}
+
+// BackupKeyMaterial is defined by the connector protocol schema.
+//
+// Whether the archive carries key material, and which tables were held back when it
+// does not (docs/SECURITY.md section 20). It is stated in every archive rather than
+// only in the archives that carry it, because absence has to be a recorded fact for a
+// restore to be able to say what it cannot reconstruct.
+type BackupKeyMaterial struct {
+	// True only when the operator explicitly opted in. A portable backup carrying key
+	// material is a private key in a file an operator will copy somewhere, so it is never
+	// the default.
+	Included bool `json:"included"`
+	// Tables whose rows were held back because they hold key material. Empty when key
+	// material was included.
+	ExcludedTables []string `json:"excluded_tables"`
+}
+
+// BackupManifest is defined by the connector protocol schema.
+//
+// The manifest of a backup archive (docs/DEPLOYMENT.md section 16). It is the first
+// member of the archive, so a reader learns what it holds before reading anything
+// else, and it is the single structure both the backup writer and the restore reader
+// validate against.
+type BackupManifest struct {
+	// Manifest structure version. A reader refuses a version it does not know rather than
+	// guessing at the members it recognises.
+	ManifestVersion int64 `json:"manifest_version"`
+	// When the archive was written.
+	CreatedAt string `json:"created_at"`
+	// What the archive carries.
+	Mode BackupMode `json:"mode"`
+	// Build that produced the archive.
+	Product BackupProduct `json:"product"`
+	// Migration file at the head of the backed-up schema, which is the schema version
+	// reviewplane migrate reports. A restore refuses an archive whose schema is ahead of
+	// the installed build, because the rows would name columns this build's migrations
+	// have not created.
+	SchemaVersion string `json:"schema_version"`
+	// Installation the archive came from.
+	Source BackupSource `json:"source"`
+	// Every table in the public schema, with the rows the archive carries. Tables are
+	// enumerated from the live catalogue rather than from a list in the source, so a
+	// table added by a later migration is backed up without anyone remembering to add it
+	// here.
+	Tables []BackupTable `json:"tables"`
+	// Artefact objects carried. Zero in database mode, and zero in full mode only when
+	// the store held none.
+	ArtefactObjects int64 `json:"artefact_objects"`
+	// Total uncompressed size of the artefact objects carried.
+	ArtefactBytes int64 `json:"artefact_bytes"`
+	// Storage keys that artefact metadata referenced and the store did not hold at backup
+	// time. Recorded rather than silently skipped: application metadata is authoritative
+	// for availability (ADR-0012), so a row without bytes is missing evidence and a
+	// restore has to be able to report it.
+	ArtefactsMissing []string `json:"artefacts_missing,omitempty"`
+	// Key-material disposition.
+	KeyMaterial BackupKeyMaterial `json:"key_material"`
+	// Distinct encryption key references the backed-up data names (docs/SECURITY.md
+	// section 15). A reference is a name for a key held elsewhere and never key material,
+	// so recording it is what lets a restore state which keys the restored installation
+	// will need. Empty while envelope encryption is unimplemented.
+	KeyReferences []string `json:"key_references"`
+	// Whether a configuration member was written. It carries the non-secret settings of
+	// the installation and records a secret only as the name of the variable that held
+	// it.
+	ConfigurationIncluded *bool `json:"configuration_included,omitempty"`
+	// Algorithm every digest in this manifest uses.
+	ChecksumAlgorithm BackupManifestChecksumAlgorithm `json:"checksum_algorithm"`
+	// Every archive member but the manifest, with its digest. The manifest cannot carry
+	// its own digest, so whole-archive integrity is the digest the backup command prints
+	// and records in its audit event; these entries are what detect a truncated or
+	// corrupted member.
+	Entries []BackupEntry `json:"entries"`
+}
+
+// MigrationRecord is defined by the connector protocol schema.
+//
+// One migration and what it says about being undone.
+type MigrationRecord struct {
+	// Migration file name, which is also its position in the apply order.
+	Filename string `json:"filename"`
+	// Downgrade support the migration declares.
+	Downgrade MigrationDowngrade `json:"downgrade"`
+	// The reason the migration gives, when it gives one.
+	Note *string `json:"note,omitempty"`
+}
+
+// MigrationState is defined by the connector protocol schema.
+//
+// What a database has applied and what it has not (docs/DEPLOYMENT.md section 11). It
+// is the shape reviewplane migrate --status reports and the shape the upgrade
+// preflight reads, so an operator and a script are answering the same question from
+// the same structure.
+type MigrationState struct {
+	// Highest applied migration. Absent for a database nobody has migrated, which is a
+	// state rather than an error.
+	SchemaVersion *string `json:"schema_version,omitempty"`
+	// Migrations this database has applied, in apply order.
+	Applied []MigrationRecord `json:"applied"`
+	// Migrations on disk this database has not applied, in apply order.
+	Pending []MigrationRecord `json:"pending"`
+}
+
+// CompatibilityCheck is defined by the connector protocol schema.
+//
+// One preflight check and what it found.
+type CompatibilityCheck struct {
+	// Which check this is.
+	Name CompatibilityCheckName `json:"name"`
+	// What it found.
+	Status CompatibilityStatus `json:"status"`
+	// One line an operator can act on. It never carries a connection string, a credential
+	// or a network address (docs/SECURITY.md section 18): preflight output is pasted into
+	// issues.
+	Detail string `json:"detail"`
+}
+
+// CompatibilityReport is defined by the connector protocol schema.
+//
+// The upgrade preflight report (docs/OPERATIONS.md section 12, docs/DEPLOYMENT.md
+// section 15 step 5).
+type CompatibilityReport struct {
+	// True only when no check failed. A warning does not clear it to false, and a check
+	// that could not run reports fail rather than being omitted.
+	Ok bool `json:"ok"`
+	// When the preflight ran.
+	CheckedAt string `json:"checked_at"`
+	// Every check, in a stable order, including the ones that passed.
+	Checks []CompatibilityCheck `json:"checks"`
 }
 
 // StreamSubscribe is defined by the connector protocol schema.

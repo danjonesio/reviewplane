@@ -543,7 +543,8 @@ import json, sys
 report = json.load(open(sys.argv[1]))
 expected = [
     "status", "version", "database", "artefact_store", "connectors",
-    "browser_capacity", "sessions", "queue", "storage", "certificate", "warnings",
+    "browser_capacity", "sessions", "queue", "storage", "backup", "certificate",
+    "warnings",
 ]
 missing = [key for key in expected if key not in report]
 if missing:
@@ -564,6 +565,49 @@ if not report["certificate"]["checked"]:
 print("status --json carries every documented field")
 PY
 pass "reviewplane status reports database, artefact store, capacity and certificate"
+
+# ---------------------------------------------------------------------------
+step "9b. reviewplane backup and restore, through the wrapper"
+# ---------------------------------------------------------------------------
+# `docs/DEPLOYMENT.md` sections 16 and 17. The streaming form is the documented
+# one for this deployment, and its plumbing — `docker compose exec -T` carrying
+# standard output and standard input end to end through `./reviewplane` — has no
+# other automated coverage. A regression in it would leave the archive inside a
+# container, or truncated, and nothing else here would notice.
+ARCHIVE="${EVIDENCE}/installation-backup.tar.zst"
+BACKUP_REPORT="$(./reviewplane backup --output - 2> "${EVIDENCE}/backup.txt" > "${ARCHIVE}"; echo $?)"
+[[ "${BACKUP_REPORT}" == "0" ]] || fail "./reviewplane backup exited ${BACKUP_REPORT}"
+cat "${EVIDENCE}/backup.txt"
+
+# The digest the command printed is the digest of the file that reached this
+# host. If the stream were truncated or re-encoded on the way out, these differ.
+PRINTED_DIGEST="$(awk '$1 == "sha256" { print $2 }' "${EVIDENCE}/backup.txt")"
+HOST_DIGEST="$(sha256sum "${ARCHIVE}" | cut -d' ' -f1)"
+if [[ -n "${PRINTED_DIGEST}" && "${PRINTED_DIGEST}" == "${HOST_DIGEST}" ]]; then
+  pass "the archive on this host is byte-identical to the one the command wrote ($(wc -c < "${ARCHIVE}") bytes)"
+else
+  fail "archive digest mismatch: command said '${PRINTED_DIGEST}', file is '${HOST_DIGEST}'"
+fi
+
+grep -q 'key material    excluded' "${EVIDENCE}/backup.txt" \
+  || fail "the default backup did not report key material as excluded"
+pass "key material is excluded from the default archive"
+
+# The dry run reads the archive back in over standard input, proves it against
+# its manifest, and refuses this target because a running installation is not an
+# empty one — exit 4, the "ran correctly and the answer is bad" code.
+set +e
+./reviewplane restore --input - --dry-run < "${ARCHIVE}" > "${EVIDENCE}/restore-dry-run.txt" 2>&1
+RESTORE_EXIT=$?
+set -e
+cat "${EVIDENCE}/restore-dry-run.txt"
+if [[ "${RESTORE_EXIT}" -eq 4 ]] \
+  && grep -q 'the archive is intact' "${EVIDENCE}/restore-dry-run.txt" \
+  && grep -q 'empty installation only' "${EVIDENCE}/restore-dry-run.txt"; then
+  pass "restore --dry-run verified the archive over standard input and refused a non-empty target"
+else
+  fail "restore --dry-run exited ${RESTORE_EXIT} without the expected verdict"
+fi
 
 # ---------------------------------------------------------------------------
 step "10. Fault injection"

@@ -366,7 +366,9 @@
           "inbox_item.expired",
           "job.enqueued",
           "job.succeeded",
-          "job.failed"
+          "job.failed",
+          "backup.created",
+          "backup.restored"
         ]
       },
       "stream_message_types": {
@@ -1648,6 +1650,375 @@
         "next_attempt_at": {
           "$ref": "#/$defs/timestamp",
           "description": "When the next attempt becomes claimable. Absent when no attempt will follow."
+        }
+      }
+    },
+    "sha256_digest": {
+      "type": "string",
+      "description": "A SHA-256 digest in lower-case hexadecimal. It is the only checksum algorithm this version defines, so a reader never has to negotiate one.",
+      "pattern": "^[0-9a-f]{64}$",
+      "minLength": 64,
+      "maxLength": 64
+    },
+    "archive_member_path": {
+      "type": "string",
+      "description": "A path inside a backup archive, always relative and always forward-slashed. The character set excludes a leading slash and a backslash; a member whose path traverses upwards is refused by the reader rather than by this pattern, because a regular expression that has to be read as a security control is one nobody can check.",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "backup_mode": {
+      "type": "string",
+      "description": "What a backup archive carries (docs/DEPLOYMENT.md section 16). full is the database together with the artefact objects the filesystem driver holds, which under ADR-0012 is a complete single-host backup. database is the database alone, for an installation whose artefacts live in external storage the operator protects separately. The mode is recorded rather than inferred, so a restore that finds no artefact members can tell a deliberate database-only archive from a truncated one.",
+      "enum": ["full", "database"]
+    },
+    "backup_artefact_driver": {
+      "type": "string",
+      "description": "The artefact store the backed-up installation was running (ADR-0012).",
+      "enum": ["filesystem", "s3"]
+    },
+    "backup_product": {
+      "type": "object",
+      "description": "The build that produced the archive (docs/DEPLOYMENT.md section 16). Recorded so a restore can state which release wrote the data it is about to load.",
+      "additionalProperties": false,
+      "required": ["version", "revision", "built_at"],
+      "properties": {
+        "version": {
+          "type": "string",
+          "description": "Product version the image reports.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[^\\x00-\\x1f]+$"
+        },
+        "revision": {
+          "type": "string",
+          "description": "Source revision the image was built from, or unknown when the build did not stamp one.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[^\\x00-\\x1f]+$"
+        },
+        "built_at": {
+          "type": "string",
+          "description": "Build time the image reports, or unknown. It is a free string rather than a timestamp because an unstamped development build has no build time and inventing one would be a lie in an audit record.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[^\\x00-\\x1f]+$"
+        }
+      }
+    },
+    "backup_source": {
+      "type": "object",
+      "description": "Where the archive came from. hostname is what makes a restore to a new host visible: a restore that changes it says so and states which credentials it invalidated (docs/DEPLOYMENT.md section 17).",
+      "additionalProperties": false,
+      "required": ["artefact_driver"],
+      "properties": {
+        "hostname": {
+          "type": "string",
+          "description": "The gateway hostname the installation was serving, when it was configured. Absent when the deployment terminates TLS in front of the stack and the control plane was never told a hostname.",
+          "minLength": 1,
+          "maxLength": 253,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9.-]*$"
+        },
+        "artefact_driver": {
+          "$ref": "#/$defs/backup_artefact_driver",
+          "description": "Artefact store the installation was running."
+        }
+      }
+    },
+    "backup_table": {
+      "type": "object",
+      "description": "One backed-up table and the number of rows the archive carries for it. The count is what a restore compares its own result against, so a load that silently dropped rows fails rather than reporting success.",
+      "additionalProperties": false,
+      "required": ["name", "rows"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Table name in the public schema.",
+          "pattern": "^[a-z][a-z0-9_]{0,62}$",
+          "minLength": 1,
+          "maxLength": 63
+        },
+        "rows": {
+          "type": "integer",
+          "description": "Rows written for this table.",
+          "minimum": 0,
+          "maximum": 1000000000000
+        }
+      }
+    },
+    "backup_entry": {
+      "type": "object",
+      "description": "One member of the archive, with the digest and size the manifest binds it to. Every member but the manifest itself appears here, so a member that was truncated, altered or omitted is detected before anything is written.",
+      "additionalProperties": false,
+      "required": ["path", "bytes", "sha256"],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/archive_member_path",
+          "description": "Path of the member inside the archive."
+        },
+        "bytes": {
+          "type": "integer",
+          "description": "Uncompressed size of the member.",
+          "minimum": 0,
+          "maximum": 1099511627776
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256_digest",
+          "description": "Digest of the member's bytes."
+        }
+      }
+    },
+    "backup_key_material": {
+      "type": "object",
+      "description": "Whether the archive carries key material, and which tables were held back when it does not (docs/SECURITY.md section 20). It is stated in every archive rather than only in the archives that carry it, because absence has to be a recorded fact for a restore to be able to say what it cannot reconstruct.",
+      "additionalProperties": false,
+      "required": ["included", "excluded_tables"],
+      "properties": {
+        "included": {
+          "type": "boolean",
+          "description": "True only when the operator explicitly opted in. A portable backup carrying key material is a private key in a file an operator will copy somewhere, so it is never the default."
+        },
+        "excluded_tables": {
+          "type": "array",
+          "description": "Tables whose rows were held back because they hold key material. Empty when key material was included.",
+          "minItems": 0,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "description": "Table name.",
+            "pattern": "^[a-z][a-z0-9_]{0,62}$",
+            "minLength": 1,
+            "maxLength": 63
+          }
+        }
+      }
+    },
+    "backup_manifest": {
+      "type": "object",
+      "description": "The manifest of a backup archive (docs/DEPLOYMENT.md section 16). It is the first member of the archive, so a reader learns what it holds before reading anything else, and it is the single structure both the backup writer and the restore reader validate against.",
+      "additionalProperties": false,
+      "required": [
+        "manifest_version",
+        "created_at",
+        "mode",
+        "product",
+        "schema_version",
+        "source",
+        "tables",
+        "artefact_objects",
+        "artefact_bytes",
+        "key_material",
+        "key_references",
+        "checksum_algorithm",
+        "entries"
+      ],
+      "properties": {
+        "manifest_version": {
+          "type": "integer",
+          "description": "Manifest structure version. A reader refuses a version it does not know rather than guessing at the members it recognises.",
+          "const": 1
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the archive was written."
+        },
+        "mode": { "$ref": "#/$defs/backup_mode", "description": "What the archive carries." },
+        "product": {
+          "$ref": "#/$defs/backup_product",
+          "description": "Build that produced the archive."
+        },
+        "schema_version": {
+          "type": "string",
+          "description": "Migration file at the head of the backed-up schema, which is the schema version reviewplane migrate reports. A restore refuses an archive whose schema is ahead of the installed build, because the rows would name columns this build's migrations have not created.",
+          "minLength": 5,
+          "maxLength": 128,
+          "pattern": "^[0-9]{4}_[a-z0-9_]+\\.sql$"
+        },
+        "source": {
+          "$ref": "#/$defs/backup_source",
+          "description": "Installation the archive came from."
+        },
+        "tables": {
+          "type": "array",
+          "description": "Every table in the public schema, with the rows the archive carries. Tables are enumerated from the live catalogue rather than from a list in the source, so a table added by a later migration is backed up without anyone remembering to add it here.",
+          "minItems": 0,
+          "maxItems": 512,
+          "items": { "$ref": "#/$defs/backup_table", "description": "One table." }
+        },
+        "artefact_objects": {
+          "type": "integer",
+          "description": "Artefact objects carried. Zero in database mode, and zero in full mode only when the store held none.",
+          "minimum": 0,
+          "maximum": 1000000000
+        },
+        "artefact_bytes": {
+          "type": "integer",
+          "description": "Total uncompressed size of the artefact objects carried.",
+          "minimum": 0,
+          "maximum": 1099511627776
+        },
+        "artefacts_missing": {
+          "type": "array",
+          "description": "Storage keys that artefact metadata referenced and the store did not hold at backup time. Recorded rather than silently skipped: application metadata is authoritative for availability (ADR-0012), so a row without bytes is missing evidence and a restore has to be able to report it.",
+          "minItems": 0,
+          "maxItems": 1024,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/archive_member_path",
+            "description": "A storage key the metadata referenced."
+          }
+        },
+        "key_material": {
+          "$ref": "#/$defs/backup_key_material",
+          "description": "Key-material disposition."
+        },
+        "key_references": {
+          "type": "array",
+          "description": "Distinct encryption key references the backed-up data names (docs/SECURITY.md section 15). A reference is a name for a key held elsewhere and never key material, so recording it is what lets a restore state which keys the restored installation will need. Empty while envelope encryption is unimplemented.",
+          "minItems": 0,
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "description": "One key reference.",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9:._/-]+$"
+          }
+        },
+        "configuration_included": {
+          "type": "boolean",
+          "description": "Whether a configuration member was written. It carries the non-secret settings of the installation and records a secret only as the name of the variable that held it."
+        },
+        "checksum_algorithm": {
+          "type": "string",
+          "description": "Algorithm every digest in this manifest uses.",
+          "enum": ["sha256"]
+        },
+        "entries": {
+          "type": "array",
+          "description": "Every archive member but the manifest, with its digest. The manifest cannot carry its own digest, so whole-archive integrity is the digest the backup command prints and records in its audit event; these entries are what detect a truncated or corrupted member.",
+          "minItems": 0,
+          "maxItems": 1000000,
+          "items": { "$ref": "#/$defs/backup_entry", "description": "One member." }
+        }
+      }
+    },
+    "migration_downgrade": {
+      "type": "string",
+      "description": "Whether a migration can be undone (docs/DEPLOYMENT.md section 15). Every migration states one; the repository default is forward-only, and Stage 1 implements no automated downgrade, so not_supported means the rollback path is restoring the backup taken before the upgrade.",
+      "enum": ["supported", "not_supported"]
+    },
+    "migration_record": {
+      "type": "object",
+      "description": "One migration and what it says about being undone.",
+      "additionalProperties": false,
+      "required": ["filename", "downgrade"],
+      "properties": {
+        "filename": {
+          "type": "string",
+          "description": "Migration file name, which is also its position in the apply order.",
+          "pattern": "^[0-9]{4}_[a-z0-9_]+\\.sql$",
+          "minLength": 5,
+          "maxLength": 128
+        },
+        "downgrade": {
+          "$ref": "#/$defs/migration_downgrade",
+          "description": "Downgrade support the migration declares."
+        },
+        "note": {
+          "type": "string",
+          "description": "The reason the migration gives, when it gives one.",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^[^\\x00-\\x1f]+$"
+        }
+      }
+    },
+    "migration_state": {
+      "type": "object",
+      "description": "What a database has applied and what it has not (docs/DEPLOYMENT.md section 11). It is the shape reviewplane migrate --status reports and the shape the upgrade preflight reads, so an operator and a script are answering the same question from the same structure.",
+      "additionalProperties": false,
+      "required": ["applied", "pending"],
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "description": "Highest applied migration. Absent for a database nobody has migrated, which is a state rather than an error.",
+          "minLength": 5,
+          "maxLength": 128,
+          "pattern": "^[0-9]{4}_[a-z0-9_]+\\.sql$"
+        },
+        "applied": {
+          "type": "array",
+          "description": "Migrations this database has applied, in apply order.",
+          "minItems": 0,
+          "maxItems": 4096,
+          "items": { "$ref": "#/$defs/migration_record", "description": "One applied migration." }
+        },
+        "pending": {
+          "type": "array",
+          "description": "Migrations on disk this database has not applied, in apply order.",
+          "minItems": 0,
+          "maxItems": 4096,
+          "items": { "$ref": "#/$defs/migration_record", "description": "One pending migration." }
+        }
+      }
+    },
+    "compatibility_status": {
+      "type": "string",
+      "description": "Outcome of one preflight check. fail stops the upgrade; warn is reported and does not.",
+      "enum": ["pass", "warn", "fail"]
+    },
+    "compatibility_check_name": {
+      "type": "string",
+      "description": "The preflight checks of docs/OPERATIONS.md section 12. The set is closed so that a report with a check missing is detectable rather than being read as a check that passed.",
+      "enum": [
+        "source_version",
+        "backup_freshness",
+        "disk_space",
+        "connector_compatibility",
+        "worker_compatibility",
+        "migration_lock"
+      ]
+    },
+    "compatibility_check": {
+      "type": "object",
+      "description": "One preflight check and what it found.",
+      "additionalProperties": false,
+      "required": ["name", "status", "detail"],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/compatibility_check_name",
+          "description": "Which check this is."
+        },
+        "status": { "$ref": "#/$defs/compatibility_status", "description": "What it found." },
+        "detail": {
+          "type": "string",
+          "description": "One line an operator can act on. It never carries a connection string, a credential or a network address (docs/SECURITY.md section 18): preflight output is pasted into issues.",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^[^\\x00-\\x1f]+$"
+        }
+      }
+    },
+    "compatibility_report": {
+      "type": "object",
+      "description": "The upgrade preflight report (docs/OPERATIONS.md section 12, docs/DEPLOYMENT.md section 15 step 5).",
+      "additionalProperties": false,
+      "required": ["ok", "checked_at", "checks"],
+      "properties": {
+        "ok": {
+          "type": "boolean",
+          "description": "True only when no check failed. A warning does not clear it to false, and a check that could not run reports fail rather than being omitted."
+        },
+        "checked_at": { "$ref": "#/$defs/timestamp", "description": "When the preflight ran." },
+        "checks": {
+          "type": "array",
+          "description": "Every check, in a stable order, including the ones that passed.",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/compatibility_check", "description": "One check." }
         }
       }
     },

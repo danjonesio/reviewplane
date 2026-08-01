@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Organisations and projects (docs/DOMAIN_MODEL.md sections 4 and 6).
 --
 -- This is the single canonical definition. Several Stage 0 branches introduced

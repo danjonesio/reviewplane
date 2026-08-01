@@ -310,6 +310,73 @@ describe("reviewplane status", () => {
     );
   });
 
+  /**
+   * `docs/OPERATIONS.md` section 11: "backup status visible in UI or status
+   * command". The section reports the last `backup.created` event, and warns
+   * only when there is something to lose — a fresh installation with no reviews
+   * has nothing to back up, and warning about it would train an operator to
+   * ignore the command.
+   */
+  test("it reports the last backup, and warns only when reviews would be lost", async () => {
+    const fresh = await gatherStatus({ pool: postgres.pool, artefactPath: artefactRoot });
+    assert.equal(fresh.backup.recorded, false);
+    assert.equal(fresh.backup.reviews, 0);
+    assert.ok(
+      !fresh.warnings.some((warning) => warning.includes("backup")),
+      `a fresh installation was warned about a backup: ${JSON.stringify(fresh.warnings)}`,
+    );
+    assert.match(renderStatus(fresh), /backup\s+never recorded/u);
+
+    const organisationId = "org_status_backup";
+    const projectId = "prj_status_backup";
+    await postgres.pool.query("insert into organisations (id, name, slug) values ($1, 'Org', 'org-status-backup')", [
+      organisationId,
+    ]);
+    await postgres.pool.query(
+      "insert into projects (id, organisation_id, name, slug) values ($1, $2, 'Project', 'project-status-backup')",
+      [projectId, organisationId],
+    );
+    await postgres.pool.query(
+      `insert into reviews (id, organisation_id, project_id, slug, title, status,
+                            created_by_actor_type, captured_branch, captured_commit,
+                            captured_workspace_id)
+       values ('rev_status_backup', $1, $2, 'bugs', 'Bugs', 'READY', 'human_user',
+               'main', 'c0ffee1', 'wsp_1')`,
+      [organisationId, projectId],
+    );
+
+    const unprotected = await gatherStatus({ pool: postgres.pool, artefactPath: artefactRoot });
+    assert.equal(unprotected.backup.reviews, 1);
+    assert.ok(
+      unprotected.warnings.some((warning) => warning.includes("never recorded a backup")),
+      `expected a backup warning, got ${JSON.stringify(unprotected.warnings)}`,
+    );
+    assert.equal(unprotected.status, "ok", "a missing backup degraded the report");
+
+    await postgres.pool.query(
+      `insert into event_streams (stream_key, last_sequence) values ($1, 1)
+       on conflict (stream_key) do update set last_sequence = event_streams.last_sequence + 1`,
+      [organisationId],
+    );
+    await postgres.pool.query(
+      `insert into events (id, stream_key, sequence, type, occurred_at, recorded_at,
+                           organisation_id, actor_type, payload)
+       values ('evt_status_backup', $1, 1, 'backup.created', now() - interval '2 hours',
+               now() - interval '2 hours', $1, 'system', '{"mode":"full"}'::jsonb)`,
+      [organisationId],
+    );
+
+    const protectedReport = await gatherStatus({ pool: postgres.pool, artefactPath: artefactRoot });
+    assert.equal(protectedReport.backup.recorded, true);
+    assert.equal(protectedReport.backup.mode, "full");
+    assert.ok((protectedReport.backup.age_hours ?? 0) >= 1.9);
+    assert.ok(
+      !protectedReport.warnings.some((warning) => warning.includes("backup")),
+      `a backed-up installation was still warned: ${JSON.stringify(protectedReport.warnings)}`,
+    );
+    assert.match(renderStatus(protectedReport), /backup\s+last full backup/u);
+  });
+
   test("an unwritable artefact volume reports the store unavailable and degrades the report", async () => {
     // Fault injection, `docs/TESTING.md` section 2: the failure an operator
     // actually meets is a volume that mounted read-only or filled up, and a
@@ -503,6 +570,7 @@ describe("reviewplane status", () => {
       "sessions",
       "queue",
       "storage",
+      "backup",
       "certificate",
       "warnings",
     ]);

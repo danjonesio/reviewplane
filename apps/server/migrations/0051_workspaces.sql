@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Workspaces (docs/DOMAIN_MODEL.md section 9).
 --
 -- A workspace is the checkout an agent is working in. Stage 1's connector

@@ -379,13 +379,22 @@ it.
 ```bash
 reviewplane migrate            # apply every pending migration
 reviewplane migrate --status   # report the schema version and what is pending
+reviewplane migrate --preflight # the upgrade preflight; changes nothing
 reviewplane serve              # the api role
 reviewplane jobs [--once]      # the jobs role
 reviewplane install-token      # mint the one-time administrator bootstrap token
 reviewplane status [--json]    # the deployment's health, capacity and storage
+reviewplane backup --output F  # one archive of this installation (§16)
+reviewplane restore --input F  # restore one archive into an empty installation (§17)
 reviewplane export-review      # write one review as a portable document
 reviewplane version            # the build this image carries
 ```
+
+Exit codes are the operator interface: `0` success, `1` failure, `2` a
+configuration error the process cannot start with, `3` for `migrate --status`
+when migrations are pending, and `4` for a command that ran correctly and found
+a bad answer — a degraded `status`, a failed `migrate --preflight`, or a
+`restore` that finished with evidence missing.
 
 In the Compose stack, `deploy/compose/reviewplane` runs these inside the `api`
 container: `./reviewplane status` is `docker compose exec -T api reviewplane
@@ -655,15 +664,131 @@ Required sequence:
 8. Verify health and migration status
 9. Retain rollback artefacts until validation completes
 
-Database migrations must state whether downgrade is supported.
+Database migrations MUST state whether downgrade is supported.
+
+### The sequence, as commands
+
+Each step below is a command that exists. Steps 3 and 5 are the same command:
+the preflight measures free storage as one of its six checks, so an operator who
+runs it has done both.
+
+```bash
+cd deploy/compose
+
+# 2. Create backup. Under the default filesystem driver this is the whole
+#    installation: the database and the artefact objects (section 16). The
+#    archive lands on this host, in this directory.
+./reviewplane backup --output - > "reviewplane-$(date +%F).tar.zst"
+
+# 3 and 5. Preflight. It reads and reports; it applies nothing, and exits 4
+#    when a check fails (section 11's exit codes).
+./reviewplane migrate --preflight
+
+# 4. Pull the pinned images.
+docker compose pull
+
+# 6. Apply the migration. `--status` first shows what is pending and what each
+#    pending migration says about being undone.
+./reviewplane migrate --status
+./reviewplane migrate
+
+# 7. Restart. The order is the one `depends_on` in compose.yaml already
+#    expresses — PostgreSQL healthy before `api`, `api` before the surfaces in
+#    front of it — so this is the same command §8 installs with.
+docker compose up -d
+
+# 8. Verify.
+./reviewplane migrate --status   # exit 0 with nothing pending
+./reviewplane status             # exit 0, or 4 with the reason
+```
+
+Step 9 is the operator's: **keep the archive from step 2 until the upgraded
+installation has been used and found good.** It is the only rollback path this
+release has, because no migration in this release declares a downgrade.
+
+### Upgrading from Stage 0
+
+An installation at the Stage 0 schema (`0054_idempotency_keys.sql`) upgrades by
+the sequence above with one difference: the Stage 0 build has no `backup`
+command, so step 2 is run with the **new** image after `docker compose pull`,
+against the old schema. `reviewplane backup` supports this deliberately — it
+reads the tables the catalogue reports rather than the tables this build
+expects, and it records the audit event `docs/SECURITY.md` §16 requires even
+though the Stage 0 schema has no event outbox to deliver it through.
+
+The path is tested rather than described: `apps/server/test/upgrade-stage0.test.ts`
+restores the committed Stage 0 fixture, runs the preflight, applies every
+migration from `0055` to the head, and checks the review, its findings, its
+annotations and its evidence against the fixture's manifest
+(`docs/TESTING.md` §13).
+
+### What a migration says about downgrade
+
+Every migration file carries a declaration on its own comment line:
+
+```sql
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
+```
+
+`reviewplane migrate --status` prints the declaration of every pending
+migration, and `--json` carries it as `downgrade` on each record. A file that
+carries no declaration is reported as `not_supported`, which is the repository
+default (`docs/DEVELOPMENT.md` §7); `apps/server/test/migrate.test.ts` requires
+every committed migration to declare it explicitly, so the default is a safety
+net rather than a way to omit the statement.
+
+Stage 1 implements **no automated downgrade**. `not supported` therefore means
+what it says: the way back is restoring the archive taken at step 2 into an
+empty installation.
+
+Restore it with **this** release, not the previous one. `restore` brings an
+empty installation to the schema the archive records and stops there, so a
+Stage 1 build restores a Stage 0 archive to `0054` and reports the `0055`
+onwards as pending — which is the rollback. The previous release cannot do it:
+`backup` and `restore` ship in this one, so no earlier build has the commands at
+all. `apps/server/test/upgrade-stage0.test.ts` performs exactly this rollback,
+against the archive taken from the committed Stage 0 fixture.
 
 ## 16. Backups
 
-Supported command concept:
-
 ```bash
-./reviewplane backup --output /backup/reviewplane-2026-07-28.tar.zst
+# In the Compose deployment. The archive lands on the host, in the operator's
+# own directory, with the operator's own permissions.
+./reviewplane backup --output - > /backup/reviewplane-2026-07-28.tar.zst
+
+# Where the command has a filesystem it can write to directly.
+reviewplane backup --output /backup/reviewplane-2026-07-28.tar.zst
 ```
+
+The command writes one archive: a `tar` stream inside a `zstd` frame.
+
+The two forms differ in one guarantee. `--output FILE` writes to
+`<output>.partial` and renames it only when the archive is complete, so an
+interrupted backup leaves nothing a restore would read. `--output -` writes to
+standard output, where the destination is the operator's own redirection: an
+interrupted stream leaves a **truncated file** rather than an absence. A
+truncated archive is refused or read whole and never read short — the archive's
+own end marker catches a stream that stops mid-member, and the manifest's
+per-member digests catch a member that arrived complete and wrong — so a
+half-copied archive cannot become a half-restored installation. What `-` gives
+up is the *absence*: a file is there for a human reading a directory listing to
+mistake for a finished backup, and only the restore will say otherwise.
+`-` is nonetheless the form to use in the Compose deployment, because the
+alternative is an archive inside a container's volume that the operator then has
+to copy out; `deploy/compose/reviewplane` runs the command through
+`docker compose exec -T`, which carries the bytes straight through.
+
+Either way the command prints the archive's SHA-256: to standard output for the
+file form, to standard error for the streamed form, since standard output is
+carrying the archive. For the same reason `--output -` and `--json` together are
+refused rather than interleaved — both want standard output, and a document with
+an archive in the middle of it is neither.
+
+`backup` exits `4` when it finished and the answer is bad: the archive was
+written, and the metadata referenced an artefact the store did not hold. The
+manifest records which (`artefacts_missing`), the restore will report the same
+absence, and the archive is still the best backup available — which is why it is
+written and reported rather than refused.
 
 Backup manifest contains:
 
@@ -675,11 +800,92 @@ Backup manifest contains:
 - Encryption key references
 - Checksums
 
-A portable backup that includes key material must require explicit opt-in and strong warning.
+A portable backup that includes key material MUST require explicit opt-in and
+strong warning.
+
+### Modes
+
+| Mode | What it carries | When |
+|---|---|---|
+| `full` (default under the `filesystem` driver) | The database and every object in the artefact volume's `sha256/` tree | The default installation. ADR-0012 makes a complete single-host backup one database plus one directory |
+| `database` | The database alone | An installation running the `s3` driver, whose objects are protected by bucket versioning or the operator's own backup (§12) |
+
+`--mode` selects one. A `full` backup of an installation running the `s3`
+driver is refused rather than silently taken without its objects, because the
+command cannot read a bucket and an archive that quietly omitted the evidence
+would be the worst possible outcome.
+
+### What is in the archive
+
+| Member | Contents |
+|---|---|
+| `manifest.json` | The manifest, always first, in the `backup_manifest` shape of `packages/protocol` |
+| `configuration.json` | Every `REVIEWPLANE_` setting the process was started with. A setting whose name or value is credential-shaped is recorded as present and **redacted** |
+| `database/<table>.jsonl` | One JSON object per row, one row per line, for every base table in the `public` schema |
+| `artefacts/sha256/<xx>/<62 hex>` | The artefact objects, at their content-addressed keys (`full` mode only) |
+
+The database export is a row-level export produced by PostgreSQL's own
+`row_to_json`, taken inside a single `REPEATABLE READ READ ONLY` transaction so
+that every table in the archive is the same instant. It is **not** `pg_dump`
+output and is restored by `reviewplane restore` rather than by `psql`; an
+operator who additionally wants a `pg_dump` archive takes one with their own
+tooling against the same database (§11). ADR-0025 records why, and what is given
+up. The tables are enumerated from `information_schema` rather than from a list
+in the source, so a table a later migration adds is backed up without anyone
+having to remember it.
+
+The archive carries no schema. A restore reaches the archive's recorded schema
+version by applying this build's own migrations up to it, and then loads rows —
+which is why an archive from a newer release is refused rather than partially
+understood (§17).
+
+The manifest records a SHA-256 for every member but itself, and the command
+prints the SHA-256 of the whole archive. Those digests detect a truncated,
+corrupted or altered member; they are **not** a signature, and an attacker who
+can rewrite the archive can rewrite the manifest with it. Record the printed
+digest somewhere the archive is not.
+
+### Key material
+
+`connector_tls_material` holds the connector certificate authority's private
+key. Its rows are excluded from every archive unless `--include-key-material` is
+passed, and the manifest records which way round it was
+(`key_material.included`). The opt-in prints a warning naming what the file will
+contain, and both paths write a `backup.created` audit event recording whether
+key material travelled (`docs/SECURITY.md` §16 and §20).
+
+A restore of an archive without key material produces an installation that
+generates a **new** connector authority on first start. Connector identities
+issued by the old authority are no longer trusted, and the restore says how many
+have to be re-enrolled.
+
+### Encryption key references
+
+The manifest's `key_references` lists the distinct `encryption_key_reference`
+values the backed-up artefacts name. A reference is a name for a key held
+elsewhere and never key material. Envelope encryption is not implemented
+(`docs/SECURITY.md` §15), so this list is empty in this release; it exists so
+that an archive written before envelope encryption is unambiguous after it.
+
+The archive itself is **not** encrypted by this command. Encrypt it in transit
+and at rest with the operator's own tooling, as `docs/SECURITY.md` §20 requires.
 
 ## 17. Restore
 
-Restore must support:
+```bash
+./reviewplane restore --input - --dry-run < /backup/reviewplane-2026-07-28.tar.zst
+./reviewplane restore --input -           < /backup/reviewplane-2026-07-28.tar.zst
+```
+
+`--input -` reads the archive from standard input, which is how an archive on
+the host reaches a command running in a container. It is spooled to
+`<artefact path>/.restore/` first, because a restore reads its archive twice on
+purpose — once to prove it, once to apply it — and standard input can be read
+only once. The spool is removed when the command finishes, whether it succeeded
+or not, and the artefact volume therefore needs room for the archive as well as
+for its contents.
+
+Restore MUST support:
 
 - Empty installation
 - Compatibility validation
@@ -688,7 +894,80 @@ Restore must support:
 - New hostname configuration
 - Re-encryption or key-reference remapping where supported
 
-Production restore should be tested periodically.
+Production restore SHOULD be tested periodically.
+
+### What the shipped command does
+
+| Requirement | Behaviour |
+|---|---|
+| Empty installation | The target must have no table in the `public` schema. Restore is not a merge, and a restore over existing data would silently be one. A non-empty target is refused |
+| Compatibility validation | The archive's `schema_version` must be a migration file this build has. An archive from a newer release is refused, naming the version. The migration list the archive recorded must also be this product's |
+| Integrity check | The archive is read once **before anything is written**, and every member is checked against the manifest's digest and size. A missing member, a member the manifest does not declare, a member that appears twice and a manifest that is not the first member are all refused |
+| Dry run | `--dry-run` runs the same integrity pass, reports the plan — rows, artefact objects, migrations to apply, migrations still pending afterwards — and writes nothing, in the database or in the artefact store |
+| New hostname | `--hostname HOST` records the move and revokes the credentials issued for the previous host: sign-in sessions, unspent installation tokens and agent credentials. It reports which settings to change; see below |
+| Key-reference remapping | Not implemented, because envelope encryption is not (`docs/SECURITY.md` §15). The manifest's `key_references` is reported, and this release has nothing to remap |
+
+The whole restore is one transaction: the migrations that create the schema, the
+load, the hostname rotation, the artefact check and the audit event. Foreign
+keys are deferred inside it, so a load that would leave a dangling reference
+aborts and writes nothing.
+
+PostgreSQL rolls back schema changes as it rolls back rows, so **a failed
+restore leaves the database exactly as the command found it** — no schema, no
+rows, no audit event — and the restore can simply be run again. The command
+drops nothing and creates nothing outside its transaction, so an object that was
+already in the database is not at risk: a view, a function, a sequence, a type or
+an extension that a managed PostgreSQL had put in `public` is untouched by a
+failure, and `apps/server/test/backup.test.ts` asserts exactly that against all
+five.
+
+This is why every migration must be transactional, and why
+`apps/server/test/migrate.test.ts` refuses one containing `CREATE INDEX
+CONCURRENTLY`, `VACUUM`, `CREATE DATABASE`, `CREATE TABLESPACE`, `ALTER SYSTEM`
+or `CREATE EXTENSION`.
+
+Each of those post-load steps is guarded against the schema **the archive
+restores to**, not this build's. A Stage 0 archive restores to `0054`, where
+`event_outbox`, `install_tokens` and `viewer_sessions.revocation_reason` do not
+exist; the restore writes the audit record without an outbox row, rotates the
+credentials the schema does have, and reports what it did.
+
+After the load, restore checks every artefact the restored metadata references
+against the store. Application metadata is authoritative for availability
+(ADR-0012), so a row without bytes is missing evidence: it is reported, and for a
+`full` archive the command exits `4`. A `database` archive reports the same absence differently,
+naming the external store the manifest records, because the objects were never
+supposed to be in the file.
+
+### Restoring to a new hostname
+
+`REVIEWPLANE_GATEWAY_DOMAIN` and `REVIEWPLANE_PUBLIC_ORIGIN` are configuration
+the control plane reads at startup, not rows in the database. `--hostname` does
+not change them and does not claim to: it revokes the credentials that named the
+old host and prints the settings to change before the stack is started. The
+sequence on the new machine is:
+
+```bash
+./configure                                     # generate this host's secrets
+docker compose up -d postgres                   # only postgres: `api` migrates
+                                                # on start, and a restore needs
+                                                # an installation with no tables
+./reviewplane restore --input - --hostname reviews.example \
+  < /backup/reviewplane-2026-07-28.tar.zst
+# set REVIEWPLANE_GATEWAY_DOMAIN and REVIEWPLANE_PUBLIC_ORIGIN in .env
+docker compose up -d
+./reviewplane install-token --force             # sign in again
+./reviewplane status
+```
+
+`api` must not be running when the restore runs. `reviewplane serve` applies
+every migration before it opens its listener (§11), which creates the schema and
+leaves the target no longer empty; the restore then refuses. With `api` stopped,
+`deploy/compose/reviewplane` runs the command in a one-shot container, which has
+the same artefact volume and the same database.
+
+Connectors are re-enrolled on the new host (§13). The restore says how many
+identities the missing authority invalidated.
 
 ## 18. Air-gapped deployment
 

@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Artefact metadata the review domain needs, and the short-lived grants that
 -- are the only way to read artefact bytes back (docs/DOMAIN_MODEL.md
 -- section 20, docs/SECURITY.md section 13, ADR-0012, ADR-0019).

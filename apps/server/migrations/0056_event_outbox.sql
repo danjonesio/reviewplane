@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Post-commit fan-out for committed events (docs/EVENTS.md section 9,
 -- docs/ARCHITECTURE.md section 10).
 --

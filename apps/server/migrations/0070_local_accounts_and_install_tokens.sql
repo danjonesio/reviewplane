@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Local administrator accounts (docs/SECURITY.md section 6.1, RVP-12).
 --
 -- Stage 0 had one human credential: a long-lived token in the environment

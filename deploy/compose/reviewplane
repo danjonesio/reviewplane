@@ -13,21 +13,36 @@
 # It prefers `exec` on the running `api` container, because that is the process
 # with the artefact volume mounted and a route to the gateway, and those are two
 # of the things `status` reports. With the stack down it falls back to a
-# one-shot container, which can still answer `migrate` and `version`.
+# one-shot container, which can still answer `migrate`, `backup`, `restore` and
+# `version`.
 #
-# Usage: ./reviewplane <command> [arguments]
-#   ./reviewplane status [--json]
-#   ./reviewplane install-token [--ttl-seconds N] [--force]
-#   ./reviewplane migrate [--status]
-#   ./reviewplane version
+# `backup` and `restore` stream through this script rather than writing into a
+# volume: `-T` keeps standard input and standard output connected end to end, so
+# `./reviewplane backup --output - > archive.tar.zst` lands the archive on this
+# host, in this directory, owned by whoever ran it
+# (`docs/DEPLOYMENT.md` sections 16 and 17).
 
 set -euo pipefail
 
 COMPOSE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE=(docker compose --project-directory "${COMPOSE_DIR}")
 
+usage() {
+  cat >&2 <<'USAGE'
+Usage: ./reviewplane <command> [arguments]
+  ./reviewplane status [--json]
+  ./reviewplane install-token [--ttl-seconds N] [--force]
+  ./reviewplane migrate [--status] [--preflight] [--json]
+  ./reviewplane backup --output - [--mode full|database] > archive.tar.zst
+  ./reviewplane restore --input - [--dry-run] [--hostname HOST] < archive.tar.zst
+  ./reviewplane connector list
+  ./reviewplane export-review --project <id|slug> --review <slug|id>
+  ./reviewplane version
+USAGE
+}
+
 if [[ $# -eq 0 ]]; then
-  sed -n '19,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+  usage
   exit 1
 fi
 

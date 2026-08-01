@@ -90,6 +90,7 @@ Output includes, and the `--json` object carries a key for each:
 | Active sessions | `sessions` | Sessions that have not ended |
 | Queue depth | `queue` | Pending, running and failed durable jobs |
 | Storage use | `storage` | Available artefact count and bytes, database size, volume free and total |
+| Backup | `backup` | When this installation last recorded a backup, in what mode, how long ago, and how many reviews it holds |
 | Certificate expiry warnings | `certificate` | The expiry of the certificate the configured TLS listener actually serves |
 
 Two properties are deliberate.
@@ -122,8 +123,17 @@ registered" is a stack that never came up.
 and no queued work, and reporting that as unhealthy would train an operator to
 ignore the command. Only the database, the schema and the artefact store make
 the report `degraded`; no browser capacity, a worker gone quiet, a worker
-reporting the Chromium sandbox disabled and a certificate near expiry are
-`warnings`.
+reporting the Chromium sandbox disabled, an installation holding reviews it has
+never backed up, and a certificate near expiry are `warnings`.
+
+**Backup is read from the audit trail, not from a disk.** The section reports
+the newest `backup.created` event: what a status command can answer truthfully
+is whether a backup was taken *from this installation*, not whether a file
+somewhere else still exists. An operator whose archives are produced by their own
+tooling therefore sees "never recorded", which is the honest answer to "can this
+installation prove it is backed up". The warning is raised only when the
+installation holds at least one review, because a fresh installation has nothing
+to lose and warning about it would be the noise this section exists to avoid.
 
 The exit code is the automation interface: `0` when every check passes, `4` when
 one that the deployment cannot work without has failed. `4` rather than `1`
@@ -317,6 +327,31 @@ availability (ADR-0012): a database restored ahead of the volume names artefacts
 whose bytes are not there yet, and a volume restored ahead of the database holds
 objects nothing references.
 
+### The commands
+
+```bash
+cd deploy/compose
+./reviewplane backup --output - > "reviewplane-$(date +%F).tar.zst"
+./reviewplane restore --input - --dry-run < reviewplane-2026-07-28.tar.zst
+```
+
+`backup` takes both halves in one archive and `restore` puts both back in one
+operation, which is what makes "restored together" a property of the tooling
+rather than an instruction. `docs/DEPLOYMENT.md` §16 and §17 give the modes, the
+archive layout, the key-material rules and the restore refusals in full.
+
+A daily database backup is the recommendation; the schedule is the operator's,
+and this release ships no scheduler. `reviewplane status` reports when the last
+one was recorded (§3), and `reviewplane migrate --preflight` refuses an upgrade
+when there is none (§12).
+
+Both operations write an audit event — `backup.created` and `backup.restored`
+(`docs/EVENTS.md` §7) — which is what `docs/SECURITY.md` §16 requires of export
+and backup operations, and what the status and preflight answers are read from.
+
+Backup encryption is the operator's: the archive is not encrypted by the command
+(`docs/SECURITY.md` §20).
+
 ## 12. Upgrade operations
 
 Preflight checks:
@@ -328,7 +363,49 @@ Preflight checks:
 - Worker compatibility
 - Migration lock availability
 
-Rolling compatibility should permit old connectors within a documented support window.
+Rolling compatibility SHOULD permit old connectors within a documented support window.
+
+### `reviewplane migrate --preflight`
+
+The six checks above, in that order, every one of them reported — including the
+ones that passed, because a check that is silently omitted reads as a check that
+passed. `--json` carries the `compatibility_report` shape of
+`packages/protocol`. The command reads and reports; it applies nothing, and
+exits `4` when a check fails.
+
+| Check | `fail` | `warn` |
+|---|---|---|
+| `source_version` | The database is at a schema this build does not have — it was written by a newer release | — |
+| `backup_freshness` | No `backup.created` event has ever been recorded | The newest is older than 24 hours |
+| `disk_space` | Free space on the artefact volume is under 1 GiB, or under the database's own size | Free space is under three times the database's size |
+| `connector_compatibility` | The connector table could not be read | An enrolled connector is below the configured minimum and will be refused with `UPGRADE_REQUIRED`, or below the recommended version and will keep running with a recommendation |
+| `worker_compatibility` | The worker table could not be read | A registered browser worker reports a build other than the control plane's |
+| `migration_lock` | Another process holds the migration lock | — |
+
+A check that could not run at all reports `fail`, whatever the row above says:
+"the connector table could not be read" is not a check that passed. The detail
+carries no connection string, credential or address (`docs/SECURITY.md` §18),
+because preflight output is pasted into issues.
+
+Two distinctions are deliberate. A connector that will be refused does **not**
+fail the preflight: the control plane's upgrade is not what has to move, and
+`docs/CONNECTOR_PROTOCOL.md` §19 already gives that connector a terminal
+classification it reports and stops on. The classification here comes from the
+same function the reconnect exchange uses, against the same configured policy
+(`REVIEWPLANE_CONNECTOR_MINIMUM_VERSION` and
+`REVIEWPLANE_CONNECTOR_RECOMMENDED_VERSION`), so the preflight cannot say a
+connector is fine and the control plane then refuse it.
+
+A missing backup **does** fail it. The migrations in this release declare no
+downgrade (`docs/DEPLOYMENT.md` §15), so an upgrade without a backup is an
+upgrade with no way back, and that is the one thing a preflight exists to
+prevent.
+
+The migration lock is taken and released rather than held: the preflight must
+not become the process that blocks the migration it is clearing the way for. The
+window between the check and the migration is real and is not pretended away —
+the runner takes the same lock, so two concurrent upgrades still cannot both
+apply a file. The check exists so the second one is told why it is waiting.
 
 ## 13. Incident categories
 
@@ -380,6 +457,22 @@ reviewplane export-review
 ```
 
 Commands support `--json` for automation.
+
+### Implemented today
+
+| Command | State |
+|---|---|
+| `reviewplane status [--json]` | Shipped (§3) |
+| `reviewplane backup --output FILE\|- [--mode full\|database] [--include-key-material] [--json]` | Shipped (§11, `docs/DEPLOYMENT.md` §16) |
+| `reviewplane restore --input FILE\|- [--dry-run] [--hostname HOST] [--json]` | Shipped (§11, `docs/DEPLOYMENT.md` §17) |
+| `reviewplane migrate [--status] [--preflight] [--json]` | Shipped (§12, `docs/DEPLOYMENT.md` §11) |
+| `reviewplane connector list` | Shipped |
+| `reviewplane export-review --project P --review R [--out FILE]` | Shipped |
+| `reviewplane doctor` | Not implemented (§15) |
+| `reviewplane rotate-keys` | Not implemented. Envelope encryption is unimplemented, so there is no data key to rotate (`docs/SECURITY.md` §15); the connector authority is generated when its row is absent, and the identities it signed are replaced by re-enrolment (`docs/DEPLOYMENT.md` §13) |
+| `reviewplane worker list` | Not implemented. `status` reports browser capacity |
+| `reviewplane session reconcile` | Not implemented. Reconciliation runs on reconnect (§9) |
+| `reviewplane retention run` | Not implemented. Retention is Stage 2 (§10) |
 
 ## 15. Doctor command
 

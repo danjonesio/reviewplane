@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Adds `service:publish` to the agent capability vocabulary.
 --
 -- The published-service tools of docs/MCP_SPEC.md section 7.2 publish and

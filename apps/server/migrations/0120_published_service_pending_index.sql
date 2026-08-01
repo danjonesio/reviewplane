@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Supports the sweep that finishes publications another process asked for
 -- (docs/CONNECTOR_PROTOCOL.md section 11, ADR-0021).
 --

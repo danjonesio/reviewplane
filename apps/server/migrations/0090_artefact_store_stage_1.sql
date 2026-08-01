@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Stage 1 artefact store: the remaining docs/DOMAIN_MODEL.md section 20 fields,
 -- derived artefacts, and deletion (RVP-33, ADR-0012, ADR-0006).
 --

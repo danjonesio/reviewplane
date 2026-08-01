@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Annotations: structured geometry stored apart from the original evidence
 -- (docs/DOMAIN_MODEL.md section 16, ADR-0006).
 --

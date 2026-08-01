@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Durable background work (docs/ARCHITECTURE.md sections 4.8 and 5.1).
 --
 -- "Initial durable jobs may use PostgreSQL row locking. A separate message

@@ -28,17 +28,23 @@ const PATTERN_12 = new RegExp("^[A-Za-z0-9:._-]+$", "u");
 const PATTERN_13 = new RegExp("^sha256:[0-9a-f]{64}$", "u");
 const PATTERN_14 = new RegExp("^[^\\x00-\\x1f\\x7f/\\\\]+$", "u");
 const PATTERN_15 = new RegExp("^[0-9a-f]+$", "u");
-const PATTERN_16 = new RegExp("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", "u");
-const PATTERN_17 = new RegExp("^https://[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.[a-z0-9.-]{1,180}/$", "u");
-const PATTERN_18 = new RegExp("^[0-9A-Fa-f:.]{1,45}$", "u");
-const PATTERN_19 = new RegExp("^(\\[[0-9A-Fa-f:.]{1,45}\\]|[0-9A-Fa-f:.]{1,45}):[0-9]{1,5}$", "u");
-const PATTERN_20 = new RegExp("^[^\\s\\x00-\\x1f]+$", "u");
-const PATTERN_21 = new RegExp("^[a-z][a-z0-9_]*$", "u");
-const PATTERN_22 = new RegExp("^[^\\x00]+$", "u");
-const PATTERN_23 = new RegExp("^[A-Za-z0-9_.-]+$", "u");
-const PATTERN_24 = new RegExp("^[a-z][a-z0-9_.]*$", "u");
-const PATTERN_25 = new RegExp("^[a-z][a-z0-9_.\\[\\]]*$", "u");
-const PATTERN_26 = new RegExp("^[A-Za-z0-9_-]{1,64}$", "u");
+const PATTERN_16 = new RegExp("^[0-9a-f]{64}$", "u");
+const PATTERN_17 = new RegExp("^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$", "u");
+const PATTERN_18 = new RegExp("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", "u");
+const PATTERN_19 = new RegExp("^https://[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.[a-z0-9.-]{1,180}/$", "u");
+const PATTERN_20 = new RegExp("^[0-9A-Fa-f:.]{1,45}$", "u");
+const PATTERN_21 = new RegExp("^(\\[[0-9A-Fa-f:.]{1,45}\\]|[0-9A-Fa-f:.]{1,45}):[0-9]{1,5}$", "u");
+const PATTERN_22 = new RegExp("^[^\\s\\x00-\\x1f]+$", "u");
+const PATTERN_23 = new RegExp("^[a-z][a-z0-9_]*$", "u");
+const PATTERN_24 = new RegExp("^[A-Za-z0-9][A-Za-z0-9.-]*$", "u");
+const PATTERN_25 = new RegExp("^[a-z][a-z0-9_]{0,62}$", "u");
+const PATTERN_26 = new RegExp("^[0-9]{4}_[a-z0-9_]+\\.sql$", "u");
+const PATTERN_27 = new RegExp("^[A-Za-z0-9:._/-]+$", "u");
+const PATTERN_28 = new RegExp("^[^\\x00]+$", "u");
+const PATTERN_29 = new RegExp("^[A-Za-z0-9_.-]+$", "u");
+const PATTERN_30 = new RegExp("^[a-z][a-z0-9_.]*$", "u");
+const PATTERN_31 = new RegExp("^[a-z][a-z0-9_.\\[\\]]*$", "u");
+const PATTERN_32 = new RegExp("^[A-Za-z0-9_-]{1,64}$", "u");
 
 /**
  * Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the
@@ -373,6 +379,68 @@ export function validateSessionRevocationReason(value: unknown, path: string, ou
 }
 
 /**
+ * A SHA-256 digest in lower-case hexadecimal. It is the only checksum algorithm this
+ * version defines, so a reader never has to negotiate one.
+ */
+export function validateSha256Digest(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 64, maxLength: 64, pattern: PATTERN_16 });
+}
+
+/**
+ * A path inside a backup archive, always relative and always forward-slashed. The
+ * character set excludes a leading slash and a backslash; a member whose path traverses
+ * upwards is refused by the reader rather than by this pattern, because a regular
+ * expression that has to be read as a security control is one nobody can check.
+ */
+export function validateArchiveMemberPath(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 256, pattern: PATTERN_17 });
+}
+
+/**
+ * What a backup archive carries (docs/DEPLOYMENT.md section 16). full is the database
+ * together with the artefact objects the filesystem driver holds, which under ADR-0012 is
+ * a complete single-host backup. database is the database alone, for an installation whose
+ * artefacts live in external storage the operator protects separately. The mode is
+ * recorded rather than inferred, so a restore that finds no artefact members can tell a
+ * deliberate database-only archive from a truncated one.
+ */
+export function validateBackupMode(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["full","database"] });
+}
+
+/**
+ * The artefact store the backed-up installation was running (ADR-0012).
+ */
+export function validateBackupArtefactDriver(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["filesystem","s3"] });
+}
+
+/**
+ * Whether a migration can be undone (docs/DEPLOYMENT.md section 15). Every migration
+ * states one; the repository default is forward-only, and Stage 1 implements no automated
+ * downgrade, so not_supported means the rollback path is restoring the backup taken before
+ * the upgrade.
+ */
+export function validateMigrationDowngrade(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["supported","not_supported"] });
+}
+
+/**
+ * Outcome of one preflight check. fail stops the upgrade; warn is reported and does not.
+ */
+export function validateCompatibilityStatus(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["pass","warn","fail"] });
+}
+
+/**
+ * The preflight checks of docs/OPERATIONS.md section 12. The set is closed so that a
+ * report with a check missing is detectable rather than being read as a check that passed.
+ */
+export function validateCompatibilityCheckName(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["source_version","backup_freshness","disk_space","connector_compatibility","worker_compatibility","migration_lock"] });
+}
+
+/**
  * Published-service lifecycle status (docs/DOMAIN_MODEL.md section 10). A route reaches
  * ready only once the connector has acknowledged the destination it opened and the tunnel
  * gateway has accepted the registration; failed carries the stable class that refused it.
@@ -419,7 +487,7 @@ export function validateDestinationProtocol(value: unknown, path: string, out: S
  * not a valid label. Consumers MUST treat it as opaque.
  */
 export function validatePublicAlias(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 63, pattern: PATTERN_16 });
+  checkString(value, path, out, { minLength: 1, maxLength: 63, pattern: PATTERN_18 });
 }
 
 /**
@@ -429,7 +497,7 @@ export function validatePublicAlias(value: unknown, path: string, out: SchemaVio
  * allow-list (docs/SECURITY.md section 9).
  */
 export function validateInternalOrigin(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 256, pattern: PATTERN_17 });
+  checkString(value, path, out, { minLength: 1, maxLength: 256, pattern: PATTERN_19 });
 }
 
 /**
@@ -438,7 +506,7 @@ export function validateInternalOrigin(value: unknown, path: string, out: Schema
  * policy need not be the address the connector later opens (docs/SECURITY.md section 9).
  */
 export function validateLocalHost(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 45, pattern: PATTERN_18 });
+  checkString(value, path, out, { minLength: 1, maxLength: 45, pattern: PATTERN_20 });
 }
 
 /**
@@ -454,7 +522,7 @@ export function validateLocalPort(value: unknown, path: string, out: SchemaViola
  * what the control plane asked for, so that the two can be compared.
  */
 export function validateObservedDestination(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 3, maxLength: 64, pattern: PATTERN_19 });
+  checkString(value, path, out, { minLength: 3, maxLength: 64, pattern: PATTERN_21 });
 }
 
 /**
@@ -466,7 +534,7 @@ export function validateRepositoryIdentityCanonical(value: unknown, path: string
 }
 
 export function validateRepositoryIdentityCloneUrlsItem(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 3, maxLength: 512, pattern: PATTERN_20 });
+  checkString(value, path, out, { minLength: 3, maxLength: 512, pattern: PATTERN_22 });
 }
 
 /**
@@ -1299,7 +1367,7 @@ export function validateSessionRevokedPayload(value: unknown, path: string, out:
 }
 
 export function validateProjectUpdatedPayloadChangedFieldsItem(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_21 });
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_23 });
 }
 
 /**
@@ -1697,6 +1765,466 @@ export function validateJobFailedPayload(value: unknown, path: string, out: Sche
 }
 
 /**
+ * Product version the image reports.
+ */
+export function validateBackupProductVersion(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 128, pattern: PATTERN_3 });
+}
+
+/**
+ * Source revision the image was built from, or unknown when the build did not stamp one.
+ */
+export function validateBackupProductRevision(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 128, pattern: PATTERN_3 });
+}
+
+/**
+ * Build time the image reports, or unknown. It is a free string rather than a timestamp
+ * because an unstamped development build has no build time and inventing one would be a
+ * lie in an audit record.
+ */
+export function validateBackupProductBuiltAt(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_3 });
+}
+
+/**
+ * The build that produced the archive (docs/DEPLOYMENT.md section 16). Recorded so a
+ * restore can state which release wrote the data it is about to load.
+ */
+export function validateBackupProduct(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["version", "revision", "built_at"], ["version", "revision", "built_at"]);
+  if (source === null) return;
+  if (source["version"] !== undefined) {
+    validateBackupProductVersion(source["version"], `${path}.version`, out);
+  }
+  if (source["revision"] !== undefined) {
+    validateBackupProductRevision(source["revision"], `${path}.revision`, out);
+  }
+  if (source["built_at"] !== undefined) {
+    validateBackupProductBuiltAt(source["built_at"], `${path}.built_at`, out);
+  }
+}
+
+/**
+ * The gateway hostname the installation was serving, when it was configured. Absent when
+ * the deployment terminates TLS in front of the stack and the control plane was never told
+ * a hostname.
+ */
+export function validateBackupSourceHostname(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 253, pattern: PATTERN_24 });
+}
+
+/**
+ * Where the archive came from. hostname is what makes a restore to a new host visible: a
+ * restore that changes it says so and states which credentials it invalidated
+ * (docs/DEPLOYMENT.md section 17).
+ */
+export function validateBackupSource(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["hostname", "artefact_driver"], ["artefact_driver"]);
+  if (source === null) return;
+  if (source["hostname"] !== undefined) {
+    validateBackupSourceHostname(source["hostname"], `${path}.hostname`, out);
+  }
+  if (source["artefact_driver"] !== undefined) {
+    validateBackupArtefactDriver(source["artefact_driver"], `${path}.artefact_driver`, out);
+  }
+}
+
+/**
+ * Table name in the public schema.
+ */
+export function validateBackupTableName(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 63, pattern: PATTERN_25 });
+}
+
+/**
+ * Rows written for this table.
+ */
+export function validateBackupTableRows(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 0, maximum: 1000000000000 });
+}
+
+/**
+ * One backed-up table and the number of rows the archive carries for it. The count is what
+ * a restore compares its own result against, so a load that silently dropped rows fails
+ * rather than reporting success.
+ */
+export function validateBackupTable(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["name", "rows"], ["name", "rows"]);
+  if (source === null) return;
+  if (source["name"] !== undefined) {
+    validateBackupTableName(source["name"], `${path}.name`, out);
+  }
+  if (source["rows"] !== undefined) {
+    validateBackupTableRows(source["rows"], `${path}.rows`, out);
+  }
+}
+
+/**
+ * Uncompressed size of the member.
+ */
+export function validateBackupEntryBytes(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 0, maximum: 1099511627776 });
+}
+
+/**
+ * One member of the archive, with the digest and size the manifest binds it to. Every
+ * member but the manifest itself appears here, so a member that was truncated, altered or
+ * omitted is detected before anything is written.
+ */
+export function validateBackupEntry(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["path", "bytes", "sha256"], ["path", "bytes", "sha256"]);
+  if (source === null) return;
+  if (source["path"] !== undefined) {
+    validateArchiveMemberPath(source["path"], `${path}.path`, out);
+  }
+  if (source["bytes"] !== undefined) {
+    validateBackupEntryBytes(source["bytes"], `${path}.bytes`, out);
+  }
+  if (source["sha256"] !== undefined) {
+    validateSha256Digest(source["sha256"], `${path}.sha256`, out);
+  }
+}
+
+/**
+ * True only when the operator explicitly opted in. A portable backup carrying key material
+ * is a private key in a file an operator will copy somewhere, so it is never the default.
+ */
+export function validateBackupKeyMaterialIncluded(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+export function validateBackupKeyMaterialExcludedTablesItem(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 63, pattern: PATTERN_25 });
+}
+
+/**
+ * Tables whose rows were held back because they hold key material. Empty when key material
+ * was included.
+ */
+export function validateBackupKeyMaterialExcludedTables(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 64, uniqueItems: true })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateBackupKeyMaterialExcludedTablesItem(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Whether the archive carries key material, and which tables were held back when it does
+ * not (docs/SECURITY.md section 20). It is stated in every archive rather than only in the
+ * archives that carry it, because absence has to be a recorded fact for a restore to be
+ * able to say what it cannot reconstruct.
+ */
+export function validateBackupKeyMaterial(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["included", "excluded_tables"], ["included", "excluded_tables"]);
+  if (source === null) return;
+  if (source["included"] !== undefined) {
+    validateBackupKeyMaterialIncluded(source["included"], `${path}.included`, out);
+  }
+  if (source["excluded_tables"] !== undefined) {
+    validateBackupKeyMaterialExcludedTables(source["excluded_tables"], `${path}.excluded_tables`, out);
+  }
+}
+
+/**
+ * Manifest structure version. A reader refuses a version it does not know rather than
+ * guessing at the members it recognises.
+ */
+export function validateBackupManifestManifestVersion(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 1, maximum: 1 });
+}
+
+/**
+ * Migration file at the head of the backed-up schema, which is the schema version
+ * reviewplane migrate reports. A restore refuses an archive whose schema is ahead of the
+ * installed build, because the rows would name columns this build's migrations have not
+ * created.
+ */
+export function validateBackupManifestSchemaVersion(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 5, maxLength: 128, pattern: PATTERN_26 });
+}
+
+/**
+ * Every table in the public schema, with the rows the archive carries. Tables are
+ * enumerated from the live catalogue rather than from a list in the source, so a table
+ * added by a later migration is backed up without anyone remembering to add it here.
+ */
+export function validateBackupManifestTables(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 512, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateBackupTable(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Artefact objects carried. Zero in database mode, and zero in full mode only when the
+ * store held none.
+ */
+export function validateBackupManifestArtefactObjects(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 0, maximum: 1000000000 });
+}
+
+/**
+ * Total uncompressed size of the artefact objects carried.
+ */
+export function validateBackupManifestArtefactBytes(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 0, maximum: 1099511627776 });
+}
+
+/**
+ * Storage keys that artefact metadata referenced and the store did not hold at backup
+ * time. Recorded rather than silently skipped: application metadata is authoritative for
+ * availability (ADR-0012), so a row without bytes is missing evidence and a restore has to
+ * be able to report it.
+ */
+export function validateBackupManifestArtefactsMissing(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 1024, uniqueItems: true })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateArchiveMemberPath(value[index], `${path}[${index}]`, out);
+  }
+}
+
+export function validateBackupManifestKeyReferencesItem(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 256, pattern: PATTERN_27 });
+}
+
+/**
+ * Distinct encryption key references the backed-up data names (docs/SECURITY.md section
+ * 15). A reference is a name for a key held elsewhere and never key material, so recording
+ * it is what lets a restore state which keys the restored installation will need. Empty
+ * while envelope encryption is unimplemented.
+ */
+export function validateBackupManifestKeyReferences(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 256, uniqueItems: true })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateBackupManifestKeyReferencesItem(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Whether a configuration member was written. It carries the non-secret settings of the
+ * installation and records a secret only as the name of the variable that held it.
+ */
+export function validateBackupManifestConfigurationIncluded(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * Algorithm every digest in this manifest uses.
+ */
+export function validateBackupManifestChecksumAlgorithm(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["sha256"] });
+}
+
+/**
+ * Every archive member but the manifest, with its digest. The manifest cannot carry its
+ * own digest, so whole-archive integrity is the digest the backup command prints and
+ * records in its audit event; these entries are what detect a truncated or corrupted
+ * member.
+ */
+export function validateBackupManifestEntries(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 1000000, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateBackupEntry(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * The manifest of a backup archive (docs/DEPLOYMENT.md section 16). It is the first member
+ * of the archive, so a reader learns what it holds before reading anything else, and it is
+ * the single structure both the backup writer and the restore reader validate against.
+ */
+export function validateBackupManifest(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["manifest_version", "created_at", "mode", "product", "schema_version", "source", "tables", "artefact_objects", "artefact_bytes", "artefacts_missing", "key_material", "key_references", "configuration_included", "checksum_algorithm", "entries"], ["manifest_version", "created_at", "mode", "product", "schema_version", "source", "tables", "artefact_objects", "artefact_bytes", "key_material", "key_references", "checksum_algorithm", "entries"]);
+  if (source === null) return;
+  if (source["manifest_version"] !== undefined) {
+    validateBackupManifestManifestVersion(source["manifest_version"], `${path}.manifest_version`, out);
+  }
+  if (source["created_at"] !== undefined) {
+    validateTimestamp(source["created_at"], `${path}.created_at`, out);
+  }
+  if (source["mode"] !== undefined) {
+    validateBackupMode(source["mode"], `${path}.mode`, out);
+  }
+  if (source["product"] !== undefined) {
+    validateBackupProduct(source["product"], `${path}.product`, out);
+  }
+  if (source["schema_version"] !== undefined) {
+    validateBackupManifestSchemaVersion(source["schema_version"], `${path}.schema_version`, out);
+  }
+  if (source["source"] !== undefined) {
+    validateBackupSource(source["source"], `${path}.source`, out);
+  }
+  if (source["tables"] !== undefined) {
+    validateBackupManifestTables(source["tables"], `${path}.tables`, out);
+  }
+  if (source["artefact_objects"] !== undefined) {
+    validateBackupManifestArtefactObjects(source["artefact_objects"], `${path}.artefact_objects`, out);
+  }
+  if (source["artefact_bytes"] !== undefined) {
+    validateBackupManifestArtefactBytes(source["artefact_bytes"], `${path}.artefact_bytes`, out);
+  }
+  if (source["artefacts_missing"] !== undefined) {
+    validateBackupManifestArtefactsMissing(source["artefacts_missing"], `${path}.artefacts_missing`, out);
+  }
+  if (source["key_material"] !== undefined) {
+    validateBackupKeyMaterial(source["key_material"], `${path}.key_material`, out);
+  }
+  if (source["key_references"] !== undefined) {
+    validateBackupManifestKeyReferences(source["key_references"], `${path}.key_references`, out);
+  }
+  if (source["configuration_included"] !== undefined) {
+    validateBackupManifestConfigurationIncluded(source["configuration_included"], `${path}.configuration_included`, out);
+  }
+  if (source["checksum_algorithm"] !== undefined) {
+    validateBackupManifestChecksumAlgorithm(source["checksum_algorithm"], `${path}.checksum_algorithm`, out);
+  }
+  if (source["entries"] !== undefined) {
+    validateBackupManifestEntries(source["entries"], `${path}.entries`, out);
+  }
+}
+
+/**
+ * Migration file name, which is also its position in the apply order.
+ */
+export function validateMigrationRecordFilename(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 5, maxLength: 128, pattern: PATTERN_26 });
+}
+
+/**
+ * The reason the migration gives, when it gives one.
+ */
+export function validateMigrationRecordNote(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 512, pattern: PATTERN_3 });
+}
+
+/**
+ * One migration and what it says about being undone.
+ */
+export function validateMigrationRecord(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["filename", "downgrade", "note"], ["filename", "downgrade"]);
+  if (source === null) return;
+  if (source["filename"] !== undefined) {
+    validateMigrationRecordFilename(source["filename"], `${path}.filename`, out);
+  }
+  if (source["downgrade"] !== undefined) {
+    validateMigrationDowngrade(source["downgrade"], `${path}.downgrade`, out);
+  }
+  if (source["note"] !== undefined) {
+    validateMigrationRecordNote(source["note"], `${path}.note`, out);
+  }
+}
+
+/**
+ * Highest applied migration. Absent for a database nobody has migrated, which is a state
+ * rather than an error.
+ */
+export function validateMigrationStateSchemaVersion(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 5, maxLength: 128, pattern: PATTERN_26 });
+}
+
+/**
+ * Migrations this database has applied, in apply order.
+ */
+export function validateMigrationStateApplied(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 4096, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateMigrationRecord(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Migrations on disk this database has not applied, in apply order.
+ */
+export function validateMigrationStatePending(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 4096, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateMigrationRecord(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * What a database has applied and what it has not (docs/DEPLOYMENT.md section 11). It is
+ * the shape reviewplane migrate --status reports and the shape the upgrade preflight
+ * reads, so an operator and a script are answering the same question from the same
+ * structure.
+ */
+export function validateMigrationState(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["schema_version", "applied", "pending"], ["applied", "pending"]);
+  if (source === null) return;
+  if (source["schema_version"] !== undefined) {
+    validateMigrationStateSchemaVersion(source["schema_version"], `${path}.schema_version`, out);
+  }
+  if (source["applied"] !== undefined) {
+    validateMigrationStateApplied(source["applied"], `${path}.applied`, out);
+  }
+  if (source["pending"] !== undefined) {
+    validateMigrationStatePending(source["pending"], `${path}.pending`, out);
+  }
+}
+
+/**
+ * One line an operator can act on. It never carries a connection string, a credential or a
+ * network address (docs/SECURITY.md section 18): preflight output is pasted into issues.
+ */
+export function validateCompatibilityCheckDetail(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 512, pattern: PATTERN_3 });
+}
+
+/**
+ * One preflight check and what it found.
+ */
+export function validateCompatibilityCheck(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["name", "status", "detail"], ["name", "status", "detail"]);
+  if (source === null) return;
+  if (source["name"] !== undefined) {
+    validateCompatibilityCheckName(source["name"], `${path}.name`, out);
+  }
+  if (source["status"] !== undefined) {
+    validateCompatibilityStatus(source["status"], `${path}.status`, out);
+  }
+  if (source["detail"] !== undefined) {
+    validateCompatibilityCheckDetail(source["detail"], `${path}.detail`, out);
+  }
+}
+
+/**
+ * True only when no check failed. A warning does not clear it to false, and a check that
+ * could not run reports fail rather than being omitted.
+ */
+export function validateCompatibilityReportOk(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * Every check, in a stable order, including the ones that passed.
+ */
+export function validateCompatibilityReportChecks(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 1, maxItems: 32, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateCompatibilityCheck(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * The upgrade preflight report (docs/OPERATIONS.md section 12, docs/DEPLOYMENT.md section
+ * 15 step 5).
+ */
+export function validateCompatibilityReport(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["ok", "checked_at", "checks"], ["ok", "checked_at", "checks"]);
+  if (source === null) return;
+  if (source["ok"] !== undefined) {
+    validateCompatibilityReportOk(source["ok"], `${path}.ok`, out);
+  }
+  if (source["checked_at"] !== undefined) {
+    validateTimestamp(source["checked_at"], `${path}.checked_at`, out);
+  }
+  if (source["checks"] !== undefined) {
+    validateCompatibilityReportChecks(source["checks"], `${path}.checks`, out);
+  }
+}
+
+/**
  * Message discriminator.
  */
 export function validateStreamSubscribeType(value: unknown, path: string, out: SchemaViolation[]): void {
@@ -1883,7 +2411,7 @@ export function validateStreamErrorType(value: unknown, path: string, out: Schem
  * trace.
  */
 export function validateStreamErrorMessage(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 1024, pattern: PATTERN_22 });
+  checkString(value, path, out, { minLength: 1, maxLength: 1024, pattern: PATTERN_28 });
 }
 
 /**
@@ -1949,7 +2477,7 @@ export function validateApiErrorDetailsCandidates(value: unknown, path: string, 
 }
 
 export function validateApiErrorDetailsAllowedTransitionsItem(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_23 });
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_29 });
 }
 
 /**
@@ -1964,7 +2492,7 @@ export function validateApiErrorDetailsAllowedTransitions(value: unknown, path: 
 }
 
 export function validateApiErrorDetailsRequiredEvidenceItem(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_21 });
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_23 });
 }
 
 /**
@@ -1978,7 +2506,7 @@ export function validateApiErrorDetailsRequiredEvidence(value: unknown, path: st
 }
 
 export function validateApiErrorDetailsMissingContextItem(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_24 });
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_30 });
 }
 
 /**
@@ -2004,14 +2532,14 @@ export function validateApiErrorDetailsRetryAfterMs(value: unknown, path: string
  * The request member the refusal is about.
  */
 export function validateApiErrorDetailsField(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 128, pattern: PATTERN_25 });
+  checkString(value, path, out, { minLength: 1, maxLength: 128, pattern: PATTERN_31 });
 }
 
 /**
  * Stable sub-reason where one code covers several causes.
  */
 export function validateApiErrorDetailsReason(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_21 });
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_23 });
 }
 
 /**
@@ -2059,7 +2587,7 @@ export function validateApiErrorDetails(value: unknown, path: string, out: Schem
  * (docs/SECURITY.md section 18).
  */
 export function validateApiErrorMessage(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 1024, pattern: PATTERN_22 });
+  checkString(value, path, out, { minLength: 1, maxLength: 1024, pattern: PATTERN_28 });
 }
 
 /**
@@ -2120,7 +2648,7 @@ export function validateCursorClaimsVersion(value: unknown, path: string, out: S
  * Value of the collection's sort column at the last row of the previous page.
  */
 export function validateCursorClaimsSortKey(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 128, pattern: PATTERN_22 });
+  checkString(value, path, out, { minLength: 1, maxLength: 128, pattern: PATTERN_28 });
 }
 
 /**
@@ -2283,7 +2811,7 @@ export function validatePublishedServiceReadyPayloadConnectorConnected(value: un
  * Signing key the capability was minted with, so that a rotation can be audited.
  */
 export function validatePublishedServiceReadyPayloadKeyId(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_26 });
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_32 });
 }
 
 /**

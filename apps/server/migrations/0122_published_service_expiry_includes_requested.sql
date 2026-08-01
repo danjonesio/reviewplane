@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Widens the expiry index so the sweep can reach a route that never completed.
 --
 -- The sweep selected `status = 'ready'` only, so a publication that was asked

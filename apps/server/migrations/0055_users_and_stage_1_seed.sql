@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- The single Stage 1 user, and the organisation that owns it
 -- (docs/DOMAIN_MODEL.md section 4, docs/ARCHITECTURE.md section 11).
 --

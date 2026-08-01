@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Inbox items (docs/DOMAIN_MODEL.md section 21, docs/API.md section 16,
 -- docs/MCP_SPEC.md section 9, RVP-49).
 --

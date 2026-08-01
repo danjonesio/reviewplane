@@ -463,6 +463,95 @@ export type SessionRevocationReason =
   | "revoked_by_administrator";
 
 /**
+ * What a backup archive carries (docs/DEPLOYMENT.md section 16). full is the database
+ * together with the artefact objects the filesystem driver holds, which under ADR-0012 is
+ * a complete single-host backup. database is the database alone, for an installation whose
+ * artefacts live in external storage the operator protects separately. The mode is
+ * recorded rather than inferred, so a restore that finds no artefact members can tell a
+ * deliberate database-only archive from a truncated one.
+ */
+export const BACKUP_MODE_VALUES = [
+  "full",
+  "database",
+] as const;
+
+export type BackupMode =
+  | "full"
+  | "database";
+
+/**
+ * The artefact store the backed-up installation was running (ADR-0012).
+ */
+export const BACKUP_ARTEFACT_DRIVER_VALUES = [
+  "filesystem",
+  "s3",
+] as const;
+
+export type BackupArtefactDriver =
+  | "filesystem"
+  | "s3";
+
+/**
+ * Algorithm every digest in this manifest uses.
+ */
+export const BACKUP_MANIFEST_CHECKSUM_ALGORITHM_VALUES = [
+  "sha256",
+] as const;
+
+export type BackupManifestChecksumAlgorithm =
+  | "sha256";
+
+/**
+ * Whether a migration can be undone (docs/DEPLOYMENT.md section 15). Every migration
+ * states one; the repository default is forward-only, and Stage 1 implements no automated
+ * downgrade, so not_supported means the rollback path is restoring the backup taken before
+ * the upgrade.
+ */
+export const MIGRATION_DOWNGRADE_VALUES = [
+  "supported",
+  "not_supported",
+] as const;
+
+export type MigrationDowngrade =
+  | "supported"
+  | "not_supported";
+
+/**
+ * Outcome of one preflight check. fail stops the upgrade; warn is reported and does not.
+ */
+export const COMPATIBILITY_STATUS_VALUES = [
+  "pass",
+  "warn",
+  "fail",
+] as const;
+
+export type CompatibilityStatus =
+  | "pass"
+  | "warn"
+  | "fail";
+
+/**
+ * The preflight checks of docs/OPERATIONS.md section 12. The set is closed so that a
+ * report with a check missing is detectable rather than being read as a check that passed.
+ */
+export const COMPATIBILITY_CHECK_NAME_VALUES = [
+  "source_version",
+  "backup_freshness",
+  "disk_space",
+  "connector_compatibility",
+  "worker_compatibility",
+  "migration_lock",
+] as const;
+
+export type CompatibilityCheckName =
+  | "source_version"
+  | "backup_freshness"
+  | "disk_space"
+  | "connector_compatibility"
+  | "worker_compatibility"
+  | "migration_lock";
+
+/**
  * Message discriminator.
  */
 export const STREAM_SUBSCRIBE_TYPE_VALUES = [
@@ -851,6 +940,8 @@ export const EVENT_TYPES = [
   "job.enqueued",
   "job.succeeded",
   "job.failed",
+  "backup.created",
+  "backup.restored",
 ] as const;
 
 /**
@@ -1052,6 +1143,20 @@ export type WorkspaceDisplayLabel = string;
  * identifier are both accepted and nothing else is.
  */
 export type GitCommit = string;
+
+/**
+ * A SHA-256 digest in lower-case hexadecimal. It is the only checksum algorithm this
+ * version defines, so a reader never has to negotiate one.
+ */
+export type Sha256Digest = string;
+
+/**
+ * A path inside a backup archive, always relative and always forward-slashed. The
+ * character set excludes a leading slash and a backslash; a member whose path traverses
+ * upwards is refused by the reader rather than by this pattern, because a regular
+ * expression that has to be read as a security control is one nobody can check.
+ */
+export type ArchiveMemberPath = string;
 
 /**
  * Leftmost label of a route's internal origin (docs/ARCHITECTURE.md section 7.3). It MUST
@@ -2189,6 +2294,266 @@ export interface JobFailedPayload {
    * When the next attempt becomes claimable. Absent when no attempt will follow.
    */
   readonly next_attempt_at?: Timestamp;
+}
+
+/**
+ * The build that produced the archive (docs/DEPLOYMENT.md section 16). Recorded so a
+ * restore can state which release wrote the data it is about to load.
+ */
+export interface BackupProduct {
+  /**
+   * Product version the image reports.
+   */
+  readonly version: string;
+  /**
+   * Source revision the image was built from, or unknown when the build did not stamp one.
+   */
+  readonly revision: string;
+  /**
+   * Build time the image reports, or unknown. It is a free string rather than a timestamp
+   * because an unstamped development build has no build time and inventing one would be a
+   * lie in an audit record.
+   */
+  readonly built_at: string;
+}
+
+/**
+ * Where the archive came from. hostname is what makes a restore to a new host visible: a
+ * restore that changes it says so and states which credentials it invalidated
+ * (docs/DEPLOYMENT.md section 17).
+ */
+export interface BackupSource {
+  /**
+   * The gateway hostname the installation was serving, when it was configured. Absent when
+   * the deployment terminates TLS in front of the stack and the control plane was never
+   * told a hostname.
+   */
+  readonly hostname?: string;
+  /**
+   * Artefact store the installation was running.
+   */
+  readonly artefact_driver: BackupArtefactDriver;
+}
+
+/**
+ * One backed-up table and the number of rows the archive carries for it. The count is what
+ * a restore compares its own result against, so a load that silently dropped rows fails
+ * rather than reporting success.
+ */
+export interface BackupTable {
+  /**
+   * Table name in the public schema.
+   */
+  readonly name: string;
+  /**
+   * Rows written for this table.
+   */
+  readonly rows: number;
+}
+
+/**
+ * One member of the archive, with the digest and size the manifest binds it to. Every
+ * member but the manifest itself appears here, so a member that was truncated, altered or
+ * omitted is detected before anything is written.
+ */
+export interface BackupEntry {
+  /**
+   * Path of the member inside the archive.
+   */
+  readonly path: ArchiveMemberPath;
+  /**
+   * Uncompressed size of the member.
+   */
+  readonly bytes: number;
+  /**
+   * Digest of the member's bytes.
+   */
+  readonly sha256: Sha256Digest;
+}
+
+/**
+ * Whether the archive carries key material, and which tables were held back when it does
+ * not (docs/SECURITY.md section 20). It is stated in every archive rather than only in the
+ * archives that carry it, because absence has to be a recorded fact for a restore to be
+ * able to say what it cannot reconstruct.
+ */
+export interface BackupKeyMaterial {
+  /**
+   * True only when the operator explicitly opted in. A portable backup carrying key
+   * material is a private key in a file an operator will copy somewhere, so it is never
+   * the default.
+   */
+  readonly included: boolean;
+  /**
+   * Tables whose rows were held back because they hold key material. Empty when key
+   * material was included.
+   */
+  readonly excluded_tables: readonly string[];
+}
+
+/**
+ * The manifest of a backup archive (docs/DEPLOYMENT.md section 16). It is the first member
+ * of the archive, so a reader learns what it holds before reading anything else, and it is
+ * the single structure both the backup writer and the restore reader validate against.
+ */
+export interface BackupManifest {
+  /**
+   * Manifest structure version. A reader refuses a version it does not know rather than
+   * guessing at the members it recognises.
+   */
+  readonly manifest_version: number;
+  /**
+   * When the archive was written.
+   */
+  readonly created_at: Timestamp;
+  /**
+   * What the archive carries.
+   */
+  readonly mode: BackupMode;
+  /**
+   * Build that produced the archive.
+   */
+  readonly product: BackupProduct;
+  /**
+   * Migration file at the head of the backed-up schema, which is the schema version
+   * reviewplane migrate reports. A restore refuses an archive whose schema is ahead of the
+   * installed build, because the rows would name columns this build's migrations have not
+   * created.
+   */
+  readonly schema_version: string;
+  /**
+   * Installation the archive came from.
+   */
+  readonly source: BackupSource;
+  /**
+   * Every table in the public schema, with the rows the archive carries. Tables are
+   * enumerated from the live catalogue rather than from a list in the source, so a table
+   * added by a later migration is backed up without anyone remembering to add it here.
+   */
+  readonly tables: readonly BackupTable[];
+  /**
+   * Artefact objects carried. Zero in database mode, and zero in full mode only when the
+   * store held none.
+   */
+  readonly artefact_objects: number;
+  /**
+   * Total uncompressed size of the artefact objects carried.
+   */
+  readonly artefact_bytes: number;
+  /**
+   * Storage keys that artefact metadata referenced and the store did not hold at backup
+   * time. Recorded rather than silently skipped: application metadata is authoritative for
+   * availability (ADR-0012), so a row without bytes is missing evidence and a restore has
+   * to be able to report it.
+   */
+  readonly artefacts_missing?: readonly ArchiveMemberPath[];
+  /**
+   * Key-material disposition.
+   */
+  readonly key_material: BackupKeyMaterial;
+  /**
+   * Distinct encryption key references the backed-up data names (docs/SECURITY.md section
+   * 15). A reference is a name for a key held elsewhere and never key material, so
+   * recording it is what lets a restore state which keys the restored installation will
+   * need. Empty while envelope encryption is unimplemented.
+   */
+  readonly key_references: readonly string[];
+  /**
+   * Whether a configuration member was written. It carries the non-secret settings of the
+   * installation and records a secret only as the name of the variable that held it.
+   */
+  readonly configuration_included?: boolean;
+  /**
+   * Algorithm every digest in this manifest uses.
+   */
+  readonly checksum_algorithm: BackupManifestChecksumAlgorithm;
+  /**
+   * Every archive member but the manifest, with its digest. The manifest cannot carry its
+   * own digest, so whole-archive integrity is the digest the backup command prints and
+   * records in its audit event; these entries are what detect a truncated or corrupted
+   * member.
+   */
+  readonly entries: readonly BackupEntry[];
+}
+
+/**
+ * One migration and what it says about being undone.
+ */
+export interface MigrationRecord {
+  /**
+   * Migration file name, which is also its position in the apply order.
+   */
+  readonly filename: string;
+  /**
+   * Downgrade support the migration declares.
+   */
+  readonly downgrade: MigrationDowngrade;
+  /**
+   * The reason the migration gives, when it gives one.
+   */
+  readonly note?: string;
+}
+
+/**
+ * What a database has applied and what it has not (docs/DEPLOYMENT.md section 11). It is
+ * the shape reviewplane migrate --status reports and the shape the upgrade preflight
+ * reads, so an operator and a script are answering the same question from the same
+ * structure.
+ */
+export interface MigrationState {
+  /**
+   * Highest applied migration. Absent for a database nobody has migrated, which is a state
+   * rather than an error.
+   */
+  readonly schema_version?: string;
+  /**
+   * Migrations this database has applied, in apply order.
+   */
+  readonly applied: readonly MigrationRecord[];
+  /**
+   * Migrations on disk this database has not applied, in apply order.
+   */
+  readonly pending: readonly MigrationRecord[];
+}
+
+/**
+ * One preflight check and what it found.
+ */
+export interface CompatibilityCheck {
+  /**
+   * Which check this is.
+   */
+  readonly name: CompatibilityCheckName;
+  /**
+   * What it found.
+   */
+  readonly status: CompatibilityStatus;
+  /**
+   * One line an operator can act on. It never carries a connection string, a credential or
+   * a network address (docs/SECURITY.md section 18): preflight output is pasted into
+   * issues.
+   */
+  readonly detail: string;
+}
+
+/**
+ * The upgrade preflight report (docs/OPERATIONS.md section 12, docs/DEPLOYMENT.md section
+ * 15 step 5).
+ */
+export interface CompatibilityReport {
+  /**
+   * True only when no check failed. A warning does not clear it to false, and a check that
+   * could not run reports fail rather than being omitted.
+   */
+  readonly ok: boolean;
+  /**
+   * When the preflight ran.
+   */
+  readonly checked_at: Timestamp;
+  /**
+   * Every check, in a stable order, including the ones that passed.
+   */
+  readonly checks: readonly CompatibilityCheck[];
 }
 
 /**

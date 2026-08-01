@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Agent sessions (docs/DOMAIN_MODEL.md section 11).
 --
 -- A bounded agent execution context. One MCP connection is one row, and every

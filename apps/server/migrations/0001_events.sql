@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Append-only domain and audit events (docs/EVENTS.md, docs/ARCHITECTURE.md
 -- section 10). Current state stays in normalised tables; this table is the
 -- audit history, session timeline and realtime source.

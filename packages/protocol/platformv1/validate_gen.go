@@ -21,17 +21,23 @@ var pattern12 = regexp.MustCompile("^[A-Za-z0-9:._-]+$")
 var pattern13 = regexp.MustCompile("^sha256:[0-9a-f]{64}$")
 var pattern14 = regexp.MustCompile("^[^\\x00-\\x1f\\x7f/\\\\]+$")
 var pattern15 = regexp.MustCompile("^[0-9a-f]+$")
-var pattern16 = regexp.MustCompile("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
-var pattern17 = regexp.MustCompile("^https://[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.[a-z0-9.-]{1,180}/$")
-var pattern18 = regexp.MustCompile("^[0-9A-Fa-f:.]{1,45}$")
-var pattern19 = regexp.MustCompile("^(\\[[0-9A-Fa-f:.]{1,45}\\]|[0-9A-Fa-f:.]{1,45}):[0-9]{1,5}$")
-var pattern20 = regexp.MustCompile("^[^\\s\\x00-\\x1f]+$")
-var pattern21 = regexp.MustCompile("^[a-z][a-z0-9_]*$")
-var pattern22 = regexp.MustCompile("^[^\\x00]+$")
-var pattern23 = regexp.MustCompile("^[A-Za-z0-9_.-]+$")
-var pattern24 = regexp.MustCompile("^[a-z][a-z0-9_.]*$")
-var pattern25 = regexp.MustCompile("^[a-z][a-z0-9_.\\[\\]]*$")
-var pattern26 = regexp.MustCompile("^[A-Za-z0-9_-]{1,64}$")
+var pattern16 = regexp.MustCompile("^[0-9a-f]{64}$")
+var pattern17 = regexp.MustCompile("^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$")
+var pattern18 = regexp.MustCompile("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+var pattern19 = regexp.MustCompile("^https://[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.[a-z0-9.-]{1,180}/$")
+var pattern20 = regexp.MustCompile("^[0-9A-Fa-f:.]{1,45}$")
+var pattern21 = regexp.MustCompile("^(\\[[0-9A-Fa-f:.]{1,45}\\]|[0-9A-Fa-f:.]{1,45}):[0-9]{1,5}$")
+var pattern22 = regexp.MustCompile("^[^\\s\\x00-\\x1f]+$")
+var pattern23 = regexp.MustCompile("^[a-z][a-z0-9_]*$")
+var pattern24 = regexp.MustCompile("^[A-Za-z0-9][A-Za-z0-9.-]*$")
+var pattern25 = regexp.MustCompile("^[a-z][a-z0-9_]{0,62}$")
+var pattern26 = regexp.MustCompile("^[0-9]{4}_[a-z0-9_]+\\.sql$")
+var pattern27 = regexp.MustCompile("^[A-Za-z0-9:._/-]+$")
+var pattern28 = regexp.MustCompile("^[^\\x00]+$")
+var pattern29 = regexp.MustCompile("^[A-Za-z0-9_.-]+$")
+var pattern30 = regexp.MustCompile("^[a-z][a-z0-9_.]*$")
+var pattern31 = regexp.MustCompile("^[a-z][a-z0-9_.\\[\\]]*$")
+var pattern32 = regexp.MustCompile("^[A-Za-z0-9_-]{1,64}$")
 
 // validateIdentifier checks opaque durable identifier (docs/DOMAIN_MODEL.md section
 // 3). Consumers MUST treat the value as opaque: the schema bounds only its length and
@@ -305,6 +311,60 @@ func validateSessionRevocationReason(value any, path string, out *[]SchemaViolat
 	checkString(value, path, out, stringOpts{values: []string{"sign_out", "rotated", "revoked_by_user", "revoked_by_administrator"}})
 }
 
+// validateSha256Digest checks a SHA-256 digest in lower-case hexadecimal. It is the
+// only checksum algorithm this version defines, so a reader never has to negotiate
+// one.
+func validateSha256Digest(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 64, maxLength: 64, pattern: pattern16})
+}
+
+// validateArchiveMemberPath checks a path inside a backup archive, always relative and
+// always forward-slashed. The character set excludes a leading slash and a backslash;
+// a member whose path traverses upwards is refused by the reader rather than by this
+// pattern, because a regular expression that has to be read as a security control is
+// one nobody can check.
+func validateArchiveMemberPath(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 256, pattern: pattern17})
+}
+
+// validateBackupMode checks what a backup archive carries (docs/DEPLOYMENT.md section
+// 16). full is the database together with the artefact objects the filesystem driver
+// holds, which under ADR-0012 is a complete single-host backup. database is the
+// database alone, for an installation whose artefacts live in external storage the
+// operator protects separately. The mode is recorded rather than inferred, so a
+// restore that finds no artefact members can tell a deliberate database-only archive
+// from a truncated one.
+func validateBackupMode(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"full", "database"}})
+}
+
+// validateBackupArtefactDriver checks the artefact store the backed-up installation
+// was running (ADR-0012).
+func validateBackupArtefactDriver(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"filesystem", "s3"}})
+}
+
+// validateMigrationDowngrade checks whether a migration can be undone
+// (docs/DEPLOYMENT.md section 15). Every migration states one; the repository default
+// is forward-only, and Stage 1 implements no automated downgrade, so not_supported
+// means the rollback path is restoring the backup taken before the upgrade.
+func validateMigrationDowngrade(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"supported", "not_supported"}})
+}
+
+// validateCompatibilityStatus checks outcome of one preflight check. fail stops the
+// upgrade; warn is reported and does not.
+func validateCompatibilityStatus(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"pass", "warn", "fail"}})
+}
+
+// validateCompatibilityCheckName checks the preflight checks of docs/OPERATIONS.md
+// section 12. The set is closed so that a report with a check missing is detectable
+// rather than being read as a check that passed.
+func validateCompatibilityCheckName(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"source_version", "backup_freshness", "disk_space", "connector_compatibility", "worker_compatibility", "migration_lock"}})
+}
+
 // validatePublishedServiceStatus checks published-service lifecycle status
 // (docs/DOMAIN_MODEL.md section 10). A route reaches ready only once the connector has
 // acknowledged the destination it opened and the tunnel gateway has accepted the
@@ -346,7 +406,7 @@ func validateDestinationProtocol(value any, path string, out *[]SchemaViolation)
 // route identifier, whose conventional svc_ prefix is not a valid label. Consumers
 // MUST treat it as opaque.
 func validatePublicAlias(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 63, pattern: pattern16})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 63, pattern: pattern18})
 }
 
 // validateInternalOrigin checks origin an authorised browser session opens, of the
@@ -354,7 +414,7 @@ func validatePublicAlias(value any, path string, out *[]SchemaViolation) {
 // it is never taken from a request, because the origin is the browser session's egress
 // allow-list (docs/SECURITY.md section 9).
 func validateInternalOrigin(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 256, pattern: pattern17})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 256, pattern: pattern19})
 }
 
 // validateLocalHost checks local address of the development service, as a literal IP
@@ -362,7 +422,7 @@ func validateInternalOrigin(value any, path string, out *[]SchemaViolation) {
 // the name that passed the destination policy need not be the address the connector
 // later opens (docs/SECURITY.md section 9).
 func validateLocalHost(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 45, pattern: pattern18})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 45, pattern: pattern20})
 }
 
 // validateLocalPort checks tCP port the development service listens on.
@@ -375,7 +435,7 @@ func validateLocalPort(value any, path string, out *[]SchemaViolation) {
 // the connector observed rather than what the control plane asked for, so that the two
 // can be compared.
 func validateObservedDestination(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 3, maxLength: 64, pattern: pattern19})
+	checkString(value, path, out, stringOpts{minLength: 3, maxLength: 64, pattern: pattern21})
 }
 
 // validateRepositoryIdentityCanonical checks normalised host and path, lowercase host,
@@ -387,7 +447,7 @@ func validateRepositoryIdentityCanonical(value any, path string, out *[]SchemaVi
 
 // validateRepositoryIdentityCloneURLsItem checks a generated schema node.
 func validateRepositoryIdentityCloneURLsItem(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 3, maxLength: 512, pattern: pattern20})
+	checkString(value, path, out, stringOpts{minLength: 3, maxLength: 512, pattern: pattern22})
 }
 
 // validateRepositoryIdentityCloneURLs checks clone URLs that reduce to canonical, in
@@ -1162,7 +1222,7 @@ func validateSessionRevokedPayload(value any, path string, out *[]SchemaViolatio
 
 // validateProjectUpdatedPayloadChangedFieldsItem checks a generated schema node.
 func validateProjectUpdatedPayloadChangedFieldsItem(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern21})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern23})
 }
 
 // validateProjectUpdatedPayloadChangedFields checks attribute names that changed, in
@@ -1532,6 +1592,437 @@ func validateJobFailedPayload(value any, path string, out *[]SchemaViolation) {
 	}
 }
 
+// validateBackupProductVersion checks product version the image reports.
+func validateBackupProductVersion(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 128, pattern: pattern3})
+}
+
+// validateBackupProductRevision checks source revision the image was built from, or
+// unknown when the build did not stamp one.
+func validateBackupProductRevision(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 128, pattern: pattern3})
+}
+
+// validateBackupProductBuiltAt checks build time the image reports, or unknown. It is
+// a free string rather than a timestamp because an unstamped development build has no
+// build time and inventing one would be a lie in an audit record.
+func validateBackupProductBuiltAt(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern3})
+}
+
+// validateBackupProduct checks a BackupProduct value.
+func validateBackupProduct(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"version", "revision", "built_at"}, []string{"version", "revision", "built_at"})
+	if !ok {
+		return
+	}
+	if field, present := source["version"]; present {
+		validateBackupProductVersion(field, path+".version", out)
+	}
+	if field, present := source["revision"]; present {
+		validateBackupProductRevision(field, path+".revision", out)
+	}
+	if field, present := source["built_at"]; present {
+		validateBackupProductBuiltAt(field, path+".built_at", out)
+	}
+}
+
+// validateBackupSourceHostname checks the gateway hostname the installation was
+// serving, when it was configured. Absent when the deployment terminates TLS in front
+// of the stack and the control plane was never told a hostname.
+func validateBackupSourceHostname(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 253, pattern: pattern24})
+}
+
+// validateBackupSource checks a BackupSource value.
+func validateBackupSource(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"hostname", "artefact_driver"}, []string{"artefact_driver"})
+	if !ok {
+		return
+	}
+	if field, present := source["hostname"]; present {
+		validateBackupSourceHostname(field, path+".hostname", out)
+	}
+	if field, present := source["artefact_driver"]; present {
+		validateBackupArtefactDriver(field, path+".artefact_driver", out)
+	}
+}
+
+// validateBackupTableName checks table name in the public schema.
+func validateBackupTableName(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 63, pattern: pattern25})
+}
+
+// validateBackupTableRows checks rows written for this table.
+func validateBackupTableRows(value any, path string, out *[]SchemaViolation) {
+	checkInteger(value, path, out, 0, 1000000000000)
+}
+
+// validateBackupTable checks a BackupTable value.
+func validateBackupTable(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"name", "rows"}, []string{"name", "rows"})
+	if !ok {
+		return
+	}
+	if field, present := source["name"]; present {
+		validateBackupTableName(field, path+".name", out)
+	}
+	if field, present := source["rows"]; present {
+		validateBackupTableRows(field, path+".rows", out)
+	}
+}
+
+// validateBackupEntryBytes checks uncompressed size of the member.
+func validateBackupEntryBytes(value any, path string, out *[]SchemaViolation) {
+	checkInteger(value, path, out, 0, 1099511627776)
+}
+
+// validateBackupEntry checks a BackupEntry value.
+func validateBackupEntry(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"path", "bytes", "sha256"}, []string{"path", "bytes", "sha256"})
+	if !ok {
+		return
+	}
+	if field, present := source["path"]; present {
+		validateArchiveMemberPath(field, path+".path", out)
+	}
+	if field, present := source["bytes"]; present {
+		validateBackupEntryBytes(field, path+".bytes", out)
+	}
+	if field, present := source["sha256"]; present {
+		validateSha256Digest(field, path+".sha256", out)
+	}
+}
+
+// validateBackupKeyMaterialIncluded checks true only when the operator explicitly
+// opted in. A portable backup carrying key material is a private key in a file an
+// operator will copy somewhere, so it is never the default.
+func validateBackupKeyMaterialIncluded(value any, path string, out *[]SchemaViolation) {
+	checkBoolean(value, path, out)
+}
+
+// validateBackupKeyMaterialExcludedTablesItem checks a generated schema node.
+func validateBackupKeyMaterialExcludedTablesItem(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 63, pattern: pattern25})
+}
+
+// validateBackupKeyMaterialExcludedTables checks tables whose rows were held back
+// because they hold key material. Empty when key material was included.
+func validateBackupKeyMaterialExcludedTables(value any, path string, out *[]SchemaViolation) {
+	items, ok := checkArray(value, path, out, 0, 64, true)
+	if !ok {
+		return
+	}
+	for index, item := range items {
+		validateBackupKeyMaterialExcludedTablesItem(item, indexPath(path, index), out)
+	}
+}
+
+// validateBackupKeyMaterial checks a BackupKeyMaterial value.
+func validateBackupKeyMaterial(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"included", "excluded_tables"}, []string{"included", "excluded_tables"})
+	if !ok {
+		return
+	}
+	if field, present := source["included"]; present {
+		validateBackupKeyMaterialIncluded(field, path+".included", out)
+	}
+	if field, present := source["excluded_tables"]; present {
+		validateBackupKeyMaterialExcludedTables(field, path+".excluded_tables", out)
+	}
+}
+
+// validateBackupManifestManifestVersion checks manifest structure version. A reader
+// refuses a version it does not know rather than guessing at the members it
+// recognises.
+func validateBackupManifestManifestVersion(value any, path string, out *[]SchemaViolation) {
+	checkInteger(value, path, out, 1, 1)
+}
+
+// validateBackupManifestSchemaVersion checks migration file at the head of the
+// backed-up schema, which is the schema version reviewplane migrate reports. A restore
+// refuses an archive whose schema is ahead of the installed build, because the rows
+// would name columns this build's migrations have not created.
+func validateBackupManifestSchemaVersion(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 5, maxLength: 128, pattern: pattern26})
+}
+
+// validateBackupManifestTables checks every table in the public schema, with the rows
+// the archive carries. Tables are enumerated from the live catalogue rather than from
+// a list in the source, so a table added by a later migration is backed up without
+// anyone remembering to add it here.
+func validateBackupManifestTables(value any, path string, out *[]SchemaViolation) {
+	items, ok := checkArray(value, path, out, 0, 512, false)
+	if !ok {
+		return
+	}
+	for index, item := range items {
+		validateBackupTable(item, indexPath(path, index), out)
+	}
+}
+
+// validateBackupManifestArtefactObjects checks artefact objects carried. Zero in
+// database mode, and zero in full mode only when the store held none.
+func validateBackupManifestArtefactObjects(value any, path string, out *[]SchemaViolation) {
+	checkInteger(value, path, out, 0, 1000000000)
+}
+
+// validateBackupManifestArtefactBytes checks total uncompressed size of the artefact
+// objects carried.
+func validateBackupManifestArtefactBytes(value any, path string, out *[]SchemaViolation) {
+	checkInteger(value, path, out, 0, 1099511627776)
+}
+
+// validateBackupManifestArtefactsMissing checks storage keys that artefact metadata
+// referenced and the store did not hold at backup time. Recorded rather than silently
+// skipped: application metadata is authoritative for availability (ADR-0012), so a row
+// without bytes is missing evidence and a restore has to be able to report it.
+func validateBackupManifestArtefactsMissing(value any, path string, out *[]SchemaViolation) {
+	items, ok := checkArray(value, path, out, 0, 1024, true)
+	if !ok {
+		return
+	}
+	for index, item := range items {
+		validateArchiveMemberPath(item, indexPath(path, index), out)
+	}
+}
+
+// validateBackupManifestKeyReferencesItem checks a generated schema node.
+func validateBackupManifestKeyReferencesItem(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 256, pattern: pattern27})
+}
+
+// validateBackupManifestKeyReferences checks distinct encryption key references the
+// backed-up data names (docs/SECURITY.md section 15). A reference is a name for a key
+// held elsewhere and never key material, so recording it is what lets a restore state
+// which keys the restored installation will need. Empty while envelope encryption is
+// unimplemented.
+func validateBackupManifestKeyReferences(value any, path string, out *[]SchemaViolation) {
+	items, ok := checkArray(value, path, out, 0, 256, true)
+	if !ok {
+		return
+	}
+	for index, item := range items {
+		validateBackupManifestKeyReferencesItem(item, indexPath(path, index), out)
+	}
+}
+
+// validateBackupManifestConfigurationIncluded checks whether a configuration member
+// was written. It carries the non-secret settings of the installation and records a
+// secret only as the name of the variable that held it.
+func validateBackupManifestConfigurationIncluded(value any, path string, out *[]SchemaViolation) {
+	checkBoolean(value, path, out)
+}
+
+// validateBackupManifestChecksumAlgorithm checks algorithm every digest in this
+// manifest uses.
+func validateBackupManifestChecksumAlgorithm(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{values: []string{"sha256"}})
+}
+
+// validateBackupManifestEntries checks every archive member but the manifest, with its
+// digest. The manifest cannot carry its own digest, so whole-archive integrity is the
+// digest the backup command prints and records in its audit event; these entries are
+// what detect a truncated or corrupted member.
+func validateBackupManifestEntries(value any, path string, out *[]SchemaViolation) {
+	items, ok := checkArray(value, path, out, 0, 1000000, false)
+	if !ok {
+		return
+	}
+	for index, item := range items {
+		validateBackupEntry(item, indexPath(path, index), out)
+	}
+}
+
+// validateBackupManifest checks a BackupManifest value.
+func validateBackupManifest(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"manifest_version", "created_at", "mode", "product", "schema_version", "source", "tables", "artefact_objects", "artefact_bytes", "artefacts_missing", "key_material", "key_references", "configuration_included", "checksum_algorithm", "entries"}, []string{"manifest_version", "created_at", "mode", "product", "schema_version", "source", "tables", "artefact_objects", "artefact_bytes", "key_material", "key_references", "checksum_algorithm", "entries"})
+	if !ok {
+		return
+	}
+	if field, present := source["manifest_version"]; present {
+		validateBackupManifestManifestVersion(field, path+".manifest_version", out)
+	}
+	if field, present := source["created_at"]; present {
+		validateTimestamp(field, path+".created_at", out)
+	}
+	if field, present := source["mode"]; present {
+		validateBackupMode(field, path+".mode", out)
+	}
+	if field, present := source["product"]; present {
+		validateBackupProduct(field, path+".product", out)
+	}
+	if field, present := source["schema_version"]; present {
+		validateBackupManifestSchemaVersion(field, path+".schema_version", out)
+	}
+	if field, present := source["source"]; present {
+		validateBackupSource(field, path+".source", out)
+	}
+	if field, present := source["tables"]; present {
+		validateBackupManifestTables(field, path+".tables", out)
+	}
+	if field, present := source["artefact_objects"]; present {
+		validateBackupManifestArtefactObjects(field, path+".artefact_objects", out)
+	}
+	if field, present := source["artefact_bytes"]; present {
+		validateBackupManifestArtefactBytes(field, path+".artefact_bytes", out)
+	}
+	if field, present := source["artefacts_missing"]; present {
+		validateBackupManifestArtefactsMissing(field, path+".artefacts_missing", out)
+	}
+	if field, present := source["key_material"]; present {
+		validateBackupKeyMaterial(field, path+".key_material", out)
+	}
+	if field, present := source["key_references"]; present {
+		validateBackupManifestKeyReferences(field, path+".key_references", out)
+	}
+	if field, present := source["configuration_included"]; present {
+		validateBackupManifestConfigurationIncluded(field, path+".configuration_included", out)
+	}
+	if field, present := source["checksum_algorithm"]; present {
+		validateBackupManifestChecksumAlgorithm(field, path+".checksum_algorithm", out)
+	}
+	if field, present := source["entries"]; present {
+		validateBackupManifestEntries(field, path+".entries", out)
+	}
+}
+
+// validateMigrationRecordFilename checks migration file name, which is also its
+// position in the apply order.
+func validateMigrationRecordFilename(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 5, maxLength: 128, pattern: pattern26})
+}
+
+// validateMigrationRecordNote checks the reason the migration gives, when it gives
+// one.
+func validateMigrationRecordNote(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 512, pattern: pattern3})
+}
+
+// validateMigrationRecord checks a MigrationRecord value.
+func validateMigrationRecord(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"filename", "downgrade", "note"}, []string{"filename", "downgrade"})
+	if !ok {
+		return
+	}
+	if field, present := source["filename"]; present {
+		validateMigrationRecordFilename(field, path+".filename", out)
+	}
+	if field, present := source["downgrade"]; present {
+		validateMigrationDowngrade(field, path+".downgrade", out)
+	}
+	if field, present := source["note"]; present {
+		validateMigrationRecordNote(field, path+".note", out)
+	}
+}
+
+// validateMigrationStateSchemaVersion checks highest applied migration. Absent for a
+// database nobody has migrated, which is a state rather than an error.
+func validateMigrationStateSchemaVersion(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 5, maxLength: 128, pattern: pattern26})
+}
+
+// validateMigrationStateApplied checks migrations this database has applied, in apply
+// order.
+func validateMigrationStateApplied(value any, path string, out *[]SchemaViolation) {
+	items, ok := checkArray(value, path, out, 0, 4096, false)
+	if !ok {
+		return
+	}
+	for index, item := range items {
+		validateMigrationRecord(item, indexPath(path, index), out)
+	}
+}
+
+// validateMigrationStatePending checks migrations on disk this database has not
+// applied, in apply order.
+func validateMigrationStatePending(value any, path string, out *[]SchemaViolation) {
+	items, ok := checkArray(value, path, out, 0, 4096, false)
+	if !ok {
+		return
+	}
+	for index, item := range items {
+		validateMigrationRecord(item, indexPath(path, index), out)
+	}
+}
+
+// validateMigrationState checks a MigrationState value.
+func validateMigrationState(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"schema_version", "applied", "pending"}, []string{"applied", "pending"})
+	if !ok {
+		return
+	}
+	if field, present := source["schema_version"]; present {
+		validateMigrationStateSchemaVersion(field, path+".schema_version", out)
+	}
+	if field, present := source["applied"]; present {
+		validateMigrationStateApplied(field, path+".applied", out)
+	}
+	if field, present := source["pending"]; present {
+		validateMigrationStatePending(field, path+".pending", out)
+	}
+}
+
+// validateCompatibilityCheckDetail checks one line an operator can act on. It never
+// carries a connection string, a credential or a network address (docs/SECURITY.md
+// section 18): preflight output is pasted into issues.
+func validateCompatibilityCheckDetail(value any, path string, out *[]SchemaViolation) {
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 512, pattern: pattern3})
+}
+
+// validateCompatibilityCheck checks a CompatibilityCheck value.
+func validateCompatibilityCheck(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"name", "status", "detail"}, []string{"name", "status", "detail"})
+	if !ok {
+		return
+	}
+	if field, present := source["name"]; present {
+		validateCompatibilityCheckName(field, path+".name", out)
+	}
+	if field, present := source["status"]; present {
+		validateCompatibilityStatus(field, path+".status", out)
+	}
+	if field, present := source["detail"]; present {
+		validateCompatibilityCheckDetail(field, path+".detail", out)
+	}
+}
+
+// validateCompatibilityReportOk checks true only when no check failed. A warning does
+// not clear it to false, and a check that could not run reports fail rather than being
+// omitted.
+func validateCompatibilityReportOk(value any, path string, out *[]SchemaViolation) {
+	checkBoolean(value, path, out)
+}
+
+// validateCompatibilityReportChecks checks every check, in a stable order, including
+// the ones that passed.
+func validateCompatibilityReportChecks(value any, path string, out *[]SchemaViolation) {
+	items, ok := checkArray(value, path, out, 1, 32, false)
+	if !ok {
+		return
+	}
+	for index, item := range items {
+		validateCompatibilityCheck(item, indexPath(path, index), out)
+	}
+}
+
+// validateCompatibilityReport checks a CompatibilityReport value.
+func validateCompatibilityReport(value any, path string, out *[]SchemaViolation) {
+	source, ok := checkObject(value, path, out, []string{"ok", "checked_at", "checks"}, []string{"ok", "checked_at", "checks"})
+	if !ok {
+		return
+	}
+	if field, present := source["ok"]; present {
+		validateCompatibilityReportOk(field, path+".ok", out)
+	}
+	if field, present := source["checked_at"]; present {
+		validateTimestamp(field, path+".checked_at", out)
+	}
+	if field, present := source["checks"]; present {
+		validateCompatibilityReportChecks(field, path+".checks", out)
+	}
+}
+
 // validateStreamSubscribeType checks message discriminator.
 func validateStreamSubscribeType(value any, path string, out *[]SchemaViolation) {
 	checkString(value, path, out, stringOpts{values: []string{"stream.subscribe"}})
@@ -1693,7 +2184,7 @@ func validateStreamErrorType(value any, path string, out *[]SchemaViolation) {
 // validateStreamErrorMessage checks human-readable explanation. It never carries
 // request data, a credential or a stack trace.
 func validateStreamErrorMessage(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 1024, pattern: pattern22})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 1024, pattern: pattern28})
 }
 
 // validateStreamErrorRetryable checks whether repeating the subscription verbatim can
@@ -1756,7 +2247,7 @@ func validateApiErrorDetailsCandidates(value any, path string, out *[]SchemaViol
 
 // validateApiErrorDetailsAllowedTransitionsItem checks a generated schema node.
 func validateApiErrorDetailsAllowedTransitionsItem(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern23})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern29})
 }
 
 // validateApiErrorDetailsAllowedTransitions checks transitions that are legal from the
@@ -1773,7 +2264,7 @@ func validateApiErrorDetailsAllowedTransitions(value any, path string, out *[]Sc
 
 // validateApiErrorDetailsRequiredEvidenceItem checks a generated schema node.
 func validateApiErrorDetailsRequiredEvidenceItem(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern21})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern23})
 }
 
 // validateApiErrorDetailsRequiredEvidence checks evidence the operation needs before
@@ -1790,7 +2281,7 @@ func validateApiErrorDetailsRequiredEvidence(value any, path string, out *[]Sche
 
 // validateApiErrorDetailsMissingContextItem checks a generated schema node.
 func validateApiErrorDetailsMissingContextItem(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern24})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern30})
 }
 
 // validateApiErrorDetailsMissingContext checks captured context the request omitted.
@@ -1814,13 +2305,13 @@ func validateApiErrorDetailsRetryAfterMs(value any, path string, out *[]SchemaVi
 
 // validateApiErrorDetailsField checks the request member the refusal is about.
 func validateApiErrorDetailsField(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 128, pattern: pattern25})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 128, pattern: pattern31})
 }
 
 // validateApiErrorDetailsReason checks stable sub-reason where one code covers several
 // causes.
 func validateApiErrorDetailsReason(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern21})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern23})
 }
 
 // validateAPIErrorDetails checks a ApiErrorDetails value.
@@ -1864,7 +2355,7 @@ func validateAPIErrorDetails(value any, path string, out *[]SchemaViolation) {
 // validateApiErrorMessage checks human-readable explanation. It never carries a
 // credential, request data or a stack trace (docs/SECURITY.md section 18).
 func validateApiErrorMessage(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 1024, pattern: pattern22})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 1024, pattern: pattern28})
 }
 
 // validateAPIError checks a ApiError value.
@@ -1921,7 +2412,7 @@ func validateCursorClaimsVersion(value any, path string, out *[]SchemaViolation)
 // validateCursorClaimsSortKey checks value of the collection's sort column at the last
 // row of the previous page.
 func validateCursorClaimsSortKey(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 128, pattern: pattern22})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 128, pattern: pattern28})
 }
 
 // validateCursorClaims checks a CursorClaims value.
@@ -2080,7 +2571,7 @@ func validatePublishedServiceReadyPayloadConnectorConnected(value any, path stri
 // validatePublishedServiceReadyPayloadKeyID checks signing key the capability was
 // minted with, so that a rotation can be audited.
 func validatePublishedServiceReadyPayloadKeyID(value any, path string, out *[]SchemaViolation) {
-	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern26})
+	checkString(value, path, out, stringOpts{minLength: 1, maxLength: 64, pattern: pattern32})
 }
 
 // validatePublishedServiceReadyPayload checks a PublishedServiceReadyPayload value.

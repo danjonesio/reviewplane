@@ -704,6 +704,14 @@ and an operator relying on encryption at rest must configure it on the volume
 or the bucket. The field exists now so that the record of which artefacts
 predate envelope encryption is unambiguous when it arrives.
 
+A backup manifest carries `key_references`: the distinct
+`encryption_key_reference` values the backed-up artefacts name (§20,
+`docs/DEPLOYMENT.md` §16). It is empty in this release, for the same reason —
+nothing writes the column — and it is recorded rather than omitted so that an
+archive written before envelope encryption is unambiguous after it. Restore
+therefore has no key reference to remap, and says so rather than implying a
+remapping happened.
+
 ## 16. Audit
 
 Audit events must cover:
@@ -728,6 +736,17 @@ Audit events must cover:
   looking for.
 
 Audit payloads must avoid raw secrets.
+
+Export and backup operations are recorded as `backup.created` and
+`backup.restored` (`docs/EVENTS.md` §7). Both are written by the operator
+command line rather than by a request, so their actor is `system` and their
+payload names what the archive carried — mode, schema version, row and object
+counts, the archive's digest and whether key material travelled — and never the
+archive's path, which is the field of the operation most likely to name a mount,
+a host or a share. `backup.created` is also what `reviewplane status` and
+`reviewplane migrate --preflight` read to answer "is this installation backed
+up" (`docs/OPERATIONS.md` §3 and §12): the audit record is the evidence, not a
+second copy of it.
 
 Artefact access and deletion are both recorded. Minting an access grant records
 `artefact.access_granted` with the subject and the expiry, and every read of
@@ -801,6 +820,45 @@ Backups may contain highly sensitive data.
 - Do not include master encryption keys silently
 - Record backup and restore audit events
 - Verify restore into an isolated environment regularly
+
+### What the shipped commands do
+
+| Requirement | Behaviour |
+|---|---|
+| Encrypt transport and storage | **The operator's.** `reviewplane backup` writes a `tar` stream in a `zstd` frame and does not encrypt it. Encrypt the archive and the medium it is copied to |
+| Separate configuration, data and key material | The archive holds them as separate members: `configuration.json`, `database/<table>.jsonl` and — only on the opt-in — the rows of `connector_tls_material`. The manifest states which are present |
+| Never include master keys silently | `connector_tls_material` is excluded from every archive unless `--include-key-material` is passed. The opt-in prints a warning naming what the file will contain, and the manifest's `key_material.included` and the audit event both record which way round it was |
+| Record backup and restore audit events | `backup.created` and `backup.restored` (`docs/EVENTS.md` §7). Neither payload carries the archive's path, a credential or a setting value |
+| Verify restore regularly | `reviewplane restore --dry-run` checks every member of an archive against the manifest and writes nothing. Pointed at a live installation it reports the archive intact **and** the target non-empty, and exits `4` for the second — a dry run answers "would this restore succeed here", not "is this file readable", so a clean verification runs it against an empty database. A full rehearsal restores into one, which is what `apps/server/test/upgrade-stage0.test.ts` does on every run |
+
+Three further properties are enforced rather than advised.
+
+**Restore is a privileged local operation and is exposed through no network
+interface.** It truncates and repopulates every table, and an HTTP route that
+could do that would be an authorisation bug with the blast radius of the whole
+installation. Two suites assert it against the surfaces themselves rather than
+against their source: `apps/server/test/backup-security.test.ts` enumerates
+every route the control plane has registered, and
+`apps/mcp-server/test/unit.test.ts` enumerates the tool table the MCP server
+registers. Neither is a search for a pattern in a file.
+
+**No credential reaches the configuration record or the log.** The
+configuration member of the archive records the *name* of every `REVIEWPLANE_`
+setting and the value only of the ones that are not credentials; a
+credential-shaped name and any value carrying URL user information — which is
+what catches a database connection string — are recorded as present and
+redacted. This is a statement about configuration, not about the archive as a
+whole: the archive carries the installation's data, and under
+`--include-key-material` it deliberately carries a private key as well. Treat
+every archive as credential-grade.
+
+**The archive's integrity is checked before a restore writes anything, and the
+check is not a signature.** The manifest carries a SHA-256 for every member and
+the command prints the digest of the whole archive. Those detect truncation,
+corruption and a member that was swapped; they do not detect an attacker who
+rewrote the manifest along with the member. Record the printed digest somewhere
+the archive is not, and protect the archive as the credential-grade artefact it
+is.
 
 ## 21. Security testing
 

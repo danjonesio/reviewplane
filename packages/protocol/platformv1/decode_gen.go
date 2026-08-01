@@ -628,6 +628,129 @@ func DecodeJobFailedPayload(value any) JobFailedPayload {
 	return out
 }
 
+// DecodeBackupProduct builds a BackupProduct from a validated tree.
+func DecodeBackupProduct(value any) BackupProduct {
+	source, _ := value.(map[string]any)
+	var out BackupProduct
+	out.Version = decodeString(source["version"])
+	out.Revision = decodeString(source["revision"])
+	out.BuiltAt = decodeString(source["built_at"])
+	return out
+}
+
+// DecodeBackupSource builds a BackupSource from a validated tree.
+func DecodeBackupSource(value any) BackupSource {
+	source, _ := value.(map[string]any)
+	var out BackupSource
+	if field, present := source["hostname"]; present {
+		decoded := decodeString(field)
+		out.Hostname = &decoded
+	}
+	out.ArtefactDriver = BackupArtefactDriver(decodeString(source["artefact_driver"]))
+	return out
+}
+
+// DecodeBackupTable builds a BackupTable from a validated tree.
+func DecodeBackupTable(value any) BackupTable {
+	source, _ := value.(map[string]any)
+	var out BackupTable
+	out.Name = decodeString(source["name"])
+	out.Rows = decodeInt(source["rows"])
+	return out
+}
+
+// DecodeBackupEntry builds a BackupEntry from a validated tree.
+func DecodeBackupEntry(value any) BackupEntry {
+	source, _ := value.(map[string]any)
+	var out BackupEntry
+	out.Path = decodeString(source["path"])
+	out.Bytes = decodeInt(source["bytes"])
+	out.Sha256 = decodeString(source["sha256"])
+	return out
+}
+
+// DecodeBackupKeyMaterial builds a BackupKeyMaterial from a validated tree.
+func DecodeBackupKeyMaterial(value any) BackupKeyMaterial {
+	source, _ := value.(map[string]any)
+	var out BackupKeyMaterial
+	out.Included = decodeBool(source["included"])
+	out.ExcludedTables = decodeSlice(source["excluded_tables"], func(item any) string { return decodeString(item) })
+	return out
+}
+
+// DecodeBackupManifest builds a BackupManifest from a validated tree.
+func DecodeBackupManifest(value any) BackupManifest {
+	source, _ := value.(map[string]any)
+	var out BackupManifest
+	out.ManifestVersion = decodeInt(source["manifest_version"])
+	out.CreatedAt = decodeString(source["created_at"])
+	out.Mode = BackupMode(decodeString(source["mode"]))
+	out.Product = DecodeBackupProduct(source["product"])
+	out.SchemaVersion = decodeString(source["schema_version"])
+	out.Source = DecodeBackupSource(source["source"])
+	out.Tables = decodeSlice(source["tables"], func(item any) BackupTable { return DecodeBackupTable(item) })
+	out.ArtefactObjects = decodeInt(source["artefact_objects"])
+	out.ArtefactBytes = decodeInt(source["artefact_bytes"])
+	if field, present := source["artefacts_missing"]; present {
+		out.ArtefactsMissing = decodeSlice(field, func(item any) string { return decodeString(item) })
+	}
+	out.KeyMaterial = DecodeBackupKeyMaterial(source["key_material"])
+	out.KeyReferences = decodeSlice(source["key_references"], func(item any) string { return decodeString(item) })
+	if field, present := source["configuration_included"]; present {
+		decoded := decodeBool(field)
+		out.ConfigurationIncluded = &decoded
+	}
+	out.ChecksumAlgorithm = BackupManifestChecksumAlgorithm(decodeString(source["checksum_algorithm"]))
+	out.Entries = decodeSlice(source["entries"], func(item any) BackupEntry { return DecodeBackupEntry(item) })
+	return out
+}
+
+// DecodeMigrationRecord builds a MigrationRecord from a validated tree.
+func DecodeMigrationRecord(value any) MigrationRecord {
+	source, _ := value.(map[string]any)
+	var out MigrationRecord
+	out.Filename = decodeString(source["filename"])
+	out.Downgrade = MigrationDowngrade(decodeString(source["downgrade"]))
+	if field, present := source["note"]; present {
+		decoded := decodeString(field)
+		out.Note = &decoded
+	}
+	return out
+}
+
+// DecodeMigrationState builds a MigrationState from a validated tree.
+func DecodeMigrationState(value any) MigrationState {
+	source, _ := value.(map[string]any)
+	var out MigrationState
+	if field, present := source["schema_version"]; present {
+		decoded := decodeString(field)
+		out.SchemaVersion = &decoded
+	}
+	out.Applied = decodeSlice(source["applied"], func(item any) MigrationRecord { return DecodeMigrationRecord(item) })
+	out.Pending = decodeSlice(source["pending"], func(item any) MigrationRecord { return DecodeMigrationRecord(item) })
+	return out
+}
+
+// DecodeCompatibilityCheck builds a CompatibilityCheck from a validated tree.
+func DecodeCompatibilityCheck(value any) CompatibilityCheck {
+	source, _ := value.(map[string]any)
+	var out CompatibilityCheck
+	out.Name = CompatibilityCheckName(decodeString(source["name"]))
+	out.Status = CompatibilityStatus(decodeString(source["status"]))
+	out.Detail = decodeString(source["detail"])
+	return out
+}
+
+// DecodeCompatibilityReport builds a CompatibilityReport from a validated tree.
+func DecodeCompatibilityReport(value any) CompatibilityReport {
+	source, _ := value.(map[string]any)
+	var out CompatibilityReport
+	out.Ok = decodeBool(source["ok"])
+	out.CheckedAt = decodeString(source["checked_at"])
+	out.Checks = decodeSlice(source["checks"], func(item any) CompatibilityCheck { return DecodeCompatibilityCheck(item) })
+	return out
+}
+
 // DecodeStreamSubscribe builds a StreamSubscribe from a validated tree.
 func DecodeStreamSubscribe(value any) StreamSubscribe {
 	source, _ := value.(map[string]any)

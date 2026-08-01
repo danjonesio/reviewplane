@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- The rest of the project record (docs/DOMAIN_MODEL.md section 6, RVP-12).
 --
 -- Migration 0002 declared only the columns Stage 0 read and said the repository

@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Defence-in-depth scope on the idempotency table (docs/DOMAIN_MODEL.md
 -- section 3).
 --

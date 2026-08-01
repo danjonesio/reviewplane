@@ -1,3 +1,4 @@
+-- downgrade: not supported (forward-only; roll back by restoring the backup taken before the upgrade)
 -- Published services: the temporary route from an authorised browser worker to
 -- a local development service (docs/DOMAIN_MODEL.md section 10).
 --
