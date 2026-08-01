@@ -1,0 +1,25 @@
+{
+  "id": "evt_40000000000000000000000000000010",
+  "schema_version": 1,
+  "sequence": 26,
+  "type": "published_service.ready",
+  "occurred_at": "2026-07-30T12:00:02.000Z",
+  "recorded_at": "2026-07-30T12:00:02.009Z",
+  "organisation_id": "org_2f1c8ba0d9e34a7f8b6c5d4e3f2a1b09",
+  "project_id": "prj_7d6c5b4a39281706f5e4d3c2b1a09876",
+  "actor": {
+    "type": "human_user",
+    "id": "usr_1111222233334444555566667777888"
+  },
+  "correlation": {
+    "published_service_id": "svc_5a4b3c2d1e0f9877665544332211aabb"
+  },
+  "payload": {
+    "published_service_id": "svc_5a4b3c2d1e0f9877665544332211aabb",
+    "capability_id": "cap_2b3c4d5e6f708192a3b4c5d6e7f80910",
+    "browser_session_id": "brs_1a2b3c4d5e6f708192a3b4c5d6e7f809",
+    "key_id": "stage0-a",
+    "capability": "rp1.the-bearer-token-itself",
+    "expires_at": "2026-07-30T12:05:00.000Z"
+  }
+}

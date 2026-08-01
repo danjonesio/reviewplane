@@ -226,6 +226,13 @@ Entry points:
 - Project live page
 - Published service action
 
+Publication itself lives on the project Live page. The reader chooses an
+environment, a workspace and a local port, sets a lifetime, publishes, sees the
+route's status and internal origin, and revokes it. A route MUST authorise at
+least one browser session (`CONNECTOR_PROTOCOL.md` §11), so the form names the
+sessions it will authorise; a project with none says so in those terms rather
+than failing on submit.
+
 Human flow:
 
 1. Select development environment and service.
@@ -636,6 +643,23 @@ and it says which capabilities remain — a session whose live capture is
 unavailable is still usable for navigation and screenshot capture. A stream
 that connects but stops painting says so as well, because a frozen picture is
 indistinguishable from a still page.
+
+Three of them belong to the publication surface of §6, and each has a stable
+code behind it rather than a guess. **No connector connected** is
+`CONNECTOR_OFFLINE`, and it is also what an agent's `development_service_publish`
+receives. It means a connector this deployment has is unreachable; a request
+naming a connector, workspace or browser session that does not exist in the
+project answers `RESOURCE_NOT_FOUND` instead, and the surface MUST NOT present
+that as an outage — nothing is down, the request named something that is not
+there. **Dev service not listening** is `PORT_NOT_LISTENING`: the connector
+probed the destination within its bounded startup grace and nothing was there,
+so the reader is told to start the development server and retry rather than to
+suspect the tunnel. **Tunnel unavailable** is `CONTROL_PLANE_UNAVAILABLE` or a
+route whose connector has since gone, and it is the one that must not be
+confused with the other two — the application is fine and the path to it is not.
+A refused destination is `DESTINATION_NOT_ALLOWED` and a lifetime beyond the
+maximum is `ROUTE_EXPIRED`; both are the operator's request being refused rather
+than anything being broken, and the surface MUST say which.
 
 **No connector connected** is the first of these a new deployment meets, and it
 is the one most likely to be read as a fault. It is not: a project with no

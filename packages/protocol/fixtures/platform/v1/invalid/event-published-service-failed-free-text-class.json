@@ -1,0 +1,22 @@
+{
+  "id": "evt_40000000000000000000000000000011",
+  "schema_version": 1,
+  "sequence": 27,
+  "type": "published_service.failed",
+  "occurred_at": "2026-07-30T12:00:11.000Z",
+  "recorded_at": "2026-07-30T12:00:11.006Z",
+  "organisation_id": "org_2f1c8ba0d9e34a7f8b6c5d4e3f2a1b09",
+  "project_id": "prj_7d6c5b4a39281706f5e4d3c2b1a09876",
+  "actor": {
+    "type": "system"
+  },
+  "correlation": {
+    "published_service_id": "svc_6b5c4d3e2f10a987766554433221bbcc"
+  },
+  "payload": {
+    "published_service_id": "svc_6b5c4d3e2f10a987766554433221bbcc",
+    "previous_status": "requested",
+    "new_status": "failed",
+    "error_class": "connection refused by 127.0.0.1:4321"
+  }
+}

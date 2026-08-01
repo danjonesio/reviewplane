@@ -1,0 +1,25 @@
+{
+  "id": "evt_4000000000000000000000000000000d",
+  "schema_version": 1,
+  "sequence": 23,
+  "type": "published_service.failed",
+  "occurred_at": "2026-07-30T12:00:11.000Z",
+  "recorded_at": "2026-07-30T12:00:11.006Z",
+  "organisation_id": "org_2f1c8ba0d9e34a7f8b6c5d4e3f2a1b09",
+  "project_id": "prj_7d6c5b4a39281706f5e4d3c2b1a09876",
+  "actor": {
+    "type": "agent_session",
+    "id": "ags_6f708192a3b4c5d6e7f8091021324354",
+    "display": "Claude Code on dev-ai-03"
+  },
+  "correlation": {
+    "request_id": "req_2b3c4d5e6f708192",
+    "published_service_id": "svc_6b5c4d3e2f10a987766554433221bbcc"
+  },
+  "payload": {
+    "published_service_id": "svc_6b5c4d3e2f10a987766554433221bbcc",
+    "previous_status": "requested",
+    "new_status": "failed",
+    "error_class": "PORT_NOT_LISTENING"
+  }
+}

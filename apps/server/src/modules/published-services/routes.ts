@@ -1,5 +1,5 @@
 /**
- * Published-service endpoints (`docs/API.md` section 10).
+ * Published-service endpoints (`docs/API.md` §10).
  *
  * ```text
  * GET    /api/v1/projects/:projectId/published-services
@@ -9,19 +9,63 @@
  * ```
  *
  * The fourth is an addition: a browser session cannot use a route without a
- * capability, and `docs/ARCHITECTURE.md` section 7.3 makes the control plane
- * the minting authority. `docs/API.md` section 10 records it.
+ * capability, and `docs/ARCHITECTURE.md` §7.3 makes the control plane the
+ * minting authority. `docs/API.md` §10 records it.
  *
- * Handlers do no authorisation arithmetic of their own. They parse, they call
- * the service and they render; every rule lives in the service layer, which is
- * what `docs/DEVELOPMENT.md` section 8 means by authorisation in the service
- * layer rather than the UI.
+ * Three properties of this surface are load-bearing, and all three changed when
+ * the publication UI of `docs/UX_FLOWS.md` §6 arrived.
+ *
+ * **Who may call it.** Stage 0 accepted only the bootstrap administrator token,
+ * because no human session existed and nothing but a script published a route.
+ * Publishing from the project Live page means a **cookie** now authenticates
+ * these routes, so they resolve the organisation administrator of
+ * `modules/identity/authorisation.ts` — which the bootstrap token still maps
+ * to, so an operator's `Authorization: Bearer` continues to work unchanged. A
+ * browser-worker, agent or connector credential reaches none of them
+ * (`docs/SECURITY.md` §6.3).
+ *
+ * **CSRF.** The moment a cookie can authenticate a state-changing route, a
+ * forged cross-origin write becomes possible: the browser attaches the cookie
+ * to a request another origin caused, and a bearer token is not attached that
+ * way. Every state-changing route here therefore applies the strict
+ * `requireCsrfToken`, in an **`onRequest`** hook, which Fastify runs after
+ * routing and before the body is parsed. `preHandler` is the wrong phase for
+ * this and the comment that used to sit here claimed otherwise: Fastify's
+ * order is `onRequest` → `preParsing` → parsing → `preValidation` →
+ * validation → `preHandler`, so a `preHandler` guard refuses only after the
+ * body it was supposed to refuse has already been read. `onRequest` also means
+ * a forged request with a malformed body is answered by this guard rather than
+ * by the JSON parser. Publication is exactly the shape that must not be
+ * forgeable: it opens a tunnel from a central browser into a development
+ * machine, and minting mints a bearer credential for it.
+ *
+ * **Scope.** Every lookup carries the identifier, the caller's organisation and
+ * the session's project scope in one SQL predicate. A route outside the
+ * caller's scope produces no row, so a foreign identifier and an unknown one
+ * answer `RESOURCE_NOT_FOUND` byte-identically and neither can be used to
+ * enumerate the other (`docs/API.md` §5). `DELETE` is the one that mattered
+ * most: it took an identifier and no scope at all, so a route in another
+ * organisation could be revoked by anyone who could guess its identifier.
+ *
+ * Handlers do no authorisation arithmetic of their own beyond that. They parse,
+ * they call the service and they render; every domain rule lives in the service
+ * layer, which is what `docs/DEVELOPMENT.md` §8 means by authorisation in the
+ * service layer rather than the UI.
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
-import { ApiError, apiData, apiError } from "../../errors.ts";
+import type { Pool } from "../../db/pool.ts";
+import { ApiError, apiData } from "../../errors.ts";
+import {
+  requireCsrfToken,
+  requireOrganisationAdministrator,
+  resolveProject,
+  scopeParameter,
+} from "../identity/authorisation.ts";
+import type { ViewerPrincipal } from "../live/viewer-sessions.ts";
 import type { EventActor } from "./events.ts";
+import type { CallerScope } from "./repository.ts";
 import type { PublishedServiceService } from "./service.ts";
 
 /** The maximum page size for the listing endpoint. */
@@ -73,50 +117,84 @@ function requireSessionIds(value: unknown): string[] {
 }
 
 /**
- * The Stage 0 actor.
+ * The scope a principal acts in.
  *
- * Human accounts and agent sessions arrive with the issues that introduce them;
- * until then every authenticated caller is the bootstrap administrator, and
- * saying so explicitly is better than a placeholder that later reads as a real
- * identity (`docs/EVENTS.md` section 5: actor identity is never inferred from
- * display text).
+ * It is read from the **principal** and never from the record being reached.
+ * `organisationId` is null for the organisation-wide bootstrap administrator,
+ * which belongs to no organisation row (ADR-0016); `projectIds` is null for a
+ * session that is not delegated to a subset of projects.
  */
-const BOOTSTRAP_ACTOR: EventActor = {
-  type: "human_user",
-  id: "usr_bootstrap",
-  display: "Bootstrap administrator",
-};
+function scopeOf(principal: ViewerPrincipal): CallerScope {
+  return { organisationId: principal.organisationId, projectIds: scopeParameter(principal) };
+}
+
+/** The actor an event is attributed to (`docs/EVENTS.md` §5). */
+function actorOfPrincipal(principal: ViewerPrincipal): EventActor {
+  return {
+    type: "human_user",
+    ...(principal.userId === null ? {} : { id: principal.userId }),
+    ...(principal.display === null ? {} : { display: principal.display }),
+  };
+}
 
 export interface PublishedServiceRouteOptions {
+  readonly pool: Pool;
   readonly service: PublishedServiceService;
-  /** Runs before every handler. */
-  readonly authenticate: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
 }
 
 export function registerPublishedServiceRoutes(
   app: FastifyInstance,
   options: PublishedServiceRouteOptions,
 ): void {
-  const { service, authenticate } = options;
+  const { pool, service } = options;
+
+  /**
+   * The guard every state-changing route on this surface uses.
+   *
+   * It is an `onRequest` hook, so Fastify has routed the request and has not
+   * yet read its body. It refuses on the credential alone: nothing in the body
+   * is read to decide it, and nothing in the body has been parsed when it does.
+   */
+  const administratorWrite = async (request: FastifyRequest, _reply: FastifyReply): Promise<void> => {
+    const principal = requireOrganisationAdministrator(request);
+    requireCsrfToken(request, principal);
+    await Promise.resolve();
+  };
+
+  const administratorRead = async (request: FastifyRequest, _reply: FastifyReply): Promise<void> => {
+    requireOrganisationAdministrator(request);
+    await Promise.resolve();
+  };
 
   app.get<{ Params: { projectId: string }; Querystring: { limit?: string } }>(
     "/api/v1/projects/:projectId/published-services",
-    { preHandler: authenticate },
+    { onRequest: administratorRead },
     async (request, reply) => {
+      const principal = requireOrganisationAdministrator(request);
+      // Resolving the project first means an unreachable project is absent
+      // rather than an empty list, which would be indistinguishable from a
+      // project that simply has no routes.
+      const project = await resolveProject(pool, principal, request.params.projectId);
       const limit = Math.min(Number(request.query.limit ?? MAX_LIMIT) || MAX_LIMIT, MAX_LIMIT);
-      const services = await service.list(request.params.projectId, limit);
+      const services = await service.list(project.id, scopeOf(principal), limit);
       return reply.send(apiData(services, request.id));
     },
   );
 
   app.post<{ Params: { projectId: string }; Body: CreateBody }>(
     "/api/v1/projects/:projectId/published-services",
-    { preHandler: authenticate },
+    { onRequest: administratorWrite },
     async (request, reply) => {
+      const principal = requireOrganisationAdministrator(request);
+      const project = await resolveProject(pool, principal, request.params.projectId);
       const body = request.body ?? {};
       const created = await service.create(
         {
-          projectId: request.params.projectId,
+          projectId: project.id,
+          // The organisation of the resolved project, not the deployment's
+          // default and not the caller's: those three can differ, and a row
+          // whose organisation and project disagree is one no reader can act on.
+          organisationId: project.organisationId,
           connectorId: requireString(body.connector_id, "connector_id"),
           workspaceId: requireString(body.workspace_id, "workspace_id"),
           localHost: requireString(body.local_host, "local_host"),
@@ -125,7 +203,7 @@ export function registerPublishedServiceRoutes(
           ttlSeconds: typeof body.ttl_seconds === "number" ? body.ttl_seconds : 3600,
           allowedBrowserSessionIds: requireSessionIds(body.allowed_browser_session_ids),
         },
-        BOOTSTRAP_ACTOR,
+        actorOfPrincipal(principal),
         request.id,
       );
       return reply.code(201).send(apiData(created, request.id));
@@ -134,23 +212,31 @@ export function registerPublishedServiceRoutes(
 
   app.delete<{ Params: { serviceId: string } }>(
     "/api/v1/published-services/:serviceId",
-    { preHandler: authenticate },
+    { onRequest: administratorWrite },
     async (request, reply) => {
-      const revoked = await service.revoke(request.params.serviceId, BOOTSTRAP_ACTOR, request.id);
+      const principal = requireOrganisationAdministrator(request);
+      const revoked = await service.revoke(
+        request.params.serviceId,
+        scopeOf(principal),
+        actorOfPrincipal(principal),
+        request.id,
+      );
       return reply.send(apiData(revoked, request.id));
     },
   );
 
   app.post<{ Params: { serviceId: string }; Body: MintBody }>(
     "/api/v1/published-services/:serviceId/capabilities",
-    { preHandler: authenticate },
+    { onRequest: administratorWrite },
     async (request, reply) => {
+      const principal = requireOrganisationAdministrator(request);
       const body = request.body ?? {};
       const minted = await service.mint(
         request.params.serviceId,
         requireString(body.browser_session_id, "browser_session_id"),
         typeof body.ttl_seconds === "number" ? body.ttl_seconds : undefined,
-        BOOTSTRAP_ACTOR,
+        scopeOf(principal),
+        actorOfPrincipal(principal),
         request.id,
       );
       return reply.code(201).send(apiData(minted, request.id));
@@ -158,21 +244,8 @@ export function registerPublishedServiceRoutes(
   );
 }
 
-/**
- * Renders a failure.
- *
- * One hook renders every error so that no handler can answer with a stack
- * trace or an unstructured message, and so that an unexpected failure becomes
- * `INTERNAL_ERROR` rather than leaking what went wrong
- * (`docs/SECURITY.md` section 18).
- */
-export function renderError(error: unknown, request: FastifyRequest, reply: FastifyReply): void {
-  if (error instanceof ApiError) {
-    void reply.code(error.status).send(apiError(error.code, error.message, request.id, error.details));
-    return;
-  }
-  request.log.error({ err: error, request_id: request.id }, "unhandled failure");
-  void reply
-    .code(500)
-    .send(apiError("INTERNAL_ERROR", "The request could not be completed.", request.id));
-}
+// A second `renderError` stood here. It was never installed: `src/app.ts`
+// registers the one in `src/errors.ts`, so this copy was dead code that read
+// like the live error handler — which is how a fix applied to it could appear
+// to change nothing at all. There is one error handler, and it is in
+// `src/errors.ts`.

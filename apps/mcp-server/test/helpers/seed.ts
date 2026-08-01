@@ -254,7 +254,8 @@ export async function issueAgentCredential(
       ...(input.ttlSeconds === undefined ? {} : { ttl_seconds: input.ttlSeconds }),
     },
   });
-  const data = (response.json() as { data: { token: string; credential_id: string } }).data;
+  const data = (response.json() as { data?: { token: string; credential_id: string } }).data;
+  if (data === undefined) throw new Error(`agent-credential issue failed: ${String(response.statusCode)} ${response.body}`);
   return { token: data.token, credentialId: data.credential_id };
 }
 

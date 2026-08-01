@@ -274,6 +274,36 @@ before(async () => {
     "insert into projects (id, organisation_id, name, slug) values ($1, $2, $3, $4) on conflict do nothing",
     [PROJECT_ID, harness.connectorConfig.organisationId, "Reconnect", "reconnect"],
   );
+  // Publication resolves the workspace and every named browser session inside
+  // the caller's organisation and project, so both have to be real records
+  // here. The reconnect assertions are about a route surviving an
+  // interruption; they can only be made about a route that could be published.
+  await harness.pool.query(
+    `insert into workspaces (
+       id, organisation_id, project_id, root_path, branch, head_commit, path_hash,
+       display_path, source)
+     values ($1, $2, $3, '/srv/reconnect', 'main', 'abcdef1', $4, 'reconnect',
+             'connector_report')
+     on conflict do nothing`,
+    [
+      WORKSPACE_ID,
+      harness.connectorConfig.organisationId,
+      PROJECT_ID,
+      `sha256:${"a".repeat(64)}`,
+    ],
+  );
+  await harness.pool.query(
+    `insert into browser_sessions (
+       id, organisation_id, project_id, status, viewport, limits, retention_policy)
+     values ($1, $2, $3, 'REQUESTED', $4, '{}'::jsonb, 'verification_evidence')
+     on conflict do nothing`,
+    [
+      SESSION_ID,
+      harness.connectorConfig.organisationId,
+      PROJECT_ID,
+      JSON.stringify({ width: 1440, height: 900, device_scale_factor: 1 }),
+    ],
+  );
 
   const issued = await issueEnrolmentToken(harness, { expires_in_seconds: 600 });
   const enrolment = await new Promise<{ code: number; stdout: string; stderr: string }>((resolveRun) => {
@@ -403,7 +433,12 @@ describe("a connector process restart", () => {
     );
     assert.equal(after.rows[0]?.observed_destination, destination);
 
-    await harness.built.publishedServices.revoke(routeId, { type: "system" }, "cleanup");
+    await harness.built.publishedServices.revoke(
+      routeId,
+      { organisationId: null, projectIds: null },
+      { type: "system" },
+      "cleanup",
+    );
   });
 });
 
@@ -436,7 +471,12 @@ describe("a control-plane restart while the connector is connected", () => {
     }, "a decision for the route the connector still held");
     assert.match(decision, /"decision":"continue"/u);
 
-    await harness.built.publishedServices.revoke(routeId, { type: "system" }, "cleanup");
+    await harness.built.publishedServices.revoke(
+      routeId,
+      { organisationId: null, projectIds: null },
+      { type: "system" },
+      "cleanup",
+    );
   });
 });
 
@@ -468,7 +508,12 @@ describe("reconciliation refuses what it must", () => {
 
     // The route belongs to the first connector and is untouched.
     assert.equal(await serviceStatus(routeId), "ready");
-    await harness.built.publishedServices.revoke(routeId, { type: "system" }, "cleanup");
+    await harness.built.publishedServices.revoke(
+      routeId,
+      { organisationId: null, projectIds: null },
+      { type: "system" },
+      "cleanup",
+    );
   });
 
   test("a claim on an expired route closes it and records the expiry", async () => {
@@ -644,6 +689,11 @@ describe("browser sessions during a connector outage", () => {
     assert.ok(recorded("browser_session.resumed (connector_reconnected)"), sequence.join("\n"));
     await writeEvidence("event-sequence.txt", `${sequence.join("\n")}\n`);
 
-    await harness.built.publishedServices.revoke(routeId, { type: "system" }, "cleanup");
+    await harness.built.publishedServices.revoke(
+      routeId,
+      { organisationId: null, projectIds: null },
+      { type: "system" },
+      "cleanup",
+    );
   });
 });

@@ -26,6 +26,11 @@ import type {
   ProjectCreatedPayload,
   ProjectRepositoryChangedPayload,
   ProjectUpdatedPayload,
+  PublishedServiceExpiredPayload,
+  PublishedServiceFailedPayload,
+  PublishedServiceReadyPayload,
+  PublishedServiceRequestedPayload,
+  PublishedServiceRevokedPayload,
   SessionRevokedPayload,
   UserCredentialsSetPayload,
   UserInvitedPayload,
@@ -48,6 +53,11 @@ import {
   decodeProjectCreatedPayload,
   decodeProjectRepositoryChangedPayload,
   decodeProjectUpdatedPayload,
+  decodePublishedServiceExpiredPayload,
+  decodePublishedServiceFailedPayload,
+  decodePublishedServiceReadyPayload,
+  decodePublishedServiceRequestedPayload,
+  decodePublishedServiceRevokedPayload,
   decodeSessionRevokedPayload,
   decodeUserCredentialsSetPayload,
   decodeUserInvitedPayload,
@@ -70,6 +80,11 @@ import {
   encodeProjectCreatedPayload,
   encodeProjectRepositoryChangedPayload,
   encodeProjectUpdatedPayload,
+  encodePublishedServiceExpiredPayload,
+  encodePublishedServiceFailedPayload,
+  encodePublishedServiceReadyPayload,
+  encodePublishedServiceRequestedPayload,
+  encodePublishedServiceRevokedPayload,
   encodeSessionRevokedPayload,
   encodeUserCredentialsSetPayload,
   encodeUserInvitedPayload,
@@ -92,6 +107,11 @@ import {
   validateProjectCreatedPayload,
   validateProjectRepositoryChangedPayload,
   validateProjectUpdatedPayload,
+  validatePublishedServiceExpiredPayload,
+  validatePublishedServiceFailedPayload,
+  validatePublishedServiceReadyPayload,
+  validatePublishedServiceRequestedPayload,
+  validatePublishedServiceRevokedPayload,
   validateSessionRevokedPayload,
   validateUserCredentialsSetPayload,
   validateUserInvitedPayload,
@@ -122,7 +142,12 @@ export type PlatformPayload =
   | WorkspaceHeadChangedPayload
   | JobEnqueuedPayload
   | JobSucceededPayload
-  | JobFailedPayload;
+  | JobFailedPayload
+  | PublishedServiceRequestedPayload
+  | PublishedServiceReadyPayload
+  | PublishedServiceFailedPayload
+  | PublishedServiceExpiredPayload
+  | PublishedServiceRevokedPayload;
 
 /**
  * Validates a payload against the schema selected by message type.
@@ -189,6 +214,21 @@ export function validatePayload(type: MessageType, value: unknown, path: string,
     case "job.failed":
       validateJobFailedPayload(value, path, out);
       return;
+    case "published_service.requested":
+      validatePublishedServiceRequestedPayload(value, path, out);
+      return;
+    case "published_service.ready":
+      validatePublishedServiceReadyPayload(value, path, out);
+      return;
+    case "published_service.failed":
+      validatePublishedServiceFailedPayload(value, path, out);
+      return;
+    case "published_service.expired":
+      validatePublishedServiceExpiredPayload(value, path, out);
+      return;
+    case "published_service.revoked":
+      validatePublishedServiceRevokedPayload(value, path, out);
+      return;
   }
 }
 
@@ -237,6 +277,16 @@ export function decodeFrame(envelope: Envelope, value: unknown): PlatformFrame {
       return { envelope, type: "job.succeeded", payload: decodeJobSucceededPayload(value) };
     case "job.failed":
       return { envelope, type: "job.failed", payload: decodeJobFailedPayload(value) };
+    case "published_service.requested":
+      return { envelope, type: "published_service.requested", payload: decodePublishedServiceRequestedPayload(value) };
+    case "published_service.ready":
+      return { envelope, type: "published_service.ready", payload: decodePublishedServiceReadyPayload(value) };
+    case "published_service.failed":
+      return { envelope, type: "published_service.failed", payload: decodePublishedServiceFailedPayload(value) };
+    case "published_service.expired":
+      return { envelope, type: "published_service.expired", payload: decodePublishedServiceExpiredPayload(value) };
+    case "published_service.revoked":
+      return { envelope, type: "published_service.revoked", payload: decodePublishedServiceRevokedPayload(value) };
   }
 }
 
@@ -285,5 +335,15 @@ export function encodeFramePayload(frame: PlatformFrame): string {
       return encodeJobSucceededPayload(frame.payload);
     case "job.failed":
       return encodeJobFailedPayload(frame.payload);
+    case "published_service.requested":
+      return encodePublishedServiceRequestedPayload(frame.payload);
+    case "published_service.ready":
+      return encodePublishedServiceReadyPayload(frame.payload);
+    case "published_service.failed":
+      return encodePublishedServiceFailedPayload(frame.payload);
+    case "published_service.expired":
+      return encodePublishedServiceExpiredPayload(frame.payload);
+    case "published_service.revoked":
+      return encodePublishedServiceRevokedPayload(frame.payload);
   }
 }

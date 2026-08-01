@@ -54,6 +54,15 @@ const CAPTURED_COMMIT = "4a45b94f1c2d3e4a5b6c7d8e9f0a1b2c3d4e5f60";
 const FIXED_COMMIT = "b4c5d6e7f809192a3b4c5d6e7f809192a3b4c5d6";
 
 let pool: Pool;
+/**
+ * The environment records a published route names.
+ *
+ * Publication resolves the connector, the workspace and every named browser
+ * session inside the caller's organisation and project, so a route cannot name
+ * a `con_integration` that exists in no table. These are set during setup, once
+ * the project and its workspace exist.
+ */
+let routeEnvironment: { connectorId: string; workspaceId: string };
 let control: BuiltApp;
 let mcp: BuiltMcpApp;
 let worker: ChildProcess | null = null;
@@ -131,8 +140,8 @@ async function openSession(
     url: `/api/v1/projects/${projectId}/published-services`,
     headers: ADMIN,
     payload: {
-      connector_id: "con_integration",
-      workspace_id: "wsp_integration",
+      connector_id: routeEnvironment.connectorId,
+      workspace_id: routeEnvironment.workspaceId,
       local_host: "127.0.0.1",
       local_port: FIXTURE_PORT,
       protocol: "http",
@@ -207,6 +216,14 @@ before(async () => {
     workerRequestTimeoutMs: 60000,
     artefactPath: artefactRoot,
     artefactMaxBytes: 20971520,
+    // The tunnel gateway is unreachable in this harness on purpose: nothing
+    // here revokes a route, and a reachable control listener would make a
+    // test depend on a service it never started.
+    tunnelControlUrl: "http://127.0.0.1:1",
+    tunnelControlToken: "test-tunnel-control-token-0001",
+    internalSuffix: "internal.invalid",
+    routeTtlMaxSeconds: 28_800,
+    publishWaitMs: 5_000,
     apiPathPrefix: "/api/v1",
     mcpPath: "/mcp/v1",
   };
@@ -338,6 +355,28 @@ test("steps 9 to 12: an MCP client retrieves bugs-on-homepage and submits after 
       })
     ).json() as { data: { id: string } }
   ).data.id;
+
+  // The connector a route is published through. This scenario runs no connector
+  // binary — the route publisher is stubbed — but the record has to exist,
+  // because the control plane resolves `connector_id` inside the caller's
+  // organisation and project before it sends anything.
+  const environmentId = "env_integration";
+  await pool.query(
+    `INSERT INTO environments (id, organisation_id, project_id, name, platform, architecture)
+     VALUES ($1, $2, $3, 'integration', 'linux', 'amd64')
+     ON CONFLICT DO NOTHING`,
+    [environmentId, organisationId, projectId],
+  );
+  await pool.query(
+    `INSERT INTO connectors (
+       id, organisation_id, environment_id, project_id, certificate_fingerprint,
+       certificate_serial, certificate_not_after, public_key, version, status)
+     VALUES ('con_integration', $1, $2, $3, 'sha256:integration', '01',
+             now() + interval '30 days', 'key', '0.1.0', 'ACTIVE')
+     ON CONFLICT DO NOTHING`,
+    [organisationId, environmentId, projectId],
+  );
+  routeEnvironment = { connectorId: "con_integration", workspaceId };
 
   // A browser session on the fixture application, and a human capture of the
   // defect. This is steps 1 to 8 compressed: the parts before this issue.

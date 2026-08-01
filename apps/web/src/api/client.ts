@@ -15,6 +15,7 @@ import type {
   Connector,
   ConnectorStatus,
   Environment,
+  PublishedService as PublishedServiceEntity,
   Workspace,
 } from "@reviewplane/protocol/platform";
 import type {
@@ -366,6 +367,63 @@ export interface EnrolmentToken {
 }
 
 /**
+ * A published development service: a temporary route from a central browser
+ * worker to a port on the development machine (`docs/DOMAIN_MODEL.md` section
+ * 10, `docs/API.md` section 10).
+ *
+ * The closed vocabularies come from `packages/protocol` rather than being
+ * spelled again here. An earlier version of this file declared all of them
+ * locally with a comment saying the platform schema did not cover the record —
+ * true when it was written, and false by the end of the same change. Widening
+ * `protocol` and `failure_class` to `string` is not a small loss: they are the
+ * two fields the publication surface renders by name, and a code outside the
+ * vocabulary would have compiled.
+ *
+ * The **shape** is still declared here, and deliberately. The generated
+ * `PublishedService` entity is the durable record; this is what `docs/API.md`
+ * section 10 returns, which adds `internal_origin` and renders an absent member
+ * as `null` rather than omitting it. Importing the entity and pretending the
+ * response matched it would be a type that lies about which members can be
+ * read without a check.
+ */
+export type PublishedServiceStatus = PublishedServiceEntity["status"];
+
+export interface PublishedService {
+  readonly id: string;
+  readonly project_id: string;
+  readonly connector_id: string;
+  readonly workspace_id: string;
+  readonly local_host: string;
+  readonly local_port: number;
+  readonly protocol: PublishedServiceEntity["protocol"];
+  readonly public_alias: string;
+  readonly internal_origin: string;
+  readonly scope: string;
+  readonly allowed_browser_session_ids: readonly string[];
+  readonly expires_at: string;
+  readonly status: PublishedServiceStatus;
+  readonly failure_class?: Absent<NonNullable<PublishedServiceEntity["failure_class"]>>;
+  readonly observed_destination?: Absent<string>;
+}
+
+/**
+ * What the publication form sends.
+ *
+ * `allowed_browser_session_ids` must name at least one session:
+ * `docs/CONNECTOR_PROTOCOL.md` section 11 does not publish a route no session
+ * may use, so a form that could send none would only ever be refused.
+ */
+export interface PublishedServiceDraft {
+  readonly connector_id: string;
+  readonly workspace_id: string;
+  readonly local_host: string;
+  readonly local_port: number;
+  readonly protocol: string;
+  readonly ttl_seconds: number;
+  readonly allowed_browser_session_ids: readonly string[];
+}
+
+/**
  * One delivered piece of work (`docs/API.md` section 16,
  * `docs/DOMAIN_MODEL.md` section 21).
  *
@@ -527,6 +585,33 @@ export const api = {
 
   async environment(environmentId: string): Promise<EnvironmentRecord> {
     return request<EnvironmentRecord>(`/api/v1/environments/${encodeURIComponent(environmentId)}`);
+  },
+
+  async publishedServices(projectId: string): Promise<PublishedService[]> {
+    return request<PublishedService[]>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/published-services`,
+    );
+  },
+
+  /**
+   * Publishes a development service. The control plane asks the connector and
+   * the gateway in turn, so the record this answers with may be `requested`
+   * rather than `ready`; the caller reports what it was given rather than
+   * assuming the route is carried.
+   */
+  async publishService(projectId: string, draft: PublishedServiceDraft): Promise<PublishedService> {
+    return request<PublishedService>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/published-services`,
+      { method: "POST", body: JSON.stringify(draft) },
+    );
+  },
+
+  /** Revokes a route. The gateway is instructed before the record changes. */
+  async revokePublishedService(serviceId: string): Promise<PublishedService> {
+    return request<PublishedService>(
+      `/api/v1/published-services/${encodeURIComponent(serviceId)}`,
+      { method: "DELETE" },
+    );
   },
 
   async reviews(projectId: string): Promise<Review[]> {

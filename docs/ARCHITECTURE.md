@@ -159,11 +159,20 @@ same authority rules the HTTP API calls, so a rule such as "an agent may not
 finally dispose of a human-authored finding" has one implementation and two
 callers.
 
-It is the same trust zone as the server — it holds a database connection and the
-worker command credential — and a smaller one in the way that matters: it never
-reads the administrator bootstrap token, so the agent-facing process cannot
-present one. Its artefact volume is mounted read-only, because evidence is
-written by the worker through the control-plane API and only read here.
+It is the same trust zone as the server — it holds a database connection, the
+worker command credential and the tunnel gateway's control credential — and a
+smaller one in two ways that matter. It never reads the administrator bootstrap
+token, so the agent-facing process cannot present one; and it holds no
+capability signing key, so it cannot mint the credential that admits a browser
+session to a route (ADR-0021). Its artefact volume is mounted read-only, because
+evidence is written by the worker through the control-plane API and only read
+here.
+
+The tunnel credential is there for one operation. Revoking a published service
+must reach the gateway to be a revocation at all, because the gateway verifies a
+route capability from its signature without a database read. It holds no
+connector control channel, so it cannot publish a route by itself: it writes the
+route as `requested` and the control-plane API completes it (ADR-0021).
 
 ### 4.5 Browser worker
 
@@ -452,14 +461,16 @@ The gateway resolves an origin by dropping any port, dropping a trailing dot and
 
 The publication half of §7.2 is implemented and is exercised end to end against the real connector binary by `apps/server/test/route-publication.test.ts`:
 
-1. `POST /api/v1/projects/:projectId/published-services` validates the destination against the control plane's own policy before any row exists (`SECURITY.md` §9), writes the record as `requested` and records `published_service.requested`.
+1. `POST /api/v1/projects/:projectId/published-services` resolves the project inside the caller's scope, validates the destination against the control plane's own policy before any row exists (`SECURITY.md` §9), writes the record as `requested` and records `published_service.requested`. The same first phase serves `development_service_publish`, which an agent calls on a process that holds no connector channel (ADR-0021).
 2. The control plane sends `route.publish` down the control channel the connector already holds open, and waits, bounded, for the acknowledgement (`CONNECTOR_PROTOCOL.md` §11). No channel is `CONNECTOR_OFFLINE`; no answer is `CONTROL_PLANE_UNAVAILABLE`.
 3. The connector validates independently against its own configuration, probes the destination within a bounded startup grace, and answers `ready` with the destination it observed or `rejected` with a stable class.
 4. Only then is the route registered with the tunnel gateway, the record becomes `ready`, and `published_service.ready` is recorded. A refusal at any step leaves the record `failed` carrying the class, never free text.
 
 The connector opens no listening socket at any point, which the same test asserts with `ss -ltnp` while a route is being carried.
 
-Capabilities are minted by the control plane and verified by the gateway. A capability is opaque to its bearer, binds route, project and browser session, expires, and is revocable individually as well as through its route.
+Capabilities are minted by the control plane and verified by the gateway. A capability is opaque to its bearer, binds route, project and browser session, expires, and is revocable individually as well as through its route. "The control plane" is narrower than it sounds: the signing key is held by the process that serves the API and drives browser sessions, and the MCP endpoint is built without it, so the process an agent talks to cannot mint (ADR-0021).
+
+An agent reaches the same publication path through `development_services_list`, `development_service_publish` and `development_service_unpublish` (`MCP_SPEC.md` §7.2). Those tools take no connector, no project and no browser session: all three are resolved from the agent session, because a caller that could name any of them would be choosing which development machine the central browser reaches.
 
 The browser worker receives its session's capability in the allocation message and presents it as `X-ReviewPlane-Capability` on every request to the session's origin, and on no other request. The gateway strips the whole `X-ReviewPlane-` namespace before forwarding, so the credential never reaches the development service. How Chromium resolves an internal origin and trusts the gateway's certificate is ADR-0015.
 

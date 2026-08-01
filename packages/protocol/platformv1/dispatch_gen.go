@@ -49,6 +49,16 @@ func validatePayload(messageType MessageType, value any, path string, out *[]Sch
 		validateJobSucceededPayload(value, path, out)
 	case MessageTypeJobFailed:
 		validateJobFailedPayload(value, path, out)
+	case MessageTypePublishedServiceRequested:
+		validatePublishedServiceRequestedPayload(value, path, out)
+	case MessageTypePublishedServiceReady:
+		validatePublishedServiceReadyPayload(value, path, out)
+	case MessageTypePublishedServiceFailed:
+		validatePublishedServiceFailedPayload(value, path, out)
+	case MessageTypePublishedServiceExpired:
+		validatePublishedServiceExpiredPayload(value, path, out)
+	case MessageTypePublishedServiceRevoked:
+		validatePublishedServiceRevokedPayload(value, path, out)
 	}
 }
 
@@ -95,6 +105,16 @@ func decodePayload(messageType MessageType, value any) Payload {
 		return DecodeJobSucceededPayload(value)
 	case MessageTypeJobFailed:
 		return DecodeJobFailedPayload(value)
+	case MessageTypePublishedServiceRequested:
+		return DecodePublishedServiceRequestedPayload(value)
+	case MessageTypePublishedServiceReady:
+		return DecodePublishedServiceReadyPayload(value)
+	case MessageTypePublishedServiceFailed:
+		return DecodePublishedServiceFailedPayload(value)
+	case MessageTypePublishedServiceExpired:
+		return DecodePublishedServiceExpiredPayload(value)
+	case MessageTypePublishedServiceRevoked:
+		return DecodePublishedServiceRevokedPayload(value)
 	}
 	return nil
 }
@@ -142,6 +162,16 @@ func EncodePayload(payload Payload) ([]byte, error) {
 		return EncodeJobSucceededPayload(value)
 	case JobFailedPayload:
 		return EncodeJobFailedPayload(value)
+	case PublishedServiceRequestedPayload:
+		return EncodePublishedServiceRequestedPayload(value)
+	case PublishedServiceReadyPayload:
+		return EncodePublishedServiceReadyPayload(value)
+	case PublishedServiceFailedPayload:
+		return EncodePublishedServiceFailedPayload(value)
+	case PublishedServiceExpiredPayload:
+		return EncodePublishedServiceExpiredPayload(value)
+	case PublishedServiceRevokedPayload:
+		return EncodePublishedServiceRevokedPayload(value)
 	}
 	return nil, errUnknownPayload
 }
@@ -149,7 +179,7 @@ func EncodePayload(payload Payload) ([]byte, error) {
 // IsKnownMessageType reports whether a value names a version 1 message type.
 func IsKnownMessageType(value string) bool {
 	switch MessageType(value) {
-	case MessageTypeOrganisationCreated, MessageTypeProjectCreated, MessageTypeProjectUpdated, MessageTypeProjectRepositoryChanged, MessageTypeProjectArchived, MessageTypeUserInvited, MessageTypeUserCredentialsSet, MessageTypeAuthenticationLoginSucceeded, MessageTypeAuthenticationLoginFailed, MessageTypeSessionRevoked, MessageTypeConnectorEnrolled, MessageTypeConnectorConnected, MessageTypeConnectorDegraded, MessageTypeConnectorDisconnected, MessageTypeConnectorRevoked, MessageTypeWorkspaceObserved, MessageTypeWorkspaceHeadChanged, MessageTypeJobEnqueued, MessageTypeJobSucceeded, MessageTypeJobFailed:
+	case MessageTypeOrganisationCreated, MessageTypeProjectCreated, MessageTypeProjectUpdated, MessageTypeProjectRepositoryChanged, MessageTypeProjectArchived, MessageTypeUserInvited, MessageTypeUserCredentialsSet, MessageTypeAuthenticationLoginSucceeded, MessageTypeAuthenticationLoginFailed, MessageTypeSessionRevoked, MessageTypeConnectorEnrolled, MessageTypeConnectorConnected, MessageTypeConnectorDegraded, MessageTypeConnectorDisconnected, MessageTypeConnectorRevoked, MessageTypeWorkspaceObserved, MessageTypeWorkspaceHeadChanged, MessageTypeJobEnqueued, MessageTypeJobSucceeded, MessageTypeJobFailed, MessageTypePublishedServiceRequested, MessageTypePublishedServiceReady, MessageTypePublishedServiceFailed, MessageTypePublishedServiceExpired, MessageTypePublishedServiceRevoked:
 		return true
 	}
 	return false

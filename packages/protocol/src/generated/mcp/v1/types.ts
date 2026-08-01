@@ -30,6 +30,7 @@ export const CHANNELS = [
   "finding",
   "browser",
   "command",
+  "development_service",
   "refusal",
 ] as const;
 
@@ -45,6 +46,7 @@ export const CHANNEL_DESCRIPTIONS: Readonly<Record<Channel, string>> = {
   "finding": "Finding lifecycle, comments and verification (section 7.7).",
   "browser": "Bounded browser capture (section 7.4).",
   "command": "Tool arguments sent by an agent client.",
+  "development_service": "Published development services and the scoped tunnel routes that carry them (section 7.2, docs/DOMAIN_MODEL.md section 10).",
   "refusal": "The section 5 error envelope and its stable section 12 code.",
 };
 
@@ -205,6 +207,9 @@ export const MESSAGE_TYPE_VALUES = [
   "finding_add_comment",
   "finding_submit_verification",
   "browser_take_screenshot",
+  "development_services_list",
+  "development_service_publish",
+  "development_service_unpublish",
 ] as const;
 
 export type MessageType =
@@ -224,7 +229,10 @@ export type MessageType =
   | "finding_mark_blocked"
   | "finding_add_comment"
   | "finding_submit_verification"
-  | "browser_take_screenshot";
+  | "browser_take_screenshot"
+  | "development_services_list"
+  | "development_service_publish"
+  | "development_service_unpublish";
 
 /**
  * A capability an agent credential may carry (docs/SECURITY.md section 6.3). A tool
@@ -240,6 +248,7 @@ export const AGENT_CAPABILITY_VALUES = [
   "finding:write",
   "verification:submit",
   "browser:capture",
+  "service:publish",
 ] as const;
 
 export type AgentCapability =
@@ -249,7 +258,8 @@ export type AgentCapability =
   | "finding:read"
   | "finding:write"
   | "verification:submit"
-  | "browser:capture";
+  | "browser:capture"
+  | "service:publish";
 
 /**
  * Agent-session status (docs/DOMAIN_MODEL.md section 11).
@@ -601,6 +611,37 @@ export type SessionInclude =
   | "capabilities";
 
 /**
+ * Protocol a development service speaks on its local socket. It is declared at publication
+ * and is not negotiable per request.
+ */
+export const DESTINATION_PROTOCOL_VALUES = [
+  "http",
+  "https",
+] as const;
+
+export type DestinationProtocol =
+  | "http"
+  | "https";
+
+/**
+ * Published-service lifecycle status (docs/DOMAIN_MODEL.md section 10).
+ */
+export const PUBLISHED_SERVICE_STATUS_VALUES = [
+  "requested",
+  "ready",
+  "failed",
+  "expired",
+  "revoked",
+] as const;
+
+export type PublishedServiceStatus =
+  | "requested"
+  | "ready"
+  | "failed"
+  | "expired"
+  | "revoked";
+
+/**
  * Which side of the trust boundary sends each message type.
  */
 export const MESSAGE_DIRECTIONS: Readonly<Record<MessageType, "client_to_server" | "server_to_client">> = {
@@ -621,6 +662,9 @@ export const MESSAGE_DIRECTIONS: Readonly<Record<MessageType, "client_to_server"
   "finding_add_comment": "server_to_client",
   "finding_submit_verification": "server_to_client",
   "browser_take_screenshot": "server_to_client",
+  "development_services_list": "server_to_client",
+  "development_service_publish": "server_to_client",
+  "development_service_unpublish": "server_to_client",
 };
 
 /**
@@ -644,6 +688,9 @@ export const MESSAGE_CHANNELS: Readonly<Record<MessageType, Channel>> = {
   "finding_add_comment": "finding",
   "finding_submit_verification": "finding",
   "browser_take_screenshot": "browser",
+  "development_services_list": "development_service",
+  "development_service_publish": "development_service",
+  "development_service_unpublish": "development_service",
 };
 
 /**
@@ -668,6 +715,9 @@ export const PAYLOAD_MAX_BYTES: Readonly<Record<MessageType, number>> = {
   "finding_add_comment": 8192,
   "finding_submit_verification": 32768,
   "browser_take_screenshot": 8192,
+  "development_services_list": 32768,
+  "development_service_publish": 4096,
+  "development_service_unpublish": 4096,
 };
 
 /**
@@ -749,10 +799,11 @@ export const RESOURCE_URI_FORMS = [
  * The tool availability set docs/MCP_SPEC.md section 14 requires a client to be able to
  * rely on. It equals x-protocol.messages, so a tool cannot be advertised without a result
  * schema. Everything else in the section 7 catalogue is unavailable and is absent from
- * tools/list rather than present and failing: no development-service tools, no browser
- * lifecycle or interaction tools, no visual inspection, no completion gates and — the row
- * that matters most — no secret tool of any kind, which is the strongest available form of
- * the rule that no raw secret reaches an agent (docs/SECURITY.md section 12.1).
+ * tools/list rather than present and failing: no browser lifecycle or interaction tools,
+ * no visual inspection, no completion gates and — the row that matters most — no secret
+ * tool of any kind, which is the strongest available form of the rule that no raw secret
+ * reaches an agent (docs/SECURITY.md section 12.1). The inbox tools joined it with RVP-49
+ * and the development-service tools with RVP-24.
  */
 export const TOOL_AVAILABILITY = [
   "project_current",
@@ -772,6 +823,9 @@ export const TOOL_AVAILABILITY = [
   "finding_add_comment",
   "finding_submit_verification",
   "browser_take_screenshot",
+  "development_services_list",
+  "development_service_publish",
+  "development_service_unpublish",
 ] as const;
 
 /**
@@ -1016,6 +1070,17 @@ export type UntrustedFieldPath = string;
  * carries no project of its own because the project is the session's.
  */
 export type SearchQuery = string;
+
+/**
+ * Local address of a development service, as a literal IP address. A name would have to be
+ * resolved, and a resolver is a rebinding surface (docs/SECURITY.md section 9).
+ */
+export type LocalHost = string;
+
+/**
+ * TCP port a development service listens on.
+ */
+export type LocalPort = number;
 
 /**
  * An acting principal. The type is always present, because an authority rule that depends
@@ -2681,6 +2746,144 @@ export interface Envelope {
 }
 
 /**
+ * A published development service as an agent sees it. It carries the origin a browser
+ * session opens and never a capability: a capability is minted for a browser session, and
+ * an agent drives a session rather than presenting one itself (docs/ARCHITECTURE.md
+ * section 7.3).
+ */
+export interface DevelopmentServiceView {
+  /**
+   * Published-service identity.
+   */
+  readonly id: Identifier;
+  /**
+   * Lifecycle status.
+   */
+  readonly status: PublishedServiceStatus;
+  /**
+   * Workspace the service was started from.
+   */
+  readonly workspace_id?: Identifier;
+  /**
+   * Local address the connector opens.
+   */
+  readonly local_host: LocalHost;
+  /**
+   * Local port the connector opens.
+   */
+  readonly local_port: LocalPort;
+  /**
+   * Protocol declared at publication.
+   */
+  readonly protocol: DestinationProtocol;
+  /**
+   * Origin an authorised browser session opens. It is usable only by a session the route
+   * names, and only with a capability the control plane mints; it is not reachable from
+   * the public internet.
+   */
+  readonly internal_origin: string;
+  /**
+   * Destination the connector reported it opened. Absent until the route is ready.
+   */
+  readonly observed_destination?: string;
+  /**
+   * Stable class that refused the publication. Present only when the status is failed.
+   */
+  readonly failure_class?: ErrorClass;
+  /**
+   * When the route expires. Publication always expires.
+   */
+  readonly expires_at: Timestamp;
+}
+
+/**
+ * Arguments of development_services_list. It names no project: the project is the
+ * session's, and a project argument would be an authorisation input chosen by the caller.
+ */
+export interface DevelopmentServicesListInput {
+  /**
+   * Maximum routes in this page, newest first. Bounded here rather than by the caller's
+   * optimism, because an unbounded response is the failure mode docs/MCP_SPEC.md section
+   * 13 exists to prevent.
+   */
+  readonly limit?: PageLimit;
+}
+
+/**
+ * Arguments of development_service_publish (docs/MCP_SPEC.md section 7.2).
+ */
+export interface DevelopmentServicePublishInput {
+  /**
+   * Workspace the development service was started from. It MUST belong to the session's
+   * project.
+   */
+  readonly workspace_id: Identifier;
+  /**
+   * Local address to publish. Defaults to 127.0.0.1, and the connector's own policy still
+   * applies (docs/CONNECTOR_PROTOCOL.md section 11).
+   */
+  readonly local_host?: LocalHost;
+  /**
+   * Local port to publish.
+   */
+  readonly local_port: LocalPort;
+  /**
+   * Protocol the development service speaks. Defaults to http.
+   */
+  readonly protocol?: DestinationProtocol;
+  /**
+   * How long the route may live. It is bounded by the deployment's maximum route lifetime,
+   * and a longer request is refused rather than clipped: silently shortening a lifetime
+   * would make an agent believe it had access it does not have.
+   */
+  readonly ttl_seconds?: number;
+  /**
+   * Key for this publication. Section 10 requires one on every state-changing tool, and it
+   * matters particularly here: a retry without one would open a second tunnel into the
+   * development machine for a request the agent believes it made once.
+   */
+  readonly idempotency_key: IdempotencyKey;
+}
+
+/**
+ * Arguments of development_service_unpublish.
+ */
+export interface DevelopmentServiceUnpublishInput {
+  /**
+   * Route to revoke. A route outside the session's project is reported absent rather than
+   * forbidden (docs/API.md section 5).
+   */
+  readonly published_service_id: Identifier;
+  /**
+   * Key for this revocation. Section 10 requires one on every state-changing tool;
+   * revocation is idempotent in the domain as well, so a retry produces one event either
+   * way.
+   */
+  readonly idempotency_key: IdempotencyKey;
+}
+
+/**
+ * Payload of development_services_list.
+ */
+export interface DevelopmentServicesListResult {
+  /**
+   * Routes of the session's project, newest first.
+   */
+  readonly services: readonly DevelopmentServiceView[];
+}
+
+/**
+ * Payload of development_service_publish and development_service_unpublish: the record as
+ * it stands after the command.
+ */
+export interface DevelopmentServiceResult {
+  /**
+   * The published development service.
+   */
+  readonly service: DevelopmentServiceView;
+}
+
+/**
  * A decoded control frame: envelope header plus the payload selected by its type.
  */
 export type McpFrame =
@@ -2768,5 +2971,20 @@ export type McpFrame =
       readonly envelope: Envelope;
       readonly type: "browser_take_screenshot";
       readonly payload: BrowserTakeScreenshotResult;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "development_services_list";
+      readonly payload: DevelopmentServicesListResult;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "development_service_publish";
+      readonly payload: DevelopmentServiceResult;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "development_service_unpublish";
+      readonly payload: DevelopmentServiceResult;
     }
 ;

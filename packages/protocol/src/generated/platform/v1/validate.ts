@@ -28,12 +28,17 @@ const PATTERN_12 = new RegExp("^[A-Za-z0-9:._-]+$", "u");
 const PATTERN_13 = new RegExp("^sha256:[0-9a-f]{64}$", "u");
 const PATTERN_14 = new RegExp("^[^\\x00-\\x1f\\x7f/\\\\]+$", "u");
 const PATTERN_15 = new RegExp("^[0-9a-f]+$", "u");
-const PATTERN_16 = new RegExp("^[^\\s\\x00-\\x1f]+$", "u");
-const PATTERN_17 = new RegExp("^[a-z][a-z0-9_]*$", "u");
-const PATTERN_18 = new RegExp("^[^\\x00]+$", "u");
-const PATTERN_19 = new RegExp("^[A-Za-z0-9_.-]+$", "u");
-const PATTERN_20 = new RegExp("^[a-z][a-z0-9_.]*$", "u");
-const PATTERN_21 = new RegExp("^[a-z][a-z0-9_.\\[\\]]*$", "u");
+const PATTERN_16 = new RegExp("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", "u");
+const PATTERN_17 = new RegExp("^https://[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.[a-z0-9.-]{1,180}/$", "u");
+const PATTERN_18 = new RegExp("^[0-9A-Fa-f:.]{1,45}$", "u");
+const PATTERN_19 = new RegExp("^(\\[[0-9A-Fa-f:.]{1,45}\\]|[0-9A-Fa-f:.]{1,45}):[0-9]{1,5}$", "u");
+const PATTERN_20 = new RegExp("^[^\\s\\x00-\\x1f]+$", "u");
+const PATTERN_21 = new RegExp("^[a-z][a-z0-9_]*$", "u");
+const PATTERN_22 = new RegExp("^[^\\x00]+$", "u");
+const PATTERN_23 = new RegExp("^[A-Za-z0-9_.-]+$", "u");
+const PATTERN_24 = new RegExp("^[a-z][a-z0-9_.]*$", "u");
+const PATTERN_25 = new RegExp("^[a-z][a-z0-9_.\\[\\]]*$", "u");
+const PATTERN_26 = new RegExp("^[A-Za-z0-9_-]{1,64}$", "u");
 
 /**
  * Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the
@@ -77,7 +82,7 @@ export function validateCursor(value: unknown, path: string, out: SchemaViolatio
  * that source.
  */
 export function validateMessageType(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["organisation.created","project.created","project.updated","project.repository_changed","project.archived","user.invited","user.credentials_set","authentication.login_succeeded","authentication.login_failed","session.revoked","connector.enrolled","connector.connected","connector.degraded","connector.disconnected","connector.revoked","workspace.observed","workspace.head_changed","job.enqueued","job.succeeded","job.failed"] });
+  checkString(value, path, out, { values: ["organisation.created","project.created","project.updated","project.repository_changed","project.archived","user.invited","user.credentials_set","authentication.login_succeeded","authentication.login_failed","session.revoked","connector.enrolled","connector.connected","connector.degraded","connector.disconnected","connector.revoked","workspace.observed","workspace.head_changed","job.enqueued","job.succeeded","job.failed","published_service.requested","published_service.ready","published_service.failed","published_service.expired","published_service.revoked"] });
 }
 
 /**
@@ -368,6 +373,91 @@ export function validateSessionRevocationReason(value: unknown, path: string, ou
 }
 
 /**
+ * Published-service lifecycle status (docs/DOMAIN_MODEL.md section 10). A route reaches
+ * ready only once the connector has acknowledged the destination it opened and the tunnel
+ * gateway has accepted the registration; failed carries the stable class that refused it.
+ * expired and revoked are both terminal, and both close streams that are already in
+ * flight.
+ */
+export function validatePublishedServiceStatus(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["requested","ready","failed","expired","revoked"] });
+}
+
+/**
+ * What a route is scoped to (docs/DOMAIN_MODEL.md section 10). The only version 1 value is
+ * browser_session: the route is usable only by the sessions named in its publication, and
+ * docs/CONNECTOR_PROTOCOL.md section 11 requires at least one.
+ */
+export function validatePublishedServiceScope(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["browser_session"] });
+}
+
+/**
+ * Why a publication was refused. It is a closed vocabulary drawn from docs/API.md section
+ * 5 and docs/CONNECTOR_PROTOCOL.md section 21, and never free text: docs/SECURITY.md
+ * section 18 requires a stable code, and docs/API.md section 10 requires one failure to
+ * carry one code from the connector to the caller. A refusal this list does not name is
+ * recorded as INTERNAL_ERROR rather than widening the vocabulary at write time.
+ */
+export function validatePublishedServiceFailureClass(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["CONNECTOR_OFFLINE","CONTROL_PLANE_UNAVAILABLE","DESTINATION_NOT_ALLOWED","IDENTITY_REVOKED","INTERNAL_ERROR","PORT_NOT_LISTENING","PROJECT_NOT_AUTHORISED","PROTOCOL_UNSUPPORTED","PUBLISHED_SERVICE_UNAVAILABLE","ROUTE_EXPIRED","ROUTE_LIMIT_EXCEEDED","WORKSPACE_NOT_FOUND"] });
+}
+
+/**
+ * Protocol the development service speaks on its local socket. It is declared at
+ * publication and is not negotiable per request: docs/CONNECTOR_PROTOCOL.md section 12
+ * fixes the destination at publication time, so nothing a browser sends can change it.
+ */
+export function validateDestinationProtocol(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["http","https"] });
+}
+
+/**
+ * Leftmost label of a route's internal origin (docs/ARCHITECTURE.md section 7.3). It MUST
+ * be a DNS label and MUST be unique across the deployment, so the control plane generates
+ * it rather than deriving it from the route identifier, whose conventional svc_ prefix is
+ * not a valid label. Consumers MUST treat it as opaque.
+ */
+export function validatePublicAlias(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 63, pattern: PATTERN_16 });
+}
+
+/**
+ * Origin an authorised browser session opens, of the form
+ * https://<public_alias>.<suffix>/. The control plane derives it from the alias; it is
+ * never taken from a request, because the origin is the browser session's egress
+ * allow-list (docs/SECURITY.md section 9).
+ */
+export function validateInternalOrigin(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 256, pattern: PATTERN_17 });
+}
+
+/**
+ * Local address of the development service, as a literal IP address. A name would have to
+ * be resolved, and a resolver is a rebinding surface: the name that passed the destination
+ * policy need not be the address the connector later opens (docs/SECURITY.md section 9).
+ */
+export function validateLocalHost(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 45, pattern: PATTERN_18 });
+}
+
+/**
+ * TCP port the development service listens on.
+ */
+export function validateLocalPort(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 1, maximum: 65535 });
+}
+
+/**
+ * The destination the connector reported it actually opened, as host:port
+ * (docs/CONNECTOR_PROTOCOL.md section 11). It is what the connector observed rather than
+ * what the control plane asked for, so that the two can be compared.
+ */
+export function validateObservedDestination(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 3, maxLength: 64, pattern: PATTERN_19 });
+}
+
+/**
  * Normalised host and path, lowercase host, no scheme, no credentials, no .git suffix and
  * no trailing slash, for example github.com/example/refresh-surplus.
  */
@@ -376,7 +466,7 @@ export function validateRepositoryIdentityCanonical(value: unknown, path: string
 }
 
 export function validateRepositoryIdentityCloneUrlsItem(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 3, maxLength: 512, pattern: PATTERN_16 });
+  checkString(value, path, out, { minLength: 3, maxLength: 512, pattern: PATTERN_20 });
 }
 
 /**
@@ -1209,7 +1299,7 @@ export function validateSessionRevokedPayload(value: unknown, path: string, out:
 }
 
 export function validateProjectUpdatedPayloadChangedFieldsItem(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_17 });
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_21 });
 }
 
 /**
@@ -1793,7 +1883,7 @@ export function validateStreamErrorType(value: unknown, path: string, out: Schem
  * trace.
  */
 export function validateStreamErrorMessage(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 1024, pattern: PATTERN_18 });
+  checkString(value, path, out, { minLength: 1, maxLength: 1024, pattern: PATTERN_22 });
 }
 
 /**
@@ -1859,7 +1949,7 @@ export function validateApiErrorDetailsCandidates(value: unknown, path: string, 
 }
 
 export function validateApiErrorDetailsAllowedTransitionsItem(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_19 });
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_23 });
 }
 
 /**
@@ -1874,7 +1964,7 @@ export function validateApiErrorDetailsAllowedTransitions(value: unknown, path: 
 }
 
 export function validateApiErrorDetailsRequiredEvidenceItem(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_17 });
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_21 });
 }
 
 /**
@@ -1888,7 +1978,7 @@ export function validateApiErrorDetailsRequiredEvidence(value: unknown, path: st
 }
 
 export function validateApiErrorDetailsMissingContextItem(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_20 });
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_24 });
 }
 
 /**
@@ -1914,14 +2004,14 @@ export function validateApiErrorDetailsRetryAfterMs(value: unknown, path: string
  * The request member the refusal is about.
  */
 export function validateApiErrorDetailsField(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 128, pattern: PATTERN_21 });
+  checkString(value, path, out, { minLength: 1, maxLength: 128, pattern: PATTERN_25 });
 }
 
 /**
  * Stable sub-reason where one code covers several causes.
  */
 export function validateApiErrorDetailsReason(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_17 });
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_21 });
 }
 
 /**
@@ -1969,7 +2059,7 @@ export function validateApiErrorDetails(value: unknown, path: string, out: Schem
  * (docs/SECURITY.md section 18).
  */
 export function validateApiErrorMessage(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 1024, pattern: PATTERN_18 });
+  checkString(value, path, out, { minLength: 1, maxLength: 1024, pattern: PATTERN_22 });
 }
 
 /**
@@ -2030,7 +2120,7 @@ export function validateCursorClaimsVersion(value: unknown, path: string, out: S
  * Value of the collection's sort column at the last row of the previous page.
  */
 export function validateCursorClaimsSortKey(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 128, pattern: PATTERN_18 });
+  checkString(value, path, out, { minLength: 1, maxLength: 128, pattern: PATTERN_22 });
 }
 
 /**
@@ -2049,5 +2139,267 @@ export function validateCursorClaims(value: unknown, path: string, out: SchemaVi
   }
   if (source["id"] !== undefined) {
     validateIdentifier(source["id"], `${path}.id`, out);
+  }
+}
+
+/**
+ * Browser sessions a route authorises. At least one is required: a route no session may
+ * use is not published (docs/CONNECTOR_PROTOCOL.md section 11).
+ */
+export function validatePublishedServiceAllowedBrowserSessionIds(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 1, maxItems: 32, uniqueItems: true })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateIdentifier(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * A temporary route from an authorised browser worker to a local development service
+ * (docs/DOMAIN_MODEL.md section 10). It has no member capable of carrying a capability
+ * token: a capability is a bearer credential the control plane mints and never stores, and
+ * this record names only the sessions one may be minted for.
+ */
+export function validatePublishedService(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["id", "organisation_id", "project_id", "connector_id", "workspace_id", "public_alias", "internal_origin", "local_host", "local_port", "protocol", "scope", "allowed_browser_session_ids", "expires_at", "status", "failure_class", "observed_destination", "requested_at", "ready_at", "ended_at"], ["id", "organisation_id", "project_id", "connector_id", "workspace_id", "public_alias", "internal_origin", "local_host", "local_port", "protocol", "scope", "allowed_browser_session_ids", "expires_at", "status", "requested_at"]);
+  if (source === null) return;
+  if (source["id"] !== undefined) {
+    validateIdentifier(source["id"], `${path}.id`, out);
+  }
+  if (source["organisation_id"] !== undefined) {
+    validateIdentifier(source["organisation_id"], `${path}.organisation_id`, out);
+  }
+  if (source["project_id"] !== undefined) {
+    validateIdentifier(source["project_id"], `${path}.project_id`, out);
+  }
+  if (source["connector_id"] !== undefined) {
+    validateIdentifier(source["connector_id"], `${path}.connector_id`, out);
+  }
+  if (source["workspace_id"] !== undefined) {
+    validateIdentifier(source["workspace_id"], `${path}.workspace_id`, out);
+  }
+  if (source["public_alias"] !== undefined) {
+    validatePublicAlias(source["public_alias"], `${path}.public_alias`, out);
+  }
+  if (source["internal_origin"] !== undefined) {
+    validateInternalOrigin(source["internal_origin"], `${path}.internal_origin`, out);
+  }
+  if (source["local_host"] !== undefined) {
+    validateLocalHost(source["local_host"], `${path}.local_host`, out);
+  }
+  if (source["local_port"] !== undefined) {
+    validateLocalPort(source["local_port"], `${path}.local_port`, out);
+  }
+  if (source["protocol"] !== undefined) {
+    validateDestinationProtocol(source["protocol"], `${path}.protocol`, out);
+  }
+  if (source["scope"] !== undefined) {
+    validatePublishedServiceScope(source["scope"], `${path}.scope`, out);
+  }
+  if (source["allowed_browser_session_ids"] !== undefined) {
+    validatePublishedServiceAllowedBrowserSessionIds(source["allowed_browser_session_ids"], `${path}.allowed_browser_session_ids`, out);
+  }
+  if (source["expires_at"] !== undefined) {
+    validateTimestamp(source["expires_at"], `${path}.expires_at`, out);
+  }
+  if (source["status"] !== undefined) {
+    validatePublishedServiceStatus(source["status"], `${path}.status`, out);
+  }
+  if (source["failure_class"] !== undefined) {
+    validatePublishedServiceFailureClass(source["failure_class"], `${path}.failure_class`, out);
+  }
+  if (source["observed_destination"] !== undefined) {
+    validateObservedDestination(source["observed_destination"], `${path}.observed_destination`, out);
+  }
+  if (source["requested_at"] !== undefined) {
+    validateTimestamp(source["requested_at"], `${path}.requested_at`, out);
+  }
+  if (source["ready_at"] !== undefined) {
+    validateTimestamp(source["ready_at"], `${path}.ready_at`, out);
+  }
+  if (source["ended_at"] !== undefined) {
+    validateTimestamp(source["ended_at"], `${path}.ended_at`, out);
+  }
+}
+
+/**
+ * Browser sessions a route authorises. At least one is required: a route no session may
+ * use is not published (docs/CONNECTOR_PROTOCOL.md section 11).
+ */
+export function validatePublishedServiceRequestedPayloadAllowedBrowserSessionIds(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 1, maxItems: 32, uniqueItems: true })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateIdentifier(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Payload of published_service.requested. It is written before anything is sent to the
+ * connector or the gateway, so the audit trail records the destination that was asked for
+ * even when the publication is then refused.
+ */
+export function validatePublishedServiceRequestedPayload(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["published_service_id", "connector_id", "workspace_id", "local_host", "local_port", "protocol", "public_alias", "expires_at", "allowed_browser_session_ids", "new_status"], ["published_service_id", "connector_id", "workspace_id", "local_host", "local_port", "protocol", "public_alias", "expires_at", "allowed_browser_session_ids", "new_status"]);
+  if (source === null) return;
+  if (source["published_service_id"] !== undefined) {
+    validateIdentifier(source["published_service_id"], `${path}.published_service_id`, out);
+  }
+  if (source["connector_id"] !== undefined) {
+    validateIdentifier(source["connector_id"], `${path}.connector_id`, out);
+  }
+  if (source["workspace_id"] !== undefined) {
+    validateIdentifier(source["workspace_id"], `${path}.workspace_id`, out);
+  }
+  if (source["local_host"] !== undefined) {
+    validateLocalHost(source["local_host"], `${path}.local_host`, out);
+  }
+  if (source["local_port"] !== undefined) {
+    validateLocalPort(source["local_port"], `${path}.local_port`, out);
+  }
+  if (source["protocol"] !== undefined) {
+    validateDestinationProtocol(source["protocol"], `${path}.protocol`, out);
+  }
+  if (source["public_alias"] !== undefined) {
+    validatePublicAlias(source["public_alias"], `${path}.public_alias`, out);
+  }
+  if (source["expires_at"] !== undefined) {
+    validateTimestamp(source["expires_at"], `${path}.expires_at`, out);
+  }
+  if (source["allowed_browser_session_ids"] !== undefined) {
+    validatePublishedServiceRequestedPayloadAllowedBrowserSessionIds(source["allowed_browser_session_ids"], `${path}.allowed_browser_session_ids`, out);
+  }
+  if (source["new_status"] !== undefined) {
+    validatePublishedServiceStatus(source["new_status"], `${path}.new_status`, out);
+  }
+}
+
+/**
+ * Whether the gateway held the connector's data channel when it registered the route.
+ */
+export function validatePublishedServiceReadyPayloadConnectorConnected(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * Signing key the capability was minted with, so that a rotation can be audited.
+ */
+export function validatePublishedServiceReadyPayloadKeyId(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_26 });
+}
+
+/**
+ * Payload of published_service.ready. It is written for two occurrences: a route that
+ * began carrying traffic, and a session-scoped capability minted against one. Neither
+ * carries the capability token, only its identifier, because an event is append-only and a
+ * credential written into one cannot be taken out again (docs/EVENTS.md section 8).
+ */
+export function validatePublishedServiceReadyPayload(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["published_service_id", "previous_status", "new_status", "observed_destination", "internal_origin", "connector_connected", "capability_id", "browser_session_id", "key_id", "expires_at"], ["published_service_id"]);
+  if (source === null) return;
+  if (source["published_service_id"] !== undefined) {
+    validateIdentifier(source["published_service_id"], `${path}.published_service_id`, out);
+  }
+  if (source["previous_status"] !== undefined) {
+    validatePublishedServiceStatus(source["previous_status"], `${path}.previous_status`, out);
+  }
+  if (source["new_status"] !== undefined) {
+    validatePublishedServiceStatus(source["new_status"], `${path}.new_status`, out);
+  }
+  if (source["observed_destination"] !== undefined) {
+    validateObservedDestination(source["observed_destination"], `${path}.observed_destination`, out);
+  }
+  if (source["internal_origin"] !== undefined) {
+    validateInternalOrigin(source["internal_origin"], `${path}.internal_origin`, out);
+  }
+  if (source["connector_connected"] !== undefined) {
+    validatePublishedServiceReadyPayloadConnectorConnected(source["connector_connected"], `${path}.connector_connected`, out);
+  }
+  if (source["capability_id"] !== undefined) {
+    validateIdentifier(source["capability_id"], `${path}.capability_id`, out);
+  }
+  if (source["browser_session_id"] !== undefined) {
+    validateIdentifier(source["browser_session_id"], `${path}.browser_session_id`, out);
+  }
+  if (source["key_id"] !== undefined) {
+    validatePublishedServiceReadyPayloadKeyId(source["key_id"], `${path}.key_id`, out);
+  }
+  if (source["expires_at"] !== undefined) {
+    validateTimestamp(source["expires_at"], `${path}.expires_at`, out);
+  }
+}
+
+/**
+ * Payload of published_service.failed. The class is the diagnosis: docs/API.md section 10
+ * requires one failure to carry one code from the connector to the caller, so what refused
+ * the publication is recorded under the name the caller was given.
+ */
+export function validatePublishedServiceFailedPayload(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["published_service_id", "previous_status", "new_status", "error_class"], ["published_service_id", "previous_status", "new_status", "error_class"]);
+  if (source === null) return;
+  if (source["published_service_id"] !== undefined) {
+    validateIdentifier(source["published_service_id"], `${path}.published_service_id`, out);
+  }
+  if (source["previous_status"] !== undefined) {
+    validatePublishedServiceStatus(source["previous_status"], `${path}.previous_status`, out);
+  }
+  if (source["new_status"] !== undefined) {
+    validatePublishedServiceStatus(source["new_status"], `${path}.new_status`, out);
+  }
+  if (source["error_class"] !== undefined) {
+    validatePublishedServiceFailureClass(source["error_class"], `${path}.error_class`, out);
+  }
+}
+
+/**
+ * Payload of published_service.expired. Expiry is the ordinary end of a route, and it
+ * closes streams that are already in flight, including an upgraded one
+ * (docs/ARCHITECTURE.md section 7.3).
+ */
+export function validatePublishedServiceExpiredPayload(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["published_service_id", "previous_status", "new_status", "expires_at"], ["published_service_id", "previous_status", "new_status", "expires_at"]);
+  if (source === null) return;
+  if (source["published_service_id"] !== undefined) {
+    validateIdentifier(source["published_service_id"], `${path}.published_service_id`, out);
+  }
+  if (source["previous_status"] !== undefined) {
+    validatePublishedServiceStatus(source["previous_status"], `${path}.previous_status`, out);
+  }
+  if (source["new_status"] !== undefined) {
+    validatePublishedServiceStatus(source["new_status"], `${path}.new_status`, out);
+  }
+  if (source["expires_at"] !== undefined) {
+    validateTimestamp(source["expires_at"], `${path}.expires_at`, out);
+  }
+}
+
+/**
+ * Capabilities withdrawn with the route. Identifiers only: a token never appears in an
+ * event.
+ */
+export function validatePublishedServiceRevokedPayloadRevokedCapabilityIds(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 64, uniqueItems: true })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateIdentifier(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Payload of published_service.revoked. Revocation is idempotent and writes this once. It
+ * names the capabilities it withdrew, because revoking a route without withdrawing the
+ * credentials minted against it would leave the revocation partial.
+ */
+export function validatePublishedServiceRevokedPayload(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["published_service_id", "previous_status", "new_status", "revoked_capability_ids"], ["published_service_id", "previous_status", "new_status"]);
+  if (source === null) return;
+  if (source["published_service_id"] !== undefined) {
+    validateIdentifier(source["published_service_id"], `${path}.published_service_id`, out);
+  }
+  if (source["previous_status"] !== undefined) {
+    validatePublishedServiceStatus(source["previous_status"], `${path}.previous_status`, out);
+  }
+  if (source["new_status"] !== undefined) {
+    validatePublishedServiceStatus(source["new_status"], `${path}.new_status`, out);
+  }
+  if (source["revoked_capability_ids"] !== undefined) {
+    validatePublishedServiceRevokedPayloadRevokedCapabilityIds(source["revoked_capability_ids"], `${path}.revoked_capability_ids`, out);
   }
 }
