@@ -69,6 +69,7 @@ import {
   aggregateCompletionResult,
   aggregateMissing,
   assuranceFor,
+  missingEvidence,
   nextActions,
   type CompletionRequirements,
   type ErrorCode,
@@ -1055,11 +1056,30 @@ const TOOLS: readonly ToolDefinition[] = [
           "A human reviewer should confirm the branch before accepting.",
         );
       }
+      // What the submission still does not satisfy, answered here rather than
+      // left for the agent to discover from a refusal on the next transition.
+      // An agent that learns the gap at submission fixes it in the same turn;
+      // one that learns it from `EVIDENCE_REQUIRED` has already believed itself
+      // finished.
+      const workspaceBranch = context.connection.workspace?.branch ?? null;
+      const { settings, requirements } = await context.services.reviews.completionRequirements(
+        context.connection.scope,
+      );
+      const evidence = await context.services.reviews.completionEvidenceFor(
+        context.connection.scope,
+        findingId,
+        workspaceBranch,
+      );
       return {
         trust: trustFor({ pageDerived: true, humanAuthored: true }),
         data: {
-          verification: await toVerificationView(submitted.verification, context.views),
+          verification: {
+            ...(await toVerificationView(submitted.verification, context.views)),
+            assurance: assuranceFor(evidence),
+          },
           finding: toFindingView(submitted.finding, context.views),
+          requirements,
+          missing: missingEvidence(settings, requirements, evidence),
         },
       };
     },

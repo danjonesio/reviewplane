@@ -39,6 +39,9 @@ ADRs record decisions that materially affect architecture, security, protocols o
 | [0023](0023-connector-issued-agent-credentials.md) | A connector exchanges its device identity for a short-lived, single-project agent credential | Accepted |
 | [0024](0024-transition-tables-as-protocol-data.md) | The review and finding transition tables, with their authority column, are protocol data | Accepted |
 | [0025](0025-backup-archive-format.md) | A backup archive is a self-describing row-level export the product writes and reads, streamed through the operator's shell | Accepted |
+| [0029](0029-completion-gate-is-advisory-and-non-terminating.md) | The completion gate reports and never decides, and never terminates the agent | Accepted |
+| [0030](0030-verification-supersession.md) | A second verification supersedes the first, and exactly one is current | Accepted |
+| [0031](0031-agent-assertions-are-not-control-plane-verification.md) | Agent-asserted checks are recorded as assertions, never as control-plane verification | Accepted |
 
 ## Pending decisions
 
