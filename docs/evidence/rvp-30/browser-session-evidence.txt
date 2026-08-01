@@ -1,0 +1,34 @@
+ReviewPlane RVP-30 user-interface evidence
+starting a central browser session, and pausing, resuming and ending one,
+at 390x844 and 1440x900.
+
+properties asserted:
+- the start form is a named landmark whose status text is a polite live region
+- the interface states that Chromium runs centrally on the deployment and
+  reaches the application over a private connector route
+- 1440x900 and 390x844 are both offered whatever the project configured, and
+  one preset is always chosen
+- the route choice offers the carried route and an explicit no-route option,
+  never a blank control
+- trace and video are present, disabled and stated to be unavailable at this
+  stage rather than omitted
+- a successful start is announced with the session, its viewport and what it
+  reaches, and leaves a link to the session room that opens it
+- BROWSER_CAPACITY_EXHAUSTED is named as a deployment with no free browser
+  slot, with the three actions a reader can take, and nothing is offered to
+  open
+- the session room states the current controller beside the control epoch
+- pause then resume round-trips and the two controls swap
+- CONTROL_EPOCH_STALE is explained as browser control having changed, and the
+  session is read again so the epoch and controller on screen are current
+- no console error, no page error and no failed request in any case, except
+  the single refusal each refusal case asked the stub for
+
+screenshot: rvp30-start-session-1440x900.png
+screenshot: rvp30-start-session-capacity-1440x900.png
+screenshot: rvp30-session-room-1440x900.png
+screenshot: rvp30-session-room-stale-epoch-1440x900.png
+screenshot: rvp30-start-session-390x844.png
+screenshot: rvp30-start-session-capacity-390x844.png
+screenshot: rvp30-session-room-390x844.png
+screenshot: rvp30-session-room-stale-epoch-390x844.png

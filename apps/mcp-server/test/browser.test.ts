@@ -298,6 +298,10 @@ test("a session starts at the default viewport, pauses, resumes and ends", async
     });
     assert.equal(clicked.envelope["ok"], false);
     assert.equal(errorOf(clicked.envelope).code, "BROWSER_SESSION_NOT_ACTIVE");
+    // Which state it is in, not merely that it is not active: an agent told
+    // only the latter cannot tell a session it should resume from one it
+    // should replace.
+    assert.equal(errorOf(clicked.envelope).details?.["browser_session_status"], "PAUSED");
 
     const resumed = await call(agent.client, "browser_session_resume", {
       browser_session_id: started.id,
@@ -896,13 +900,20 @@ test("a value shaped like a credential never reaches the browser and never appea
     assert.equal(envelope["ok"], false, JSON.stringify(envelope));
     assert.equal(errorOf(envelope).code, "POLICY_DENIED");
 
-    // The refusal never quotes the value: a refusal that echoed the credential
-    // would put it in the response, the log and the event
-    // (`docs/SECURITY.md` section 18).
+    // The refusal names the **rule**, so an agent can tell "that looked like a
+    // token" from "that looked like a private key" and fix the right thing.
+    assert.equal(errorOf(envelope).details?.["detected"], "reviewplane_agent_token");
+
+    // And never the value: a refusal that echoed the credential would put it in
+    // the response, the log and the event (`docs/SECURITY.md` section 18). This
+    // is asserted over the whole result rather than over `details`, because the
+    // member that would carry it is not the only place it could leak.
     assert.ok(
       !JSON.stringify(typed).includes(secret),
       "the refusal echoed the value it refused",
     );
+    // `reason` restates the code in prose and is dropped rather than carried.
+    assert.equal(errorOf(envelope).details?.["reason"], undefined);
 
     // And it never reached the worker.
     assert.equal(harness.commands.length, commandsBefore, "the command was sent to the browser");
