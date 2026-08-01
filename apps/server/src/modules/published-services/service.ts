@@ -17,6 +17,8 @@
 import { randomUUID } from "node:crypto";
 
 import { mintCapability } from "@reviewplane/protocol";
+import { PUBLISHED_SERVICE_FAILURE_CLASS_VALUES } from "@reviewplane/protocol/platform";
+import type { PublishedServiceFailureClass } from "@reviewplane/protocol/platform";
 
 import type { Pool, PoolClient } from "../../db/pool.ts";
 import { inTransaction } from "../../db/pool.ts";
@@ -68,18 +70,45 @@ export class StubRoutePublisher implements RoutePublisher {
 }
 
 export interface PublishedServiceConfig {
-  readonly organisationId: string;
+  // There is deliberately no `organisationId` here. One existed, and every
+  // event and every capability row this service wrote was filed under the
+  // deployment's default organisation rather than under the organisation of the
+  // project the route belonged to. The organisation now comes from the resolved
+  // project on the way in, and from the record the scoped read returned
+  // everywhere else.
   readonly destinationPolicy: DestinationPolicy;
   readonly internalSuffix: string;
   readonly routeTtlMaxSeconds: number;
   readonly maxRoutesPerConnector: number;
-  readonly capabilityKeyId: string;
-  readonly capabilityKey: Uint8Array;
-  readonly capabilityTtlSeconds: number;
+  /**
+   * The capability signing material, present only in a process that mints.
+   *
+   * The control plane is the minting authority (`docs/ARCHITECTURE.md` §7.3),
+   * and minting is what binds a route to one browser session. The MCP endpoint
+   * runs in its own process (ADR-0020) and drives no browser session itself, so
+   * it holds no signing key: a process that cannot mint cannot leak a minting
+   * key, and {@link PublishedServiceService.mint} refuses rather than signing
+   * with a placeholder.
+   */
+  readonly capability?: {
+    readonly keyId: string;
+    readonly key: Uint8Array;
+    readonly ttlSeconds: number;
+  };
 }
 
 export interface CreatePublishedServiceInput {
   readonly projectId: string;
+  /**
+   * The organisation the **resolved project** belongs to.
+   *
+   * It is the project's organisation and never the deployment's default and
+   * never the caller's own, because those three can differ and a row whose
+   * `organisation_id` and `project_id` name different organisations is one no
+   * reader can interpret. `modules/connectors/routes.ts` records the same rule
+   * for enrolment tokens; this is the same defect in a different table.
+   */
+  readonly organisationId: string;
   readonly connectorId: string;
   readonly workspaceId: string;
   readonly localHost: string;
@@ -113,6 +142,34 @@ export interface MintedCapability {
   readonly browser_session_id: string;
   readonly internal_origin: string;
   readonly expires_at: string;
+}
+
+/**
+ * The scope an internal caller acts in.
+ *
+ * `complete` and `completePending` run for the deployment rather than for a
+ * principal: the record was already authorised when it was requested, and the
+ * process finishing it has no session to read a scope from. It is named rather
+ * than written inline so that "unscoped" is a deliberate, greppable choice
+ * instead of an omission.
+ */
+const EVERY_SCOPE: repository.CallerScope = { organisationId: null, projectIds: null };
+
+/**
+ * The stable class a refusal is recorded under.
+ *
+ * `published_service_failure_class` in `packages/protocol` is a closed
+ * vocabulary, so a code outside it would produce an event no consumer can
+ * decode. Anything unrecognised becomes `INTERNAL_ERROR`: an honest "something
+ * inside the control plane went wrong" beats an audit record that cannot be
+ * read, and the caller still receives the original error.
+ */
+function failureClassOf(error: unknown): PublishedServiceFailureClass {
+  const code = error instanceof ApiError ? error.code : null;
+  if (code !== null && (PUBLISHED_SERVICE_FAILURE_CLASS_VALUES as readonly string[]).includes(code)) {
+    return code as PublishedServiceFailureClass;
+  }
+  return "INTERNAL_ERROR";
 }
 
 export class PublishedServiceService {
@@ -174,6 +231,44 @@ export class PublishedServiceService {
     actor: EventActor,
     requestId: string,
   ): Promise<PublishedServiceView> {
+    const requested = await this.request(input, actor, requestId);
+    return this.complete(requested.id, actor, requestId);
+  }
+
+  /**
+   * Phase one: writes the route as `requested`.
+   *
+   * This is everything publication can decide on its own — the browser-session
+   * rule of `docs/CONNECTOR_PROTOCOL.md` §11, the lifetime bound, the
+   * destination policy of `docs/SECURITY.md` §9 and the per-connector route
+   * limit — and it touches nothing outside PostgreSQL. A refused destination
+   * therefore never reaches a row, an event, the connector or the gateway.
+   *
+   * **Every identifier in the request is resolved inside the caller's
+   * organisation and project.** The project was resolved in the caller's scope
+   * before this was called, and for a while that was the only thing that was:
+   * `connector_id`, `workspace_id` and `allowed_browser_session_ids` came
+   * straight from a request body and were written to the row unexamined. Two
+   * things followed. A caller in one organisation could name another
+   * organisation's connector and fill it to its route limit, with the rows
+   * invisible to the victim because the listing is project scoped. And a caller
+   * could name another organisation's *browser session*, after which `mint`
+   * would issue a real signed capability for it — because the only check `mint`
+   * made was against this same caller-supplied list, which made
+   * "session-scoped" a property the caller asserted rather than one the control
+   * plane enforced. The gateway and the connector both re-check the session
+   * against that list too, so all three layers agreed with the attacker.
+   *
+   * `apps/mcp-server/src/development-services.ts` never had either defect,
+   * because the agent surface has no member for a connector or a session and
+   * resolves both from the session's project. This is the same rule, applied
+   * where the identifiers can be supplied.
+   */
+  async request(
+    input: CreatePublishedServiceInput,
+    actor: EventActor,
+    requestId: string,
+  ): Promise<PublishedServiceView> {
     if (input.allowedBrowserSessionIds.length === 0) {
       // docs/CONNECTOR_PROTOCOL.md section 11: a route no session may use is
       // not published.
@@ -220,17 +315,66 @@ export class PublishedServiceService {
     const now = this.#now();
     const expiresAt = new Date(now.getTime() + input.ttlSeconds * 1000);
 
-    await inTransaction(this.#pool, async (client) => {
-      const carried = await repository.countReadyForConnector(client, input.connectorId);
+    return await inTransaction(this.#pool, async (client) => {
+      // Resolved, not trusted. Each of the three is scoped to the organisation
+      // and the project the caller was already authorised for, and each answers
+      // identically whether the identifier belongs to somebody else or to
+      // nobody (`docs/API.md` §5).
+      const connector = await repository.findPublishableConnector(client, {
+        connectorId: input.connectorId,
+        organisationId: input.organisationId,
+        projectId: input.projectId,
+      });
+      if (connector === null) {
+        throw new ApiError("RESOURCE_NOT_FOUND", "No such connector in this project.", {
+          field: "connector_id",
+        });
+      }
+      const workspace = await repository.findWorkspaceInProject(client, {
+        workspaceId: input.workspaceId,
+        organisationId: input.organisationId,
+        projectId: input.projectId,
+      });
+      if (workspace === null) {
+        // The class the connector protocol gives this condition (§21), so one
+        // failure has one code whether it is caught here or at the far end.
+        throw new ApiError("WORKSPACE_NOT_FOUND", "No such workspace in this project.", {
+          field: "workspace_id",
+        });
+      }
+      const reachable = new Set(
+        await repository.findBrowserSessionsInProject(client, {
+          browserSessionIds: input.allowedBrowserSessionIds,
+          organisationId: input.organisationId,
+          projectId: input.projectId,
+        }),
+      );
+      // Every one of them, not at least one. A route authorising four sessions
+      // of which one belongs elsewhere is a route that mints a capability for
+      // that one.
+      const unreachable = input.allowedBrowserSessionIds.filter((id) => !reachable.has(id));
+      if (unreachable.length > 0) {
+        throw new ApiError(
+          "RESOURCE_NOT_FOUND",
+          "A browser session named here does not belong to this project.",
+          { field: "allowed_browser_session_ids" },
+        );
+      }
+
+      const carried = await repository.countReadyForConnector(
+        client,
+        input.connectorId,
+        input.organisationId,
+      );
       if (carried >= this.#config.maxRoutesPerConnector) {
         throw new ApiError("ROUTE_LIMIT_EXCEEDED",
           "This connector already carries the maximum number of routes.",
           { max_routes: this.#config.maxRoutesPerConnector },
         );
       }
-      await repository.insertRequested(client, {
+      const record = await repository.insertRequested(client, {
         id,
-        organisationId: this.#config.organisationId,
+        organisationId: input.organisationId,
         projectId: input.projectId,
         connectorId: input.connectorId,
         workspaceId: input.workspaceId,
@@ -240,10 +384,11 @@ export class PublishedServiceService {
         protocol: input.protocol,
         allowedBrowserSessionIds: input.allowedBrowserSessionIds,
         expiresAt,
+        requestedAt: now,
       });
       await appendEvent(client, {
         type: "published_service.requested",
-        organisationId: this.#config.organisationId,
+        organisationId: input.organisationId,
         projectId: input.projectId,
         actor,
         correlation: { request_id: requestId, published_service_id: id, connector_id: input.connectorId },
@@ -256,53 +401,89 @@ export class PublishedServiceService {
           protocol: input.protocol,
           public_alias: publicAlias,
           expires_at: expiresAt.toISOString(),
-          allowed_browser_session_ids: input.allowedBrowserSessionIds,
+          allowed_browser_session_ids: [...input.allowedBrowserSessionIds],
           new_status: "requested",
         },
         occurredAt: now,
       });
+      return this.view(record);
     });
+  }
 
+  /**
+   * Phase two: asks the connector, registers with the gateway, marks the record
+   * `ready`.
+   *
+   * It is separate from {@link request} because it can only run **where the
+   * connector's control channel is**. A connector dials the control plane, so
+   * the channel lives in the `api` process and nowhere else; the MCP endpoint
+   * is a separate process (ADR-0020) sharing only the database. Splitting the
+   * two lets any control-plane process ask for a route and lets the one that
+   * holds the channel finish it, without a second credential and without a
+   * second network path into the connector (ADR-0021).
+   *
+   * A refusal at any step leaves the record `failed` carrying the stable class
+   * and rethrows it, so the synchronous caller and the audit trail see the same
+   * code.
+   */
+  async complete(
+    serviceId: string,
+    actor: EventActor,
+    requestId: string,
+  ): Promise<PublishedServiceView> {
+    const record = await this.#read(serviceId, EVERY_SCOPE);
+    if (record.status !== "requested") {
+      // Somebody else finished it, or it was revoked while it waited. Reporting
+      // the record is honest; publishing it a second time would open a second
+      // route for one request.
+      return this.view(record);
+    }
+    const organisationId = record.organisation_id;
+    const projectId = record.project_id;
     try {
       const { observedDestination } = await this.#publisher.publish({
-        routeId: id,
-        projectId: input.projectId,
-        connectorId: input.connectorId,
-        workspaceId: input.workspaceId,
-        localHost: input.localHost,
-        localPort: input.localPort,
-        protocol: input.protocol,
-        expiresAt,
-        allowedBrowserSessionIds: input.allowedBrowserSessionIds,
+        routeId: record.id,
+        projectId,
+        connectorId: record.connector_id,
+        workspaceId: record.workspace_id,
+        localHost: record.local_host,
+        localPort: record.local_port,
+        protocol: record.protocol,
+        expiresAt: record.expires_at,
+        allowedBrowserSessionIds: record.allowed_browser_session_ids,
       });
       const registered: GatewayRouteView = await this.#gateway.register({
-        route_id: id,
-        project_id: input.projectId,
-        connector_id: input.connectorId,
-        workspace_id: input.workspaceId,
-        public_alias: publicAlias,
-        local_host: input.localHost,
-        local_port: input.localPort,
-        protocol: input.protocol,
+        route_id: record.id,
+        project_id: projectId,
+        connector_id: record.connector_id,
+        workspace_id: record.workspace_id,
+        public_alias: record.public_alias,
+        local_host: record.local_host,
+        local_port: record.local_port,
+        protocol: record.protocol,
         scope: "browser_session",
-        expires_at: expiresAt.toISOString(),
-        allowed_browser_session_ids: input.allowedBrowserSessionIds,
+        expires_at: record.expires_at.toISOString(),
+        allowed_browser_session_ids: [...record.allowed_browser_session_ids],
         observed_destination: observedDestination,
       });
 
       return await inTransaction(this.#pool, async (client) => {
-        const ready = await repository.markReady(client, id, registered.observed_destination);
+        const ready = await repository.markReady(client, record.id, registered.observed_destination);
         if (ready === null) {
           throw new ApiError("PUBLISHED_SERVICE_UNAVAILABLE", "This route is no longer pending.");
         }
         await appendEvent(client, {
           type: "published_service.ready",
-          organisationId: this.#config.organisationId,
-          projectId: input.projectId,
+          organisationId,
+          projectId,
           actor,
-          correlation: { request_id: requestId, published_service_id: id, connector_id: input.connectorId },
+          correlation: {
+            request_id: requestId,
+            published_service_id: record.id,
+            connector_id: record.connector_id,
+          },
           payload: {
-            published_service_id: id,
+            published_service_id: record.id,
             previous_status: "requested",
             new_status: "ready",
             observed_destination: registered.observed_destination,
@@ -314,20 +495,18 @@ export class PublishedServiceService {
         return this.view(ready);
       });
     } catch (error) {
-      const failureClass = error instanceof ApiError && typeof error.code === "string"
-        ? error.code
-        : "CONTROL_PLANE_UNAVAILABLE";
+      const failureClass = failureClassOf(error);
       await inTransaction(this.#pool, async (client) => {
-        const failed = await repository.markFailed(client, id, failureClass);
+        const failed = await repository.markFailed(client, record.id, failureClass);
         if (failed === null) return;
         await appendEvent(client, {
           type: "published_service.failed",
-          organisationId: this.#config.organisationId,
-          projectId: input.projectId,
+          organisationId,
+          projectId,
           actor,
-          correlation: { request_id: requestId, published_service_id: id },
+          correlation: { request_id: requestId, published_service_id: record.id },
           payload: {
-            published_service_id: id,
+            published_service_id: record.id,
             previous_status: "requested",
             new_status: "failed",
             // Reason codes for failure, per docs/EVENTS.md section 8. No free
@@ -341,10 +520,96 @@ export class PublishedServiceService {
     }
   }
 
-  async list(projectId: string, limit: number): Promise<PublishedServiceView[]> {
+  /**
+   * Finishes routes another process asked for.
+   *
+   * `docs/CONNECTOR_PROTOCOL.md` §11 requires that nothing is left `requested`
+   * for ever, and a route requested by the MCP endpoint has nobody else to
+   * finish it: only the process holding the connector's control channel can.
+   *
+   * `olderThanMs` is what keeps this from racing the synchronous path. A route
+   * the API is publishing right now is a few milliseconds old, so the sweep
+   * ignores it; by the time a row is older than the grace, the inline attempt
+   * has either finished, failed or lost its process. `markReady` and
+   * `markFailed` both refuse a record whose status has already moved, so the
+   * worst a lost race costs is one wasted acknowledgement rather than two
+   * routes for one request.
+   */
+  async completePending(
+    options: { readonly olderThanMs?: number; readonly limit?: number } = {},
+  ): Promise<PublishedServiceView[]> {
+    const olderThan = new Date(this.#now().getTime() - (options.olderThanMs ?? 2000));
+    const client = await this.#pool.connect();
+    let pending: PublishedService[];
+    try {
+      pending = await repository.findPending(client, olderThan, options.limit ?? 50);
+    } finally {
+      client.release();
+    }
+    const finished: PublishedServiceView[] = [];
+    for (const record of pending) {
+      try {
+        finished.push(await this.complete(record.id, { type: "system" }, `sweep_${record.id}`));
+      } catch {
+        // `complete` has already recorded the refusal against the record and
+        // written `published_service.failed`. There is no caller to rethrow to
+        // here, and a sweep that stopped at the first refusal would leave every
+        // later route pending.
+        const failed = await this.#pool
+          .connect()
+          .then(async (connection) => {
+            try {
+              return await repository.findInScope(connection, {
+                id: record.id,
+                organisationId: null,
+                projectIds: null,
+              });
+            } finally {
+              connection.release();
+            }
+          });
+        if (failed !== null) finished.push(this.view(failed));
+      }
+    }
+    return finished;
+  }
+
+  /**
+   * Waits, bounded, for a requested route to reach a terminal answer.
+   *
+   * It is how a caller in a process that cannot finish a publication still gets
+   * one answer rather than a record it has to poll for itself. The wait is
+   * bounded and ends in the record as it stands: a route still `requested` when
+   * the deadline passes is reported as such, never as ready.
+   */
+  async awaitOutcome(
+    serviceId: string,
+    scope: repository.CallerScope,
+    options: { readonly timeoutMs: number; readonly pollMs?: number },
+  ): Promise<PublishedServiceView> {
+    const pollMs = options.pollMs ?? 100;
+    const deadline = Date.now() + options.timeoutMs;
+    for (;;) {
+      const record = await this.#read(serviceId, scope);
+      if (record.status !== "requested") return this.view(record);
+      if (Date.now() >= deadline) return this.view(record);
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
+  }
+
+  async list(
+    projectId: string,
+    scope: repository.CallerScope,
+    limit: number,
+  ): Promise<PublishedServiceView[]> {
     const client = await this.#pool.connect();
     try {
-      const records = await repository.listForProject(client, projectId, limit);
+      const records = await repository.listInScope(client, {
+        projectId,
+        organisationId: scope.organisationId,
+        projectIds: scope.projectIds,
+        limit,
+      });
       return records.map((record) => this.view(record));
     } finally {
       client.release();
@@ -358,9 +623,20 @@ export class PublishedServiceService {
    * still carried the route would leave the tunnel open with the control plane
    * believing it closed, which is the one ordering that turns a revocation into
    * a lie.
+   *
+   * The scope is the caller's and is applied by the read: a route this
+   * principal may not reach is absent, so nothing is sent to the gateway for it
+   * and no event is written. The organisation the event is filed under is the
+   * **record's**, which the scoped read has already proven the caller may act
+   * in.
    */
-  async revoke(serviceId: string, actor: EventActor, requestId: string): Promise<PublishedServiceView> {
-    const existing = await this.#read(serviceId);
+  async revoke(
+    serviceId: string,
+    scope: repository.CallerScope,
+    actor: EventActor,
+    requestId: string,
+  ): Promise<PublishedServiceView> {
+    const existing = await this.#read(serviceId, scope);
     await this.#gateway.revokeRoute(serviceId);
     return await inTransaction(this.#pool, async (client) => {
       const ended = await repository.markEnded(client, serviceId, "revoked");
@@ -371,7 +647,7 @@ export class PublishedServiceService {
       const revokedCapabilities = await repository.revokeCapabilitiesForService(client, serviceId);
       await appendEvent(client, {
         type: "published_service.revoked",
-        organisationId: this.#config.organisationId,
+        organisationId: ended.organisation_id,
         projectId: ended.project_id,
         actor,
         correlation: {
@@ -418,13 +694,17 @@ export class PublishedServiceService {
         await repository.revokeCapabilitiesForService(transaction, service.id);
         await appendEvent(transaction, {
           type: "published_service.expired",
-          organisationId: this.#config.organisationId,
+          organisationId: ended.organisation_id,
           projectId: ended.project_id,
           actor: { type: "system" },
           correlation: { published_service_id: service.id, connector_id: ended.connector_id },
           payload: {
+            // The status the record was actually in. The sweep now reaches a
+            // route that expired while still `requested` as well as a live one,
+            // and recording a status it was never in would be a fact an auditor
+            // cannot see through (`docs/EVENTS.md` §7).
             published_service_id: service.id,
-            previous_status: "ready",
+            previous_status: service.status,
             new_status: "expired",
             expires_at: ended.expires_at.toISOString(),
           },
@@ -450,10 +730,21 @@ export class PublishedServiceService {
     serviceId: string,
     browserSessionId: string,
     ttlSeconds: number | undefined,
+    scope: repository.CallerScope,
     actor: EventActor,
     requestId: string,
   ): Promise<MintedCapability> {
-    const service = await this.#read(serviceId);
+    const capability = this.#config.capability;
+    if (capability === undefined) {
+      // A process with no signing key is not the minting authority. Refusing is
+      // the honest answer; signing with a placeholder would produce a token the
+      // gateway rejects, and the caller would read that as a route problem.
+      throw new ApiError(
+        "UNSUPPORTED_CAPABILITY",
+        "This process holds no capability signing key and cannot mint route capabilities.",
+      );
+    }
+    const service = await this.#read(serviceId, scope);
     if (service.status !== "ready") {
       throw new ApiError("PUBLISHED_SERVICE_UNAVAILABLE",
         "This published service is not carrying traffic.",
@@ -468,11 +759,34 @@ export class PublishedServiceService {
         "That browser session is not authorised for this published service.",
       );
     }
+    // And the session must actually belong to the route's project. The check
+    // above compares against the list stored on the record, which `request` now
+    // validates — but this is the last gate before a signed credential exists,
+    // and it should not depend on a row written by an earlier release having
+    // been validated by the rules of this one. A record published before that
+    // validation existed is refused here rather than honoured.
+    const sessionInProject = await this.#pool.connect().then(async (client) => {
+      try {
+        const found = await repository.findBrowserSessionsInProject(client, {
+          browserSessionIds: [browserSessionId],
+          organisationId: service.organisation_id,
+          projectId: service.project_id,
+        });
+        return found.length === 1;
+      } finally {
+        client.release();
+      }
+    });
+    if (!sessionInProject) {
+      throw new ApiError("AUTHORISATION_DENIED",
+        "That browser session is not authorised for this published service.",
+      );
+    }
     const now = this.#now();
-    const requested = ttlSeconds ?? this.#config.capabilityTtlSeconds;
-    if (requested <= 0 || requested > this.#config.capabilityTtlSeconds) {
+    const requested = ttlSeconds ?? capability.ttlSeconds;
+    if (requested <= 0 || requested > capability.ttlSeconds) {
       throw new ApiError("VALIDATION_FAILED", "The requested capability lifetime is not permitted.", {
-        max_ttl_seconds: this.#config.capabilityTtlSeconds,
+        max_ttl_seconds: capability.ttlSeconds,
       });
     }
     // A capability may not outlive the route it authorises.
@@ -484,8 +798,8 @@ export class PublishedServiceService {
     }
 
     const capabilityId = `cap_${randomUUID().replaceAll("-", "")}`;
-    const token = mintCapability(this.#config.capabilityKey, {
-      keyId: this.#config.capabilityKeyId,
+    const token = mintCapability(capability.key, {
+      keyId: capability.keyId,
       capabilityId,
       routeId: service.id,
       projectId: service.project_id,
@@ -497,17 +811,17 @@ export class PublishedServiceService {
     await inTransaction(this.#pool, async (client) => {
       await repository.insertCapability(client, {
         id: capabilityId,
-        organisationId: this.#config.organisationId,
+        organisationId: service.organisation_id,
         projectId: service.project_id,
         publishedServiceId: service.id,
         browserSessionId,
-        keyId: this.#config.capabilityKeyId,
+        keyId: capability.keyId,
         issuedAt: now,
         expiresAt,
       });
       await appendEvent(client, {
         type: "published_service.ready",
-        organisationId: this.#config.organisationId,
+        organisationId: service.organisation_id,
         projectId: service.project_id,
         actor,
         correlation: {
@@ -521,7 +835,7 @@ export class PublishedServiceService {
           // raw secrets, and the identifier is what revocation and audit need.
           capability_id: capabilityId,
           browser_session_id: browserSessionId,
-          key_id: this.#config.capabilityKeyId,
+          key_id: capability.keyId,
           expires_at: expiresAt.toISOString(),
         },
         occurredAt: now,
@@ -539,16 +853,29 @@ export class PublishedServiceService {
     };
   }
 
-  /** Reads a route, or raises RESOURCE_NOT_FOUND. */
-  async read(serviceId: string): Promise<PublishedService> {
-    return this.#read(serviceId);
+  /**
+   * Reads a route inside a scope, or raises `RESOURCE_NOT_FOUND`.
+   *
+   * There is no unscoped overload. A caller that genuinely acts for one project
+   * — the browser-session binder — passes that project as its scope, and a
+   * caller acting for a human passes the session's.
+   */
+  async read(serviceId: string, scope: repository.CallerScope): Promise<PublishedService> {
+    return this.#read(serviceId, scope);
   }
 
-  async #read(serviceId: string): Promise<PublishedService> {
+  async #read(serviceId: string, scope: repository.CallerScope): Promise<PublishedService> {
     const client: PoolClient = await this.#pool.connect();
     try {
-      const service = await repository.findById(client, serviceId);
+      const service = await repository.findInScope(client, {
+        id: serviceId,
+        organisationId: scope.organisationId,
+        projectIds: scope.projectIds,
+      });
       if (service === null) {
+        // Byte-identical to an identifier that does not exist. docs/API.md
+        // section 5: the difference between "absent" and "not yours" is the
+        // enumeration a cross-organisation caller is looking for.
         throw new ApiError("RESOURCE_NOT_FOUND", "No such published service.");
       }
       return service;

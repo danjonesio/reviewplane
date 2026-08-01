@@ -60,7 +60,7 @@ test("the tool availability set is the message-type enumeration", () => {
   // docs/MCP_SPEC.md section 14: a client relies on negotiated availability. If
   // the two could differ, a tool could be advertised with no result schema.
   assert.deepEqual([...TOOL_AVAILABILITY], [...MESSAGE_TYPE_VALUES]);
-  assert.equal(MESSAGE_TYPE_VALUES.length, 17);
+  assert.equal(MESSAGE_TYPE_VALUES.length, 20);
 });
 
 test("no tool names a secret, a completion gate or a visual inspection", () => {

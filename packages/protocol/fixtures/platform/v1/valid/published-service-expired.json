@@ -1,0 +1,23 @@
+{
+  "id": "evt_4000000000000000000000000000000e",
+  "schema_version": 1,
+  "sequence": 24,
+  "type": "published_service.expired",
+  "occurred_at": "2026-07-30T13:00:00.000Z",
+  "recorded_at": "2026-07-30T13:00:00.011Z",
+  "organisation_id": "org_2f1c8ba0d9e34a7f8b6c5d4e3f2a1b09",
+  "project_id": "prj_7d6c5b4a39281706f5e4d3c2b1a09876",
+  "actor": {
+    "type": "system"
+  },
+  "correlation": {
+    "published_service_id": "svc_5a4b3c2d1e0f9877665544332211aabb",
+    "connector_id": "con_4c2e6d8fa0315b7c9d1e3f5071829304"
+  },
+  "payload": {
+    "published_service_id": "svc_5a4b3c2d1e0f9877665544332211aabb",
+    "previous_status": "ready",
+    "new_status": "expired",
+    "expires_at": "2026-07-30T13:00:00.000Z"
+  }
+}

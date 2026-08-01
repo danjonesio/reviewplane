@@ -711,6 +711,15 @@ test("a control plane that becomes unavailable mid-session refuses with a retrya
       artefactMaxBytes: 20971520,
       apiPathPrefix: "/api/v1",
       mcpPath: "/mcp/v1",
+      // The tunnel members RVP-24 added. This test never publishes — it proves
+      // a control plane that goes away mid-session refuses retryably — but
+      // `buildMcpApp` constructs the gateway client eagerly, so they have to
+      // be present and well formed.
+      tunnelControlUrl: "http://tunnel-gateway.invalid:8445",
+      tunnelControlToken: "unused-in-tests",
+      internalSuffix: "internal.invalid",
+      routeTtlMaxSeconds: 28800,
+      publishWaitMs: 15000,
     },
     pool: failing,
   });

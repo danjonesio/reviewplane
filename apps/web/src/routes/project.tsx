@@ -25,6 +25,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent, type ReactElement } from "react";
 
 import { ApiFailure, api, isActive, type Project } from "../api/client.ts";
+import { PublishedServices } from "../components/PublishedServices.tsx";
 import { StatusBadge } from "../components/StatusBadge.tsx";
 import { formatViewport } from "./projects.tsx";
 import { rootRoute } from "./root.tsx";
@@ -199,34 +200,44 @@ function ProjectLive(): ReactElement {
   const active = (sessions.data ?? []).filter((session) => isActive(session));
 
   return (
-    <section aria-labelledby="project-live-heading">
-      <h2 id="project-live-heading" className="text-lg font-semibold">
-        Live
-      </h2>
-      {active.length === 0 ? (
-        <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">
-          No browser session is running in this project. One appears here as soon as an agent or an
-          operator starts one.
-        </p>
-      ) : (
-        <ul className="mt-4 flex flex-col gap-3">
-          {active.map((session) => (
-            <li key={session.id} className="rounded border border-slate-300 p-3 dark:border-slate-700">
-              <Link
-                to="/sessions/$sessionId"
-                params={{ sessionId: session.id }}
-                className="font-medium underline-offset-4 hover:underline"
+    <div>
+      <section aria-labelledby="project-live-heading">
+        <h2 id="project-live-heading" className="text-lg font-semibold">
+          Live
+        </h2>
+        {active.length === 0 ? (
+          <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">
+            No browser session is running in this project. One appears here as soon as an agent or
+            an operator starts one.
+          </p>
+        ) : (
+          <ul className="mt-4 flex flex-col gap-3">
+            {active.map((session) => (
+              <li
+                key={session.id}
+                className="rounded border border-slate-300 p-3 dark:border-slate-700"
               >
-                Open live view
-              </Link>
-              <p className="mt-1 break-all font-mono text-xs text-slate-600 dark:text-slate-400">
-                {session.id}
-              </p>
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
+                <Link
+                  to="/sessions/$sessionId"
+                  params={{ sessionId: session.id }}
+                  className="font-medium underline-offset-4 hover:underline"
+                >
+                  Open live view
+                </Link>
+                <p className="mt-1 break-all font-mono text-xs text-slate-600 dark:text-slate-400">
+                  {session.id}
+                </p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+      {/*
+        Publication sits beside the sessions it exists for: a session reaches an
+        application only through a route (`docs/UX_FLOWS.md` section 6).
+      */}
+      <PublishedServices projectId={projectId} />
+    </div>
   );
 }
 

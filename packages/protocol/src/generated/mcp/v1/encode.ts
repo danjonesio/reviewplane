@@ -31,6 +31,12 @@ import type {
   ClientIdentity,
   CommentView,
   ContentRectangle,
+  DevelopmentServicePublishInput,
+  DevelopmentServiceResult,
+  DevelopmentServiceUnpublishInput,
+  DevelopmentServiceView,
+  DevelopmentServicesListInput,
+  DevelopmentServicesListResult,
   Envelope,
   ErrorDetails,
   FindingAddCommentInput,
@@ -1065,5 +1071,88 @@ export function encodeEnvelope(value: Envelope, dataJson: string): string {
     fields.push(`"warnings":${`[${value.warnings.map((item) => encodeWarning(item)).join(",")}]`}`);
   }
   fields.push(`"data":${dataJson}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a DevelopmentServiceView.
+ */
+export function encodeDevelopmentServiceView(value: DevelopmentServiceView): string {
+  const fields: string[] = [];
+  fields.push(`"id":${jsonString(value.id)}`);
+  fields.push(`"status":${jsonString(value.status)}`);
+  if (value.workspace_id !== undefined) {
+    fields.push(`"workspace_id":${jsonString(value.workspace_id)}`);
+  }
+  fields.push(`"local_host":${jsonString(value.local_host)}`);
+  fields.push(`"local_port":${jsonInteger(value.local_port)}`);
+  fields.push(`"protocol":${jsonString(value.protocol)}`);
+  fields.push(`"internal_origin":${jsonString(value.internal_origin)}`);
+  if (value.observed_destination !== undefined) {
+    fields.push(`"observed_destination":${jsonString(value.observed_destination)}`);
+  }
+  if (value.failure_class !== undefined) {
+    fields.push(`"failure_class":${jsonString(value.failure_class)}`);
+  }
+  fields.push(`"expires_at":${jsonString(value.expires_at)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a DevelopmentServicesListInput.
+ */
+export function encodeDevelopmentServicesListInput(value: DevelopmentServicesListInput): string {
+  const fields: string[] = [];
+  if (value.limit !== undefined) {
+    fields.push(`"limit":${jsonInteger(value.limit)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a DevelopmentServicePublishInput.
+ */
+export function encodeDevelopmentServicePublishInput(value: DevelopmentServicePublishInput): string {
+  const fields: string[] = [];
+  fields.push(`"workspace_id":${jsonString(value.workspace_id)}`);
+  if (value.local_host !== undefined) {
+    fields.push(`"local_host":${jsonString(value.local_host)}`);
+  }
+  fields.push(`"local_port":${jsonInteger(value.local_port)}`);
+  if (value.protocol !== undefined) {
+    fields.push(`"protocol":${jsonString(value.protocol)}`);
+  }
+  if (value.ttl_seconds !== undefined) {
+    fields.push(`"ttl_seconds":${jsonInteger(value.ttl_seconds)}`);
+  }
+  fields.push(`"idempotency_key":${jsonString(value.idempotency_key)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a DevelopmentServiceUnpublishInput.
+ */
+export function encodeDevelopmentServiceUnpublishInput(value: DevelopmentServiceUnpublishInput): string {
+  const fields: string[] = [];
+  fields.push(`"published_service_id":${jsonString(value.published_service_id)}`);
+  fields.push(`"idempotency_key":${jsonString(value.idempotency_key)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a DevelopmentServicesListResult.
+ */
+export function encodeDevelopmentServicesListResult(value: DevelopmentServicesListResult): string {
+  const fields: string[] = [];
+  fields.push(`"services":${`[${value.services.map((item) => encodeDevelopmentServiceView(item)).join(",")}]`}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a DevelopmentServiceResult.
+ */
+export function encodeDevelopmentServiceResult(value: DevelopmentServiceResult): string {
+  const fields: string[] = [];
+  fields.push(`"service":${encodeDevelopmentServiceView(value.service)}`);
   return `{${fields.join(",")}}`;
 }

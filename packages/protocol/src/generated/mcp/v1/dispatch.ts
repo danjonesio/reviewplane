@@ -12,6 +12,8 @@ import type {
   AgentInboxListResult,
   AgentSessionStatusResult,
   BrowserTakeScreenshotResult,
+  DevelopmentServiceResult,
+  DevelopmentServicesListResult,
   Envelope,
   FindingAddCommentResult,
   FindingGetResult,
@@ -31,6 +33,8 @@ import {
   decodeAgentInboxListResult,
   decodeAgentSessionStatusResult,
   decodeBrowserTakeScreenshotResult,
+  decodeDevelopmentServiceResult,
+  decodeDevelopmentServicesListResult,
   decodeFindingAddCommentResult,
   decodeFindingGetResult,
   decodeFindingMutationResult,
@@ -47,6 +51,8 @@ import {
   encodeAgentInboxListResult,
   encodeAgentSessionStatusResult,
   encodeBrowserTakeScreenshotResult,
+  encodeDevelopmentServiceResult,
+  encodeDevelopmentServicesListResult,
   encodeFindingAddCommentResult,
   encodeFindingGetResult,
   encodeFindingMutationResult,
@@ -63,6 +69,8 @@ import {
   validateAgentInboxListResult,
   validateAgentSessionStatusResult,
   validateBrowserTakeScreenshotResult,
+  validateDevelopmentServiceResult,
+  validateDevelopmentServicesListResult,
   validateFindingAddCommentResult,
   validateFindingGetResult,
   validateFindingMutationResult,
@@ -92,7 +100,9 @@ export type McpPayload =
   | FindingMutationResult
   | FindingAddCommentResult
   | FindingSubmitVerificationResult
-  | BrowserTakeScreenshotResult;
+  | BrowserTakeScreenshotResult
+  | DevelopmentServicesListResult
+  | DevelopmentServiceResult;
 
 /**
  * Validates a payload against the schema selected by message type.
@@ -150,6 +160,15 @@ export function validatePayload(type: MessageType, value: unknown, path: string,
     case "browser_take_screenshot":
       validateBrowserTakeScreenshotResult(value, path, out);
       return;
+    case "development_services_list":
+      validateDevelopmentServicesListResult(value, path, out);
+      return;
+    case "development_service_publish":
+      validateDevelopmentServiceResult(value, path, out);
+      return;
+    case "development_service_unpublish":
+      validateDevelopmentServiceResult(value, path, out);
+      return;
   }
 }
 
@@ -192,6 +211,12 @@ export function decodeFrame(envelope: Envelope, value: unknown): McpFrame {
       return { envelope, type: "finding_submit_verification", payload: decodeFindingSubmitVerificationResult(value) };
     case "browser_take_screenshot":
       return { envelope, type: "browser_take_screenshot", payload: decodeBrowserTakeScreenshotResult(value) };
+    case "development_services_list":
+      return { envelope, type: "development_services_list", payload: decodeDevelopmentServicesListResult(value) };
+    case "development_service_publish":
+      return { envelope, type: "development_service_publish", payload: decodeDevelopmentServiceResult(value) };
+    case "development_service_unpublish":
+      return { envelope, type: "development_service_unpublish", payload: decodeDevelopmentServiceResult(value) };
   }
 }
 
@@ -234,5 +259,11 @@ export function encodeFramePayload(frame: McpFrame): string {
       return encodeFindingSubmitVerificationResult(frame.payload);
     case "browser_take_screenshot":
       return encodeBrowserTakeScreenshotResult(frame.payload);
+    case "development_services_list":
+      return encodeDevelopmentServicesListResult(frame.payload);
+    case "development_service_publish":
+      return encodeDevelopmentServiceResult(frame.payload);
+    case "development_service_unpublish":
+      return encodeDevelopmentServiceResult(frame.payload);
   }
 }

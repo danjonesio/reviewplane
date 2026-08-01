@@ -8,6 +8,7 @@
  * Chromium-backed tests live in `apps/browser-worker/test/browser/`.
  */
 
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -86,6 +87,8 @@ export interface StubLiveProducer {
 
 export interface Harness {
   readonly built: BuiltApp;
+  /** The database the app is running against, for fixtures a route must name. */
+  readonly pool: Pool;
   readonly config: ServerConfig;
   readonly artefactRoot: string;
   readonly worker: StubWorkerBehaviour;
@@ -291,6 +294,7 @@ export async function startHarness(pool: Pool, options: HarnessOptions = {}): Pr
   let origin: string | null = null;
 
   return {
+    pool,
     built,
     config,
     artefactRoot,
@@ -454,10 +458,21 @@ function frameResponse(frame: BrowserFrame): Response {
 }
 
 /** Creates an organisation, a project and a registered, assigned worker. */
+/**
+ * A project, a browser worker assigned to it, and the environment records a
+ * route may name.
+ *
+ * The connector and the workspace are seeded here because publication resolves
+ * both inside the caller's organisation and project: a synthetic
+ * `con_fixture` used to be written to the row unexamined, and a suite that
+ * named one was testing a code path that no longer exists.
+ */
 export async function seedProjectAndWorker(harness: Harness): Promise<{
   organisationId: string;
   projectId: string;
   workerId: string;
+  connectorId: string;
+  workspaceId: string;
 }> {
   const app = harness.built.app;
   const organisation = await app.inject({
@@ -509,5 +524,37 @@ export async function seedProjectAndWorker(harness: Harness): Promise<{
     payload: { project_ids: [projectId] },
   });
 
-  return { organisationId, projectId, workerId };
+  const suffix = newId("").slice(0, 12).toLowerCase();
+  const environmentId = `env_${suffix}`;
+  const connectorId = `con_${suffix}`;
+  const workspaceId = `wsp_${suffix}`;
+  await harness.pool.query(
+    `INSERT INTO environments (id, organisation_id, project_id, name, platform, architecture)
+     VALUES ($1, $2, $3, $4, 'linux', 'amd64')`,
+    [environmentId, organisationId, projectId, `env-${suffix}`],
+  );
+  await harness.pool.query(
+    `INSERT INTO connectors (
+       id, organisation_id, environment_id, project_id, certificate_fingerprint,
+       certificate_serial, certificate_not_after, public_key, version, status)
+     VALUES ($1, $2, $3, $4, $5, '01', now() + interval '30 days', 'key', '0.1.0', 'ACTIVE')`,
+    [connectorId, organisationId, environmentId, projectId, `sha256:${suffix}`],
+  );
+  await harness.pool.query(
+    `INSERT INTO workspaces (
+       id, organisation_id, project_id, environment_id, root_path, branch, head_commit,
+       path_hash, display_path, source)
+     VALUES ($1, $2, $3, $4, $5, 'main', 'abcdef1', $6, $7, 'connector_report')`,
+    [
+      workspaceId,
+      organisationId,
+      projectId,
+      environmentId,
+      `/srv/${suffix}`,
+      `sha256:${createHash("sha256").update(suffix).digest("hex")}`,
+      suffix,
+    ],
+  );
+
+  return { organisationId, projectId, workerId, connectorId, workspaceId };
 }

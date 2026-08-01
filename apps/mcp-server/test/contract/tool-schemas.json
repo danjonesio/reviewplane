@@ -1084,5 +1084,147 @@
         }
       }
     }
+  },
+  "development_services_list": {
+    "title": "List the project's published development services",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "Arguments of development_services_list. It names no project: the project is the session's, and a project argument would be an authorisation input chosen by the caller.",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "limit": {
+          "$ref": "#/$defs/page_limit",
+          "description": "Maximum routes in this page, newest first. Bounded here rather than by the caller's optimism, because an unbounded response is the failure mode docs/MCP_SPEC.md section 13 exists to prevent."
+        }
+      },
+      "$defs": {
+        "page_limit": {
+          "type": "integer",
+          "description": "Maximum records in one page. Bounded here rather than by the caller's optimism, because an unbounded response is the failure mode docs/MCP_SPEC.md section 13 exists to prevent.",
+          "minimum": 1,
+          "maximum": 50
+        }
+      }
+    }
+  },
+  "development_service_publish": {
+    "title": "Publish a local development service through the connector",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "Arguments of development_service_publish (docs/MCP_SPEC.md section 7.2).",
+      "additionalProperties": false,
+      "required": [
+        "workspace_id",
+        "local_port",
+        "idempotency_key"
+      ],
+      "properties": {
+        "workspace_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Workspace the development service was started from. It MUST belong to the session's project."
+        },
+        "local_host": {
+          "$ref": "#/$defs/local_host",
+          "description": "Local address to publish. Defaults to 127.0.0.1, and the connector's own policy still applies (docs/CONNECTOR_PROTOCOL.md section 11)."
+        },
+        "local_port": {
+          "$ref": "#/$defs/local_port",
+          "description": "Local port to publish."
+        },
+        "protocol": {
+          "$ref": "#/$defs/destination_protocol",
+          "description": "Protocol the development service speaks. Defaults to http."
+        },
+        "ttl_seconds": {
+          "type": "integer",
+          "description": "How long the route may live. It is bounded by the deployment's maximum route lifetime, and a longer request is refused rather than clipped: silently shortening a lifetime would make an agent believe it had access it does not have.",
+          "minimum": 1,
+          "maximum": 86400
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/idempotency_key",
+          "description": "Key for this publication. Section 10 requires one on every state-changing tool, and it matters particularly here: a retry without one would open a second tunnel into the development machine for a request the agent believes it made once."
+        }
+      },
+      "$defs": {
+        "destination_protocol": {
+          "type": "string",
+          "description": "Protocol a development service speaks on its local socket. It is declared at publication and is not negotiable per request.",
+          "enum": [
+            "http",
+            "https"
+          ]
+        },
+        "idempotency_key": {
+          "type": "string",
+          "description": "Caller-chosen key for a state-changing tool (docs/MCP_SPEC.md section 10). It is scoped to actor, tool and project: reuse with the same arguments returns the first result and creates no second record, and reuse with different arguments is refused with IDEMPOTENCY_CONFLICT.",
+          "minLength": 8,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:-]+$"
+        },
+        "identifier": {
+          "type": "string",
+          "description": "Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the value as opaque: the schema bounds only its length and character class and never its documented prefix.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "local_host": {
+          "type": "string",
+          "description": "Local address of a development service, as a literal IP address. A name would have to be resolved, and a resolver is a rebinding surface (docs/SECURITY.md section 9).",
+          "minLength": 1,
+          "maxLength": 45,
+          "pattern": "^[0-9A-Fa-f:.]{1,45}$"
+        },
+        "local_port": {
+          "type": "integer",
+          "description": "TCP port a development service listens on.",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      }
+    }
+  },
+  "development_service_unpublish": {
+    "title": "Revoke a published development service",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "Arguments of development_service_unpublish.",
+      "additionalProperties": false,
+      "required": [
+        "published_service_id",
+        "idempotency_key"
+      ],
+      "properties": {
+        "published_service_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Route to revoke. A route outside the session's project is reported absent rather than forbidden (docs/API.md section 5)."
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/idempotency_key",
+          "description": "Key for this revocation. Section 10 requires one on every state-changing tool; revocation is idempotent in the domain as well, so a retry produces one event either way."
+        }
+      },
+      "$defs": {
+        "idempotency_key": {
+          "type": "string",
+          "description": "Caller-chosen key for a state-changing tool (docs/MCP_SPEC.md section 10). It is scoped to actor, tool and project: reuse with the same arguments returns the first result and creates no second record, and reuse with different arguments is refused with IDEMPOTENCY_CONFLICT.",
+          "minLength": 8,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:-]+$"
+        },
+        "identifier": {
+          "type": "string",
+          "description": "Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the value as opaque: the schema bounds only its length and character class and never its documented prefix.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        }
+      }
+    }
   }
 }

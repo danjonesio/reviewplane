@@ -203,6 +203,9 @@ export async function registerBrowserSessionRoutes(
   // Worker channel
   // ---------------------------------------------------------------------
 
+  // This replaces Fastify's own JSON parser for the **whole instance**, so what
+  // it does with a malformed body is what every JSON route in this server does
+  // with one.
   app.addContentTypeParser(
     "application/json",
     { parseAs: "string", bodyLimit: 262144 },
@@ -215,8 +218,19 @@ export async function registerBrowserSessionRoutes(
       }
       try {
         done(null, JSON.parse(body as string) as unknown);
-      } catch (error) {
-        done(error as Error, undefined);
+      } catch {
+        // A bare `SyntaxError` used to be handed on, and it carries no status
+        // and no code — so the error hook treated a body the *client*
+        // malformed as an unhandled server failure and answered
+        // `500 INTERNAL_ERROR`, with a stack trace in the log. Fastify's own
+        // parser reports `statusCode: 400`; replacing the parser lost that, and
+        // this restores it in this API's vocabulary. The parser's message is
+        // not carried: it quotes the input, and the input is what the refusal
+        // is about (`docs/SECURITY.md` §18).
+        done(
+          new ApiError("VALIDATION_FAILED", "The request body is not valid JSON.", undefined, 400),
+          undefined,
+        );
       }
     },
   );

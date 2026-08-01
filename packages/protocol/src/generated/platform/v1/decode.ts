@@ -44,6 +44,7 @@ import type {
   ConnectorStatus,
   Correlation,
   CursorClaims,
+  DestinationProtocol,
   Envelope,
   Environment,
   EnvironmentStatus,
@@ -71,6 +72,15 @@ import type {
   ProjectSettings,
   ProjectStatus,
   ProjectUpdatedPayload,
+  PublishedService,
+  PublishedServiceExpiredPayload,
+  PublishedServiceFailedPayload,
+  PublishedServiceFailureClass,
+  PublishedServiceReadyPayload,
+  PublishedServiceRequestedPayload,
+  PublishedServiceRevokedPayload,
+  PublishedServiceScope,
+  PublishedServiceStatus,
   RepositoryIdentity,
   SessionRevocationReason,
   SessionRevokedPayload,
@@ -856,5 +866,110 @@ export function decodeCursorClaims(value: unknown): CursorClaims {
     version: source["version"] as number,
     sort_key: source["sort_key"] as string,
     id: source["id"] as string,
+  };
+}
+
+/**
+ * Decodes a validated PublishedService.
+ */
+export function decodePublishedService(value: unknown): PublishedService {
+  const source = value as Record<string, unknown>;
+  return {
+    id: source["id"] as string,
+    organisation_id: source["organisation_id"] as string,
+    project_id: source["project_id"] as string,
+    connector_id: source["connector_id"] as string,
+    workspace_id: source["workspace_id"] as string,
+    public_alias: source["public_alias"] as string,
+    internal_origin: source["internal_origin"] as string,
+    local_host: source["local_host"] as string,
+    local_port: source["local_port"] as number,
+    protocol: source["protocol"] as DestinationProtocol,
+    scope: source["scope"] as PublishedServiceScope,
+    allowed_browser_session_ids: (source["allowed_browser_session_ids"] as unknown[]).map((item) => item as string),
+    expires_at: source["expires_at"] as string,
+    status: source["status"] as PublishedServiceStatus,
+    ...(source["failure_class"] === undefined ? {} : { failure_class: source["failure_class"] as PublishedServiceFailureClass }),
+    ...(source["observed_destination"] === undefined ? {} : { observed_destination: source["observed_destination"] as string }),
+    requested_at: source["requested_at"] as string,
+    ...(source["ready_at"] === undefined ? {} : { ready_at: source["ready_at"] as string }),
+    ...(source["ended_at"] === undefined ? {} : { ended_at: source["ended_at"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated PublishedServiceRequestedPayload.
+ */
+export function decodePublishedServiceRequestedPayload(value: unknown): PublishedServiceRequestedPayload {
+  const source = value as Record<string, unknown>;
+  return {
+    published_service_id: source["published_service_id"] as string,
+    connector_id: source["connector_id"] as string,
+    workspace_id: source["workspace_id"] as string,
+    local_host: source["local_host"] as string,
+    local_port: source["local_port"] as number,
+    protocol: source["protocol"] as DestinationProtocol,
+    public_alias: source["public_alias"] as string,
+    expires_at: source["expires_at"] as string,
+    allowed_browser_session_ids: (source["allowed_browser_session_ids"] as unknown[]).map((item) => item as string),
+    new_status: source["new_status"] as PublishedServiceStatus,
+  };
+}
+
+/**
+ * Decodes a validated PublishedServiceReadyPayload.
+ */
+export function decodePublishedServiceReadyPayload(value: unknown): PublishedServiceReadyPayload {
+  const source = value as Record<string, unknown>;
+  return {
+    published_service_id: source["published_service_id"] as string,
+    ...(source["previous_status"] === undefined ? {} : { previous_status: source["previous_status"] as PublishedServiceStatus }),
+    ...(source["new_status"] === undefined ? {} : { new_status: source["new_status"] as PublishedServiceStatus }),
+    ...(source["observed_destination"] === undefined ? {} : { observed_destination: source["observed_destination"] as string }),
+    ...(source["internal_origin"] === undefined ? {} : { internal_origin: source["internal_origin"] as string }),
+    ...(source["connector_connected"] === undefined ? {} : { connector_connected: source["connector_connected"] as boolean }),
+    ...(source["capability_id"] === undefined ? {} : { capability_id: source["capability_id"] as string }),
+    ...(source["browser_session_id"] === undefined ? {} : { browser_session_id: source["browser_session_id"] as string }),
+    ...(source["key_id"] === undefined ? {} : { key_id: source["key_id"] as string }),
+    ...(source["expires_at"] === undefined ? {} : { expires_at: source["expires_at"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated PublishedServiceFailedPayload.
+ */
+export function decodePublishedServiceFailedPayload(value: unknown): PublishedServiceFailedPayload {
+  const source = value as Record<string, unknown>;
+  return {
+    published_service_id: source["published_service_id"] as string,
+    previous_status: source["previous_status"] as PublishedServiceStatus,
+    new_status: source["new_status"] as PublishedServiceStatus,
+    error_class: source["error_class"] as PublishedServiceFailureClass,
+  };
+}
+
+/**
+ * Decodes a validated PublishedServiceExpiredPayload.
+ */
+export function decodePublishedServiceExpiredPayload(value: unknown): PublishedServiceExpiredPayload {
+  const source = value as Record<string, unknown>;
+  return {
+    published_service_id: source["published_service_id"] as string,
+    previous_status: source["previous_status"] as PublishedServiceStatus,
+    new_status: source["new_status"] as PublishedServiceStatus,
+    expires_at: source["expires_at"] as string,
+  };
+}
+
+/**
+ * Decodes a validated PublishedServiceRevokedPayload.
+ */
+export function decodePublishedServiceRevokedPayload(value: unknown): PublishedServiceRevokedPayload {
+  const source = value as Record<string, unknown>;
+  return {
+    published_service_id: source["published_service_id"] as string,
+    previous_status: source["previous_status"] as PublishedServiceStatus,
+    new_status: source["new_status"] as PublishedServiceStatus,
+    ...(source["revoked_capability_ids"] === undefined ? {} : { revoked_capability_ids: (source["revoked_capability_ids"] as unknown[]).map((item) => item as string) }),
   };
 }

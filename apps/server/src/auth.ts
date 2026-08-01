@@ -23,7 +23,7 @@
 
 import { createHash, timingSafeEqual } from "node:crypto";
 
-import type { FastifyReply, FastifyRequest } from "fastify";
+import type { FastifyRequest } from "fastify";
 
 import { ApiError } from "./errors.ts";
 import { looksLikeAgentToken } from "./modules/agents/credentials.ts";
@@ -111,25 +111,12 @@ export function requireAdministrator(
   throw new ApiError("AUTHENTICATION_REQUIRED", "The bearer credential was not recognised.");
 }
 
-/**
- * Builds the pre-handler that guards a route reachable only by the bootstrap
- * administrator, where no other principal is even a candidate.
- *
- * It answers `AUTHENTICATION_REQUIRED` for both an absent and a wrong
- * credential: telling the two apart confirms to a caller that a token exists.
- * The failure is raised, not rendered here, so that the one error hook
- * `src/app.ts` installs produces the body (`docs/API.md` §5).
- */
-export function requireBootstrapAdministrator(expectedToken: string) {
-  return async function authenticate(request: FastifyRequest, _reply: FastifyReply): Promise<void> {
-    const presented = bearerToken(request);
-    if (presented === null || !credentialMatches(presented, expectedToken)) {
-      request.log.warn({ route: request.url }, "administrative request rejected");
-      throw new ApiError(
-        "AUTHENTICATION_REQUIRED",
-        "This endpoint requires the administrator token.",
-      );
-    }
-    await Promise.resolve();
-  };
-}
+// A `requireBootstrapAdministrator` pre-handler stood here. It guarded a route
+// on the bearer token alone, which meant the route it guarded could not be
+// reached by a human session at all — and when the published-service surface
+// needed one, the guard was the thing that had to be replaced rather than
+// extended. Everything administrative now resolves the principal through
+// `modules/identity/authorisation.ts`, where the bootstrap token is one
+// principal among several and the CSRF rule is stated once. Reintroducing a
+// per-route token check would reintroduce a second answer to "who may call
+// this".

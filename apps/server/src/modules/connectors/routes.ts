@@ -15,9 +15,11 @@
  * forged cross-origin write becomes possible: the browser attaches the cookie
  * to a request another origin caused, and a bearer token is not attached that
  * way. Every state-changing route here therefore applies the strict
- * `requireCsrfToken`, in a `preHandler` so that it runs **before the body is
- * decoded** — a refusal that happened after parsing would still have spent the
- * work an attacker asked for. Minting an enrolment token is exactly the shape
+ * `requireCsrfToken`, in an **`onRequest`** hook, which Fastify runs after
+ * routing and before the body is parsed. It was a `preHandler`, and the comment
+ * that stood here said that ran before the body was decoded; Fastify's order is
+ * `onRequest` → `preParsing` → parsing → `preValidation` → validation →
+ * `preHandler`, so it did not. Minting an enrolment token is exactly the shape
  * that must not be forgeable: it is a credential that enrols a machine.
  *
  * **Scope.** Every lookup carries the identifier, the organisation and the
@@ -185,11 +187,12 @@ export function registerConnectorRoutes(app: FastifyInstance, context: Connector
   /**
    * The guard every state-changing route on this surface uses.
    *
-   * It runs as a `preHandler`, which Fastify invokes after routing and before
-   * the handler, and it refuses on the credential alone: nothing in the body is
-   * read to decide it. A cookie session must present its CSRF token; a bearer
-   * credential carries none and needs none, because a browser does not attach
-   * one to a cross-origin request.
+   * It is an `onRequest` hook, so Fastify has routed the request and has not yet
+   * read its body, and it refuses on the credential alone: nothing in the body
+   * is read to decide it, and nothing in the body has been parsed when it does.
+   * A cookie session must present its CSRF token; a bearer credential carries
+   * none and needs none, because a browser does not attach one to a
+   * cross-origin request.
    */
   const administratorWrite = async (request: FastifyRequest, _reply: FastifyReply): Promise<void> => {
     const principal = requireOrganisationAdministrator(request);
@@ -214,7 +217,7 @@ export function registerConnectorRoutes(app: FastifyInstance, context: Connector
    */
   app.post<{ Body: IssueTokenBody }>(
     "/api/v1/connectors/enrolment-tokens",
-    { preHandler: administratorWrite },
+    { onRequest: administratorWrite },
     async (request, reply) => {
       const principal = requireOrganisationAdministrator(request);
       const scopedOrganisation = organisationOf(principal);
@@ -296,7 +299,7 @@ export function registerConnectorRoutes(app: FastifyInstance, context: Connector
    * certificate, for an operator configuring the tunnel gateway's trust anchor.
    * The CA private key is never part of this response.
    */
-  app.get("/api/v1/connectors/certificate-authority", { preHandler: administratorRead }, async (request, reply) => {
+  app.get("/api/v1/connectors/certificate-authority", { onRequest: administratorRead }, async (request, reply) => {
     const parsed = new X509Certificate(context.authority.certificatePem);
     return reply.send({
       data: {
@@ -310,7 +313,7 @@ export function registerConnectorRoutes(app: FastifyInstance, context: Connector
   });
 
   /** `GET /api/v1/connectors` */
-  app.get("/api/v1/connectors", { preHandler: administratorRead }, async (request, reply) => {
+  app.get("/api/v1/connectors", { onRequest: administratorRead }, async (request, reply) => {
     const principal = requireOrganisationAdministrator(request);
     const connectors = await listConnectors(
       context.pool,
@@ -326,7 +329,7 @@ export function registerConnectorRoutes(app: FastifyInstance, context: Connector
   /** `GET /api/v1/connectors/:connectorId` */
   app.get<{ Params: { connectorId: string } }>(
     "/api/v1/connectors/:connectorId",
-    { preHandler: administratorRead },
+    { onRequest: administratorRead },
     async (request, reply) => {
       const principal = requireOrganisationAdministrator(request);
       const organisationId = organisationOf(principal);
@@ -367,7 +370,7 @@ export function registerConnectorRoutes(app: FastifyInstance, context: Connector
    */
   app.post<{ Params: { connectorId: string } }>(
     "/api/v1/connectors/:connectorId/revoke",
-    { preHandler: administratorWrite },
+    { onRequest: administratorWrite },
     async (request, reply) => {
       const principal = requireOrganisationAdministrator(request);
       const outcome = await revokeConnectorIdentity(
@@ -408,7 +411,7 @@ export function registerConnectorRoutes(app: FastifyInstance, context: Connector
   /** `GET /api/v1/projects/:projectId/environments` */
   app.get<{ Params: { projectId: string } }>(
     "/api/v1/projects/:projectId/environments",
-    { preHandler: administratorRead },
+    { onRequest: administratorRead },
     async (request, reply) => {
       const principal = requireOrganisationAdministrator(request);
       const project = await resolveProject(context.pool, principal, request.params.projectId);
@@ -437,7 +440,7 @@ export function registerConnectorRoutes(app: FastifyInstance, context: Connector
   /** `GET /api/v1/environments/:environmentId` */
   app.get<{ Params: { environmentId: string } }>(
     "/api/v1/environments/:environmentId",
-    { preHandler: administratorRead },
+    { onRequest: administratorRead },
     async (request, reply) => {
       const principal = requireOrganisationAdministrator(request);
       const environment = await findEnvironmentInScope(context.pool, {

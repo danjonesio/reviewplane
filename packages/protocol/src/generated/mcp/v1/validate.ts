@@ -29,6 +29,9 @@ const PATTERN_11 = new RegExp("^/[!-~]*$", "u");
 const PATTERN_12 = new RegExp("^[0-9a-f]{7,64}$", "u");
 const PATTERN_13 = new RegExp("^[0-9a-f]{64}$", "u");
 const PATTERN_14 = new RegExp("^[A-Za-z0-9_.\\[\\]-]+$", "u");
+const PATTERN_15 = new RegExp("^[0-9A-Fa-f:.]{1,45}$", "u");
+const PATTERN_16 = new RegExp("^https://[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.[a-z0-9.-]{1,180}/$", "u");
+const PATTERN_17 = new RegExp("^(\\[[0-9A-Fa-f:.]{1,45}\\]|[0-9A-Fa-f:.]{1,45}):[0-9]{1,5}$", "u");
 
 /**
  * Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the
@@ -347,7 +350,7 @@ export function validateErrorClass(value: unknown, path: string, out: SchemaViol
  * advertises always has a result schema and a bound.
  */
 export function validateMessageType(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["project_current","agent_session_status","agent_inbox_list","agent_inbox_acknowledge","review_list","review_search","review_get","review_claim","review_update_status","review_add_comment","finding_get","finding_claim","finding_update_status","finding_mark_blocked","finding_add_comment","finding_submit_verification","browser_take_screenshot"] });
+  checkString(value, path, out, { values: ["project_current","agent_session_status","agent_inbox_list","agent_inbox_acknowledge","review_list","review_search","review_get","review_claim","review_update_status","review_add_comment","finding_get","finding_claim","finding_update_status","finding_mark_blocked","finding_add_comment","finding_submit_verification","browser_take_screenshot","development_services_list","development_service_publish","development_service_unpublish"] });
 }
 
 /**
@@ -357,7 +360,7 @@ export function validateMessageType(value: unknown, path: string, out: SchemaVio
  * section 11).
  */
 export function validateAgentCapability(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["project:read","review:read","review:write","finding:read","finding:write","verification:submit","browser:capture"] });
+  checkString(value, path, out, { values: ["project:read","review:read","review:write","finding:read","finding:write","verification:submit","browser:capture","service:publish"] });
 }
 
 /**
@@ -521,6 +524,36 @@ export function validateFindingInclude(value: unknown, path: string, out: Schema
  */
 export function validateSessionInclude(value: unknown, path: string, out: SchemaViolation[]): void {
   checkString(value, path, out, { values: ["browser_sessions","capabilities"] });
+}
+
+/**
+ * Local address of a development service, as a literal IP address. A name would have to be
+ * resolved, and a resolver is a rebinding surface (docs/SECURITY.md section 9).
+ */
+export function validateLocalHost(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 45, pattern: PATTERN_15 });
+}
+
+/**
+ * TCP port a development service listens on.
+ */
+export function validateLocalPort(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 1, maximum: 65535 });
+}
+
+/**
+ * Protocol a development service speaks on its local socket. It is declared at publication
+ * and is not negotiable per request.
+ */
+export function validateDestinationProtocol(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["http","https"] });
+}
+
+/**
+ * Published-service lifecycle status (docs/DOMAIN_MODEL.md section 10).
+ */
+export function validatePublishedServiceStatus(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["requested","ready","failed","expired","revoked"] });
 }
 
 /**
@@ -2503,5 +2536,156 @@ export function validateEnvelope(value: unknown, path: string, out: SchemaViolat
   }
   if (source["data"] !== undefined) {
     validateEnvelopeData(source["data"], `${path}.data`, out);
+  }
+}
+
+/**
+ * Origin an authorised browser session opens. It is usable only by a session the route
+ * names, and only with a capability the control plane mints; it is not reachable from the
+ * public internet.
+ */
+export function validateDevelopmentServiceViewInternalOrigin(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 256, pattern: PATTERN_16 });
+}
+
+/**
+ * Destination the connector reported it opened. Absent until the route is ready.
+ */
+export function validateDevelopmentServiceViewObservedDestination(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 3, maxLength: 64, pattern: PATTERN_17 });
+}
+
+/**
+ * A published development service as an agent sees it. It carries the origin a browser
+ * session opens and never a capability: a capability is minted for a browser session, and
+ * an agent drives a session rather than presenting one itself (docs/ARCHITECTURE.md
+ * section 7.3).
+ */
+export function validateDevelopmentServiceView(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["id", "status", "workspace_id", "local_host", "local_port", "protocol", "internal_origin", "observed_destination", "failure_class", "expires_at"], ["id", "status", "local_host", "local_port", "protocol", "internal_origin", "expires_at"]);
+  if (source === null) return;
+  if (source["id"] !== undefined) {
+    validateIdentifier(source["id"], `${path}.id`, out);
+  }
+  if (source["status"] !== undefined) {
+    validatePublishedServiceStatus(source["status"], `${path}.status`, out);
+  }
+  if (source["workspace_id"] !== undefined) {
+    validateIdentifier(source["workspace_id"], `${path}.workspace_id`, out);
+  }
+  if (source["local_host"] !== undefined) {
+    validateLocalHost(source["local_host"], `${path}.local_host`, out);
+  }
+  if (source["local_port"] !== undefined) {
+    validateLocalPort(source["local_port"], `${path}.local_port`, out);
+  }
+  if (source["protocol"] !== undefined) {
+    validateDestinationProtocol(source["protocol"], `${path}.protocol`, out);
+  }
+  if (source["internal_origin"] !== undefined) {
+    validateDevelopmentServiceViewInternalOrigin(source["internal_origin"], `${path}.internal_origin`, out);
+  }
+  if (source["observed_destination"] !== undefined) {
+    validateDevelopmentServiceViewObservedDestination(source["observed_destination"], `${path}.observed_destination`, out);
+  }
+  if (source["failure_class"] !== undefined) {
+    validateErrorClass(source["failure_class"], `${path}.failure_class`, out);
+  }
+  if (source["expires_at"] !== undefined) {
+    validateTimestamp(source["expires_at"], `${path}.expires_at`, out);
+  }
+}
+
+/**
+ * Arguments of development_services_list. It names no project: the project is the
+ * session's, and a project argument would be an authorisation input chosen by the caller.
+ */
+export function validateDevelopmentServicesListInput(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["limit"], []);
+  if (source === null) return;
+  if (source["limit"] !== undefined) {
+    validatePageLimit(source["limit"], `${path}.limit`, out);
+  }
+}
+
+/**
+ * How long the route may live. It is bounded by the deployment's maximum route lifetime,
+ * and a longer request is refused rather than clipped: silently shortening a lifetime
+ * would make an agent believe it had access it does not have.
+ */
+export function validateDevelopmentServicePublishInputTtlSeconds(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 1, maximum: 86400 });
+}
+
+/**
+ * Arguments of development_service_publish (docs/MCP_SPEC.md section 7.2).
+ */
+export function validateDevelopmentServicePublishInput(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["workspace_id", "local_host", "local_port", "protocol", "ttl_seconds", "idempotency_key"], ["workspace_id", "local_port", "idempotency_key"]);
+  if (source === null) return;
+  if (source["workspace_id"] !== undefined) {
+    validateIdentifier(source["workspace_id"], `${path}.workspace_id`, out);
+  }
+  if (source["local_host"] !== undefined) {
+    validateLocalHost(source["local_host"], `${path}.local_host`, out);
+  }
+  if (source["local_port"] !== undefined) {
+    validateLocalPort(source["local_port"], `${path}.local_port`, out);
+  }
+  if (source["protocol"] !== undefined) {
+    validateDestinationProtocol(source["protocol"], `${path}.protocol`, out);
+  }
+  if (source["ttl_seconds"] !== undefined) {
+    validateDevelopmentServicePublishInputTtlSeconds(source["ttl_seconds"], `${path}.ttl_seconds`, out);
+  }
+  if (source["idempotency_key"] !== undefined) {
+    validateIdempotencyKey(source["idempotency_key"], `${path}.idempotency_key`, out);
+  }
+}
+
+/**
+ * Arguments of development_service_unpublish.
+ */
+export function validateDevelopmentServiceUnpublishInput(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["published_service_id", "idempotency_key"], ["published_service_id", "idempotency_key"]);
+  if (source === null) return;
+  if (source["published_service_id"] !== undefined) {
+    validateIdentifier(source["published_service_id"], `${path}.published_service_id`, out);
+  }
+  if (source["idempotency_key"] !== undefined) {
+    validateIdempotencyKey(source["idempotency_key"], `${path}.idempotency_key`, out);
+  }
+}
+
+/**
+ * Routes of the session's project, newest first.
+ */
+export function validateDevelopmentServicesListResultServices(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 100, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateDevelopmentServiceView(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Payload of development_services_list.
+ */
+export function validateDevelopmentServicesListResult(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["services"], ["services"]);
+  if (source === null) return;
+  if (source["services"] !== undefined) {
+    validateDevelopmentServicesListResultServices(source["services"], `${path}.services`, out);
+  }
+}
+
+/**
+ * Payload of development_service_publish and development_service_unpublish: the record as
+ * it stands after the command.
+ */
+export function validateDevelopmentServiceResult(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["service"], ["service"]);
+  if (source === null) return;
+  if (source["service"] !== undefined) {
+    validateDevelopmentServiceView(source["service"], `${path}.service`, out);
   }
 }

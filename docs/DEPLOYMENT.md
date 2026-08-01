@@ -127,7 +127,7 @@ untrusted connections would be a key in the wrong place.
 |---|---|---|
 | `data` | postgres, api, jobs, mcp | The database is reachable by the three processes that own domain state and nothing else. |
 | `browser` | api, mcp, browser-worker | The control plane and the agent endpoint command the worker. |
-| `tunnel` | api, tunnel-gateway, browser-worker | The worker reaches published services only through the tunnel gateway; the control plane reaches the gateway's admin API. |
+| `tunnel` | api, mcp, tunnel-gateway, browser-worker | The worker reaches published services only through the tunnel gateway; the control plane and the MCP endpoint reach the gateway's admin API, the latter so that `development_service_unpublish` withdraws the route rather than only the record (ADR-0021). |
 | `devnet` | api, tunnel-gateway, dev-fixture | The development environment dials out to enrol and to open its data channel. Nothing dials in. |
 | `edge` | gateway, api, mcp | The edge gateway reaches the two HTTP processes over this network rather than over the host, and neither gains a route anywhere else by being on it. |
 | `frontend` | gateway | **Not** internal, and the only one here that is not. |

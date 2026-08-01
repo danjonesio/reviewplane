@@ -247,6 +247,35 @@ before(async () => {
     "insert into projects (id, organisation_id, name, slug) values ($1, $2, $3, $4) on conflict do nothing",
     [PROJECT_ID, harness.connectorConfig.organisationId, "Fixture", "fixture"],
   );
+  // The workspace and the browser session a route names have to be real
+  // records in this project: publication resolves every identifier the request
+  // supplies inside the caller's organisation and project, so an identifier
+  // that names nothing is refused before a row exists.
+  await harness.pool.query(
+    `insert into workspaces (
+       id, organisation_id, project_id, root_path, branch, head_commit, path_hash,
+       display_path, source)
+     values ($1, $2, $3, '/srv/fixture', 'main', 'abcdef1', $4, 'fixture', 'connector_report')
+     on conflict do nothing`,
+    [
+      WORKSPACE_ID,
+      harness.connectorConfig.organisationId,
+      PROJECT_ID,
+      `sha256:${"f".repeat(64)}`,
+    ],
+  );
+  await harness.pool.query(
+    `insert into browser_sessions (
+       id, organisation_id, project_id, status, viewport, limits, retention_policy)
+     values ($1, $2, $3, 'REQUESTED', $4, '{}'::jsonb, 'verification_evidence')
+     on conflict do nothing`,
+    [
+      SESSION_ID,
+      harness.connectorConfig.organisationId,
+      PROJECT_ID,
+      JSON.stringify({ width: 1440, height: 900, device_scale_factor: 1 }),
+    ],
+  );
 
   const dataDir = join(workDirectory, "connector");
   const issued = await issueEnrolmentToken(harness, { expires_in_seconds: 600 });
@@ -424,7 +453,35 @@ describe("publishing a loopback development service", () => {
       "insert into projects (id, organisation_id, name, slug) values ($1, $2, $3, $4) on conflict do nothing",
       ["prj_other", harness.connectorConfig.organisationId, "Other", "other"],
     );
-    const refused = await publish({}, "prj_other");
+    // The other project needs its own workspace and browser session, or the
+    // control plane refuses the request before the connector is ever asked —
+    // which is correct, and is not what this test is about. This one is about
+    // the connector's *independent* refusal: the control plane is willing, and
+    // the connector answers for its own projects only.
+    await harness.pool.query(
+      `insert into workspaces (
+         id, organisation_id, project_id, root_path, branch, head_commit, path_hash,
+         display_path, source)
+       values ('wsp_other', $1, 'prj_other', '/srv/other', 'main', 'abcdef1', $2, 'other',
+               'connector_report')
+       on conflict do nothing`,
+      [harness.connectorConfig.organisationId, `sha256:${"e".repeat(64)}`],
+    );
+    await harness.pool.query(
+      `insert into browser_sessions (
+         id, organisation_id, project_id, status, viewport, limits, retention_policy)
+       values ('brs_other', $1, 'prj_other', 'REQUESTED', $2, '{}'::jsonb,
+               'verification_evidence')
+       on conflict do nothing`,
+      [
+        harness.connectorConfig.organisationId,
+        JSON.stringify({ width: 1440, height: 900, device_scale_factor: 1 }),
+      ],
+    );
+    const refused = await publish(
+      { workspace_id: "wsp_other", allowed_browser_session_ids: ["brs_other"] },
+      "prj_other",
+    );
     const error = (refused.body["error"] as Record<string, string> | undefined) ?? {};
     assert.equal(error["code"], "PROJECT_NOT_AUTHORISED", JSON.stringify(refused.body));
   });
@@ -432,10 +489,37 @@ describe("publishing a loopback development service", () => {
   // docs/UX_FLOWS.md section 18: "no connector connected" is an actionable
   // cause with its own stable code, not a generic failure.
   test("a connector that is not connected fails with CONNECTOR_OFFLINE", async () => {
-    const refused = await publish({ connector_id: "con_never_enrolled" });
+    // A connector that **exists** and holds no channel. That is the state
+    // `docs/UX_FLOWS.md` §18 calls "no connector connected", and it is a
+    // different thing from an identifier that names nothing: publication now
+    // resolves `connector_id` inside the caller's organisation and project, so
+    // a name that matches no row is `RESOURCE_NOT_FOUND` like any other absent
+    // identifier, and `CONNECTOR_OFFLINE` is reserved for the connector this
+    // deployment has and cannot currently reach.
+    await harness.pool.query(
+      `insert into connectors (
+         id, organisation_id, environment_id, certificate_fingerprint, certificate_serial,
+         certificate_not_after, public_key, version, status)
+       select 'con_disconnected', organisation_id, id, 'sha256:disconnected', '02',
+              now() + interval '30 days', 'key', '0.1.0', 'DISCONNECTED'
+         from environments
+        where organisation_id = $1
+        limit 1
+       on conflict do nothing`,
+      [harness.connectorConfig.organisationId],
+    );
+    const refused = await publish({ connector_id: "con_disconnected" });
     const error = (refused.body["error"] as Record<string, string> | undefined) ?? {};
     assert.equal(refused.status, 503, JSON.stringify(refused.body));
     assert.equal(error["code"], "CONNECTOR_OFFLINE");
+
+    // And an identifier that names nothing is absent rather than offline.
+    const unknown = await publish({ connector_id: "con_never_enrolled" });
+    assert.equal(unknown.status, 404, JSON.stringify(unknown.body));
+    assert.equal(
+      (unknown.body["error"] as Record<string, string>)["code"],
+      "RESOURCE_NOT_FOUND",
+    );
   });
 
   // docs/DOMAIN_MODEL.md section 10: publication always expires, and the

@@ -23,6 +23,8 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
 import type { Pool } from "pg";
 
+import { AGENT_CAPABILITY_VALUES } from "@reviewplane/protocol/mcp";
+
 import { ApiError } from "../../errors.ts";
 import { newId } from "../../ids.ts";
 
@@ -37,16 +39,17 @@ import { newId } from "../../ids.ts";
  */
 export const AGENT_TOKEN_PREFIX = "rpa_";
 
-/** Capabilities a credential may carry. The vocabulary is the schema's. */
-export const AGENT_CAPABILITIES: readonly string[] = [
-  "project:read",
-  "review:read",
-  "review:write",
-  "finding:read",
-  "finding:write",
-  "verification:submit",
-  "browser:capture",
-];
+/**
+ * Capabilities a credential may carry.
+ *
+ * It **is** the schema's vocabulary, read from `packages/protocol` rather than
+ * restated here. A copy stood in this file and said it was the schema's; it was
+ * the schema's on the day it was written, and nothing would have failed if a
+ * capability had been added to one list and not the other — the API would have
+ * refused to issue a credential for a capability its own tools required
+ * (`docs/DEVELOPMENT.md` §3).
+ */
+export const AGENT_CAPABILITIES: readonly string[] = AGENT_CAPABILITY_VALUES;
 
 /** `docs/SECURITY.md` section 6.3: short-lived. One coding session. */
 export const AGENT_CREDENTIAL_TTL_SECONDS = 3600;

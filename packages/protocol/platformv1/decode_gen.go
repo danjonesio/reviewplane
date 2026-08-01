@@ -894,3 +894,142 @@ func DecodeCursorClaims(value any) CursorClaims {
 	out.ID = decodeString(source["id"])
 	return out
 }
+
+// DecodePublishedService builds a PublishedService from a validated tree.
+func DecodePublishedService(value any) PublishedService {
+	source, _ := value.(map[string]any)
+	var out PublishedService
+	out.ID = decodeString(source["id"])
+	out.OrganisationID = decodeString(source["organisation_id"])
+	out.ProjectID = decodeString(source["project_id"])
+	out.ConnectorID = decodeString(source["connector_id"])
+	out.WorkspaceID = decodeString(source["workspace_id"])
+	out.PublicAlias = decodeString(source["public_alias"])
+	out.InternalOrigin = decodeString(source["internal_origin"])
+	out.LocalHost = decodeString(source["local_host"])
+	out.LocalPort = decodeInt(source["local_port"])
+	out.Protocol = DestinationProtocol(decodeString(source["protocol"]))
+	out.Scope = PublishedServiceScope(decodeString(source["scope"]))
+	out.AllowedBrowserSessionIDs = decodeSlice(source["allowed_browser_session_ids"], func(item any) string { return decodeString(item) })
+	out.ExpiresAt = decodeString(source["expires_at"])
+	out.Status = PublishedServiceStatus(decodeString(source["status"]))
+	if field, present := source["failure_class"]; present {
+		decoded := PublishedServiceFailureClass(decodeString(field))
+		out.FailureClass = &decoded
+	}
+	if field, present := source["observed_destination"]; present {
+		decoded := decodeString(field)
+		out.ObservedDestination = &decoded
+	}
+	out.RequestedAt = decodeString(source["requested_at"])
+	if field, present := source["ready_at"]; present {
+		decoded := decodeString(field)
+		out.ReadyAt = &decoded
+	}
+	if field, present := source["ended_at"]; present {
+		decoded := decodeString(field)
+		out.EndedAt = &decoded
+	}
+	return out
+}
+
+// DecodePublishedServiceRequestedPayload builds a PublishedServiceRequestedPayload
+// from a validated tree.
+func DecodePublishedServiceRequestedPayload(value any) PublishedServiceRequestedPayload {
+	source, _ := value.(map[string]any)
+	var out PublishedServiceRequestedPayload
+	out.PublishedServiceID = decodeString(source["published_service_id"])
+	out.ConnectorID = decodeString(source["connector_id"])
+	out.WorkspaceID = decodeString(source["workspace_id"])
+	out.LocalHost = decodeString(source["local_host"])
+	out.LocalPort = decodeInt(source["local_port"])
+	out.Protocol = DestinationProtocol(decodeString(source["protocol"]))
+	out.PublicAlias = decodeString(source["public_alias"])
+	out.ExpiresAt = decodeString(source["expires_at"])
+	out.AllowedBrowserSessionIDs = decodeSlice(source["allowed_browser_session_ids"], func(item any) string { return decodeString(item) })
+	out.NewStatus = PublishedServiceStatus(decodeString(source["new_status"]))
+	return out
+}
+
+// DecodePublishedServiceReadyPayload builds a PublishedServiceReadyPayload from a
+// validated tree.
+func DecodePublishedServiceReadyPayload(value any) PublishedServiceReadyPayload {
+	source, _ := value.(map[string]any)
+	var out PublishedServiceReadyPayload
+	out.PublishedServiceID = decodeString(source["published_service_id"])
+	if field, present := source["previous_status"]; present {
+		decoded := PublishedServiceStatus(decodeString(field))
+		out.PreviousStatus = &decoded
+	}
+	if field, present := source["new_status"]; present {
+		decoded := PublishedServiceStatus(decodeString(field))
+		out.NewStatus = &decoded
+	}
+	if field, present := source["observed_destination"]; present {
+		decoded := decodeString(field)
+		out.ObservedDestination = &decoded
+	}
+	if field, present := source["internal_origin"]; present {
+		decoded := decodeString(field)
+		out.InternalOrigin = &decoded
+	}
+	if field, present := source["connector_connected"]; present {
+		decoded := decodeBool(field)
+		out.ConnectorConnected = &decoded
+	}
+	if field, present := source["capability_id"]; present {
+		decoded := decodeString(field)
+		out.CapabilityID = &decoded
+	}
+	if field, present := source["browser_session_id"]; present {
+		decoded := decodeString(field)
+		out.BrowserSessionID = &decoded
+	}
+	if field, present := source["key_id"]; present {
+		decoded := decodeString(field)
+		out.KeyID = &decoded
+	}
+	if field, present := source["expires_at"]; present {
+		decoded := decodeString(field)
+		out.ExpiresAt = &decoded
+	}
+	return out
+}
+
+// DecodePublishedServiceFailedPayload builds a PublishedServiceFailedPayload from a
+// validated tree.
+func DecodePublishedServiceFailedPayload(value any) PublishedServiceFailedPayload {
+	source, _ := value.(map[string]any)
+	var out PublishedServiceFailedPayload
+	out.PublishedServiceID = decodeString(source["published_service_id"])
+	out.PreviousStatus = PublishedServiceStatus(decodeString(source["previous_status"]))
+	out.NewStatus = PublishedServiceStatus(decodeString(source["new_status"]))
+	out.ErrorClass = PublishedServiceFailureClass(decodeString(source["error_class"]))
+	return out
+}
+
+// DecodePublishedServiceExpiredPayload builds a PublishedServiceExpiredPayload from a
+// validated tree.
+func DecodePublishedServiceExpiredPayload(value any) PublishedServiceExpiredPayload {
+	source, _ := value.(map[string]any)
+	var out PublishedServiceExpiredPayload
+	out.PublishedServiceID = decodeString(source["published_service_id"])
+	out.PreviousStatus = PublishedServiceStatus(decodeString(source["previous_status"]))
+	out.NewStatus = PublishedServiceStatus(decodeString(source["new_status"]))
+	out.ExpiresAt = decodeString(source["expires_at"])
+	return out
+}
+
+// DecodePublishedServiceRevokedPayload builds a PublishedServiceRevokedPayload from a
+// validated tree.
+func DecodePublishedServiceRevokedPayload(value any) PublishedServiceRevokedPayload {
+	source, _ := value.(map[string]any)
+	var out PublishedServiceRevokedPayload
+	out.PublishedServiceID = decodeString(source["published_service_id"])
+	out.PreviousStatus = PublishedServiceStatus(decodeString(source["previous_status"]))
+	out.NewStatus = PublishedServiceStatus(decodeString(source["new_status"]))
+	if field, present := source["revoked_capability_ids"]; present {
+		out.RevokedCapabilityIDs = decodeSlice(field, func(item any) string { return decodeString(item) })
+	}
+	return out
+}

@@ -30,6 +30,7 @@ export const CHANNELS = [
   "jobs",
   "stream",
   "api",
+  "published_service",
 ] as const;
 
 export type Channel = (typeof CHANNELS)[number];
@@ -43,6 +44,7 @@ export const CHANNEL_DESCRIPTIONS: Readonly<Record<Channel, string>> = {
   "jobs": "Durable background work (docs/ARCHITECTURE.md section 4.8).",
   "stream": "The project event stream of docs/API.md section 18.1.",
   "api": "The HTTP response metadata and refusal envelope of docs/API.md section 5.",
+  "published_service": "Published development services and the scoped tunnel routes that carry them (docs/EVENTS.md section 7, docs/DOMAIN_MODEL.md section 10). It is a channel of its own because a route's lifecycle is neither environment lifecycle nor project lifecycle: it is short-lived, it belongs to exactly one project, and every transition of it is an access decision docs/SECURITY.md section 16 requires to be auditable on its own.",
 };
 
 /**
@@ -72,6 +74,11 @@ export const MESSAGE_TYPE_VALUES = [
   "job.enqueued",
   "job.succeeded",
   "job.failed",
+  "published_service.requested",
+  "published_service.ready",
+  "published_service.failed",
+  "published_service.expired",
+  "published_service.revoked",
 ] as const;
 
 export type MessageType =
@@ -94,7 +101,12 @@ export type MessageType =
   | "workspace.head_changed"
   | "job.enqueued"
   | "job.succeeded"
-  | "job.failed";
+  | "job.failed"
+  | "published_service.requested"
+  | "published_service.ready"
+  | "published_service.failed"
+  | "published_service.expired"
+  | "published_service.revoked";
 
 /**
  * Stable API error code (docs/API.md section 5, docs/MCP_SPEC.md section 12). This
@@ -604,6 +616,90 @@ export type StreamErrorType =
   | "stream.error";
 
 /**
+ * Published-service lifecycle status (docs/DOMAIN_MODEL.md section 10). A route reaches
+ * ready only once the connector has acknowledged the destination it opened and the tunnel
+ * gateway has accepted the registration; failed carries the stable class that refused it.
+ * expired and revoked are both terminal, and both close streams that are already in
+ * flight.
+ */
+export const PUBLISHED_SERVICE_STATUS_VALUES = [
+  "requested",
+  "ready",
+  "failed",
+  "expired",
+  "revoked",
+] as const;
+
+export type PublishedServiceStatus =
+  | "requested"
+  | "ready"
+  | "failed"
+  | "expired"
+  | "revoked";
+
+/**
+ * What a route is scoped to (docs/DOMAIN_MODEL.md section 10). The only version 1 value is
+ * browser_session: the route is usable only by the sessions named in its publication, and
+ * docs/CONNECTOR_PROTOCOL.md section 11 requires at least one.
+ */
+export const PUBLISHED_SERVICE_SCOPE_VALUES = [
+  "browser_session",
+] as const;
+
+export type PublishedServiceScope =
+  | "browser_session";
+
+/**
+ * Why a publication was refused. It is a closed vocabulary drawn from docs/API.md section
+ * 5 and docs/CONNECTOR_PROTOCOL.md section 21, and never free text: docs/SECURITY.md
+ * section 18 requires a stable code, and docs/API.md section 10 requires one failure to
+ * carry one code from the connector to the caller. A refusal this list does not name is
+ * recorded as INTERNAL_ERROR rather than widening the vocabulary at write time.
+ */
+export const PUBLISHED_SERVICE_FAILURE_CLASS_VALUES = [
+  "CONNECTOR_OFFLINE",
+  "CONTROL_PLANE_UNAVAILABLE",
+  "DESTINATION_NOT_ALLOWED",
+  "IDENTITY_REVOKED",
+  "INTERNAL_ERROR",
+  "PORT_NOT_LISTENING",
+  "PROJECT_NOT_AUTHORISED",
+  "PROTOCOL_UNSUPPORTED",
+  "PUBLISHED_SERVICE_UNAVAILABLE",
+  "ROUTE_EXPIRED",
+  "ROUTE_LIMIT_EXCEEDED",
+  "WORKSPACE_NOT_FOUND",
+] as const;
+
+export type PublishedServiceFailureClass =
+  | "CONNECTOR_OFFLINE"
+  | "CONTROL_PLANE_UNAVAILABLE"
+  | "DESTINATION_NOT_ALLOWED"
+  | "IDENTITY_REVOKED"
+  | "INTERNAL_ERROR"
+  | "PORT_NOT_LISTENING"
+  | "PROJECT_NOT_AUTHORISED"
+  | "PROTOCOL_UNSUPPORTED"
+  | "PUBLISHED_SERVICE_UNAVAILABLE"
+  | "ROUTE_EXPIRED"
+  | "ROUTE_LIMIT_EXCEEDED"
+  | "WORKSPACE_NOT_FOUND";
+
+/**
+ * Protocol the development service speaks on its local socket. It is declared at
+ * publication and is not negotiable per request: docs/CONNECTOR_PROTOCOL.md section 12
+ * fixes the destination at publication time, so nothing a browser sends can change it.
+ */
+export const DESTINATION_PROTOCOL_VALUES = [
+  "http",
+  "https",
+] as const;
+
+export type DestinationProtocol =
+  | "http"
+  | "https";
+
+/**
  * Which side of the trust boundary sends each message type.
  */
 export const MESSAGE_DIRECTIONS: Readonly<Record<MessageType, "control_plane_to_subscriber" | "subscriber_to_control_plane">> = {
@@ -627,6 +723,11 @@ export const MESSAGE_DIRECTIONS: Readonly<Record<MessageType, "control_plane_to_
   "job.enqueued": "control_plane_to_subscriber",
   "job.succeeded": "control_plane_to_subscriber",
   "job.failed": "control_plane_to_subscriber",
+  "published_service.requested": "control_plane_to_subscriber",
+  "published_service.ready": "control_plane_to_subscriber",
+  "published_service.failed": "control_plane_to_subscriber",
+  "published_service.expired": "control_plane_to_subscriber",
+  "published_service.revoked": "control_plane_to_subscriber",
 };
 
 /**
@@ -653,6 +754,11 @@ export const MESSAGE_CHANNELS: Readonly<Record<MessageType, Channel>> = {
   "job.enqueued": "jobs",
   "job.succeeded": "jobs",
   "job.failed": "jobs",
+  "published_service.requested": "published_service",
+  "published_service.ready": "published_service",
+  "published_service.failed": "published_service",
+  "published_service.expired": "published_service",
+  "published_service.revoked": "published_service",
 };
 
 /**
@@ -680,6 +786,11 @@ export const PAYLOAD_MAX_BYTES: Readonly<Record<MessageType, number>> = {
   "job.enqueued": 1024,
   "job.succeeded": 1024,
   "job.failed": 1024,
+  "published_service.requested": 2048,
+  "published_service.ready": 1024,
+  "published_service.failed": 512,
+  "published_service.expired": 512,
+  "published_service.revoked": 2048,
 };
 
 /**
@@ -1046,6 +1157,41 @@ export type Sha256Digest = string;
  * expression that has to be read as a security control is one nobody can check.
  */
 export type ArchiveMemberPath = string;
+
+/**
+ * Leftmost label of a route's internal origin (docs/ARCHITECTURE.md section 7.3). It MUST
+ * be a DNS label and MUST be unique across the deployment, so the control plane generates
+ * it rather than deriving it from the route identifier, whose conventional svc_ prefix is
+ * not a valid label. Consumers MUST treat it as opaque.
+ */
+export type PublicAlias = string;
+
+/**
+ * Origin an authorised browser session opens, of the form
+ * https://<public_alias>.<suffix>/. The control plane derives it from the alias; it is
+ * never taken from a request, because the origin is the browser session's egress
+ * allow-list (docs/SECURITY.md section 9).
+ */
+export type InternalOrigin = string;
+
+/**
+ * Local address of the development service, as a literal IP address. A name would have to
+ * be resolved, and a resolver is a rebinding surface: the name that passed the destination
+ * policy need not be the address the connector later opens (docs/SECURITY.md section 9).
+ */
+export type LocalHost = string;
+
+/**
+ * TCP port the development service listens on.
+ */
+export type LocalPort = number;
+
+/**
+ * The destination the connector reported it actually opened, as host:port
+ * (docs/CONNECTOR_PROTOCOL.md section 11). It is what the connector observed rather than
+ * what the control plane asked for, so that the two can be compared.
+ */
+export type ObservedDestination = string;
 
 /**
  * Provider-agnostic repository identity (docs/DOMAIN_MODEL.md section 6). canonical is the
@@ -2652,6 +2798,267 @@ export interface CursorClaims {
 }
 
 /**
+ * A temporary route from an authorised browser worker to a local development service
+ * (docs/DOMAIN_MODEL.md section 10). It has no member capable of carrying a capability
+ * token: a capability is a bearer credential the control plane mints and never stores, and
+ * this record names only the sessions one may be minted for.
+ */
+export interface PublishedService {
+  /**
+   * Published-service identity, conventionally prefixed svc_.
+   */
+  readonly id: Identifier;
+  /**
+   * Owning organisation, carried for defence-in-depth filtering.
+   */
+  readonly organisation_id: Identifier;
+  /**
+   * Project the route belongs to. A capability issued for this project is refused anywhere
+   * else.
+   */
+  readonly project_id: Identifier;
+  /**
+   * Connector that carries the route.
+   */
+  readonly connector_id: Identifier;
+  /**
+   * Workspace the development service was started from.
+   */
+  readonly workspace_id: Identifier;
+  /**
+   * Leftmost label of the internal origin.
+   */
+  readonly public_alias: PublicAlias;
+  /**
+   * Origin an authorised browser session opens.
+   */
+  readonly internal_origin: InternalOrigin;
+  /**
+   * Local address the connector opens. The default is loopback.
+   */
+  readonly local_host: LocalHost;
+  /**
+   * Local port the connector opens.
+   */
+  readonly local_port: LocalPort;
+  /**
+   * Protocol declared at publication.
+   */
+  readonly protocol: DestinationProtocol;
+  /**
+   * What the route is scoped to.
+   */
+  readonly scope: PublishedServiceScope;
+  /**
+   * Browser sessions a route authorises. At least one is required: a route no session may
+   * use is not published (docs/CONNECTOR_PROTOCOL.md section 11).
+   */
+  readonly allowed_browser_session_ids: readonly Identifier[];
+  /**
+   * When the route expires. Publication always expires, and no stream's deadline may
+   * exceed this instant.
+   */
+  readonly expires_at: Timestamp;
+  /**
+   * Lifecycle status.
+   */
+  readonly status: PublishedServiceStatus;
+  /**
+   * Why the publication was refused. Present only when the status is failed.
+   */
+  readonly failure_class?: PublishedServiceFailureClass;
+  /**
+   * Destination the connector reported it opened. Absent until the route is ready.
+   */
+  readonly observed_destination?: ObservedDestination;
+  /**
+   * When publication was requested.
+   */
+  readonly requested_at: Timestamp;
+  /**
+   * When the route began carrying traffic. Absent until it does.
+   */
+  readonly ready_at?: Timestamp;
+  /**
+   * When the route stopped carrying traffic, by failure, expiry or revocation. Absent
+   * while it is live.
+   */
+  readonly ended_at?: Timestamp;
+}
+
+/**
+ * Payload of published_service.requested. It is written before anything is sent to the
+ * connector or the gateway, so the audit trail records the destination that was asked for
+ * even when the publication is then refused.
+ */
+export interface PublishedServiceRequestedPayload {
+  /**
+   * Route requested.
+   */
+  readonly published_service_id: Identifier;
+  /**
+   * Connector asked to carry it.
+   */
+  readonly connector_id: Identifier;
+  /**
+   * Workspace the service was started from.
+   */
+  readonly workspace_id: Identifier;
+  /**
+   * Destination address requested.
+   */
+  readonly local_host: LocalHost;
+  /**
+   * Destination port requested.
+   */
+  readonly local_port: LocalPort;
+  /**
+   * Destination protocol declared.
+   */
+  readonly protocol: DestinationProtocol;
+  /**
+   * Alias the internal origin was built from.
+   */
+  readonly public_alias: PublicAlias;
+  /**
+   * When the requested route expires.
+   */
+  readonly expires_at: Timestamp;
+  /**
+   * Browser sessions a route authorises. At least one is required: a route no session may
+   * use is not published (docs/CONNECTOR_PROTOCOL.md section 11).
+   */
+  readonly allowed_browser_session_ids: readonly Identifier[];
+  /**
+   * Status the record was written in, which is requested.
+   */
+  readonly new_status: PublishedServiceStatus;
+}
+
+/**
+ * Payload of published_service.ready. It is written for two occurrences: a route that
+ * began carrying traffic, and a session-scoped capability minted against one. Neither
+ * carries the capability token, only its identifier, because an event is append-only and a
+ * credential written into one cannot be taken out again (docs/EVENTS.md section 8).
+ */
+export interface PublishedServiceReadyPayload {
+  /**
+   * Route concerned.
+   */
+  readonly published_service_id: Identifier;
+  /**
+   * Status before the move. Absent when the event records a capability mint, which moves
+   * no status.
+   */
+  readonly previous_status?: PublishedServiceStatus;
+  /**
+   * Status after the move. Absent on a capability mint.
+   */
+  readonly new_status?: PublishedServiceStatus;
+  /**
+   * Destination the connector reported it opened.
+   */
+  readonly observed_destination?: ObservedDestination;
+  /**
+   * Origin the gateway registered for the route.
+   */
+  readonly internal_origin?: InternalOrigin;
+  /**
+   * Whether the gateway held the connector's data channel when it registered the route.
+   */
+  readonly connector_connected?: boolean;
+  /**
+   * Capability minted, when this event records a mint. The token itself never appears.
+   */
+  readonly capability_id?: Identifier;
+  /**
+   * Session the capability was minted for.
+   */
+  readonly browser_session_id?: Identifier;
+  /**
+   * Signing key the capability was minted with, so that a rotation can be audited.
+   */
+  readonly key_id?: string;
+  /**
+   * When the minted capability expires. It never outlives its route.
+   */
+  readonly expires_at?: Timestamp;
+}
+
+/**
+ * Payload of published_service.failed. The class is the diagnosis: docs/API.md section 10
+ * requires one failure to carry one code from the connector to the caller, so what refused
+ * the publication is recorded under the name the caller was given.
+ */
+export interface PublishedServiceFailedPayload {
+  /**
+   * Route refused.
+   */
+  readonly published_service_id: Identifier;
+  /**
+   * Status before the refusal.
+   */
+  readonly previous_status: PublishedServiceStatus;
+  /**
+   * Status after it, which is failed.
+   */
+  readonly new_status: PublishedServiceStatus;
+  /**
+   * Stable class that refused it.
+   */
+  readonly error_class: PublishedServiceFailureClass;
+}
+
+/**
+ * Payload of published_service.expired. Expiry is the ordinary end of a route, and it
+ * closes streams that are already in flight, including an upgraded one
+ * (docs/ARCHITECTURE.md section 7.3).
+ */
+export interface PublishedServiceExpiredPayload {
+  /**
+   * Route that expired.
+   */
+  readonly published_service_id: Identifier;
+  /**
+   * Status before expiry.
+   */
+  readonly previous_status: PublishedServiceStatus;
+  /**
+   * Status after it, which is expired.
+   */
+  readonly new_status: PublishedServiceStatus;
+  /**
+   * The expiry the sweep enforced.
+   */
+  readonly expires_at: Timestamp;
+}
+
+/**
+ * Payload of published_service.revoked. Revocation is idempotent and writes this once. It
+ * names the capabilities it withdrew, because revoking a route without withdrawing the
+ * credentials minted against it would leave the revocation partial.
+ */
+export interface PublishedServiceRevokedPayload {
+  /**
+   * Route revoked.
+   */
+  readonly published_service_id: Identifier;
+  /**
+   * Status before revocation.
+   */
+  readonly previous_status: PublishedServiceStatus;
+  /**
+   * Status after it, which is revoked.
+   */
+  readonly new_status: PublishedServiceStatus;
+  /**
+   * Capabilities withdrawn with the route. Identifiers only: a token never appears in an
+   * event.
+   */
+  readonly revoked_capability_ids?: readonly Identifier[];
+}
+
+/**
  * A decoded control frame: envelope header plus the payload selected by its type.
  */
 export type PlatformFrame =
@@ -2754,5 +3161,30 @@ export type PlatformFrame =
       readonly envelope: Envelope;
       readonly type: "job.failed";
       readonly payload: JobFailedPayload;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "published_service.requested";
+      readonly payload: PublishedServiceRequestedPayload;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "published_service.ready";
+      readonly payload: PublishedServiceReadyPayload;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "published_service.failed";
+      readonly payload: PublishedServiceFailedPayload;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "published_service.expired";
+      readonly payload: PublishedServiceExpiredPayload;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "published_service.revoked";
+      readonly payload: PublishedServiceRevokedPayload;
     }
 ;

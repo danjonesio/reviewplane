@@ -226,10 +226,27 @@ configured separately, because it is a separate process:
 | `REVIEWPLANE_WORKER_ENDPOINT` | `http://browser-worker:8090` | Worker's internal listener |
 | `REVIEWPLANE_ARTEFACT_PATH` | `/var/lib/reviewplane/artefacts` | Artefact store, mounted read-only |
 | `REVIEWPLANE_API_PATH_PREFIX` | `/api/v1` | Prefix used to build the evidence path an agent fetches |
+| `REVIEWPLANE_TUNNEL_CONTROL_URL` | `http://tunnel-gateway:8445` | Gateway control listener, for `development_service_unpublish` |
+| `REVIEWPLANE_TUNNEL_CONTROL_TOKEN` | none | Credential presented to that listener |
+| `REVIEWPLANE_INTERNAL_SUFFIX` | `internal.invalid` | Domain the internal origins live under; must match the control plane's |
+| `REVIEWPLANE_ROUTE_TTL_MAX_SECONDS` | `28800` | Longest route lifetime `development_service_publish` may request |
+| `REVIEWPLANE_MCP_PUBLISH_WAIT_MS` | `15000` | How long `development_service_publish` waits for a requested route to become ready or failed |
 
-It deliberately does **not** read `REVIEWPLANE_BOOTSTRAP_TOKEN`. The agent-facing
-process has no administrative work to do, and a process that cannot read an
-administrator credential cannot leak one. It does not run migrations either: the
+The tunnel-control pair is what makes `development_service_unpublish` a
+revocation rather than a note in the database. The gateway verifies a route
+capability from its signature without a database read, so a record marked
+revoked while the gateway still carried the route would withdraw nothing. This
+process reaches that listener and nothing else on the tunnel network: it holds
+no connector control channel, and a publication it requests is completed by the
+control-plane API (ADR-0021). `REVIEWPLANE_MCP_PUBLISH_WAIT_MS` bounds the wait
+for that completion and never shortens it into a false answer — a route still
+`requested` when it expires is reported as `requested`.
+
+It deliberately does **not** read `REVIEWPLANE_BOOTSTRAP_TOKEN`, and it holds no
+capability signing key. The agent-facing process has no administrative work to
+do, and a process that cannot read an administrator credential cannot leak one;
+minting binds a route to a browser session and this process drives none, so it
+cannot mint either (ADR-0021). It does not run migrations either: the
 control-plane server owns the schema, and two processes racing to migrate one
 database is a failure mode with no upside.
 

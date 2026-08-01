@@ -60,7 +60,6 @@ KEEP_UP="${REVIEWPLANE_E2E_KEEP_UP:-0}"
 
 PROJECT_ID="prj_fixture"
 PROJECT_SLUG="fixture"
-ORGANISATION_SLUG="fixture-org"
 
 step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 info() { printf '   %s\n' "$*"; }
@@ -284,17 +283,60 @@ if [[ -n "${PUBLISHED}" ]]; then
 fi
 info "no container publishes a host port"
 
-ORG_RESPONSE="$(api POST /api/v1/organisations "{\"name\":\"Fixture\",\"slug\":\"${ORGANISATION_SLUG}\"}")"
-ORGANISATION_ID="$(field "${ORG_RESPONSE}" 'data["id"]')" || fail "could not create the organisation"
-PRJ_RESPONSE="$(api POST "/api/v1/organisations/${ORGANISATION_ID}/projects" "{\"name\":\"Fixture\",\"slug\":\"${PROJECT_SLUG}\"}")"
-CREATED_PROJECT="$(field "${PRJ_RESPONSE}" 'data["id"]')" || fail "could not create the project"
-info "organisation ${ORGANISATION_ID}, project ${CREATED_PROJECT}"
-PROJECT_ID="${CREATED_PROJECT}"
-
+# The enrolment token comes first, and the project is created in the
+# organisation it names.
+#
+# Enrolment refuses a token minted for any organisation but the one this
+# deployment is configured with (`CONNECTOR_PROTOCOL.md` §4.1 as Stage 0
+# implements it, `apps/server/src/modules/connectors/enrolment.ts`), so a
+# scenario that created its own organisation and then enrolled a connector into
+# it could never have had both in the same place. That did not matter while
+# publication wrote whatever `connector_id` it was given; it does now, because
+# the control plane resolves the connector inside the caller's organisation, and
+# a connector in one organisation publishing into another's project is exactly
+# the cross-organisation shape that is refused.
+#
 # No environment_labels: a token that requires them is refused unless the
 # enrolling environment declares the same set, and the fixture describes itself
 # through its configuration file rather than through flags in an entry point.
 TOKEN_RESPONSE="$(api POST /api/v1/connectors/enrolment-tokens "{\"max_uses\":1,\"expires_in_seconds\":600}")"
+ORGANISATION_ID="$(field "${TOKEN_RESPONSE}" 'data["organisation_id"]')" || fail "the enrolment token named no organisation"
+
+# The project and the workspace are created with the identifiers
+# `connector-config.yaml` declares, and that is the point of doing it here
+# rather than through the API, which generates them.
+#
+# The fixture connector is configured with `project: prj_fixture` and
+# `workspaces: [{id: wsp_fixture}]`, and it validates the workspace association
+# itself (`docs/CONNECTOR_PROTOCOL.md` §11). `wsp_fixture` existed in no table:
+# the connector reports no workspace here — the fixture is a served directory
+# and not a Git checkout, so there is nothing to observe — and while the control
+# plane wrote whatever `workspace_id` it was given, nothing noticed. Once the
+# control plane stopped forwarding an identifier it could not resolve, the
+# connector refused it too, on its own check.
+#
+# The row is `administrative_registration` and not `connector_report`. No
+# connector reported it, and `0080_workspace_git_context.sql` keeps the two
+# apart precisely so that a reader can tell which happened. Making the fixture a
+# real checkout, so that observation is proven rather than stood in for, is
+# follow-up work.
+"${COMPOSE[@]}" exec -T postgres psql -U reviewplane -d reviewplane -q -c \
+  "insert into projects (id, organisation_id, name, slug)
+   values ('${PROJECT_ID}', '${ORGANISATION_ID}', 'Fixture', '${PROJECT_SLUG}')
+   on conflict (id) do nothing" >/dev/null \
+  || fail "could not create the project"
+"${COMPOSE[@]}" exec -T postgres psql -U reviewplane -d reviewplane -q -c \
+  "insert into workspaces (
+     id, organisation_id, project_id, root_path, branch, head_commit, path_hash,
+     display_path, source)
+   values ('wsp_fixture', '${ORGANISATION_ID}', '${PROJECT_ID}',
+           '/opt/reviewplane/dev-fixture', 'main',
+           '0000000000000000000000000000000000000001',
+           'sha256:$(printf '0%.0s' {1..64})', 'dev-fixture', 'administrative_registration')
+   on conflict (id) do nothing" >/dev/null \
+  || fail "could not register the fixture workspace"
+WORKSPACE_ID="wsp_fixture"
+info "organisation ${ORGANISATION_ID}, project ${PROJECT_ID}, workspace ${WORKSPACE_ID}"
 ENROLMENT_TOKEN="$(field "${TOKEN_RESPONSE}" 'data["enrolment_token"]')" || fail "could not issue an enrolment token"
 printf '%s' "${ENROLMENT_TOKEN}" > "${COMPOSE_DIR}/secrets/enrolment_token"
 # 0644 for the reason generate-secrets.sh records: a plain-Compose file secret
@@ -302,10 +344,15 @@ printf '%s' "${ENROLMENT_TOKEN}" > "${COMPOSE_DIR}/secrets/enrolment_token"
 chmod 644 "${COMPOSE_DIR}/secrets/enrolment_token"
 info "issued a single-use enrolment token"
 
-# The connector's configuration names the project it serves; the fixture project
-# identifier is generated, so it is substituted here.
-sed "s/prj_fixture/${PROJECT_ID}/g" "${COMPOSE_DIR}/connector-config.yaml" \
-  > "${COMPOSE_DIR}/connector-config.generated.yaml"
+# The connector reads the generated copy, which Compose mounts; `configure`
+# makes the same copy for an ordinary installation.
+#
+# It used to be a `sed` substituting the generated project identifier into the
+# configuration, which is why the connector's own §11 checks passed while the
+# scenario was otherwise disagreeing with its fixture. The scenario now creates
+# the project under the identifier the configuration already names, so there is
+# nothing to substitute and a copy is the whole of it.
+cp "${COMPOSE_DIR}/connector-config.yaml" "${COMPOSE_DIR}/connector-config.generated.yaml"
 
 # ---------------------------------------------------------------------------
 step "3. Start the fixture application on connector loopback (step 3)"
@@ -356,8 +403,7 @@ SESSION_ID="$(field "${SESSION_RESPONSE}" 'data["id"]')" || fail "could not rese
 SESSION_STATUS="$(field "${SESSION_RESPONSE}" 'data["status"]')"
 [[ "${SESSION_STATUS}" == "REQUESTED" ]] || fail "a reserved session should be REQUESTED, got ${SESSION_STATUS}"
 info "reserved browser session ${SESSION_ID} (REQUESTED)"
-
-PUBLISH_BODY="$(printf '{"connector_id":"%s","workspace_id":"wsp_fixture","local_host":"127.0.0.1","local_port":4321,"protocol":"http","ttl_seconds":3600,"allowed_browser_session_ids":["%s"]}' "${CONNECTOR_ID}" "${SESSION_ID}")"
+PUBLISH_BODY="$(printf '{"connector_id":"%s","workspace_id":"%s","local_host":"127.0.0.1","local_port":4321,"protocol":"http","ttl_seconds":3600,"allowed_browser_session_ids":["%s"]}' "${CONNECTOR_ID}" "${WORKSPACE_ID}" "${SESSION_ID}")"
 PUBLISH_RESPONSE="$(api POST "/api/v1/projects/${PROJECT_ID}/published-services" "${PUBLISH_BODY}")"
 SERVICE_ID="$(field "${PUBLISH_RESPONSE}" 'data["id"]')" || fail "publication failed"
 SERVICE_STATUS="$(field "${PUBLISH_RESPONSE}" 'data["status"]')"
@@ -779,7 +825,7 @@ VITE_SESSION_RESPONSE="$(api POST "/api/v1/projects/${PROJECT_ID}/browser-sessio
 VITE_SESSION_ID="$(field "${VITE_SESSION_RESPONSE}" 'data["id"]')" \
   || fail "could not reserve a browser session for the Vite fixture"
 
-VITE_PUBLISH_BODY="$(printf '{"connector_id":"%s","workspace_id":"wsp_fixture","local_host":"127.0.0.1","local_port":5173,"protocol":"http","ttl_seconds":3600,"allowed_browser_session_ids":["%s"]}' "${CONNECTOR_ID}" "${VITE_SESSION_ID}")"
+VITE_PUBLISH_BODY="$(printf '{"connector_id":"%s","workspace_id":"%s","local_host":"127.0.0.1","local_port":5173,"protocol":"http","ttl_seconds":3600,"allowed_browser_session_ids":["%s"]}' "${CONNECTOR_ID}" "${WORKSPACE_ID}" "${VITE_SESSION_ID}")"
 VITE_PUBLISH_RESPONSE="$(api POST "/api/v1/projects/${PROJECT_ID}/published-services" "${VITE_PUBLISH_BODY}")"
 VITE_SERVICE_ID="$(field "${VITE_PUBLISH_RESPONSE}" 'data["id"]')" || fail "publishing the Vite server failed"
 VITE_OBSERVED="$(field "${VITE_PUBLISH_RESPONSE}" 'data["observed_destination"]')"
