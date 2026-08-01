@@ -23,9 +23,12 @@ import type {
   Envelope,
   NavigateParams,
   NavigationResult,
+  PressKeyParams,
   ResizeParams,
   ScreenshotParams,
   ScreenshotResult,
+  ScrollParams,
+  SelectOptionParams,
   SessionAllocate,
   SessionAllocated,
   SessionLimits,
@@ -36,7 +39,11 @@ import type {
   TypeTextParams,
   Viewport,
   WaitParams,
+  WorkerContext,
+  WorkerContexts,
+  WorkerContextsRequest,
   WorkerHeartbeat,
+  WorkerHeartbeatAck,
   WorkerRegistration,
   WorkerRegistrationAck,
 } from "./types.ts";
@@ -153,6 +160,47 @@ export function encodeWorkerHeartbeat(value: WorkerHeartbeat): string {
 }
 
 /**
+ * Canonically encodes a WorkerHeartbeatAck.
+ */
+export function encodeWorkerHeartbeatAck(value: WorkerHeartbeatAck): string {
+  const fields: string[] = [];
+  fields.push(`"assigned_projects":${`[${value.assigned_projects.map((item) => jsonString(item)).join(",")}]`}`);
+  fields.push(`"heartbeat_interval_seconds":${jsonInteger(value.heartbeat_interval_seconds)}`);
+  fields.push(`"observed_at":${jsonString(value.observed_at)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a WorkerContextsRequest.
+ */
+export function encodeWorkerContextsRequest(value: WorkerContextsRequest): string {
+  const fields: string[] = [];
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a WorkerContext.
+ */
+export function encodeWorkerContext(value: WorkerContext): string {
+  const fields: string[] = [];
+  fields.push(`"browser_session_id":${jsonString(value.browser_session_id)}`);
+  fields.push(`"project_id":${jsonString(value.project_id)}`);
+  fields.push(`"status":${jsonString(value.status)}`);
+  fields.push(`"control_epoch":${jsonInteger(value.control_epoch)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a WorkerContexts.
+ */
+export function encodeWorkerContexts(value: WorkerContexts): string {
+  const fields: string[] = [];
+  fields.push(`"contexts":${`[${value.contexts.map((item) => encodeWorkerContext(item)).join(",")}]`}`);
+  fields.push(`"observed_at":${jsonString(value.observed_at)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
  * Canonically encodes a SessionAllocate.
  */
 export function encodeSessionAllocate(value: SessionAllocate): string {
@@ -264,6 +312,48 @@ export function encodeTypeTextParams(value: TypeTextParams): string {
 }
 
 /**
+ * Canonically encodes a SelectOptionParams.
+ */
+export function encodeSelectOptionParams(value: SelectOptionParams): string {
+  const fields: string[] = [];
+  fields.push(`"snapshot_id":${jsonString(value.snapshot_id)}`);
+  fields.push(`"ref":${jsonString(value.ref)}`);
+  fields.push(`"values":${`[${value.values.map((item) => jsonString(item)).join(",")}]`}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a PressKeyParams.
+ */
+export function encodePressKeyParams(value: PressKeyParams): string {
+  const fields: string[] = [];
+  fields.push(`"key":${jsonString(value.key)}`);
+  if (value.snapshot_id !== undefined) {
+    fields.push(`"snapshot_id":${jsonString(value.snapshot_id)}`);
+  }
+  if (value.ref !== undefined) {
+    fields.push(`"ref":${jsonString(value.ref)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ScrollParams.
+ */
+export function encodeScrollParams(value: ScrollParams): string {
+  const fields: string[] = [];
+  fields.push(`"direction":${jsonString(value.direction)}`);
+  fields.push(`"amount_px":${jsonInteger(value.amount_px)}`);
+  if (value.snapshot_id !== undefined) {
+    fields.push(`"snapshot_id":${jsonString(value.snapshot_id)}`);
+  }
+  if (value.ref !== undefined) {
+    fields.push(`"ref":${jsonString(value.ref)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
  * Canonically encodes a ResizeParams.
  */
 export function encodeResizeParams(value: ResizeParams): string {
@@ -330,6 +420,15 @@ export function encodeBrowserCommand(value: BrowserCommand): string {
   }
   if (value.type_text !== undefined) {
     fields.push(`"type_text":${encodeTypeTextParams(value.type_text)}`);
+  }
+  if (value.select_option !== undefined) {
+    fields.push(`"select_option":${encodeSelectOptionParams(value.select_option)}`);
+  }
+  if (value.press_key !== undefined) {
+    fields.push(`"press_key":${encodePressKeyParams(value.press_key)}`);
+  }
+  if (value.scroll !== undefined) {
+    fields.push(`"scroll":${encodeScrollParams(value.scroll)}`);
   }
   if (value.resize !== undefined) {
     fields.push(`"resize":${encodeResizeParams(value.resize)}`);

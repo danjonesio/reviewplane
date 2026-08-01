@@ -1,0 +1,23 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JSELECTOPTION",
+  "type": "browser.command",
+  "sent_at": "2026-07-29T09:16:09.000Z",
+  "worker_id": "wkr_01JBROWSERWORKER01",
+  "browser_session_id": "brs_01JHOMEPAGEREVIEW",
+  "controller": {
+    "type": "agent",
+    "id": "ags_01JCLAUDECODE"
+  },
+  "control_epoch": 1,
+  "sequence": 11,
+  "payload": {
+    "command": "select_option",
+    "timeout_ms": 30000,
+    "select_option": {
+      "snapshot_id": "bsn_01JSNAPSHOTONE",
+      "ref": "e14",
+      "values": ["standard-delivery"]
+    }
+  }
+}

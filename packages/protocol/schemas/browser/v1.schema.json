@@ -36,6 +36,24 @@
         "payload": "worker_heartbeat",
         "description": "Periodic capacity and liveness report used to detect a crashed or orphaned worker (docs/ARCHITECTURE.md section 14)."
       },
+      "worker.heartbeat.ack": {
+        "channel": "control",
+        "direction": "control_plane_to_worker",
+        "payload": "worker_heartbeat_ack",
+        "description": "Answer to a heartbeat, restating the worker's current project assignment. Restating it on every heartbeat is what bounds the staleness of a revocation to one heartbeat interval: an assignment learned only at registration would let an unassigned project keep working until the worker restarted (docs/SECURITY.md section 6.4, ADR-0026)."
+      },
+      "worker.contexts.request": {
+        "channel": "control",
+        "direction": "control_plane_to_worker",
+        "payload": "worker_contexts_request",
+        "description": "Asks the worker to enumerate the browser contexts it is actually holding, for the reconciliation of docs/OPERATIONS.md section 9."
+      },
+      "worker.contexts": {
+        "channel": "control",
+        "direction": "worker_to_control_plane",
+        "payload": "worker_contexts",
+        "description": "The browser contexts the worker holds. Reconciliation compares this against control-plane state and terminates the contexts no live session claims (docs/OPERATIONS.md section 9)."
+      },
       "browser_session.allocate": {
         "channel": "control",
         "direction": "control_plane_to_worker",
@@ -136,7 +154,16 @@
     "vocabularies": {
       "interactive_commands": {
         "description": "Commands that operate the page on behalf of a controller. They require the issuing controller to hold the current interactive control lease (docs/SECURITY.md section 7, ADR-0007).",
-        "values": ["navigate", "click", "type_text", "resize", "wait"]
+        "values": [
+          "navigate",
+          "click",
+          "type_text",
+          "select_option",
+          "press_key",
+          "scroll",
+          "resize",
+          "wait"
+        ]
       },
       "system_capture_commands": {
         "description": "Non-interactive capture commands. A system controller may issue these without holding the interactive lease, and doing so never transfers or revokes it (docs/TESTING.md section 5).",
@@ -248,6 +275,13 @@
       "maxLength": 4096,
       "pattern": "^[^\\u0000-\\u0009\\u000b-\\u001f\\u007f]*$"
     },
+    "option_value": {
+      "type": "string",
+      "description": "Value of one option of a select. Page-derived in practice, so bounded in length and character class.",
+      "minLength": 0,
+      "maxLength": 512,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+    },
     "selector": {
       "type": "string",
       "description": "CSS selector used by a bounded wait condition. Selectors are hints, not identity (docs/DOMAIN_MODEL.md section 17).",
@@ -283,6 +317,9 @@
         "worker.register",
         "worker.register.ack",
         "worker.heartbeat",
+        "worker.heartbeat.ack",
+        "worker.contexts.request",
+        "worker.contexts",
         "browser_session.allocate",
         "browser_session.allocated",
         "browser_session.status",
@@ -362,10 +399,39 @@
         "snapshot",
         "click",
         "type_text",
+        "select_option",
+        "press_key",
+        "scroll",
         "resize",
         "wait",
         "take_screenshot"
       ]
+    },
+    "key_name": {
+      "type": "string",
+      "description": "A key press, optionally with modifiers. The vocabulary is closed on purpose: a key name reaches the browser as a control instruction, so it is drawn from a fixed set rather than passed through from an argument a page could influence.",
+      "enum": [
+        "Enter",
+        "Tab",
+        "Shift+Tab",
+        "Escape",
+        "Backspace",
+        "Delete",
+        "Home",
+        "End",
+        "PageUp",
+        "PageDown",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowLeft",
+        "ArrowRight",
+        "Space"
+      ]
+    },
+    "scroll_direction": {
+      "type": "string",
+      "description": "Direction of a scroll command.",
+      "enum": ["up", "down", "left", "right"]
     },
     "wait_until": {
       "type": "string",
@@ -475,6 +541,9 @@
             "in": [
               "worker.register.ack",
               "worker.heartbeat",
+              "worker.heartbeat.ack",
+              "worker.contexts.request",
+              "worker.contexts",
               "browser_session.allocate",
               "browser_session.allocated",
               "browser_session.status",
@@ -743,6 +812,91 @@
         }
       }
     },
+    "worker_heartbeat_ack": {
+      "type": "object",
+      "description": "Answer to a heartbeat. It restates the assignment rather than describing a change, so a worker that missed an earlier answer converges anyway and no side has to keep a diff (ADR-0026).",
+      "additionalProperties": false,
+      "x-max-bytes": 32768,
+      "required": ["assigned_projects", "heartbeat_interval_seconds", "observed_at"],
+      "properties": {
+        "assigned_projects": {
+          "type": "array",
+          "description": "The complete set of projects this worker may accept sessions for, as of this answer. An assignment removed here MUST stop being served without waiting for a restart (docs/SECURITY.md section 6.4).",
+          "minItems": 0,
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "heartbeat_interval_seconds": {
+          "type": "integer",
+          "description": "How often the worker must heartbeat before the control plane treats it as lost. Repeated here so an operator can change the cadence without restarting the worker.",
+          "minimum": 5,
+          "maximum": 300
+        },
+        "observed_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the control plane read the assignment."
+        }
+      }
+    },
+    "worker_contexts_request": {
+      "type": "object",
+      "description": "Asks the worker what it is holding. It takes no arguments: a reconciler that could name the sessions it expects would be told what it already believes.",
+      "additionalProperties": false,
+      "x-max-bytes": 512,
+      "required": [],
+      "properties": {}
+    },
+    "worker_context": {
+      "type": "object",
+      "description": "One browser context the worker is holding.",
+      "additionalProperties": false,
+      "required": ["browser_session_id", "project_id", "status", "control_epoch"],
+      "properties": {
+        "browser_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Browser session the context was allocated for."
+        },
+        "project_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Project the context belongs to."
+        },
+        "status": {
+          "$ref": "#/$defs/session_status",
+          "description": "Status the worker believes the session is in."
+        },
+        "control_epoch": {
+          "type": "integer",
+          "description": "Control epoch the worker is enforcing for this context.",
+          "minimum": 0,
+          "maximum": 2147483647
+        }
+      }
+    },
+    "worker_contexts": {
+      "type": "object",
+      "description": "Every browser context the worker holds, for reconciliation (docs/OPERATIONS.md section 9).",
+      "additionalProperties": false,
+      "x-max-bytes": 16384,
+      "required": ["contexts", "observed_at"],
+      "properties": {
+        "contexts": {
+          "type": "array",
+          "description": "The contexts the worker holds. An empty array means the worker holds none, which is a fact rather than an absence of one.",
+          "minItems": 0,
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/worker_context"
+          }
+        },
+        "observed_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the worker enumerated its contexts."
+        }
+      }
+    },
     "session_allocate": {
       "type": "object",
       "description": "Allocation request for one isolated browser context.",
@@ -947,6 +1101,77 @@
         }
       }
     },
+    "select_option_params": {
+      "type": "object",
+      "description": "Input for select_option. The values name options of the select the reference points at; the schema bounds how many and how long, so a hostile page cannot make one command unbounded.",
+      "additionalProperties": false,
+      "required": ["snapshot_id", "ref", "values"],
+      "properties": {
+        "snapshot_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Snapshot the reference was issued by."
+        },
+        "ref": {
+          "$ref": "#/$defs/element_reference",
+          "description": "Element reference from that snapshot."
+        },
+        "values": {
+          "type": "array",
+          "description": "Option values to select. More than one is meaningful only on a multiple select.",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/option_value"
+          }
+        }
+      }
+    },
+    "press_key_params": {
+      "type": "object",
+      "description": "Input for press_key. The key set is closed: a key name is a control instruction to the browser, so it is drawn from a fixed vocabulary rather than passed through.",
+      "additionalProperties": false,
+      "required": ["key"],
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/key_name",
+          "description": "Key or modifier combination to press."
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Snapshot the reference was issued by, when the key is directed at one element rather than at the page."
+        },
+        "ref": {
+          "$ref": "#/$defs/element_reference",
+          "description": "Element the key is directed at. Absent means the page has focus."
+        }
+      }
+    },
+    "scroll_params": {
+      "type": "object",
+      "description": "Input for scroll. The distance is bounded, so a scroll is a movement rather than an unbounded loop.",
+      "additionalProperties": false,
+      "required": ["direction", "amount_px"],
+      "properties": {
+        "direction": {
+          "$ref": "#/$defs/scroll_direction",
+          "description": "Direction to scroll in."
+        },
+        "amount_px": {
+          "type": "integer",
+          "description": "Distance in CSS pixels.",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Snapshot the reference was issued by, when the scroll is inside one element."
+        },
+        "ref": {
+          "$ref": "#/$defs/element_reference",
+          "description": "Element to scroll. Absent means the page scrolls."
+        }
+      }
+    },
     "resize_params": {
       "type": "object",
       "description": "Input for resize. A resize invalidates every outstanding element reference (docs/MCP_SPEC.md section 7.4).",
@@ -1089,6 +1314,18 @@
           "$ref": "#/$defs/type_text_params",
           "description": "Parameters for type_text."
         },
+        "select_option": {
+          "$ref": "#/$defs/select_option_params",
+          "description": "Parameters for select_option."
+        },
+        "press_key": {
+          "$ref": "#/$defs/press_key_params",
+          "description": "Parameters for press_key."
+        },
+        "scroll": {
+          "$ref": "#/$defs/scroll_params",
+          "description": "Parameters for scroll."
+        },
         "resize": {
           "$ref": "#/$defs/resize_params",
           "description": "Parameters for resize."
@@ -1112,8 +1349,20 @@
             "property": "command",
             "equals": "navigate"
           },
-          "required": ["navigate"],
-          "forbidden": ["click", "type_text", "resize", "wait", "snapshot", "take_screenshot"],
+          "required": [
+            "navigate"
+          ],
+          "forbidden": [
+            "click",
+            "type_text",
+            "select_option",
+            "press_key",
+            "scroll",
+            "resize",
+            "wait",
+            "snapshot",
+            "take_screenshot"
+          ],
           "detail": "a command carries only its own parameters"
         },
         {
@@ -1121,8 +1370,20 @@
             "property": "command",
             "equals": "click"
           },
-          "required": ["click"],
-          "forbidden": ["navigate", "type_text", "resize", "wait", "snapshot", "take_screenshot"],
+          "required": [
+            "click"
+          ],
+          "forbidden": [
+            "navigate",
+            "type_text",
+            "select_option",
+            "press_key",
+            "scroll",
+            "resize",
+            "wait",
+            "snapshot",
+            "take_screenshot"
+          ],
           "detail": "a command carries only its own parameters"
         },
         {
@@ -1130,8 +1391,83 @@
             "property": "command",
             "equals": "type_text"
           },
-          "required": ["type_text"],
-          "forbidden": ["navigate", "click", "resize", "wait", "snapshot", "take_screenshot"],
+          "required": [
+            "type_text"
+          ],
+          "forbidden": [
+            "navigate",
+            "click",
+            "select_option",
+            "press_key",
+            "scroll",
+            "resize",
+            "wait",
+            "snapshot",
+            "take_screenshot"
+          ],
+          "detail": "a command carries only its own parameters"
+        },
+        {
+          "when": {
+            "property": "command",
+            "equals": "select_option"
+          },
+          "required": [
+            "select_option"
+          ],
+          "forbidden": [
+            "navigate",
+            "click",
+            "type_text",
+            "press_key",
+            "scroll",
+            "resize",
+            "wait",
+            "snapshot",
+            "take_screenshot"
+          ],
+          "detail": "a command carries only its own parameters"
+        },
+        {
+          "when": {
+            "property": "command",
+            "equals": "press_key"
+          },
+          "required": [
+            "press_key"
+          ],
+          "forbidden": [
+            "navigate",
+            "click",
+            "type_text",
+            "select_option",
+            "scroll",
+            "resize",
+            "wait",
+            "snapshot",
+            "take_screenshot"
+          ],
+          "detail": "a command carries only its own parameters"
+        },
+        {
+          "when": {
+            "property": "command",
+            "equals": "scroll"
+          },
+          "required": [
+            "scroll"
+          ],
+          "forbidden": [
+            "navigate",
+            "click",
+            "type_text",
+            "select_option",
+            "press_key",
+            "resize",
+            "wait",
+            "snapshot",
+            "take_screenshot"
+          ],
           "detail": "a command carries only its own parameters"
         },
         {
@@ -1139,8 +1475,20 @@
             "property": "command",
             "equals": "resize"
           },
-          "required": ["resize"],
-          "forbidden": ["navigate", "click", "type_text", "wait", "snapshot", "take_screenshot"],
+          "required": [
+            "resize"
+          ],
+          "forbidden": [
+            "navigate",
+            "click",
+            "type_text",
+            "select_option",
+            "press_key",
+            "scroll",
+            "wait",
+            "snapshot",
+            "take_screenshot"
+          ],
           "detail": "a command carries only its own parameters"
         },
         {
@@ -1148,8 +1496,20 @@
             "property": "command",
             "equals": "wait"
           },
-          "required": ["wait"],
-          "forbidden": ["navigate", "click", "type_text", "resize", "snapshot", "take_screenshot"],
+          "required": [
+            "wait"
+          ],
+          "forbidden": [
+            "navigate",
+            "click",
+            "type_text",
+            "select_option",
+            "press_key",
+            "scroll",
+            "resize",
+            "snapshot",
+            "take_screenshot"
+          ],
           "detail": "a command carries only its own parameters"
         },
         {
@@ -1157,7 +1517,17 @@
             "property": "command",
             "equals": "snapshot"
           },
-          "forbidden": ["navigate", "click", "type_text", "resize", "wait", "take_screenshot"],
+          "forbidden": [
+            "navigate",
+            "click",
+            "type_text",
+            "select_option",
+            "press_key",
+            "scroll",
+            "resize",
+            "wait",
+            "take_screenshot"
+          ],
           "detail": "a command carries only its own parameters"
         },
         {
@@ -1165,8 +1535,20 @@
             "property": "command",
             "equals": "take_screenshot"
           },
-          "required": ["take_screenshot"],
-          "forbidden": ["navigate", "click", "type_text", "resize", "wait", "snapshot"],
+          "required": [
+            "take_screenshot"
+          ],
+          "forbidden": [
+            "navigate",
+            "click",
+            "type_text",
+            "select_option",
+            "press_key",
+            "scroll",
+            "resize",
+            "wait",
+            "snapshot"
+          ],
           "detail": "a command carries only its own parameters"
         }
       ]

@@ -22,14 +22,19 @@ import type {
   ErrorClass,
   ImageContentType,
   InstructionPolicy,
+  KeyName,
   MessageType,
   NavigateParams,
   NavigationResult,
+  PressKeyParams,
   ResizeParams,
   RetentionClass,
   ScreenshotParams,
   ScreenshotPurpose,
   ScreenshotResult,
+  ScrollDirection,
+  ScrollParams,
+  SelectOptionParams,
   SessionAllocate,
   SessionAllocated,
   SessionLimits,
@@ -45,7 +50,11 @@ import type {
   WaitCondition,
   WaitParams,
   WaitUntil,
+  WorkerContext,
+  WorkerContexts,
+  WorkerContextsRequest,
   WorkerHeartbeat,
+  WorkerHeartbeatAck,
   WorkerRegistration,
   WorkerRegistrationAck,
 } from "./types.ts";
@@ -152,6 +161,51 @@ export function decodeWorkerHeartbeat(value: unknown): WorkerHeartbeat {
 }
 
 /**
+ * Decodes a validated WorkerHeartbeatAck.
+ */
+export function decodeWorkerHeartbeatAck(value: unknown): WorkerHeartbeatAck {
+  const source = value as Record<string, unknown>;
+  return {
+    assigned_projects: (source["assigned_projects"] as unknown[]).map((item) => item as string),
+    heartbeat_interval_seconds: source["heartbeat_interval_seconds"] as number,
+    observed_at: source["observed_at"] as string,
+  };
+}
+
+/**
+ * Decodes a validated WorkerContextsRequest.
+ */
+export function decodeWorkerContextsRequest(value: unknown): WorkerContextsRequest {
+  const source = value as Record<string, unknown>;
+  return {
+  };
+}
+
+/**
+ * Decodes a validated WorkerContext.
+ */
+export function decodeWorkerContext(value: unknown): WorkerContext {
+  const source = value as Record<string, unknown>;
+  return {
+    browser_session_id: source["browser_session_id"] as string,
+    project_id: source["project_id"] as string,
+    status: source["status"] as SessionStatus,
+    control_epoch: source["control_epoch"] as number,
+  };
+}
+
+/**
+ * Decodes a validated WorkerContexts.
+ */
+export function decodeWorkerContexts(value: unknown): WorkerContexts {
+  const source = value as Record<string, unknown>;
+  return {
+    contexts: (source["contexts"] as unknown[]).map((item) => decodeWorkerContext(item)),
+    observed_at: source["observed_at"] as string,
+  };
+}
+
+/**
  * Decodes a validated SessionAllocate.
  */
 export function decodeSessionAllocate(value: unknown): SessionAllocate {
@@ -248,6 +302,43 @@ export function decodeTypeTextParams(value: unknown): TypeTextParams {
 }
 
 /**
+ * Decodes a validated SelectOptionParams.
+ */
+export function decodeSelectOptionParams(value: unknown): SelectOptionParams {
+  const source = value as Record<string, unknown>;
+  return {
+    snapshot_id: source["snapshot_id"] as string,
+    ref: source["ref"] as string,
+    values: (source["values"] as unknown[]).map((item) => item as string),
+  };
+}
+
+/**
+ * Decodes a validated PressKeyParams.
+ */
+export function decodePressKeyParams(value: unknown): PressKeyParams {
+  const source = value as Record<string, unknown>;
+  return {
+    key: source["key"] as KeyName,
+    ...(source["snapshot_id"] === undefined ? {} : { snapshot_id: source["snapshot_id"] as string }),
+    ...(source["ref"] === undefined ? {} : { ref: source["ref"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated ScrollParams.
+ */
+export function decodeScrollParams(value: unknown): ScrollParams {
+  const source = value as Record<string, unknown>;
+  return {
+    direction: source["direction"] as ScrollDirection,
+    amount_px: source["amount_px"] as number,
+    ...(source["snapshot_id"] === undefined ? {} : { snapshot_id: source["snapshot_id"] as string }),
+    ...(source["ref"] === undefined ? {} : { ref: source["ref"] as string }),
+  };
+}
+
+/**
  * Decodes a validated ResizeParams.
  */
 export function decodeResizeParams(value: unknown): ResizeParams {
@@ -304,6 +395,9 @@ export function decodeBrowserCommand(value: unknown): BrowserCommand {
     ...(source["navigate"] === undefined ? {} : { navigate: decodeNavigateParams(source["navigate"]) }),
     ...(source["click"] === undefined ? {} : { click: decodeClickParams(source["click"]) }),
     ...(source["type_text"] === undefined ? {} : { type_text: decodeTypeTextParams(source["type_text"]) }),
+    ...(source["select_option"] === undefined ? {} : { select_option: decodeSelectOptionParams(source["select_option"]) }),
+    ...(source["press_key"] === undefined ? {} : { press_key: decodePressKeyParams(source["press_key"]) }),
+    ...(source["scroll"] === undefined ? {} : { scroll: decodeScrollParams(source["scroll"]) }),
     ...(source["resize"] === undefined ? {} : { resize: decodeResizeParams(source["resize"]) }),
     ...(source["wait"] === undefined ? {} : { wait: decodeWaitParams(source["wait"]) }),
     ...(source["snapshot"] === undefined ? {} : { snapshot: decodeSnapshotParams(source["snapshot"]) }),

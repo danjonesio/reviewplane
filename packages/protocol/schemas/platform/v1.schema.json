@@ -331,6 +331,10 @@
           "browser.command_executed",
           "browser.live_view_started",
           "browser.live_view_stopped",
+          "browser_worker.registered",
+          "browser_worker.degraded",
+          "browser_worker.lost",
+          "browser_session.reconciled",
           "screenshot.captured",
           "artefact.upload_started",
           "artefact.upload_completed",
@@ -883,7 +887,8 @@
         "finding:read",
         "finding:write",
         "verification:submit",
-        "browser:capture"
+        "browser:capture",
+        "browser:control"
       ]
     },
     "agent_session": {

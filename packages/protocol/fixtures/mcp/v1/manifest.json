@@ -32,6 +32,27 @@
       "note": "The after screenshot of the Stage 0 exit criterion: a verified artefact returned as a resource link with its digest, never as inline image bytes, and labelled untrusted_browser_content because it is a picture of a page."
     },
     {
+      "name": "browser-session-start",
+      "kind": "mcp_tool_response",
+      "file": "valid/browser-session-start.json",
+      "message_type": "browser_session_start",
+      "note": "The allocated session an agent works from: its epoch, the lease it holds, and the one origin it may reach. No capability appears in it — the route capability is minted by the control plane and never leaves it."
+    },
+    {
+      "name": "browser-navigate",
+      "kind": "mcp_tool_response",
+      "file": "valid/browser-navigate.json",
+      "message_type": "browser_navigate",
+      "note": "A navigation result. The settled URL, the status and the title all came from a page, so the response is labelled untrusted_browser_content."
+    },
+    {
+      "name": "browser-snapshot",
+      "kind": "mcp_tool_response",
+      "file": "valid/browser-snapshot.json",
+      "message_type": "browser_snapshot",
+      "note": "The docs/MCP_SPEC.md section 7.4 snapshot shape, whose element references are valid for this snapshot alone."
+    },
+    {
       "name": "finding-submit-verification",
       "kind": "mcp_tool_response",
       "file": "valid/finding-submit-verification.json",
@@ -105,6 +126,14 @@
       "expect_reason": "untrusted_content_mislabelled",
       "expect_error_class": "POLICY_DENIED",
       "note": "A capture declaring trusted_control_plane. ADR-0010 forbids returning page content without an untrusted label, and the codec refuses it on the way out as well as on the way in."
+    },
+    {
+      "name": "browser-navigate-trusted-label",
+      "kind": "mcp_tool_response",
+      "file": "invalid/browser-navigate-trusted-label.json",
+      "expect_reason": "untrusted_content_mislabelled",
+      "expect_error_class": "POLICY_DENIED",
+      "note": "A navigation result under a trusted label. The page chose the URL and the title, so the codec refuses the label rather than the handler being trusted to set it."
     },
     {
       "name": "review-findings-labelled-trusted",

@@ -138,6 +138,14 @@ export function validateInputText(value: unknown, path: string, out: SchemaViola
 }
 
 /**
+ * Value of one option of a select. Page-derived in practice, so bounded in length and
+ * character class.
+ */
+export function validateOptionValue(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 0, maxLength: 512, pattern: PATTERN_8 });
+}
+
+/**
  * CSS selector used by a bounded wait condition. Selectors are hints, not identity
  * (docs/DOMAIN_MODEL.md section 17).
  */
@@ -173,7 +181,7 @@ export function validateSha256Hex(value: unknown, path: string, out: SchemaViola
  * equal the keys of x-protocol.messages.
  */
 export function validateMessageType(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["worker.register","worker.register.ack","worker.heartbeat","browser_session.allocate","browser_session.allocated","browser_session.status","browser_session.terminate","browser.command","browser.command.result"] });
+  checkString(value, path, out, { values: ["worker.register","worker.register.ack","worker.heartbeat","worker.heartbeat.ack","worker.contexts.request","worker.contexts","browser_session.allocate","browser_session.allocated","browser_session.status","browser_session.terminate","browser.command","browser.command.result"] });
 }
 
 /**
@@ -228,7 +236,23 @@ export function validateRetentionClass(value: unknown, path: string, out: Schema
  * whether the issuing controller must hold the interactive lease.
  */
 export function validateCommandName(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["navigate","snapshot","click","type_text","resize","wait","take_screenshot"] });
+  checkString(value, path, out, { values: ["navigate","snapshot","click","type_text","select_option","press_key","scroll","resize","wait","take_screenshot"] });
+}
+
+/**
+ * A key press, optionally with modifiers. The vocabulary is closed on purpose: a key name
+ * reaches the browser as a control instruction, so it is drawn from a fixed set rather
+ * than passed through from an argument a page could influence.
+ */
+export function validateKeyName(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["Enter","Tab","Shift+Tab","Escape","Backspace","Delete","Home","End","PageUp","PageDown","ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Space"] });
+}
+
+/**
+ * Direction of a scroll command.
+ */
+export function validateScrollDirection(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["up","down","left","right"] });
 }
 
 /**
@@ -361,7 +385,7 @@ export function validateEnvelope(value: unknown, path: string, out: SchemaViolat
     forbidProperty(source, path, "control_epoch", "registration precedes worker identity assignment", out);
     forbidProperty(source, path, "sequence", "registration precedes worker identity assignment", out);
   }
-  if (matchesCondition(source["type"], ["worker.register.ack", "worker.heartbeat", "browser_session.allocate", "browser_session.allocated", "browser_session.status", "browser_session.terminate", "browser.command", "browser.command.result"])) {
+  if (matchesCondition(source["type"], ["worker.register.ack", "worker.heartbeat", "worker.heartbeat.ack", "worker.contexts.request", "worker.contexts", "browser_session.allocate", "browser_session.allocated", "browser_session.status", "browser_session.terminate", "browser.command", "browser.command.result"])) {
     requireProperty(source, path, "worker_id", "every message after registration is attributed to a worker identity", out);
   }
   if (matchesCondition(source["type"], ["browser_session.allocate", "browser_session.allocated", "browser_session.status", "browser_session.terminate", "browser.command", "browser.command.result"])) {
@@ -652,6 +676,107 @@ export function validateWorkerHeartbeat(value: unknown, path: string, out: Schem
 }
 
 /**
+ * The complete set of projects this worker may accept sessions for, as of this answer. An
+ * assignment removed here MUST stop being served without waiting for a restart
+ * (docs/SECURITY.md section 6.4).
+ */
+export function validateWorkerHeartbeatAckAssignedProjects(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 256, uniqueItems: true })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateIdentifier(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * How often the worker must heartbeat before the control plane treats it as lost. Repeated
+ * here so an operator can change the cadence without restarting the worker.
+ */
+export function validateWorkerHeartbeatAckHeartbeatIntervalSeconds(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 5, maximum: 300 });
+}
+
+/**
+ * Answer to a heartbeat. It restates the assignment rather than describing a change, so a
+ * worker that missed an earlier answer converges anyway and no side has to keep a diff
+ * (ADR-0026).
+ */
+export function validateWorkerHeartbeatAck(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["assigned_projects", "heartbeat_interval_seconds", "observed_at"], ["assigned_projects", "heartbeat_interval_seconds", "observed_at"]);
+  if (source === null) return;
+  if (source["assigned_projects"] !== undefined) {
+    validateWorkerHeartbeatAckAssignedProjects(source["assigned_projects"], `${path}.assigned_projects`, out);
+  }
+  if (source["heartbeat_interval_seconds"] !== undefined) {
+    validateWorkerHeartbeatAckHeartbeatIntervalSeconds(source["heartbeat_interval_seconds"], `${path}.heartbeat_interval_seconds`, out);
+  }
+  if (source["observed_at"] !== undefined) {
+    validateTimestamp(source["observed_at"], `${path}.observed_at`, out);
+  }
+}
+
+/**
+ * Asks the worker what it is holding. It takes no arguments: a reconciler that could name
+ * the sessions it expects would be told what it already believes.
+ */
+export function validateWorkerContextsRequest(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, [], []);
+  if (source === null) return;
+}
+
+/**
+ * Control epoch the worker is enforcing for this context.
+ */
+export function validateWorkerContextControlEpoch(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 0, maximum: 2147483647 });
+}
+
+/**
+ * One browser context the worker is holding.
+ */
+export function validateWorkerContext(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["browser_session_id", "project_id", "status", "control_epoch"], ["browser_session_id", "project_id", "status", "control_epoch"]);
+  if (source === null) return;
+  if (source["browser_session_id"] !== undefined) {
+    validateIdentifier(source["browser_session_id"], `${path}.browser_session_id`, out);
+  }
+  if (source["project_id"] !== undefined) {
+    validateIdentifier(source["project_id"], `${path}.project_id`, out);
+  }
+  if (source["status"] !== undefined) {
+    validateSessionStatus(source["status"], `${path}.status`, out);
+  }
+  if (source["control_epoch"] !== undefined) {
+    validateWorkerContextControlEpoch(source["control_epoch"], `${path}.control_epoch`, out);
+  }
+}
+
+/**
+ * The contexts the worker holds. An empty array means the worker holds none, which is a
+ * fact rather than an absence of one.
+ */
+export function validateWorkerContextsContexts(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 64, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateWorkerContext(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Every browser context the worker holds, for reconciliation (docs/OPERATIONS.md section
+ * 9).
+ */
+export function validateWorkerContexts(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["contexts", "observed_at"], ["contexts", "observed_at"]);
+  if (source === null) return;
+  if (source["contexts"] !== undefined) {
+    validateWorkerContextsContexts(source["contexts"], `${path}.contexts`, out);
+  }
+  if (source["observed_at"] !== undefined) {
+    validateTimestamp(source["observed_at"], `${path}.observed_at`, out);
+  }
+}
+
+/**
  * Epoch of the initial control lease.
  */
 export function validateSessionAllocateControlEpoch(value: unknown, path: string, out: SchemaViolation[]): void {
@@ -830,6 +955,81 @@ export function validateTypeTextParams(value: unknown, path: string, out: Schema
 }
 
 /**
+ * Option values to select. More than one is meaningful only on a multiple select.
+ */
+export function validateSelectOptionParamsValues(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 1, maxItems: 32, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateOptionValue(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Input for select_option. The values name options of the select the reference points at;
+ * the schema bounds how many and how long, so a hostile page cannot make one command
+ * unbounded.
+ */
+export function validateSelectOptionParams(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["snapshot_id", "ref", "values"], ["snapshot_id", "ref", "values"]);
+  if (source === null) return;
+  if (source["snapshot_id"] !== undefined) {
+    validateIdentifier(source["snapshot_id"], `${path}.snapshot_id`, out);
+  }
+  if (source["ref"] !== undefined) {
+    validateElementReference(source["ref"], `${path}.ref`, out);
+  }
+  if (source["values"] !== undefined) {
+    validateSelectOptionParamsValues(source["values"], `${path}.values`, out);
+  }
+}
+
+/**
+ * Input for press_key. The key set is closed: a key name is a control instruction to the
+ * browser, so it is drawn from a fixed vocabulary rather than passed through.
+ */
+export function validatePressKeyParams(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["key", "snapshot_id", "ref"], ["key"]);
+  if (source === null) return;
+  if (source["key"] !== undefined) {
+    validateKeyName(source["key"], `${path}.key`, out);
+  }
+  if (source["snapshot_id"] !== undefined) {
+    validateIdentifier(source["snapshot_id"], `${path}.snapshot_id`, out);
+  }
+  if (source["ref"] !== undefined) {
+    validateElementReference(source["ref"], `${path}.ref`, out);
+  }
+}
+
+/**
+ * Distance in CSS pixels.
+ */
+export function validateScrollParamsAmountPx(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 1, maximum: 100000 });
+}
+
+/**
+ * Input for scroll. The distance is bounded, so a scroll is a movement rather than an
+ * unbounded loop.
+ */
+export function validateScrollParams(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["direction", "amount_px", "snapshot_id", "ref"], ["direction", "amount_px"]);
+  if (source === null) return;
+  if (source["direction"] !== undefined) {
+    validateScrollDirection(source["direction"], `${path}.direction`, out);
+  }
+  if (source["amount_px"] !== undefined) {
+    validateScrollParamsAmountPx(source["amount_px"], `${path}.amount_px`, out);
+  }
+  if (source["snapshot_id"] !== undefined) {
+    validateIdentifier(source["snapshot_id"], `${path}.snapshot_id`, out);
+  }
+  if (source["ref"] !== undefined) {
+    validateElementReference(source["ref"], `${path}.ref`, out);
+  }
+}
+
+/**
  * Input for resize. A resize invalidates every outstanding element reference
  * (docs/MCP_SPEC.md section 7.4).
  */
@@ -954,7 +1154,7 @@ export function validateBrowserCommandTimeoutMs(value: unknown, path: string, ou
  * schema forbids the others so a command cannot smuggle an unused parameter set.
  */
 export function validateBrowserCommand(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["command", "timeout_ms", "navigate", "click", "type_text", "resize", "wait", "snapshot", "take_screenshot"], ["command", "timeout_ms"]);
+  const source = checkObject(value, path, out, ["command", "timeout_ms", "navigate", "click", "type_text", "select_option", "press_key", "scroll", "resize", "wait", "snapshot", "take_screenshot"], ["command", "timeout_ms"]);
   if (source === null) return;
   if (source["command"] !== undefined) {
     validateCommandName(source["command"], `${path}.command`, out);
@@ -970,6 +1170,15 @@ export function validateBrowserCommand(value: unknown, path: string, out: Schema
   }
   if (source["type_text"] !== undefined) {
     validateTypeTextParams(source["type_text"], `${path}.type_text`, out);
+  }
+  if (source["select_option"] !== undefined) {
+    validateSelectOptionParams(source["select_option"], `${path}.select_option`, out);
+  }
+  if (source["press_key"] !== undefined) {
+    validatePressKeyParams(source["press_key"], `${path}.press_key`, out);
+  }
+  if (source["scroll"] !== undefined) {
+    validateScrollParams(source["scroll"], `${path}.scroll`, out);
   }
   if (source["resize"] !== undefined) {
     validateResizeParams(source["resize"], `${path}.resize`, out);
@@ -987,6 +1196,9 @@ export function validateBrowserCommand(value: unknown, path: string, out: Schema
     requireProperty(source, path, "navigate", "a command carries only its own parameters", out);
     forbidProperty(source, path, "click", "a command carries only its own parameters", out);
     forbidProperty(source, path, "type_text", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "select_option", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "press_key", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "scroll", "a command carries only its own parameters", out);
     forbidProperty(source, path, "resize", "a command carries only its own parameters", out);
     forbidProperty(source, path, "wait", "a command carries only its own parameters", out);
     forbidProperty(source, path, "snapshot", "a command carries only its own parameters", out);
@@ -996,6 +1208,9 @@ export function validateBrowserCommand(value: unknown, path: string, out: Schema
     requireProperty(source, path, "click", "a command carries only its own parameters", out);
     forbidProperty(source, path, "navigate", "a command carries only its own parameters", out);
     forbidProperty(source, path, "type_text", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "select_option", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "press_key", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "scroll", "a command carries only its own parameters", out);
     forbidProperty(source, path, "resize", "a command carries only its own parameters", out);
     forbidProperty(source, path, "wait", "a command carries only its own parameters", out);
     forbidProperty(source, path, "snapshot", "a command carries only its own parameters", out);
@@ -1005,6 +1220,45 @@ export function validateBrowserCommand(value: unknown, path: string, out: Schema
     requireProperty(source, path, "type_text", "a command carries only its own parameters", out);
     forbidProperty(source, path, "navigate", "a command carries only its own parameters", out);
     forbidProperty(source, path, "click", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "select_option", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "press_key", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "scroll", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "resize", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "wait", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "snapshot", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "take_screenshot", "a command carries only its own parameters", out);
+  }
+  if (matchesCondition(source["command"], ["select_option"])) {
+    requireProperty(source, path, "select_option", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "navigate", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "click", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "type_text", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "press_key", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "scroll", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "resize", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "wait", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "snapshot", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "take_screenshot", "a command carries only its own parameters", out);
+  }
+  if (matchesCondition(source["command"], ["press_key"])) {
+    requireProperty(source, path, "press_key", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "navigate", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "click", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "type_text", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "select_option", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "scroll", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "resize", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "wait", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "snapshot", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "take_screenshot", "a command carries only its own parameters", out);
+  }
+  if (matchesCondition(source["command"], ["scroll"])) {
+    requireProperty(source, path, "scroll", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "navigate", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "click", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "type_text", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "select_option", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "press_key", "a command carries only its own parameters", out);
     forbidProperty(source, path, "resize", "a command carries only its own parameters", out);
     forbidProperty(source, path, "wait", "a command carries only its own parameters", out);
     forbidProperty(source, path, "snapshot", "a command carries only its own parameters", out);
@@ -1015,6 +1269,9 @@ export function validateBrowserCommand(value: unknown, path: string, out: Schema
     forbidProperty(source, path, "navigate", "a command carries only its own parameters", out);
     forbidProperty(source, path, "click", "a command carries only its own parameters", out);
     forbidProperty(source, path, "type_text", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "select_option", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "press_key", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "scroll", "a command carries only its own parameters", out);
     forbidProperty(source, path, "wait", "a command carries only its own parameters", out);
     forbidProperty(source, path, "snapshot", "a command carries only its own parameters", out);
     forbidProperty(source, path, "take_screenshot", "a command carries only its own parameters", out);
@@ -1024,6 +1281,9 @@ export function validateBrowserCommand(value: unknown, path: string, out: Schema
     forbidProperty(source, path, "navigate", "a command carries only its own parameters", out);
     forbidProperty(source, path, "click", "a command carries only its own parameters", out);
     forbidProperty(source, path, "type_text", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "select_option", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "press_key", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "scroll", "a command carries only its own parameters", out);
     forbidProperty(source, path, "resize", "a command carries only its own parameters", out);
     forbidProperty(source, path, "snapshot", "a command carries only its own parameters", out);
     forbidProperty(source, path, "take_screenshot", "a command carries only its own parameters", out);
@@ -1032,6 +1292,9 @@ export function validateBrowserCommand(value: unknown, path: string, out: Schema
     forbidProperty(source, path, "navigate", "a command carries only its own parameters", out);
     forbidProperty(source, path, "click", "a command carries only its own parameters", out);
     forbidProperty(source, path, "type_text", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "select_option", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "press_key", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "scroll", "a command carries only its own parameters", out);
     forbidProperty(source, path, "resize", "a command carries only its own parameters", out);
     forbidProperty(source, path, "wait", "a command carries only its own parameters", out);
     forbidProperty(source, path, "take_screenshot", "a command carries only its own parameters", out);
@@ -1041,6 +1304,9 @@ export function validateBrowserCommand(value: unknown, path: string, out: Schema
     forbidProperty(source, path, "navigate", "a command carries only its own parameters", out);
     forbidProperty(source, path, "click", "a command carries only its own parameters", out);
     forbidProperty(source, path, "type_text", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "select_option", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "press_key", "a command carries only its own parameters", out);
+    forbidProperty(source, path, "scroll", "a command carries only its own parameters", out);
     forbidProperty(source, path, "resize", "a command carries only its own parameters", out);
     forbidProperty(source, path, "wait", "a command carries only its own parameters", out);
     forbidProperty(source, path, "snapshot", "a command carries only its own parameters", out);

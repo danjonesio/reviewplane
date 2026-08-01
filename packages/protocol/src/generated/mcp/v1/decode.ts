@@ -25,9 +25,31 @@ import type {
   AnnotationView,
   ArtefactKind,
   ArtefactLink,
+  BrowserCommandName,
+  BrowserController,
+  BrowserControllerType,
+  BrowserElementInput,
+  BrowserInteractionResult,
+  BrowserLifecycleStatus,
+  BrowserNavigateInput,
+  BrowserNavigationView,
+  BrowserPressKeyInput,
+  BrowserResizeInput,
+  BrowserScrollInput,
+  BrowserSelectOptionInput,
+  BrowserSessionControlInput,
+  BrowserSessionDetail,
+  BrowserSessionDetailBrowserType,
+  BrowserSessionReferenceInput,
+  BrowserSessionResult,
+  BrowserSessionStartInput,
   BrowserSessionView,
+  BrowserSnapshotInput,
+  BrowserSnapshotView,
   BrowserTakeScreenshotInput,
   BrowserTakeScreenshotResult,
+  BrowserTypeInput,
+  BrowserWaitInput,
   ClientCapabilities,
   ClientIdentity,
   CommentView,
@@ -61,6 +83,7 @@ import type {
   InboxItemType,
   InboxItemView,
   InstructionPolicy,
+  KeyName,
   MediaType,
   MessageType,
   PolicySummary,
@@ -87,6 +110,7 @@ import type {
   ReviewUpdateStatusInput,
   ReviewView,
   ScreenshotPurpose,
+  ScrollDirection,
   ScrollPosition,
   ServerCapabilities,
   SessionInclude,
@@ -99,6 +123,8 @@ import type {
   VerificationStatus,
   VerificationView,
   Viewport,
+  WaitCondition,
+  WaitUntil,
   Warning,
   WarningCode,
   WorkspaceReference,
@@ -465,7 +491,7 @@ export function decodeBrowserSessionView(value: unknown): BrowserSessionView {
   const source = value as Record<string, unknown>;
   return {
     id: source["id"] as string,
-    status: source["status"] as string,
+    status: source["status"] as BrowserLifecycleStatus,
     control_epoch: source["control_epoch"] as number,
     ...(source["controller"] === undefined ? {} : { controller: decodeActorReference(source["controller"]) }),
     viewport: decodeViewport(source["viewport"]),
@@ -733,6 +759,173 @@ export function decodeBrowserTakeScreenshotInput(value: unknown): BrowserTakeScr
 }
 
 /**
+ * Decodes a validated BrowserSessionStartInput.
+ */
+export function decodeBrowserSessionStartInput(value: unknown): BrowserSessionStartInput {
+  const source = value as Record<string, unknown>;
+  return {
+    ...(source["published_service_id"] === undefined ? {} : { published_service_id: source["published_service_id"] as string }),
+    ...(source["viewport"] === undefined ? {} : { viewport: decodeViewport(source["viewport"]) }),
+    idempotency_key: source["idempotency_key"] as string,
+  };
+}
+
+/**
+ * Decodes a validated BrowserSessionReferenceInput.
+ */
+export function decodeBrowserSessionReferenceInput(value: unknown): BrowserSessionReferenceInput {
+  const source = value as Record<string, unknown>;
+  return {
+    browser_session_id: source["browser_session_id"] as string,
+  };
+}
+
+/**
+ * Decodes a validated BrowserSessionControlInput.
+ */
+export function decodeBrowserSessionControlInput(value: unknown): BrowserSessionControlInput {
+  const source = value as Record<string, unknown>;
+  return {
+    browser_session_id: source["browser_session_id"] as string,
+    control_epoch: source["control_epoch"] as number,
+    idempotency_key: source["idempotency_key"] as string,
+  };
+}
+
+/**
+ * Decodes a validated BrowserNavigateInput.
+ */
+export function decodeBrowserNavigateInput(value: unknown): BrowserNavigateInput {
+  const source = value as Record<string, unknown>;
+  return {
+    browser_session_id: source["browser_session_id"] as string,
+    control_epoch: source["control_epoch"] as number,
+    url: source["url"] as string,
+    ...(source["wait_until"] === undefined ? {} : { wait_until: source["wait_until"] as WaitUntil }),
+    ...(source["timeout_ms"] === undefined ? {} : { timeout_ms: source["timeout_ms"] as number }),
+  };
+}
+
+/**
+ * Decodes a validated BrowserSnapshotInput.
+ */
+export function decodeBrowserSnapshotInput(value: unknown): BrowserSnapshotInput {
+  const source = value as Record<string, unknown>;
+  return {
+    browser_session_id: source["browser_session_id"] as string,
+    control_epoch: source["control_epoch"] as number,
+    ...(source["max_nodes"] === undefined ? {} : { max_nodes: source["max_nodes"] as number }),
+    ...(source["max_bytes"] === undefined ? {} : { max_bytes: source["max_bytes"] as number }),
+    ...(source["timeout_ms"] === undefined ? {} : { timeout_ms: source["timeout_ms"] as number }),
+  };
+}
+
+/**
+ * Decodes a validated BrowserElementInput.
+ */
+export function decodeBrowserElementInput(value: unknown): BrowserElementInput {
+  const source = value as Record<string, unknown>;
+  return {
+    browser_session_id: source["browser_session_id"] as string,
+    control_epoch: source["control_epoch"] as number,
+    snapshot_id: source["snapshot_id"] as string,
+    ref: source["ref"] as string,
+    ...(source["timeout_ms"] === undefined ? {} : { timeout_ms: source["timeout_ms"] as number }),
+  };
+}
+
+/**
+ * Decodes a validated BrowserTypeInput.
+ */
+export function decodeBrowserTypeInput(value: unknown): BrowserTypeInput {
+  const source = value as Record<string, unknown>;
+  return {
+    browser_session_id: source["browser_session_id"] as string,
+    control_epoch: source["control_epoch"] as number,
+    snapshot_id: source["snapshot_id"] as string,
+    ref: source["ref"] as string,
+    text: source["text"] as string,
+    ...(source["submit"] === undefined ? {} : { submit: source["submit"] as boolean }),
+    ...(source["timeout_ms"] === undefined ? {} : { timeout_ms: source["timeout_ms"] as number }),
+  };
+}
+
+/**
+ * Decodes a validated BrowserSelectOptionInput.
+ */
+export function decodeBrowserSelectOptionInput(value: unknown): BrowserSelectOptionInput {
+  const source = value as Record<string, unknown>;
+  return {
+    browser_session_id: source["browser_session_id"] as string,
+    control_epoch: source["control_epoch"] as number,
+    snapshot_id: source["snapshot_id"] as string,
+    ref: source["ref"] as string,
+    values: (source["values"] as unknown[]).map((item) => item as string),
+    ...(source["timeout_ms"] === undefined ? {} : { timeout_ms: source["timeout_ms"] as number }),
+  };
+}
+
+/**
+ * Decodes a validated BrowserPressKeyInput.
+ */
+export function decodeBrowserPressKeyInput(value: unknown): BrowserPressKeyInput {
+  const source = value as Record<string, unknown>;
+  return {
+    browser_session_id: source["browser_session_id"] as string,
+    control_epoch: source["control_epoch"] as number,
+    key: source["key"] as KeyName,
+    ...(source["snapshot_id"] === undefined ? {} : { snapshot_id: source["snapshot_id"] as string }),
+    ...(source["ref"] === undefined ? {} : { ref: source["ref"] as string }),
+    ...(source["timeout_ms"] === undefined ? {} : { timeout_ms: source["timeout_ms"] as number }),
+  };
+}
+
+/**
+ * Decodes a validated BrowserScrollInput.
+ */
+export function decodeBrowserScrollInput(value: unknown): BrowserScrollInput {
+  const source = value as Record<string, unknown>;
+  return {
+    browser_session_id: source["browser_session_id"] as string,
+    control_epoch: source["control_epoch"] as number,
+    direction: source["direction"] as ScrollDirection,
+    amount_px: source["amount_px"] as number,
+    ...(source["snapshot_id"] === undefined ? {} : { snapshot_id: source["snapshot_id"] as string }),
+    ...(source["ref"] === undefined ? {} : { ref: source["ref"] as string }),
+    ...(source["timeout_ms"] === undefined ? {} : { timeout_ms: source["timeout_ms"] as number }),
+  };
+}
+
+/**
+ * Decodes a validated BrowserResizeInput.
+ */
+export function decodeBrowserResizeInput(value: unknown): BrowserResizeInput {
+  const source = value as Record<string, unknown>;
+  return {
+    browser_session_id: source["browser_session_id"] as string,
+    control_epoch: source["control_epoch"] as number,
+    viewport: decodeViewport(source["viewport"]),
+    ...(source["timeout_ms"] === undefined ? {} : { timeout_ms: source["timeout_ms"] as number }),
+  };
+}
+
+/**
+ * Decodes a validated BrowserWaitInput.
+ */
+export function decodeBrowserWaitInput(value: unknown): BrowserWaitInput {
+  const source = value as Record<string, unknown>;
+  return {
+    browser_session_id: source["browser_session_id"] as string,
+    control_epoch: source["control_epoch"] as number,
+    condition: source["condition"] as WaitCondition,
+    ...(source["url_pattern"] === undefined ? {} : { url_pattern: source["url_pattern"] as string }),
+    ...(source["selector"] === undefined ? {} : { selector: source["selector"] as string }),
+    ...(source["text"] === undefined ? {} : { text: source["text"] as string }),
+    ...(source["timeout_ms"] === undefined ? {} : { timeout_ms: source["timeout_ms"] as number }),
+  };
+}
+
+/**
  * Decodes a validated ProjectCurrentResult.
  */
 export function decodeProjectCurrentResult(value: unknown): ProjectCurrentResult {
@@ -888,6 +1081,92 @@ export function decodeFindingSubmitVerificationResult(value: unknown): FindingSu
   return {
     verification: decodeVerificationView(source["verification"]),
     finding: decodeFindingView(source["finding"]),
+  };
+}
+
+/**
+ * Decodes a validated BrowserController.
+ */
+export function decodeBrowserController(value: unknown): BrowserController {
+  const source = value as Record<string, unknown>;
+  return {
+    type: source["type"] as BrowserControllerType,
+    id: source["id"] as string,
+  };
+}
+
+/**
+ * Decodes a validated BrowserSessionDetail.
+ */
+export function decodeBrowserSessionDetail(value: unknown): BrowserSessionDetail {
+  const source = value as Record<string, unknown>;
+  return {
+    browser_session_id: source["browser_session_id"] as string,
+    status: source["status"] as BrowserLifecycleStatus,
+    control_epoch: source["control_epoch"] as number,
+    ...(source["current_controller"] === undefined ? {} : { current_controller: decodeBrowserController(source["current_controller"]) }),
+    viewport: decodeViewport(source["viewport"]),
+    ...(source["browser_type"] === undefined ? {} : { browser_type: source["browser_type"] as BrowserSessionDetailBrowserType }),
+    ...(source["browser_version"] === undefined ? {} : { browser_version: source["browser_version"] as string }),
+    ...(source["published_service_id"] === undefined ? {} : { published_service_id: source["published_service_id"] as string }),
+    ...(source["service_origin"] === undefined ? {} : { service_origin: source["service_origin"] as string }),
+    ...(source["url"] === undefined ? {} : { url: source["url"] as string }),
+    live_view_available: source["live_view_available"] as boolean,
+    ...(source["created_at"] === undefined ? {} : { created_at: source["created_at"] as string }),
+    ...(source["ended_at"] === undefined ? {} : { ended_at: source["ended_at"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated BrowserSessionResult.
+ */
+export function decodeBrowserSessionResult(value: unknown): BrowserSessionResult {
+  const source = value as Record<string, unknown>;
+  return {
+    session: decodeBrowserSessionDetail(source["session"]),
+  };
+}
+
+/**
+ * Decodes a validated BrowserSnapshotView.
+ */
+export function decodeBrowserSnapshotView(value: unknown): BrowserSnapshotView {
+  const source = value as Record<string, unknown>;
+  return {
+    snapshot_id: source["snapshot_id"] as string,
+    viewport: decodeViewport(source["viewport"]),
+    node_count: source["node_count"] as number,
+    truncated: source["truncated"] as boolean,
+    text: source["text"] as string,
+  };
+}
+
+/**
+ * Decodes a validated BrowserNavigationView.
+ */
+export function decodeBrowserNavigationView(value: unknown): BrowserNavigationView {
+  const source = value as Record<string, unknown>;
+  return {
+    url: source["url"] as string,
+    ...(source["http_status"] === undefined ? {} : { http_status: source["http_status"] as number }),
+    redirected: source["redirected"] as boolean,
+    title: source["title"] as string,
+  };
+}
+
+/**
+ * Decodes a validated BrowserInteractionResult.
+ */
+export function decodeBrowserInteractionResult(value: unknown): BrowserInteractionResult {
+  const source = value as Record<string, unknown>;
+  return {
+    browser_session_id: source["browser_session_id"] as string,
+    command: source["command"] as BrowserCommandName,
+    control_epoch: source["control_epoch"] as number,
+    duration_ms: source["duration_ms"] as number,
+    ...(source["viewport"] === undefined ? {} : { viewport: decodeViewport(source["viewport"]) }),
+    ...(source["navigation"] === undefined ? {} : { navigation: decodeBrowserNavigationView(source["navigation"]) }),
+    ...(source["snapshot"] === undefined ? {} : { snapshot: decodeBrowserSnapshotView(source["snapshot"]) }),
   };
 }
 

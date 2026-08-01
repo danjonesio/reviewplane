@@ -207,6 +207,20 @@ export const MESSAGE_TYPE_VALUES = [
   "finding_add_comment",
   "finding_submit_verification",
   "browser_take_screenshot",
+  "browser_session_start",
+  "browser_session_status",
+  "browser_session_pause",
+  "browser_session_resume",
+  "browser_session_end",
+  "browser_navigate",
+  "browser_snapshot",
+  "browser_click",
+  "browser_type",
+  "browser_select_option",
+  "browser_press_key",
+  "browser_scroll",
+  "browser_resize",
+  "browser_wait",
   "development_services_list",
   "development_service_publish",
   "development_service_unpublish",
@@ -230,6 +244,20 @@ export type MessageType =
   | "finding_add_comment"
   | "finding_submit_verification"
   | "browser_take_screenshot"
+  | "browser_session_start"
+  | "browser_session_status"
+  | "browser_session_pause"
+  | "browser_session_resume"
+  | "browser_session_end"
+  | "browser_navigate"
+  | "browser_snapshot"
+  | "browser_click"
+  | "browser_type"
+  | "browser_select_option"
+  | "browser_press_key"
+  | "browser_scroll"
+  | "browser_resize"
+  | "browser_wait"
   | "development_services_list"
   | "development_service_publish"
   | "development_service_unpublish";
@@ -249,6 +277,7 @@ export const AGENT_CAPABILITY_VALUES = [
   "verification:submit",
   "browser:capture",
   "service:publish",
+  "browser:control",
 ] as const;
 
 export type AgentCapability =
@@ -259,7 +288,36 @@ export type AgentCapability =
   | "finding:write"
   | "verification:submit"
   | "browser:capture"
-  | "service:publish";
+  | "service:publish"
+  | "browser:control";
+
+/**
+ * Browser-session lifecycle status (docs/DOMAIN_MODEL.md section 12). This enumeration
+ * MUST equal the browser protocol's session_status: an agent and a worker that disagreed
+ * about what PAUSED meant would disagree about whether a command may run.
+ */
+export const BROWSER_LIFECYCLE_STATUS_VALUES = [
+  "REQUESTED",
+  "ALLOCATING",
+  "READY",
+  "ACTIVE",
+  "PAUSED",
+  "DEGRADED",
+  "TERMINATING",
+  "TERMINATED",
+  "FAILED",
+] as const;
+
+export type BrowserLifecycleStatus =
+  | "REQUESTED"
+  | "ALLOCATING"
+  | "READY"
+  | "ACTIVE"
+  | "PAUSED"
+  | "DEGRADED"
+  | "TERMINATING"
+  | "TERMINATED"
+  | "FAILED";
 
 /**
  * Agent-session status (docs/DOMAIN_MODEL.md section 11).
@@ -536,6 +594,128 @@ export type ActorType =
   | "integration";
 
 /**
+ * A key press. The vocabulary is closed on purpose: a key name reaches the browser as a
+ * control instruction, so it is drawn from a fixed set rather than passed through from an
+ * argument a page could influence. This enumeration MUST equal the browser protocol's
+ * key_name.
+ */
+export const KEY_NAME_VALUES = [
+  "Enter",
+  "Tab",
+  "Shift+Tab",
+  "Escape",
+  "Backspace",
+  "Delete",
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown",
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+  "Space",
+] as const;
+
+export type KeyName =
+  | "Enter"
+  | "Tab"
+  | "Shift+Tab"
+  | "Escape"
+  | "Backspace"
+  | "Delete"
+  | "Home"
+  | "End"
+  | "PageUp"
+  | "PageDown"
+  | "ArrowUp"
+  | "ArrowDown"
+  | "ArrowLeft"
+  | "ArrowRight"
+  | "Space";
+
+/**
+ * Direction of a scroll.
+ */
+export const SCROLL_DIRECTION_VALUES = [
+  "up",
+  "down",
+  "left",
+  "right",
+] as const;
+
+export type ScrollDirection =
+  | "up"
+  | "down"
+  | "left"
+  | "right";
+
+/**
+ * Bounded navigation wait condition (docs/MCP_SPEC.md section 7.4). Every value completes
+ * or times out; none waits indefinitely.
+ */
+export const WAIT_UNTIL_VALUES = [
+  "commit",
+  "domcontentloaded",
+  "load",
+  "networkidle",
+] as const;
+
+export type WaitUntil =
+  | "commit"
+  | "domcontentloaded"
+  | "load"
+  | "networkidle";
+
+/**
+ * Bounded wait condition. docs/MCP_SPEC.md section 7.4 forbids an unbounded sleep, so
+ * every condition is paired with a timeout.
+ */
+export const WAIT_CONDITION_VALUES = [
+  "url_matches",
+  "selector_visible",
+  "selector_hidden",
+  "text_visible",
+  "network_idle",
+] as const;
+
+export type WaitCondition =
+  | "url_matches"
+  | "selector_visible"
+  | "selector_hidden"
+  | "text_visible"
+  | "network_idle";
+
+/**
+ * The browser command an interaction result answers. It is the browser protocol's
+ * command_name, restated here so a result names what it was.
+ */
+export const BROWSER_COMMAND_NAME_VALUES = [
+  "navigate",
+  "snapshot",
+  "click",
+  "type_text",
+  "select_option",
+  "press_key",
+  "scroll",
+  "resize",
+  "wait",
+  "take_screenshot",
+] as const;
+
+export type BrowserCommandName =
+  | "navigate"
+  | "snapshot"
+  | "click"
+  | "type_text"
+  | "select_option"
+  | "press_key"
+  | "scroll"
+  | "resize"
+  | "wait"
+  | "take_screenshot";
+
+/**
  * Why a capture is being taken. Stage 0 accepts verification only: a capture is evidence,
  * and an unclassified capture cannot be filed under a retention class.
  */
@@ -611,6 +791,32 @@ export type SessionInclude =
   | "capabilities";
 
 /**
+ * Controller kind. Stage 1 issues interactive leases to agent and system controllers;
+ * human is present because ADR-0007 fixes the vocabulary and Stage 2 adds the controller
+ * rather than the model.
+ */
+export const BROWSER_CONTROLLER_TYPE_VALUES = [
+  "agent",
+  "human",
+  "system",
+] as const;
+
+export type BrowserControllerType =
+  | "agent"
+  | "human"
+  | "system";
+
+/**
+ * Browser engine. ADR-0001 fixes Chromium.
+ */
+export const BROWSER_SESSION_DETAIL_BROWSER_TYPE_VALUES = [
+  "chromium",
+] as const;
+
+export type BrowserSessionDetailBrowserType =
+  | "chromium";
+
+/**
  * Protocol a development service speaks on its local socket. It is declared at publication
  * and is not negotiable per request.
  */
@@ -662,6 +868,20 @@ export const MESSAGE_DIRECTIONS: Readonly<Record<MessageType, "client_to_server"
   "finding_add_comment": "server_to_client",
   "finding_submit_verification": "server_to_client",
   "browser_take_screenshot": "server_to_client",
+  "browser_session_start": "server_to_client",
+  "browser_session_status": "server_to_client",
+  "browser_session_pause": "server_to_client",
+  "browser_session_resume": "server_to_client",
+  "browser_session_end": "server_to_client",
+  "browser_navigate": "server_to_client",
+  "browser_snapshot": "server_to_client",
+  "browser_click": "server_to_client",
+  "browser_type": "server_to_client",
+  "browser_select_option": "server_to_client",
+  "browser_press_key": "server_to_client",
+  "browser_scroll": "server_to_client",
+  "browser_resize": "server_to_client",
+  "browser_wait": "server_to_client",
   "development_services_list": "server_to_client",
   "development_service_publish": "server_to_client",
   "development_service_unpublish": "server_to_client",
@@ -688,6 +908,20 @@ export const MESSAGE_CHANNELS: Readonly<Record<MessageType, Channel>> = {
   "finding_add_comment": "finding",
   "finding_submit_verification": "finding",
   "browser_take_screenshot": "browser",
+  "browser_session_start": "browser",
+  "browser_session_status": "browser",
+  "browser_session_pause": "browser",
+  "browser_session_resume": "browser",
+  "browser_session_end": "browser",
+  "browser_navigate": "browser",
+  "browser_snapshot": "browser",
+  "browser_click": "browser",
+  "browser_type": "browser",
+  "browser_select_option": "browser",
+  "browser_press_key": "browser",
+  "browser_scroll": "browser",
+  "browser_resize": "browser",
+  "browser_wait": "browser",
   "development_services_list": "development_service",
   "development_service_publish": "development_service",
   "development_service_unpublish": "development_service",
@@ -715,6 +949,20 @@ export const PAYLOAD_MAX_BYTES: Readonly<Record<MessageType, number>> = {
   "finding_add_comment": 8192,
   "finding_submit_verification": 32768,
   "browser_take_screenshot": 8192,
+  "browser_session_start": 8192,
+  "browser_session_status": 8192,
+  "browser_session_pause": 8192,
+  "browser_session_resume": 8192,
+  "browser_session_end": 8192,
+  "browser_navigate": 49152,
+  "browser_snapshot": 49152,
+  "browser_click": 49152,
+  "browser_type": 49152,
+  "browser_select_option": 49152,
+  "browser_press_key": 49152,
+  "browser_scroll": 49152,
+  "browser_resize": 49152,
+  "browser_wait": 49152,
   "development_services_list": 32768,
   "development_service_publish": 4096,
   "development_service_unpublish": 4096,
@@ -823,6 +1071,20 @@ export const TOOL_AVAILABILITY = [
   "finding_add_comment",
   "finding_submit_verification",
   "browser_take_screenshot",
+  "browser_session_start",
+  "browser_session_status",
+  "browser_session_pause",
+  "browser_session_resume",
+  "browser_session_end",
+  "browser_navigate",
+  "browser_snapshot",
+  "browser_click",
+  "browser_type",
+  "browser_select_option",
+  "browser_press_key",
+  "browser_scroll",
+  "browser_resize",
+  "browser_wait",
   "development_services_list",
   "development_service_publish",
   "development_service_unpublish",
@@ -955,6 +1217,65 @@ export type ReasonText = string;
 export type CapturedUrl = string;
 
 /**
+ * Absolute URL or root-relative path a browser session is asked to open. A relative path
+ * resolves against the published-service origin of the session (docs/MCP_SPEC.md section
+ * 7.4); an absolute URL outside that origin is refused, because the origin is the
+ * session's egress allow-list.
+ */
+export type NavigationTarget = string;
+
+/**
+ * Short page-derived text: a document title, or the text a bounded wait is looking for.
+ * Untrusted (ADR-0010), so control characters are excluded and the length is bounded.
+ */
+export type CapturedText = string;
+
+/**
+ * The rendered accessibility snapshot of docs/MCP_SPEC.md section 7.4. Untrusted content:
+ * bounded, newline-separated and never interpreted as an instruction. The bound is smaller
+ * than the browser protocol's because the MCP response bound is smaller than the worker
+ * frame's; a snapshot the worker would return whole is truncated on the way to the agent
+ * rather than overflowing it.
+ */
+export type SnapshotText = string;
+
+/**
+ * Reference to one element of a single snapshot. It is valid only for the snapshot that
+ * issued it and is invalidated by a resize (docs/MCP_SPEC.md section 7.4).
+ */
+export type ElementReference = string;
+
+/**
+ * Accessibility role of a snapshot element. Page-derived and bounded.
+ */
+export type AccessibleRole = string;
+
+/**
+ * Text typed into a page input. A secret value MUST NOT travel through this field
+ * (docs/MCP_SPEC.md sections 7.4 and 7.9); the schema bounds its shape and the server
+ * refuses one flagged as secret material.
+ */
+export type TypedText = string;
+
+/**
+ * Value of one option of a select element. Page-derived in practice, so bounded in length
+ * and character class.
+ */
+export type OptionValue = string;
+
+/**
+ * CSS selector used by a bounded wait condition. Selectors are hints, not identity
+ * (docs/DOMAIN_MODEL.md section 17).
+ */
+export type Selector = string;
+
+/**
+ * Substring a URL must contain for a url_matches wait condition to be satisfied. It is
+ * matched literally and is never interpreted as a pattern language.
+ */
+export type UrlPattern = string;
+
+/**
  * One of the docs/MCP_SPEC.md section 8 resource URI forms. A resource enforces the same
  * authorisation as the tool that returned the link.
  */
@@ -1014,6 +1335,14 @@ export type VersionNumber = number;
  * now controls.
  */
 export type ControlEpoch = number;
+
+/**
+ * Bound on one browser command. Every browser tool is bounded: exceeding it fails with
+ * BROWSER_COMMAND_TIMEOUT rather than holding the browser for as long as the page likes
+ * (docs/MCP_SPEC.md section 7.4). The server clamps it to the session's own maximum, so a
+ * larger value here buys nothing.
+ */
+export type CommandTimeoutMs = number;
 
 /**
  * Byte length the control plane verified.
@@ -1883,9 +2212,10 @@ export interface BrowserSessionView {
    */
   readonly id: Identifier;
   /**
-   * Lifecycle status of the session.
+   * Lifecycle status of the session. It was free text until RVP-30, which is how an agent
+   * could be told a status docs/DOMAIN_MODEL.md section 12 does not define.
    */
-  readonly status: ReasonText;
+  readonly status: BrowserLifecycleStatus;
   /**
    * Current control epoch.
    */
@@ -2374,6 +2704,332 @@ export interface BrowserTakeScreenshotInput {
 }
 
 /**
+ * Arguments of browser_session_start (docs/MCP_SPEC.md section 7.3). There is no project
+ * argument and no origin argument: the project is the session's, and the origin is derived
+ * from the published service by the control plane, because the origin is the browser's
+ * egress allow-list (docs/SECURITY.md section 9).
+ */
+export interface BrowserSessionStartInput {
+  /**
+   * Published service the session may reach. A session started without one can navigate
+   * nowhere.
+   */
+  readonly published_service_id?: Identifier;
+  /**
+   * Initial viewport. Absent means the project's first default validation viewport.
+   */
+  readonly viewport?: Viewport;
+  /**
+   * Key for this allocation, so a retried call does not consume two browser slots.
+   */
+  readonly idempotency_key: IdempotencyKey;
+}
+
+/**
+ * Names one browser session and nothing else. A session in another project is reported not
+ * found, byte for byte as an unknown identifier is.
+ */
+export interface BrowserSessionReferenceInput {
+  /**
+   * Browser session to describe.
+   */
+  readonly browser_session_id: Identifier;
+}
+
+/**
+ * Names one browser session and the epoch the caller believes is current. The epoch is
+ * required on a lifecycle change for the same reason it is required on a command: pausing
+ * or ending a browser somebody else now controls is not a lesser act than clicking in it.
+ */
+export interface BrowserSessionControlInput {
+  /**
+   * Browser session to act on.
+   */
+  readonly browser_session_id: Identifier;
+  /**
+   * Epoch the agent believes is current.
+   */
+  readonly control_epoch: ControlEpoch;
+  /**
+   * Key for this lifecycle change, so a retry is one transition rather than two.
+   */
+  readonly idempotency_key: IdempotencyKey;
+}
+
+/**
+ * Arguments of browser_navigate (docs/MCP_SPEC.md section 7.4).
+ */
+export interface BrowserNavigateInput {
+  /**
+   * Browser session to navigate.
+   */
+  readonly browser_session_id: Identifier;
+  /**
+   * Epoch the agent believes is current.
+   */
+  readonly control_epoch: ControlEpoch;
+  /**
+   * Absolute URL inside the session's published-service origin, or a root-relative path
+   * resolved against it.
+   */
+  readonly url: NavigationTarget;
+  /**
+   * Bounded navigation wait condition. Absent means domcontentloaded.
+   */
+  readonly wait_until?: WaitUntil;
+  /**
+   * Bound on the navigation, inside the session's own maximum.
+   */
+  readonly timeout_ms?: CommandTimeoutMs;
+}
+
+/**
+ * Arguments of browser_snapshot (docs/MCP_SPEC.md sections 7.4 and 13).
+ */
+export interface BrowserSnapshotInput {
+  /**
+   * Browser session to snapshot.
+   */
+  readonly browser_session_id: Identifier;
+  /**
+   * Epoch the agent believes is current.
+   */
+  readonly control_epoch: ControlEpoch;
+  /**
+   * Largest number of elements to describe, clamped to the session's own limit.
+   */
+  readonly max_nodes?: number;
+  /**
+   * Largest rendered snapshot to return before truncation, clamped to the session's own
+   * limit.
+   */
+  readonly max_bytes?: number;
+  /**
+   * Bound on the capture.
+   */
+  readonly timeout_ms?: CommandTimeoutMs;
+}
+
+/**
+ * Arguments of a tool that acts on one element of the current snapshot. The reference
+ * names the snapshot that issued it, so a reference from a superseded snapshot fails
+ * rather than acting on whatever now occupies that position.
+ */
+export interface BrowserElementInput {
+  /**
+   * Browser session to act in.
+   */
+  readonly browser_session_id: Identifier;
+  /**
+   * Epoch the agent believes is current.
+   */
+  readonly control_epoch: ControlEpoch;
+  /**
+   * Snapshot the reference was issued by.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * Element reference from that snapshot.
+   */
+  readonly ref: ElementReference;
+  /**
+   * Bound on the interaction.
+   */
+  readonly timeout_ms?: CommandTimeoutMs;
+}
+
+/**
+ * Arguments of browser_type. Secret values MUST NOT be supplied here (docs/MCP_SPEC.md
+ * sections 7.4 and 7.9); the server refuses a value flagged as secret material with
+ * POLICY_DENIED, and the schema cannot make that judgement for it because a secret is a
+ * fact about provenance rather than about shape.
+ */
+export interface BrowserTypeInput {
+  /**
+   * Browser session to type in.
+   */
+  readonly browser_session_id: Identifier;
+  /**
+   * Epoch the agent believes is current.
+   */
+  readonly control_epoch: ControlEpoch;
+  /**
+   * Snapshot the reference was issued by.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * Element reference from that snapshot.
+   */
+  readonly ref: ElementReference;
+  /**
+   * Text to type. Never a credential.
+   */
+  readonly text: TypedText;
+  /**
+   * Whether to press Enter after typing.
+   */
+  readonly submit?: boolean;
+  /**
+   * Bound on the interaction.
+   */
+  readonly timeout_ms?: CommandTimeoutMs;
+}
+
+/**
+ * Arguments of browser_select_option.
+ */
+export interface BrowserSelectOptionInput {
+  /**
+   * Browser session to act in.
+   */
+  readonly browser_session_id: Identifier;
+  /**
+   * Epoch the agent believes is current.
+   */
+  readonly control_epoch: ControlEpoch;
+  /**
+   * Snapshot the reference was issued by.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * Element reference from that snapshot.
+   */
+  readonly ref: ElementReference;
+  /**
+   * Option values to select.
+   */
+  readonly values: readonly OptionValue[];
+  /**
+   * Bound on the interaction.
+   */
+  readonly timeout_ms?: CommandTimeoutMs;
+}
+
+/**
+ * Arguments of browser_press_key. The key vocabulary is closed, so a shortcut the product
+ * does not support is refused by the schema rather than passed to Chromium to interpret.
+ */
+export interface BrowserPressKeyInput {
+  /**
+   * Browser session to act in.
+   */
+  readonly browser_session_id: Identifier;
+  /**
+   * Epoch the agent believes is current.
+   */
+  readonly control_epoch: ControlEpoch;
+  /**
+   * Key to press.
+   */
+  readonly key: KeyName;
+  /**
+   * Snapshot the reference was issued by, when the key is directed at one element.
+   */
+  readonly snapshot_id?: Identifier;
+  /**
+   * Element the key is directed at. Absent means whatever the page has focused.
+   */
+  readonly ref?: ElementReference;
+  /**
+   * Bound on the interaction.
+   */
+  readonly timeout_ms?: CommandTimeoutMs;
+}
+
+/**
+ * Arguments of browser_scroll.
+ */
+export interface BrowserScrollInput {
+  /**
+   * Browser session to act in.
+   */
+  readonly browser_session_id: Identifier;
+  /**
+   * Epoch the agent believes is current.
+   */
+  readonly control_epoch: ControlEpoch;
+  /**
+   * Direction to scroll in.
+   */
+  readonly direction: ScrollDirection;
+  /**
+   * Distance in CSS pixels.
+   */
+  readonly amount_px: number;
+  /**
+   * Snapshot the reference was issued by, when the scroll is inside one element.
+   */
+  readonly snapshot_id?: Identifier;
+  /**
+   * Element to scroll. Absent means the page scrolls.
+   */
+  readonly ref?: ElementReference;
+  /**
+   * Bound on the interaction.
+   */
+  readonly timeout_ms?: CommandTimeoutMs;
+}
+
+/**
+ * Arguments of browser_resize. Section 7.4 requires a resize to produce a new snapshot and
+ * invalidate every outstanding element reference, so the result carries the replacement
+ * rather than the agent being told to guess.
+ */
+export interface BrowserResizeInput {
+  /**
+   * Browser session to resize.
+   */
+  readonly browser_session_id: Identifier;
+  /**
+   * Epoch the agent believes is current.
+   */
+  readonly control_epoch: ControlEpoch;
+  /**
+   * New viewport.
+   */
+  readonly viewport: Viewport;
+  /**
+   * Bound on the interaction.
+   */
+  readonly timeout_ms?: CommandTimeoutMs;
+}
+
+/**
+ * Arguments of browser_wait. Every condition is bounded and each is defined by exactly one
+ * target, so a contradictory request is refused rather than resolved by precedence.
+ */
+export interface BrowserWaitInput {
+  /**
+   * Browser session to wait in.
+   */
+  readonly browser_session_id: Identifier;
+  /**
+   * Epoch the agent believes is current.
+   */
+  readonly control_epoch: ControlEpoch;
+  /**
+   * Condition to wait for.
+   */
+  readonly condition: WaitCondition;
+  /**
+   * Substring the URL must contain.
+   */
+  readonly url_pattern?: UrlPattern;
+  /**
+   * Selector whose state is awaited.
+   */
+  readonly selector?: Selector;
+  /**
+   * Text whose presence is awaited.
+   */
+  readonly text?: CapturedText;
+  /**
+   * Bound on the wait. Absent means the session's default timeout.
+   */
+  readonly timeout_ms?: CommandTimeoutMs;
+}
+
+/**
  * Payload of project_current.
  */
 export interface ProjectCurrentResult {
@@ -2632,6 +3288,189 @@ export interface FindingSubmitVerificationResult {
    * The finding as it now stands.
    */
   readonly finding: FindingView;
+}
+
+/**
+ * The controller holding the interactive lease of a browser session (docs/DOMAIN_MODEL.md
+ * section 13).
+ */
+export interface BrowserController {
+  /**
+   * Controller kind. Stage 1 issues interactive leases to agent and system controllers;
+   * human is present because ADR-0007 fixes the vocabulary and Stage 2 adds the controller
+   * rather than the model.
+   */
+  readonly type: BrowserControllerType;
+  /**
+   * Opaque controller identity, for example an agent session identifier.
+   */
+  readonly id: Identifier;
+}
+
+/**
+ * One browser session as an agent sees it (docs/DOMAIN_MODEL.md section 12). It carries no
+ * capability and no origin credential: the route capability is minted by the control plane
+ * and never leaves it.
+ */
+export interface BrowserSessionDetail {
+  /**
+   * The session.
+   */
+  readonly browser_session_id: Identifier;
+  /**
+   * Lifecycle status.
+   */
+  readonly status: BrowserLifecycleStatus;
+  /**
+   * Epoch every command against this session must present.
+   */
+  readonly control_epoch: ControlEpoch;
+  /**
+   * Controller holding the interactive lease, when one does.
+   */
+  readonly current_controller?: BrowserController;
+  /**
+   * Viewport in force.
+   */
+  readonly viewport: Viewport;
+  /**
+   * Browser engine. ADR-0001 fixes Chromium.
+   */
+  readonly browser_type?: BrowserSessionDetailBrowserType;
+  /**
+   * Browser build, once a context exists.
+   */
+  readonly browser_version?: ClientVersion;
+  /**
+   * Published service this session may reach. Absent means the session can reach nothing.
+   */
+  readonly published_service_id?: Identifier;
+  /**
+   * Origin relative navigation resolves against, and the only origin this session may
+   * reach.
+   */
+  readonly service_origin?: CapturedUrl;
+  /**
+   * URL the browser last settled on. Page-derived, so a response carrying one is labelled
+   * untrusted_browser_content.
+   */
+  readonly url?: CapturedUrl;
+  /**
+   * Whether a human can watch this session. Live frames are never persisted (ADR-0009).
+   */
+  readonly live_view_available: boolean;
+  /**
+   * When the session was requested.
+   */
+  readonly created_at?: Timestamp;
+  /**
+   * When the session ended, once it has.
+   */
+  readonly ended_at?: Timestamp;
+}
+
+/**
+ * Payload of every browser lifecycle tool (docs/MCP_SPEC.md section 7.3). One shape for
+ * all five, because an agent that has started, paused, resumed or ended a session needs
+ * the same facts afterwards.
+ */
+export interface BrowserSessionResult {
+  /**
+   * The session after the call.
+   */
+  readonly session: BrowserSessionDetail;
+}
+
+/**
+ * A bounded accessibility snapshot (docs/MCP_SPEC.md sections 7.4 and 13). Page-derived
+ * throughout, so any response carrying one is labelled untrusted_browser_content.
+ */
+export interface BrowserSnapshotView {
+  /**
+   * Identity of this snapshot. A reference is accepted only while this is the current
+   * snapshot.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * Viewport the snapshot was taken at. A resize supersedes it.
+   */
+  readonly viewport: Viewport;
+  /**
+   * Number of elements described.
+   */
+  readonly node_count: number;
+  /**
+   * Whether the page had more content than the bounds allowed. A truncated snapshot is a
+   * summary, never a whole-page dump.
+   */
+  readonly truncated: boolean;
+  /**
+   * Rendered snapshot.
+   */
+  readonly text: SnapshotText;
+}
+
+/**
+ * Outcome of a navigation. Every member is page-derived and therefore untrusted.
+ */
+export interface BrowserNavigationView {
+  /**
+   * URL the browser settled on.
+   */
+  readonly url: CapturedUrl;
+  /**
+   * Status of the main document response.
+   */
+  readonly http_status?: number;
+  /**
+   * Whether the browser settled on a different URL than requested.
+   */
+  readonly redirected: boolean;
+  /**
+   * Document title, truncated to its bound.
+   */
+  readonly title: CapturedText;
+}
+
+/**
+ * Payload of every browser interaction tool (docs/MCP_SPEC.md section 7.4). It always
+ * names the session, the command and the epoch the command actually ran under, so an agent
+ * can tell a result it asked for from one it inherited. Anything page-derived it carries —
+ * a navigation, a snapshot — obliges the untrusted label on the envelope (ADR-0010). A
+ * snapshot is returned in the rendered form of section 7.4 and not also as an array: the
+ * rendered form already names every element's reference, role and name, and a parallel
+ * array would double the bytes of the most page-derived response the product has.
+ */
+export interface BrowserInteractionResult {
+  /**
+   * Session the command ran in.
+   */
+  readonly browser_session_id: Identifier;
+  /**
+   * Command this result answers.
+   */
+  readonly command: BrowserCommandName;
+  /**
+   * Epoch the command ran under.
+   */
+  readonly control_epoch: ControlEpoch;
+  /**
+   * How long the command took.
+   */
+  readonly duration_ms: number;
+  /**
+   * Viewport in force after the command.
+   */
+  readonly viewport?: Viewport;
+  /**
+   * Navigation outcome. Page-derived.
+   */
+  readonly navigation?: BrowserNavigationView;
+  /**
+   * Accessibility snapshot. Page-derived. A resize always returns one, because it
+   * invalidated every reference the agent held.
+   */
+  readonly snapshot?: BrowserSnapshotView;
 }
 
 /**
@@ -2971,6 +3810,76 @@ export type McpFrame =
       readonly envelope: Envelope;
       readonly type: "browser_take_screenshot";
       readonly payload: BrowserTakeScreenshotResult;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "browser_session_start";
+      readonly payload: BrowserSessionResult;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "browser_session_status";
+      readonly payload: BrowserSessionResult;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "browser_session_pause";
+      readonly payload: BrowserSessionResult;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "browser_session_resume";
+      readonly payload: BrowserSessionResult;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "browser_session_end";
+      readonly payload: BrowserSessionResult;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "browser_navigate";
+      readonly payload: BrowserInteractionResult;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "browser_snapshot";
+      readonly payload: BrowserInteractionResult;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "browser_click";
+      readonly payload: BrowserInteractionResult;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "browser_type";
+      readonly payload: BrowserInteractionResult;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "browser_select_option";
+      readonly payload: BrowserInteractionResult;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "browser_press_key";
+      readonly payload: BrowserInteractionResult;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "browser_scroll";
+      readonly payload: BrowserInteractionResult;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "browser_resize";
+      readonly payload: BrowserInteractionResult;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "browser_wait";
+      readonly payload: BrowserInteractionResult;
     }
   | {
       readonly envelope: Envelope;

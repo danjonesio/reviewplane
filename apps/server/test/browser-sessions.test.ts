@@ -46,11 +46,21 @@ async function startSession(projectId: string, organisationId: string, overrides
     payload: {
       organisation_id: organisationId,
       viewport: DESKTOP,
-      controller: { type: "agent", id: "ags_test" },
       ...overrides,
     },
   });
 }
+
+/**
+ * The controller the bootstrap administrator acts as.
+ *
+ * ADR-0028 removed `controller` from the command body: a controller a caller
+ * names is a claim about the actor rather than the actor. The control plane
+ * derives it, and a human — including the bootstrap token, which resolves to an
+ * organisation-wide human principal — acts as the `system` controller bound to
+ * their session.
+ */
+const OPERATOR = { type: "system", id: "sys_bootstrap" } as const;
 
 async function eventTypes(projectId: string): Promise<string[]> {
   const rows = await postgres.pool.query<{ type: string }>(
@@ -69,7 +79,7 @@ test("a session traverses REQUESTED, ALLOCATING and READY and records the fields
   assert.equal(record["status"], "READY");
   assert.equal(record["worker_id"], workerId);
   assert.equal(record["control_epoch"], 1);
-  assert.deepEqual(record["current_controller"], { type: "agent", id: "ags_test" });
+  assert.deepEqual(record["current_controller"], OPERATOR);
   assert.equal(record["browser_type"], "chromium");
   assert.equal(record["browser_version"], "143.0.7499.4");
   assert.equal(record["retention_policy"], "verification_evidence");
@@ -101,7 +111,6 @@ test("a command carrying a stale epoch is rejected and the rejection is recorded
     headers: { authorization: `Bearer ${BOOTSTRAP_TOKEN}` },
     payload: {
       control_epoch: 0,
-      controller: { type: "agent", id: "ags_test" },
       command: { command: "snapshot", timeout_ms: 5000 },
     },
   });
@@ -195,7 +204,6 @@ test("a successful navigate records browser_session.navigated with its trust lab
     headers: { authorization: `Bearer ${BOOTSTRAP_TOKEN}` },
     payload: {
       control_epoch: 1,
-      controller: { type: "agent", id: "ags_test" },
       command: {
         command: "navigate",
         timeout_ms: 30000,
@@ -320,7 +328,6 @@ test("every command the control plane sends carries the section 6.4 envelope", a
       headers: { authorization: `Bearer ${BOOTSTRAP_TOKEN}` },
       payload: {
         control_epoch: 1,
-        controller: { type: "agent", id: "ags_test" },
         command: { command: "snapshot", timeout_ms: 5000 },
       },
     });
@@ -329,7 +336,7 @@ test("every command the control plane sends carries the section 6.4 envelope", a
   assert.equal(seen.length, 3);
   for (const envelope of seen) {
     assert.equal(envelope["browser_session_id"], sessionId);
-    assert.deepEqual(envelope["controller"], { type: "agent", id: "ags_test" });
+    assert.deepEqual(envelope["controller"], OPERATOR);
     assert.equal(envelope["control_epoch"], 1);
     assert.equal(typeof envelope["sequence"], "number");
     assert.ok(typeof envelope["sent_at"] === "string");

@@ -126,8 +126,91 @@
         "direction": "server_to_client",
         "payload": "browser_take_screenshot_result",
         "description": "A verified screenshot artefact, returned as a resource link and never as inline image bytes (sections 7.4 and 13). The capture is page-derived, so the response is labelled untrusted_browser_content."
-      }
-,
+      },
+      "browser_session_start": {
+        "channel": "browser",
+        "direction": "server_to_client",
+        "payload": "browser_session_result",
+        "description": "The allocated browser session: its lifecycle status, the control epoch the agent must present on every command, the controller holding the interactive lease, and whether live view is available (docs/MCP_SPEC.md section 7.3)."
+      },
+      "browser_session_status": {
+        "channel": "browser",
+        "direction": "server_to_client",
+        "payload": "browser_session_result",
+        "description": "Lifecycle, viewport, controller, epoch and policy state of one browser session (section 7.3). The current URL is page-derived, so a response carrying one is labelled untrusted_browser_content."
+      },
+      "browser_session_pause": {
+        "channel": "browser",
+        "direction": "server_to_client",
+        "payload": "browser_session_result",
+        "description": "The session after agent-issued interactive commands were suspended. Non-interactive system capture continues (section 7.3), so a pause is a gate on authority rather than a stop on the browser."
+      },
+      "browser_session_resume": {
+        "channel": "browser",
+        "direction": "server_to_client",
+        "payload": "browser_session_result",
+        "description": "The session after interactive commands were re-admitted to the controller that owns the lease (section 7.3)."
+      },
+      "browser_session_end": {
+        "channel": "browser",
+        "direction": "server_to_client",
+        "payload": "browser_session_result",
+        "description": "The terminated session. The browser context and its ephemeral profile are destroyed and the control lease is revoked (docs/SECURITY.md section 10)."
+      },
+      "browser_navigate": {
+        "channel": "browser",
+        "direction": "server_to_client",
+        "payload": "browser_interaction_result",
+        "description": "The outcome of a navigation. Every member of it — settled URL, status, title — came from a page, so the response is labelled untrusted_browser_content (ADR-0010)."
+      },
+      "browser_snapshot": {
+        "channel": "browser",
+        "direction": "server_to_client",
+        "payload": "browser_interaction_result",
+        "description": "A bounded accessibility-oriented snapshot whose element references are valid for that snapshot only (section 7.4). Page-derived throughout."
+      },
+      "browser_click": {
+        "channel": "browser",
+        "direction": "server_to_client",
+        "payload": "browser_interaction_result",
+        "description": "The outcome of a click on an element named by a reference from the current snapshot."
+      },
+      "browser_type": {
+        "channel": "browser",
+        "direction": "server_to_client",
+        "payload": "browser_interaction_result",
+        "description": "The outcome of typing into an element. Secret values MUST NOT travel through this tool (section 7.4); a value flagged as secret material is refused with POLICY_DENIED."
+      },
+      "browser_select_option": {
+        "channel": "browser",
+        "direction": "server_to_client",
+        "payload": "browser_interaction_result",
+        "description": "The outcome of selecting one or more options of a select element."
+      },
+      "browser_press_key": {
+        "channel": "browser",
+        "direction": "server_to_client",
+        "payload": "browser_interaction_result",
+        "description": "The outcome of a key press drawn from the closed key vocabulary of the browser protocol."
+      },
+      "browser_scroll": {
+        "channel": "browser",
+        "direction": "server_to_client",
+        "payload": "browser_interaction_result",
+        "description": "The outcome of a bounded scroll."
+      },
+      "browser_resize": {
+        "channel": "browser",
+        "direction": "server_to_client",
+        "payload": "browser_interaction_result",
+        "description": "The new viewport and the fresh snapshot a resize produces. Section 7.4 requires a resize to invalidate every outstanding element reference, so the result carries the snapshot that replaces them rather than leaving the agent to guess."
+      },
+      "browser_wait": {
+        "channel": "browser",
+        "direction": "server_to_client",
+        "payload": "browser_interaction_result",
+        "description": "The outcome of a bounded wait. There is no unbounded sleep: every condition carries a timeout and fails with BROWSER_COMMAND_TIMEOUT rather than waiting indefinitely."
+      },
       "development_services_list": {
         "channel": "development_service",
         "direction": "server_to_client",
@@ -262,6 +345,90 @@
         "max_bytes_limit": "max_mcp_request_bytes",
         "description": "Arguments of browser_take_screenshot. Stage 0 accepts the verification purpose only."
       },
+      "browser_session_start_input": {
+        "channel": "command",
+        "def": "browser_session_start_input",
+        "max_bytes_limit": "max_mcp_request_bytes",
+        "description": "Arguments of browser_session_start. There is no project argument: the project is the session's, and a caller that could name one would be choosing which development machine the central browser reaches."
+      },
+      "browser_session_status_input": {
+        "channel": "command",
+        "def": "browser_session_reference_input",
+        "max_bytes_limit": "max_mcp_request_bytes",
+        "description": "Arguments of browser_session_status. It names a session and nothing else; a session in another project is reported not found."
+      },
+      "browser_session_pause_input": {
+        "channel": "command",
+        "def": "browser_session_control_input",
+        "max_bytes_limit": "max_mcp_request_bytes",
+        "description": "Arguments of browser_session_pause. The epoch is required, so a pause cannot be issued against a browser somebody else now controls."
+      },
+      "browser_session_resume_input": {
+        "channel": "command",
+        "def": "browser_session_control_input",
+        "max_bytes_limit": "max_mcp_request_bytes",
+        "description": "Arguments of browser_session_resume."
+      },
+      "browser_session_end_input": {
+        "channel": "command",
+        "def": "browser_session_control_input",
+        "max_bytes_limit": "max_mcp_request_bytes",
+        "description": "Arguments of browser_session_end."
+      },
+      "browser_navigate_input": {
+        "channel": "command",
+        "def": "browser_navigate_input",
+        "max_bytes_limit": "max_mcp_request_bytes",
+        "description": "Arguments of browser_navigate. A relative URL resolves against the published-service origin of the session; an absolute URL outside that origin is refused."
+      },
+      "browser_snapshot_input": {
+        "channel": "command",
+        "def": "browser_snapshot_input",
+        "max_bytes_limit": "max_mcp_request_bytes",
+        "description": "Arguments of browser_snapshot. Both bounds are optional and are clamped to the session's own limits."
+      },
+      "browser_click_input": {
+        "channel": "command",
+        "def": "browser_element_input",
+        "max_bytes_limit": "max_mcp_request_bytes",
+        "description": "Arguments of browser_click. The reference must come from the snapshot named alongside it."
+      },
+      "browser_type_input": {
+        "channel": "command",
+        "def": "browser_type_input",
+        "max_bytes_limit": "max_mcp_request_bytes",
+        "description": "Arguments of browser_type. Secret values MUST NOT be supplied here (docs/MCP_SPEC.md sections 7.4 and 7.9)."
+      },
+      "browser_select_option_input": {
+        "channel": "command",
+        "def": "browser_select_option_input",
+        "max_bytes_limit": "max_mcp_request_bytes",
+        "description": "Arguments of browser_select_option."
+      },
+      "browser_press_key_input": {
+        "channel": "command",
+        "def": "browser_press_key_input",
+        "max_bytes_limit": "max_mcp_request_bytes",
+        "description": "Arguments of browser_press_key."
+      },
+      "browser_scroll_input": {
+        "channel": "command",
+        "def": "browser_scroll_input",
+        "max_bytes_limit": "max_mcp_request_bytes",
+        "description": "Arguments of browser_scroll."
+      },
+      "browser_resize_input": {
+        "channel": "command",
+        "def": "browser_resize_input",
+        "max_bytes_limit": "max_mcp_request_bytes",
+        "description": "Arguments of browser_resize."
+      },
+      "browser_wait_input": {
+        "channel": "command",
+        "def": "browser_wait_input",
+        "max_bytes_limit": "max_mcp_request_bytes",
+        "description": "Arguments of browser_wait. Every condition is bounded; the tool has no unbounded sleep to ask for."
+      },
       "development_services_list_input": {
         "channel": "command",
         "def": "development_services_list_input",
@@ -390,6 +557,20 @@
           "finding_add_comment",
           "finding_submit_verification",
           "browser_take_screenshot",
+          "browser_session_start",
+          "browser_session_status",
+          "browser_session_pause",
+          "browser_session_resume",
+          "browser_session_end",
+          "browser_navigate",
+          "browser_snapshot",
+          "browser_click",
+          "browser_type",
+          "browser_select_option",
+          "browser_press_key",
+          "browser_scroll",
+          "browser_resize",
+          "browser_wait",
           "development_services_list",
           "development_service_publish",
           "development_service_unpublish"
@@ -522,6 +703,69 @@
       "maxLength": 2048,
       "pattern": "^[!-~]+$"
     },
+    "navigation_target": {
+      "type": "string",
+      "description": "Absolute URL or root-relative path a browser session is asked to open. A relative path resolves against the published-service origin of the session (docs/MCP_SPEC.md section 7.4); an absolute URL outside that origin is refused, because the origin is the session's egress allow-list.",
+      "minLength": 1,
+      "maxLength": 2048,
+      "pattern": "^(https?://[!-~]+|/[!-~]*)$"
+    },
+    "captured_text": {
+      "type": "string",
+      "description": "Short page-derived text: a document title, or the text a bounded wait is looking for. Untrusted (ADR-0010), so control characters are excluded and the length is bounded.",
+      "minLength": 0,
+      "maxLength": 512,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+    },
+    "snapshot_text": {
+      "type": "string",
+      "description": "The rendered accessibility snapshot of docs/MCP_SPEC.md section 7.4. Untrusted content: bounded, newline-separated and never interpreted as an instruction. The bound is smaller than the browser protocol's because the MCP response bound is smaller than the worker frame's; a snapshot the worker would return whole is truncated on the way to the agent rather than overflowing it.",
+      "minLength": 0,
+      "maxLength": 32768,
+      "pattern": "^[^\\u0000-\\u0009\\u000b-\\u001f\\u007f]*$"
+    },
+    "element_reference": {
+      "type": "string",
+      "description": "Reference to one element of a single snapshot. It is valid only for the snapshot that issued it and is invalidated by a resize (docs/MCP_SPEC.md section 7.4).",
+      "minLength": 2,
+      "maxLength": 8,
+      "pattern": "^e[0-9]{1,6}$"
+    },
+    "accessible_role": {
+      "type": "string",
+      "description": "Accessibility role of a snapshot element. Page-derived and bounded.",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z][A-Za-z0-9 _-]*$"
+    },
+    "typed_text": {
+      "type": "string",
+      "description": "Text typed into a page input. A secret value MUST NOT travel through this field (docs/MCP_SPEC.md sections 7.4 and 7.9); the schema bounds its shape and the server refuses one flagged as secret material.",
+      "minLength": 0,
+      "maxLength": 4096,
+      "pattern": "^[^\\u0000-\\u0009\\u000b-\\u001f\\u007f]*$"
+    },
+    "option_value": {
+      "type": "string",
+      "description": "Value of one option of a select element. Page-derived in practice, so bounded in length and character class.",
+      "minLength": 0,
+      "maxLength": 512,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+    },
+    "selector": {
+      "type": "string",
+      "description": "CSS selector used by a bounded wait condition. Selectors are hints, not identity (docs/DOMAIN_MODEL.md section 17).",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "url_pattern": {
+      "type": "string",
+      "description": "Substring a URL must contain for a url_matches wait condition to be satisfied. It is matched literally and is never interpreted as a pattern language.",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[!-~]+$"
+    },
     "resource_uri": {
       "type": "string",
       "description": "One of the docs/MCP_SPEC.md section 8 resource URI forms. A resource enforces the same authorisation as the tool that returned the link.",
@@ -592,6 +836,12 @@
       "description": "Monotonic browser-control epoch (ADR-0007). A command presenting a superseded epoch is refused with CONTROL_EPOCH_STALE rather than executed against a browser somebody else now controls.",
       "minimum": 1,
       "maximum": 2147483647
+    },
+    "command_timeout_ms": {
+      "type": "integer",
+      "description": "Bound on one browser command. Every browser tool is bounded: exceeding it fails with BROWSER_COMMAND_TIMEOUT rather than holding the browser for as long as the page likes (docs/MCP_SPEC.md section 7.4). The server clamps it to the session's own maximum, so a larger value here buys nothing.",
+      "minimum": 100,
+      "maximum": 120000
     },
     "byte_size": {
       "type": "integer",
@@ -731,6 +981,20 @@
         "finding_add_comment",
         "finding_submit_verification",
         "browser_take_screenshot",
+        "browser_session_start",
+        "browser_session_status",
+        "browser_session_pause",
+        "browser_session_resume",
+        "browser_session_end",
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_click",
+        "browser_type",
+        "browser_select_option",
+        "browser_press_key",
+        "browser_scroll",
+        "browser_resize",
+        "browser_wait",
         "development_services_list",
         "development_service_publish",
         "development_service_unpublish"
@@ -747,7 +1011,23 @@
         "finding:write",
         "verification:submit",
         "browser:capture",
-        "service:publish"
+        "service:publish",
+        "browser:control"
+      ]
+    },
+    "browser_lifecycle_status": {
+      "type": "string",
+      "description": "Browser-session lifecycle status (docs/DOMAIN_MODEL.md section 12). This enumeration MUST equal the browser protocol's session_status: an agent and a worker that disagreed about what PAUSED meant would disagree about whether a command may run.",
+      "enum": [
+        "REQUESTED",
+        "ALLOCATING",
+        "READY",
+        "ACTIVE",
+        "PAUSED",
+        "DEGRADED",
+        "TERMINATING",
+        "TERMINATED",
+        "FAILED"
       ]
     },
     "agent_session_state": {
@@ -862,6 +1142,64 @@
         "browser_worker",
         "system",
         "integration"
+      ]
+    },
+    "key_name": {
+      "type": "string",
+      "description": "A key press. The vocabulary is closed on purpose: a key name reaches the browser as a control instruction, so it is drawn from a fixed set rather than passed through from an argument a page could influence. This enumeration MUST equal the browser protocol's key_name.",
+      "enum": [
+        "Enter",
+        "Tab",
+        "Shift+Tab",
+        "Escape",
+        "Backspace",
+        "Delete",
+        "Home",
+        "End",
+        "PageUp",
+        "PageDown",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowLeft",
+        "ArrowRight",
+        "Space"
+      ]
+    },
+    "scroll_direction": {
+      "type": "string",
+      "description": "Direction of a scroll.",
+      "enum": ["up", "down", "left", "right"]
+    },
+    "wait_until": {
+      "type": "string",
+      "description": "Bounded navigation wait condition (docs/MCP_SPEC.md section 7.4). Every value completes or times out; none waits indefinitely.",
+      "enum": ["commit", "domcontentloaded", "load", "networkidle"]
+    },
+    "wait_condition": {
+      "type": "string",
+      "description": "Bounded wait condition. docs/MCP_SPEC.md section 7.4 forbids an unbounded sleep, so every condition is paired with a timeout.",
+      "enum": [
+        "url_matches",
+        "selector_visible",
+        "selector_hidden",
+        "text_visible",
+        "network_idle"
+      ]
+    },
+    "browser_command_name": {
+      "type": "string",
+      "description": "The browser command an interaction result answers. It is the browser protocol's command_name, restated here so a result names what it was.",
+      "enum": [
+        "navigate",
+        "snapshot",
+        "click",
+        "type_text",
+        "select_option",
+        "press_key",
+        "scroll",
+        "resize",
+        "wait",
+        "take_screenshot"
       ]
     },
     "screenshot_purpose": {
@@ -1790,8 +2128,8 @@
           "description": "Browser session identifier."
         },
         "status": {
-          "$ref": "#/$defs/reason_text",
-          "description": "Lifecycle status of the session."
+          "$ref": "#/$defs/browser_lifecycle_status",
+          "description": "Lifecycle status of the session. It was free text until RVP-30, which is how an agent could be told a status docs/DOMAIN_MODEL.md section 12 does not define."
         },
         "control_epoch": {
           "$ref": "#/$defs/control_epoch",
@@ -2376,6 +2714,398 @@
         }
       }
     },
+    "browser_session_start_input": {
+      "type": "object",
+      "description": "Arguments of browser_session_start (docs/MCP_SPEC.md section 7.3). There is no project argument and no origin argument: the project is the session's, and the origin is derived from the published service by the control plane, because the origin is the browser's egress allow-list (docs/SECURITY.md section 9).",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["idempotency_key"],
+      "properties": {
+        "published_service_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Published service the session may reach. A session started without one can navigate nowhere."
+        },
+        "viewport": {
+          "$ref": "#/$defs/viewport",
+          "description": "Initial viewport. Absent means the project's first default validation viewport."
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/idempotency_key",
+          "description": "Key for this allocation, so a retried call does not consume two browser slots."
+        }
+      }
+    },
+    "browser_session_reference_input": {
+      "type": "object",
+      "description": "Names one browser session and nothing else. A session in another project is reported not found, byte for byte as an unknown identifier is.",
+      "additionalProperties": false,
+      "x-max-bytes": 1024,
+      "required": ["browser_session_id"],
+      "properties": {
+        "browser_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Browser session to describe."
+        }
+      }
+    },
+    "browser_session_control_input": {
+      "type": "object",
+      "description": "Names one browser session and the epoch the caller believes is current. The epoch is required on a lifecycle change for the same reason it is required on a command: pausing or ending a browser somebody else now controls is not a lesser act than clicking in it.",
+      "additionalProperties": false,
+      "x-max-bytes": 1024,
+      "required": ["browser_session_id", "control_epoch", "idempotency_key"],
+      "properties": {
+        "browser_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Browser session to act on."
+        },
+        "control_epoch": {
+          "$ref": "#/$defs/control_epoch",
+          "description": "Epoch the agent believes is current."
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/idempotency_key",
+          "description": "Key for this lifecycle change, so a retry is one transition rather than two."
+        }
+      }
+    },
+    "browser_navigate_input": {
+      "type": "object",
+      "description": "Arguments of browser_navigate (docs/MCP_SPEC.md section 7.4).",
+      "additionalProperties": false,
+      "x-max-bytes": 4096,
+      "required": ["browser_session_id", "control_epoch", "url"],
+      "properties": {
+        "browser_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Browser session to navigate."
+        },
+        "control_epoch": {
+          "$ref": "#/$defs/control_epoch",
+          "description": "Epoch the agent believes is current."
+        },
+        "url": {
+          "$ref": "#/$defs/navigation_target",
+          "description": "Absolute URL inside the session's published-service origin, or a root-relative path resolved against it."
+        },
+        "wait_until": {
+          "$ref": "#/$defs/wait_until",
+          "description": "Bounded navigation wait condition. Absent means domcontentloaded."
+        },
+        "timeout_ms": {
+          "$ref": "#/$defs/command_timeout_ms",
+          "description": "Bound on the navigation, inside the session's own maximum."
+        }
+      }
+    },
+    "browser_snapshot_input": {
+      "type": "object",
+      "description": "Arguments of browser_snapshot (docs/MCP_SPEC.md sections 7.4 and 13).",
+      "additionalProperties": false,
+      "x-max-bytes": 1024,
+      "required": ["browser_session_id", "control_epoch"],
+      "properties": {
+        "browser_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Browser session to snapshot."
+        },
+        "control_epoch": {
+          "$ref": "#/$defs/control_epoch",
+          "description": "Epoch the agent believes is current."
+        },
+        "max_nodes": {
+          "type": "integer",
+          "description": "Largest number of elements to describe, clamped to the session's own limit.",
+          "minimum": 1,
+          "maximum": 500
+        },
+        "max_bytes": {
+          "type": "integer",
+          "description": "Largest rendered snapshot to return before truncation, clamped to the session's own limit.",
+          "minimum": 1024,
+          "maximum": 65536
+        },
+        "timeout_ms": {
+          "$ref": "#/$defs/command_timeout_ms",
+          "description": "Bound on the capture."
+        }
+      }
+    },
+    "browser_element_input": {
+      "type": "object",
+      "description": "Arguments of a tool that acts on one element of the current snapshot. The reference names the snapshot that issued it, so a reference from a superseded snapshot fails rather than acting on whatever now occupies that position.",
+      "additionalProperties": false,
+      "x-max-bytes": 1024,
+      "required": ["browser_session_id", "control_epoch", "snapshot_id", "ref"],
+      "properties": {
+        "browser_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Browser session to act in."
+        },
+        "control_epoch": {
+          "$ref": "#/$defs/control_epoch",
+          "description": "Epoch the agent believes is current."
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Snapshot the reference was issued by."
+        },
+        "ref": {
+          "$ref": "#/$defs/element_reference",
+          "description": "Element reference from that snapshot."
+        },
+        "timeout_ms": {
+          "$ref": "#/$defs/command_timeout_ms",
+          "description": "Bound on the interaction."
+        }
+      }
+    },
+    "browser_type_input": {
+      "type": "object",
+      "description": "Arguments of browser_type. Secret values MUST NOT be supplied here (docs/MCP_SPEC.md sections 7.4 and 7.9); the server refuses a value flagged as secret material with POLICY_DENIED, and the schema cannot make that judgement for it because a secret is a fact about provenance rather than about shape.",
+      "additionalProperties": false,
+      "x-max-bytes": 8192,
+      "required": ["browser_session_id", "control_epoch", "snapshot_id", "ref", "text"],
+      "properties": {
+        "browser_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Browser session to type in."
+        },
+        "control_epoch": {
+          "$ref": "#/$defs/control_epoch",
+          "description": "Epoch the agent believes is current."
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Snapshot the reference was issued by."
+        },
+        "ref": {
+          "$ref": "#/$defs/element_reference",
+          "description": "Element reference from that snapshot."
+        },
+        "text": {
+          "$ref": "#/$defs/typed_text",
+          "description": "Text to type. Never a credential."
+        },
+        "submit": {
+          "type": "boolean",
+          "description": "Whether to press Enter after typing."
+        },
+        "timeout_ms": {
+          "$ref": "#/$defs/command_timeout_ms",
+          "description": "Bound on the interaction."
+        }
+      }
+    },
+    "browser_select_option_input": {
+      "type": "object",
+      "description": "Arguments of browser_select_option.",
+      "additionalProperties": false,
+      "x-max-bytes": 8192,
+      "required": ["browser_session_id", "control_epoch", "snapshot_id", "ref", "values"],
+      "properties": {
+        "browser_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Browser session to act in."
+        },
+        "control_epoch": {
+          "$ref": "#/$defs/control_epoch",
+          "description": "Epoch the agent believes is current."
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Snapshot the reference was issued by."
+        },
+        "ref": {
+          "$ref": "#/$defs/element_reference",
+          "description": "Element reference from that snapshot."
+        },
+        "values": {
+          "type": "array",
+          "description": "Option values to select.",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/option_value"
+          }
+        },
+        "timeout_ms": {
+          "$ref": "#/$defs/command_timeout_ms",
+          "description": "Bound on the interaction."
+        }
+      }
+    },
+    "browser_press_key_input": {
+      "type": "object",
+      "description": "Arguments of browser_press_key. The key vocabulary is closed, so a shortcut the product does not support is refused by the schema rather than passed to Chromium to interpret.",
+      "additionalProperties": false,
+      "x-max-bytes": 1024,
+      "required": ["browser_session_id", "control_epoch", "key"],
+      "properties": {
+        "browser_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Browser session to act in."
+        },
+        "control_epoch": {
+          "$ref": "#/$defs/control_epoch",
+          "description": "Epoch the agent believes is current."
+        },
+        "key": {
+          "$ref": "#/$defs/key_name",
+          "description": "Key to press."
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Snapshot the reference was issued by, when the key is directed at one element."
+        },
+        "ref": {
+          "$ref": "#/$defs/element_reference",
+          "description": "Element the key is directed at. Absent means whatever the page has focused."
+        },
+        "timeout_ms": {
+          "$ref": "#/$defs/command_timeout_ms",
+          "description": "Bound on the interaction."
+        }
+      }
+    },
+    "browser_scroll_input": {
+      "type": "object",
+      "description": "Arguments of browser_scroll.",
+      "additionalProperties": false,
+      "x-max-bytes": 1024,
+      "required": ["browser_session_id", "control_epoch", "direction", "amount_px"],
+      "properties": {
+        "browser_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Browser session to act in."
+        },
+        "control_epoch": {
+          "$ref": "#/$defs/control_epoch",
+          "description": "Epoch the agent believes is current."
+        },
+        "direction": {
+          "$ref": "#/$defs/scroll_direction",
+          "description": "Direction to scroll in."
+        },
+        "amount_px": {
+          "type": "integer",
+          "description": "Distance in CSS pixels.",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Snapshot the reference was issued by, when the scroll is inside one element."
+        },
+        "ref": {
+          "$ref": "#/$defs/element_reference",
+          "description": "Element to scroll. Absent means the page scrolls."
+        },
+        "timeout_ms": {
+          "$ref": "#/$defs/command_timeout_ms",
+          "description": "Bound on the interaction."
+        }
+      }
+    },
+    "browser_resize_input": {
+      "type": "object",
+      "description": "Arguments of browser_resize. Section 7.4 requires a resize to produce a new snapshot and invalidate every outstanding element reference, so the result carries the replacement rather than the agent being told to guess.",
+      "additionalProperties": false,
+      "x-max-bytes": 1024,
+      "required": ["browser_session_id", "control_epoch", "viewport"],
+      "properties": {
+        "browser_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Browser session to resize."
+        },
+        "control_epoch": {
+          "$ref": "#/$defs/control_epoch",
+          "description": "Epoch the agent believes is current."
+        },
+        "viewport": {
+          "$ref": "#/$defs/viewport",
+          "description": "New viewport."
+        },
+        "timeout_ms": {
+          "$ref": "#/$defs/command_timeout_ms",
+          "description": "Bound on the interaction."
+        }
+      }
+    },
+    "browser_wait_input": {
+      "type": "object",
+      "description": "Arguments of browser_wait. Every condition is bounded and each is defined by exactly one target, so a contradictory request is refused rather than resolved by precedence.",
+      "additionalProperties": false,
+      "x-max-bytes": 2048,
+      "required": ["browser_session_id", "control_epoch", "condition"],
+      "properties": {
+        "browser_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Browser session to wait in."
+        },
+        "control_epoch": {
+          "$ref": "#/$defs/control_epoch",
+          "description": "Epoch the agent believes is current."
+        },
+        "condition": {
+          "$ref": "#/$defs/wait_condition",
+          "description": "Condition to wait for."
+        },
+        "url_pattern": {
+          "$ref": "#/$defs/url_pattern",
+          "description": "Substring the URL must contain."
+        },
+        "selector": {
+          "$ref": "#/$defs/selector",
+          "description": "Selector whose state is awaited."
+        },
+        "text": {
+          "$ref": "#/$defs/captured_text",
+          "description": "Text whose presence is awaited."
+        },
+        "timeout_ms": {
+          "$ref": "#/$defs/command_timeout_ms",
+          "description": "Bound on the wait. Absent means the session's default timeout."
+        }
+      },
+      "x-requires": [
+        {
+          "when": {
+            "property": "condition",
+            "equals": "url_matches"
+          },
+          "required": ["url_pattern"],
+          "forbidden": ["selector", "text"],
+          "detail": "a url_matches condition is defined by its pattern alone"
+        },
+        {
+          "when": {
+            "property": "condition",
+            "in": ["selector_visible", "selector_hidden"]
+          },
+          "required": ["selector"],
+          "forbidden": ["url_pattern", "text"],
+          "detail": "a selector condition is defined by its selector alone"
+        },
+        {
+          "when": {
+            "property": "condition",
+            "equals": "text_visible"
+          },
+          "required": ["text"],
+          "forbidden": ["url_pattern", "selector"],
+          "detail": "a text condition is defined by its text alone"
+        },
+        {
+          "when": {
+            "property": "condition",
+            "equals": "network_idle"
+          },
+          "forbidden": ["url_pattern", "selector", "text"],
+          "detail": "network idleness has no target"
+        }
+      ]
+    },
     "project_current_result": {
       "type": "object",
       "description": "Payload of project_current.",
@@ -2724,6 +3454,192 @@
         "finding": {
           "$ref": "#/$defs/finding_view",
           "description": "The finding as it now stands."
+        }
+      }
+    },
+    "browser_controller": {
+      "type": "object",
+      "description": "The controller holding the interactive lease of a browser session (docs/DOMAIN_MODEL.md section 13).",
+      "additionalProperties": false,
+      "required": ["type", "id"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Controller kind. Stage 1 issues interactive leases to agent and system controllers; human is present because ADR-0007 fixes the vocabulary and Stage 2 adds the controller rather than the model.",
+          "enum": ["agent", "human", "system"]
+        },
+        "id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Opaque controller identity, for example an agent session identifier."
+        }
+      }
+    },
+    "browser_session_detail": {
+      "type": "object",
+      "description": "One browser session as an agent sees it (docs/DOMAIN_MODEL.md section 12). It carries no capability and no origin credential: the route capability is minted by the control plane and never leaves it.",
+      "additionalProperties": false,
+      "required": ["browser_session_id", "status", "control_epoch", "viewport", "live_view_available"],
+      "properties": {
+        "browser_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "The session."
+        },
+        "status": {
+          "$ref": "#/$defs/browser_lifecycle_status",
+          "description": "Lifecycle status."
+        },
+        "control_epoch": {
+          "$ref": "#/$defs/control_epoch",
+          "description": "Epoch every command against this session must present."
+        },
+        "current_controller": {
+          "$ref": "#/$defs/browser_controller",
+          "description": "Controller holding the interactive lease, when one does."
+        },
+        "viewport": {
+          "$ref": "#/$defs/viewport",
+          "description": "Viewport in force."
+        },
+        "browser_type": {
+          "type": "string",
+          "description": "Browser engine. ADR-0001 fixes Chromium.",
+          "enum": ["chromium"]
+        },
+        "browser_version": {
+          "$ref": "#/$defs/client_version",
+          "description": "Browser build, once a context exists."
+        },
+        "published_service_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Published service this session may reach. Absent means the session can reach nothing."
+        },
+        "service_origin": {
+          "$ref": "#/$defs/captured_url",
+          "description": "Origin relative navigation resolves against, and the only origin this session may reach."
+        },
+        "url": {
+          "$ref": "#/$defs/captured_url",
+          "description": "URL the browser last settled on. Page-derived, so a response carrying one is labelled untrusted_browser_content."
+        },
+        "live_view_available": {
+          "type": "boolean",
+          "description": "Whether a human can watch this session. Live frames are never persisted (ADR-0009)."
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the session was requested."
+        },
+        "ended_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the session ended, once it has."
+        }
+      }
+    },
+    "browser_session_result": {
+      "type": "object",
+      "description": "Payload of every browser lifecycle tool (docs/MCP_SPEC.md section 7.3). One shape for all five, because an agent that has started, paused, resumed or ended a session needs the same facts afterwards.",
+      "additionalProperties": false,
+      "x-max-bytes": 8192,
+      "required": ["session"],
+      "properties": {
+        "session": {
+          "$ref": "#/$defs/browser_session_detail",
+          "description": "The session after the call."
+        }
+      }
+    },
+    "browser_snapshot_view": {
+      "type": "object",
+      "description": "A bounded accessibility snapshot (docs/MCP_SPEC.md sections 7.4 and 13). Page-derived throughout, so any response carrying one is labelled untrusted_browser_content.",
+      "additionalProperties": false,
+      "required": ["snapshot_id", "viewport", "node_count", "truncated", "text"],
+      "properties": {
+        "snapshot_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Identity of this snapshot. A reference is accepted only while this is the current snapshot."
+        },
+        "viewport": {
+          "$ref": "#/$defs/viewport",
+          "description": "Viewport the snapshot was taken at. A resize supersedes it."
+        },
+        "node_count": {
+          "type": "integer",
+          "description": "Number of elements described.",
+          "minimum": 0,
+          "maximum": 500
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "Whether the page had more content than the bounds allowed. A truncated snapshot is a summary, never a whole-page dump."
+        },
+        "text": {
+          "$ref": "#/$defs/snapshot_text",
+          "description": "Rendered snapshot."
+        }
+      }
+    },
+    "browser_navigation_view": {
+      "type": "object",
+      "description": "Outcome of a navigation. Every member is page-derived and therefore untrusted.",
+      "additionalProperties": false,
+      "required": ["url", "redirected", "title"],
+      "properties": {
+        "url": {
+          "$ref": "#/$defs/captured_url",
+          "description": "URL the browser settled on."
+        },
+        "http_status": {
+          "type": "integer",
+          "description": "Status of the main document response.",
+          "minimum": 100,
+          "maximum": 599
+        },
+        "redirected": {
+          "type": "boolean",
+          "description": "Whether the browser settled on a different URL than requested."
+        },
+        "title": {
+          "$ref": "#/$defs/captured_text",
+          "description": "Document title, truncated to its bound."
+        }
+      }
+    },
+    "browser_interaction_result": {
+      "type": "object",
+      "description": "Payload of every browser interaction tool (docs/MCP_SPEC.md section 7.4). It always names the session, the command and the epoch the command actually ran under, so an agent can tell a result it asked for from one it inherited. Anything page-derived it carries — a navigation, a snapshot — obliges the untrusted label on the envelope (ADR-0010). A snapshot is returned in the rendered form of section 7.4 and not also as an array: the rendered form already names every element's reference, role and name, and a parallel array would double the bytes of the most page-derived response the product has.",
+      "additionalProperties": false,
+      "x-max-bytes": 49152,
+      "required": ["browser_session_id", "command", "control_epoch", "duration_ms"],
+      "properties": {
+        "browser_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Session the command ran in."
+        },
+        "command": {
+          "$ref": "#/$defs/browser_command_name",
+          "description": "Command this result answers."
+        },
+        "control_epoch": {
+          "$ref": "#/$defs/control_epoch",
+          "description": "Epoch the command ran under."
+        },
+        "duration_ms": {
+          "type": "integer",
+          "description": "How long the command took.",
+          "minimum": 0,
+          "maximum": 600000
+        },
+        "viewport": {
+          "$ref": "#/$defs/viewport",
+          "description": "Viewport in force after the command."
+        },
+        "navigation": {
+          "$ref": "#/$defs/browser_navigation_view",
+          "description": "Navigation outcome. Page-derived."
+        },
+        "snapshot": {
+          "$ref": "#/$defs/browser_snapshot_view",
+          "description": "Accessibility snapshot. Page-derived. A resize always returns one, because it invalidated every reference the agent held."
         }
       }
     },

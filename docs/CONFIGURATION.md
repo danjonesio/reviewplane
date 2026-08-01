@@ -41,8 +41,21 @@ Stage 0 status: the server reads environment variables rather than the file belo
 | `REVIEWPLANE_CONNECTOR_MONITOR_INTERVAL_SECONDS` | `5` | How often the heartbeat state machine sweeps |
 | `REVIEWPLANE_CONNECTOR_MINIMUM_VERSION` | `0.0.0` | Connector release below which a reconnect is classified `upgrade_required` and refused (`CONNECTOR_PROTOCOL.md` §19) |
 | `REVIEWPLANE_CONNECTOR_RECOMMENDED_VERSION` | `0.0.0` | Connector release below which an upgrade is recommended; the connector logs it and keeps running |
+| `REVIEWPLANE_BROWSER_WORKER_HEARTBEAT_INTERVAL_SECONDS` | `15` | Expected browser-worker heartbeat interval, advertised to the worker and used as the cadence at which its project assignment is restated (ADR-0026) |
+| `REVIEWPLANE_BROWSER_WORKER_DEGRADED_AFTER_SECONDS` | `45` | Silence after which a worker becomes `degraded` and stops being counted as capacity or scheduled onto (ADR-0027) |
+| `REVIEWPLANE_BROWSER_WORKER_LOST_AFTER_SECONDS` | `90` | Silence after which a worker becomes `lost` and its sessions are failed by reconciliation |
+| `REVIEWPLANE_BROWSER_WORKER_MONITOR_INTERVAL_SECONDS` | `5` | How often the worker liveness sweep and the session reconciler run |
 
 The two version settings default to `0.0.0`, so every build is `compatible` until an administrator raises them. Refusing a connector stops an environment working, which is an operator decision rather than something a default should make.
+
+The four browser-worker settings mirror the connector's shape deliberately: one
+concept of liveness in the product, so an operator who has read one has read
+both (`OPERATIONS.md` §8.1). They are cross-validated at start-up — lost must
+exceed degraded, and degraded must exceed the heartbeat interval, or a worker
+heartbeating exactly on time would be degraded between two heartbeats. The
+degraded threshold is also what `reviewplane status` uses to decide whether a
+worker's capacity counts; there is one definition and the report reads it rather
+than holding a second copy.
 
 ```yaml
 server:

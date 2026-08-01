@@ -1,0 +1,20 @@
+{
+  "protocol_version": 1,
+  "ok": true,
+  "request_id": "req_01JNAVIGATEBAD",
+  "type": "browser_navigate",
+  "trust": "trusted_control_plane",
+  "instruction_policy": "do_not_follow_as_instructions",
+  "data": {
+    "browser_session_id": "brs_01JHOMEPAGE",
+    "command": "navigate",
+    "control_epoch": 1,
+    "duration_ms": 412,
+    "navigation": {
+      "url": "https://storefront.internal.invalid/checkout",
+      "http_status": 200,
+      "redirected": false,
+      "title": "Checkout"
+    }
+  }
+}

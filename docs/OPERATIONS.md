@@ -278,6 +278,47 @@ Capacity model considers:
 
 The scheduler should reject or queue new sessions explicitly rather than overcommit silently.
 
+### 8.1 Worker liveness
+
+A browser worker heartbeats every
+`REVIEWPLANE_BROWSER_WORKER_HEARTBEAT_INTERVAL_SECONDS` (default 15). Silence
+past two thresholds moves it through a lifecycle, and each transition emits its
+event (`EVENTS.md` §7):
+
+| Silence | Status | Event | Effect |
+|---|---|---|---|
+| — | `active` | `browser_worker.registered` | Schedulable, counted as capacity |
+| > `REVIEWPLANE_BROWSER_WORKER_DEGRADED_AFTER_SECONDS` (45) | `degraded` | `browser_worker.degraded` | Not counted as capacity, not scheduled onto |
+| > `REVIEWPLANE_BROWSER_WORKER_LOST_AFTER_SECONDS` (90) | `lost` | `browser_worker.lost` | As above, and its sessions are failed by reconciliation |
+
+A worker that heartbeats again returns to `active` and the recovery is recorded.
+The sweep runs every `REVIEWPLANE_BROWSER_WORKER_MONITOR_INTERVAL_SECONDS`
+(default 5). `lost` is evaluated before `degraded`, so a worker silent for a long
+time lands in `lost` rather than being degraded now and only concluded next pass.
+
+`degraded` remains in the schedulable status set deliberately: a worker that
+missed one heartbeat has not necessarily gone, and removing it from the pool the
+instant it is late would make a momentary delay indistinguishable from a crash.
+What excludes it in practice is the **liveness predicate**, which a degraded
+worker fails by definition. The status is the audit record; the predicate is the
+decision.
+
+That predicate — `greatest(last_heartbeat_at, registered_at)` inside the degraded
+budget — is applied in **every** query that decides something: scheduling,
+capacity accounting, `reviewplane status` and reconciliation, from one definition
+(ADR-0027). Both halves are needed. The background sweep is what makes the stored
+state honest and auditable; the term in the query is what makes the decision safe
+when a worker dies between two passes. Until RVP-30 neither existed except in
+`reviewplane status`, so `reviewplane status` could report `1 worker(s), 4 of 4
+slot(s) free` about a container that had been stopped for over two minutes, and
+the scheduler would dispatch to it.
+
+When no live worker has a free slot, a session request is refused with
+`BROWSER_CAPACITY_EXHAUSTED` and the UI shows the state `UX_FLOWS.md` §18
+requires. That refusal is the point of the whole mechanism: a session that hangs
+in `ALLOCATING` sends an operator looking at the worker's logs, and there are
+none, because the worker is gone.
+
 ## 9. Session reconciliation
 
 Periodic reconciliation compares:
@@ -294,6 +335,36 @@ Actions:
 - Expire stale leases
 - Mark missing sessions degraded
 - Emit audit events
+
+### 9.1 What reconciliation does
+
+It runs in the same pass as the liveness sweep of §8.1, on the same interval,
+because both answer one question: what does the control plane still believe that
+is no longer true?
+
+For each **live** worker the control plane asks what browser contexts it is
+holding (`worker.contexts.request` / `worker.contexts` on the internal channel)
+and compares:
+
+- a context **no live session claims** is an orphan. It is terminated on the
+  worker and recorded as `browser_session.reconciled` — an orphan holds a browser
+  slot and page state nobody owns.
+- a session the control plane believes is live that the worker **no longer
+  holds** is marked `DEGRADED`, not terminated. `DOMAIN_MODEL.md` §12 requires
+  the session and its metadata to be retained and to remain diagnosable.
+- a session on a worker that has gone (`lost`, or removed from the schedulable
+  set) is marked `FAILED`. Evidence already uploaded stays exactly where it is
+  (`ARCHITECTURE.md` §14).
+
+Control leases past `expires_at` are revoked in the same pass. `SECURITY.md` §8
+requires leases to expire, and until RVP-30 `expires_at` was written and never
+read. Expiry does **not** move the control epoch: the epoch moves when a
+controller changes, and an expiry is nobody taking control.
+
+The sweep runs in the API process and not in `reviewplane jobs`. A deployment
+running only the jobs role therefore keeps a correct *decision* — the liveness
+predicate is in the queries — while its stored worker status goes stale. That is
+a known limitation recorded in ADR-0027.
 
 ## 10. Data retention jobs
 

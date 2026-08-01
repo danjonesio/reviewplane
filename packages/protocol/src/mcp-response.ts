@@ -98,6 +98,23 @@ function payloadCarriesUntrustedContent(frame: McpFrame): boolean {
     if (Array.isArray(value) && value.length === 0) continue;
     return true;
   }
+  // A browser interaction is untrusted when it actually returned page-derived
+  // bytes, and not merely because it touched a browser. A click that returns
+  // only its own duration carries nothing from the page; a navigation or a
+  // snapshot carries the page itself. Deriving it from the members present
+  // rather than from the tool name keeps `mixed` and `untrusted` honest, and it
+  // is the same rule the browser protocol's own result applies.
+  if (data["navigation"] !== undefined || data["snapshot"] !== undefined) return true;
+  // A session view carries the URL the browser last settled on, which is
+  // page-derived whatever else the view holds.
+  const session = data["session"];
+  if (
+    typeof session === "object" &&
+    session !== null &&
+    (session as Record<string, unknown>)["url"] !== undefined
+  ) {
+    return true;
+  }
   return false;
 }
 

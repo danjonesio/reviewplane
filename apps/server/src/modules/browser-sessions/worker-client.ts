@@ -21,6 +21,7 @@ import {
   type SessionAllocated,
   type SessionStatusReport,
   type TerminationReason,
+  type WorkerContexts,
 } from "@reviewplane/protocol/browser";
 
 import { ApiError } from "../../errors.ts";
@@ -144,6 +145,29 @@ export class BrowserWorkerClient {
     });
     if (frame.type !== "browser.command.result") {
       throw new ApiError("INTERNAL_ERROR", "The browser worker answered a command with the wrong message.");
+    }
+    return frame.payload;
+  }
+
+  /**
+   * Asks the worker what browser contexts it is holding
+   * (`docs/OPERATIONS.md` section 9).
+   *
+   * The request names nothing: a reconciler that could name the sessions it
+   * expects would be told what it already believes, and the whole point is to
+   * compare the two independently derived sets.
+   */
+  async contexts(workerId: string): Promise<WorkerContexts> {
+    const frame = await this.#exchange("/internal/v1/contexts", {
+      envelope: this.#envelope("worker.contexts.request", workerId, {}),
+      type: "worker.contexts.request",
+      payload: {},
+    });
+    if (frame.type !== "worker.contexts") {
+      throw new ApiError(
+        "INTERNAL_ERROR",
+        "The browser worker answered a context enumeration with the wrong message.",
+      );
     }
     return frame.payload;
   }

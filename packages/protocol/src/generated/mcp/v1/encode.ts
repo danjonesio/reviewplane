@@ -24,9 +24,27 @@ import type {
   AnnotationGeometry,
   AnnotationView,
   ArtefactLink,
+  BrowserController,
+  BrowserElementInput,
+  BrowserInteractionResult,
+  BrowserNavigateInput,
+  BrowserNavigationView,
+  BrowserPressKeyInput,
+  BrowserResizeInput,
+  BrowserScrollInput,
+  BrowserSelectOptionInput,
+  BrowserSessionControlInput,
+  BrowserSessionDetail,
+  BrowserSessionReferenceInput,
+  BrowserSessionResult,
+  BrowserSessionStartInput,
   BrowserSessionView,
+  BrowserSnapshotInput,
+  BrowserSnapshotView,
   BrowserTakeScreenshotInput,
   BrowserTakeScreenshotResult,
+  BrowserTypeInput,
+  BrowserWaitInput,
   ClientCapabilities,
   ClientIdentity,
   CommentView,
@@ -833,6 +851,205 @@ export function encodeBrowserTakeScreenshotInput(value: BrowserTakeScreenshotInp
 }
 
 /**
+ * Canonically encodes a BrowserSessionStartInput.
+ */
+export function encodeBrowserSessionStartInput(value: BrowserSessionStartInput): string {
+  const fields: string[] = [];
+  if (value.published_service_id !== undefined) {
+    fields.push(`"published_service_id":${jsonString(value.published_service_id)}`);
+  }
+  if (value.viewport !== undefined) {
+    fields.push(`"viewport":${encodeViewport(value.viewport)}`);
+  }
+  fields.push(`"idempotency_key":${jsonString(value.idempotency_key)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a BrowserSessionReferenceInput.
+ */
+export function encodeBrowserSessionReferenceInput(value: BrowserSessionReferenceInput): string {
+  const fields: string[] = [];
+  fields.push(`"browser_session_id":${jsonString(value.browser_session_id)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a BrowserSessionControlInput.
+ */
+export function encodeBrowserSessionControlInput(value: BrowserSessionControlInput): string {
+  const fields: string[] = [];
+  fields.push(`"browser_session_id":${jsonString(value.browser_session_id)}`);
+  fields.push(`"control_epoch":${jsonInteger(value.control_epoch)}`);
+  fields.push(`"idempotency_key":${jsonString(value.idempotency_key)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a BrowserNavigateInput.
+ */
+export function encodeBrowserNavigateInput(value: BrowserNavigateInput): string {
+  const fields: string[] = [];
+  fields.push(`"browser_session_id":${jsonString(value.browser_session_id)}`);
+  fields.push(`"control_epoch":${jsonInteger(value.control_epoch)}`);
+  fields.push(`"url":${jsonString(value.url)}`);
+  if (value.wait_until !== undefined) {
+    fields.push(`"wait_until":${jsonString(value.wait_until)}`);
+  }
+  if (value.timeout_ms !== undefined) {
+    fields.push(`"timeout_ms":${jsonInteger(value.timeout_ms)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a BrowserSnapshotInput.
+ */
+export function encodeBrowserSnapshotInput(value: BrowserSnapshotInput): string {
+  const fields: string[] = [];
+  fields.push(`"browser_session_id":${jsonString(value.browser_session_id)}`);
+  fields.push(`"control_epoch":${jsonInteger(value.control_epoch)}`);
+  if (value.max_nodes !== undefined) {
+    fields.push(`"max_nodes":${jsonInteger(value.max_nodes)}`);
+  }
+  if (value.max_bytes !== undefined) {
+    fields.push(`"max_bytes":${jsonInteger(value.max_bytes)}`);
+  }
+  if (value.timeout_ms !== undefined) {
+    fields.push(`"timeout_ms":${jsonInteger(value.timeout_ms)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a BrowserElementInput.
+ */
+export function encodeBrowserElementInput(value: BrowserElementInput): string {
+  const fields: string[] = [];
+  fields.push(`"browser_session_id":${jsonString(value.browser_session_id)}`);
+  fields.push(`"control_epoch":${jsonInteger(value.control_epoch)}`);
+  fields.push(`"snapshot_id":${jsonString(value.snapshot_id)}`);
+  fields.push(`"ref":${jsonString(value.ref)}`);
+  if (value.timeout_ms !== undefined) {
+    fields.push(`"timeout_ms":${jsonInteger(value.timeout_ms)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a BrowserTypeInput.
+ */
+export function encodeBrowserTypeInput(value: BrowserTypeInput): string {
+  const fields: string[] = [];
+  fields.push(`"browser_session_id":${jsonString(value.browser_session_id)}`);
+  fields.push(`"control_epoch":${jsonInteger(value.control_epoch)}`);
+  fields.push(`"snapshot_id":${jsonString(value.snapshot_id)}`);
+  fields.push(`"ref":${jsonString(value.ref)}`);
+  fields.push(`"text":${jsonString(value.text)}`);
+  if (value.submit !== undefined) {
+    fields.push(`"submit":${jsonBoolean(value.submit)}`);
+  }
+  if (value.timeout_ms !== undefined) {
+    fields.push(`"timeout_ms":${jsonInteger(value.timeout_ms)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a BrowserSelectOptionInput.
+ */
+export function encodeBrowserSelectOptionInput(value: BrowserSelectOptionInput): string {
+  const fields: string[] = [];
+  fields.push(`"browser_session_id":${jsonString(value.browser_session_id)}`);
+  fields.push(`"control_epoch":${jsonInteger(value.control_epoch)}`);
+  fields.push(`"snapshot_id":${jsonString(value.snapshot_id)}`);
+  fields.push(`"ref":${jsonString(value.ref)}`);
+  fields.push(`"values":${`[${value.values.map((item) => jsonString(item)).join(",")}]`}`);
+  if (value.timeout_ms !== undefined) {
+    fields.push(`"timeout_ms":${jsonInteger(value.timeout_ms)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a BrowserPressKeyInput.
+ */
+export function encodeBrowserPressKeyInput(value: BrowserPressKeyInput): string {
+  const fields: string[] = [];
+  fields.push(`"browser_session_id":${jsonString(value.browser_session_id)}`);
+  fields.push(`"control_epoch":${jsonInteger(value.control_epoch)}`);
+  fields.push(`"key":${jsonString(value.key)}`);
+  if (value.snapshot_id !== undefined) {
+    fields.push(`"snapshot_id":${jsonString(value.snapshot_id)}`);
+  }
+  if (value.ref !== undefined) {
+    fields.push(`"ref":${jsonString(value.ref)}`);
+  }
+  if (value.timeout_ms !== undefined) {
+    fields.push(`"timeout_ms":${jsonInteger(value.timeout_ms)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a BrowserScrollInput.
+ */
+export function encodeBrowserScrollInput(value: BrowserScrollInput): string {
+  const fields: string[] = [];
+  fields.push(`"browser_session_id":${jsonString(value.browser_session_id)}`);
+  fields.push(`"control_epoch":${jsonInteger(value.control_epoch)}`);
+  fields.push(`"direction":${jsonString(value.direction)}`);
+  fields.push(`"amount_px":${jsonInteger(value.amount_px)}`);
+  if (value.snapshot_id !== undefined) {
+    fields.push(`"snapshot_id":${jsonString(value.snapshot_id)}`);
+  }
+  if (value.ref !== undefined) {
+    fields.push(`"ref":${jsonString(value.ref)}`);
+  }
+  if (value.timeout_ms !== undefined) {
+    fields.push(`"timeout_ms":${jsonInteger(value.timeout_ms)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a BrowserResizeInput.
+ */
+export function encodeBrowserResizeInput(value: BrowserResizeInput): string {
+  const fields: string[] = [];
+  fields.push(`"browser_session_id":${jsonString(value.browser_session_id)}`);
+  fields.push(`"control_epoch":${jsonInteger(value.control_epoch)}`);
+  fields.push(`"viewport":${encodeViewport(value.viewport)}`);
+  if (value.timeout_ms !== undefined) {
+    fields.push(`"timeout_ms":${jsonInteger(value.timeout_ms)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a BrowserWaitInput.
+ */
+export function encodeBrowserWaitInput(value: BrowserWaitInput): string {
+  const fields: string[] = [];
+  fields.push(`"browser_session_id":${jsonString(value.browser_session_id)}`);
+  fields.push(`"control_epoch":${jsonInteger(value.control_epoch)}`);
+  fields.push(`"condition":${jsonString(value.condition)}`);
+  if (value.url_pattern !== undefined) {
+    fields.push(`"url_pattern":${jsonString(value.url_pattern)}`);
+  }
+  if (value.selector !== undefined) {
+    fields.push(`"selector":${jsonString(value.selector)}`);
+  }
+  if (value.text !== undefined) {
+    fields.push(`"text":${jsonString(value.text)}`);
+  }
+  if (value.timeout_ms !== undefined) {
+    fields.push(`"timeout_ms":${jsonInteger(value.timeout_ms)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
  * Canonically encodes a ProjectCurrentResult.
  */
 export function encodeProjectCurrentResult(value: ProjectCurrentResult): string {
@@ -1019,6 +1236,110 @@ export function encodeFindingSubmitVerificationResult(value: FindingSubmitVerifi
   const fields: string[] = [];
   fields.push(`"verification":${encodeVerificationView(value.verification)}`);
   fields.push(`"finding":${encodeFindingView(value.finding)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a BrowserController.
+ */
+export function encodeBrowserController(value: BrowserController): string {
+  const fields: string[] = [];
+  fields.push(`"type":${jsonString(value.type)}`);
+  fields.push(`"id":${jsonString(value.id)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a BrowserSessionDetail.
+ */
+export function encodeBrowserSessionDetail(value: BrowserSessionDetail): string {
+  const fields: string[] = [];
+  fields.push(`"browser_session_id":${jsonString(value.browser_session_id)}`);
+  fields.push(`"status":${jsonString(value.status)}`);
+  fields.push(`"control_epoch":${jsonInteger(value.control_epoch)}`);
+  if (value.current_controller !== undefined) {
+    fields.push(`"current_controller":${encodeBrowserController(value.current_controller)}`);
+  }
+  fields.push(`"viewport":${encodeViewport(value.viewport)}`);
+  if (value.browser_type !== undefined) {
+    fields.push(`"browser_type":${jsonString(value.browser_type)}`);
+  }
+  if (value.browser_version !== undefined) {
+    fields.push(`"browser_version":${jsonString(value.browser_version)}`);
+  }
+  if (value.published_service_id !== undefined) {
+    fields.push(`"published_service_id":${jsonString(value.published_service_id)}`);
+  }
+  if (value.service_origin !== undefined) {
+    fields.push(`"service_origin":${jsonString(value.service_origin)}`);
+  }
+  if (value.url !== undefined) {
+    fields.push(`"url":${jsonString(value.url)}`);
+  }
+  fields.push(`"live_view_available":${jsonBoolean(value.live_view_available)}`);
+  if (value.created_at !== undefined) {
+    fields.push(`"created_at":${jsonString(value.created_at)}`);
+  }
+  if (value.ended_at !== undefined) {
+    fields.push(`"ended_at":${jsonString(value.ended_at)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a BrowserSessionResult.
+ */
+export function encodeBrowserSessionResult(value: BrowserSessionResult): string {
+  const fields: string[] = [];
+  fields.push(`"session":${encodeBrowserSessionDetail(value.session)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a BrowserSnapshotView.
+ */
+export function encodeBrowserSnapshotView(value: BrowserSnapshotView): string {
+  const fields: string[] = [];
+  fields.push(`"snapshot_id":${jsonString(value.snapshot_id)}`);
+  fields.push(`"viewport":${encodeViewport(value.viewport)}`);
+  fields.push(`"node_count":${jsonInteger(value.node_count)}`);
+  fields.push(`"truncated":${jsonBoolean(value.truncated)}`);
+  fields.push(`"text":${jsonString(value.text)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a BrowserNavigationView.
+ */
+export function encodeBrowserNavigationView(value: BrowserNavigationView): string {
+  const fields: string[] = [];
+  fields.push(`"url":${jsonString(value.url)}`);
+  if (value.http_status !== undefined) {
+    fields.push(`"http_status":${jsonInteger(value.http_status)}`);
+  }
+  fields.push(`"redirected":${jsonBoolean(value.redirected)}`);
+  fields.push(`"title":${jsonString(value.title)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a BrowserInteractionResult.
+ */
+export function encodeBrowserInteractionResult(value: BrowserInteractionResult): string {
+  const fields: string[] = [];
+  fields.push(`"browser_session_id":${jsonString(value.browser_session_id)}`);
+  fields.push(`"command":${jsonString(value.command)}`);
+  fields.push(`"control_epoch":${jsonInteger(value.control_epoch)}`);
+  fields.push(`"duration_ms":${jsonInteger(value.duration_ms)}`);
+  if (value.viewport !== undefined) {
+    fields.push(`"viewport":${encodeViewport(value.viewport)}`);
+  }
+  if (value.navigation !== undefined) {
+    fields.push(`"navigation":${encodeBrowserNavigationView(value.navigation)}`);
+  }
+  if (value.snapshot !== undefined) {
+    fields.push(`"snapshot":${encodeBrowserSnapshotView(value.snapshot)}`);
+  }
   return `{${fields.join(",")}}`;
 }
 

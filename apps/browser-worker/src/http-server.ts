@@ -434,6 +434,26 @@ export function createWorkerServer(options: WorkerServerOptions): Server {
         return;
       }
 
+      if (path === "/internal/v1/contexts" && frame.type === "worker.contexts.request") {
+        // What the worker is actually holding, for the reconciliation of
+        // `docs/OPERATIONS.md` section 9. It reports every context, including
+        // one the control plane may have no session for — that is the orphan
+        // the reconciler exists to terminate.
+        const reply: BrowserFrame = {
+          envelope: envelopeFor("worker.contexts", {
+            correlation_id: frame.envelope.message_id,
+          }),
+          type: "worker.contexts",
+          payload: {
+            contexts: [...manager.contexts()],
+            observed_at: new Date().toISOString(),
+          },
+        };
+        response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+        response.end(encodeBrowserFrame(reply));
+        return;
+      }
+
       if (path === "/internal/v1/terminate" && frame.type === "browser_session.terminate") {
         const browserSessionId = frame.envelope.browser_session_id as string;
         const report = await manager.terminate(

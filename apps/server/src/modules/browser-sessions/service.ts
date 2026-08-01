@@ -30,6 +30,7 @@ import { inTransaction } from "../../db/pool.ts";
 import { appendEvent, type EventActor } from "../../events/append.ts";
 import { ApiError, notFound } from "../../errors.ts";
 import { newId } from "../../ids.ts";
+import { authoriseBrowserCommand, isInteractive, type CommandDenial } from "./authorisation.ts";
 import type { BrowserWorkerClient } from "./worker-client.ts";
 import type { WorkerRegistry } from "./workers.ts";
 
@@ -78,6 +79,15 @@ export interface ServiceBinding {
   readonly publishedServiceId: string;
   readonly serviceOrigin: string;
   readonly serviceCapability: string;
+}
+
+/** One event of a browser session's timeline (`docs/API.md` section 11). */
+export interface TimelineEntry {
+  readonly id: string;
+  readonly type: string;
+  readonly occurred_at: string;
+  readonly actor: { readonly type: string; readonly display: string | null };
+  readonly payload: Record<string, unknown>;
 }
 
 /** Resolves a published service into the binding a session is allocated with. */
@@ -167,11 +177,16 @@ export class BrowserSessionService {
    * command can be validated against them.
    */
   async create(input: StartSessionInput): Promise<BrowserSessionRecord> {
+    // `active()` applies the liveness term in its own query rather than
+    // returning a row for the caller to check (ADR-0027). A worker that died
+    // between two sweeps still has `status = 'active'`, and scheduling onto it
+    // would surface as a session that never becomes ready instead of the
+    // capacity refusal `docs/UX_FLOWS.md` section 18 promises.
     const worker = await this.#workers.active();
     if (worker === null) {
       throw new ApiError(
         "BROWSER_CAPACITY_EXHAUSTED",
-        "No browser worker is registered with the control plane.",
+        "No live browser worker is available. A registered worker that has stopped reporting is not counted as capacity; check `reviewplane status`.",
       );
     }
     const assigned = await this.#workers.assignedProjects(worker.id);
@@ -374,37 +389,72 @@ export class BrowserSessionService {
   }
 
   /**
-   * Sends one command to the worker.
+   * Sends one command to the worker, once the whole of `docs/SECURITY.md`
+   * section 7 has passed.
    *
-   * The epoch and controller are checked here and again on the worker. Both
-   * checks are wanted: this one keeps a refusal cheap and auditable, and the
-   * worker's own check is what protects the browser if a command ever reaches
+   * Every check is applied here, before the command leaves the control plane,
+   * and the worker applies its own again. Both are wanted: this one keeps a
+   * refusal cheap and auditable and is the only layer that can see the *route*
+   * (the worker's egress policy was fixed when its context was created), and
+   * the worker's check is what protects the browser if a command ever reaches
    * it by another path.
+   *
+   * `projectId` is the actor's project and is required. It used to be absent,
+   * and each caller checked the project for itself — which meant the Stage 1
+   * exit criterion "browser control commands are project scoped" was a property
+   * of every caller rather than of this function. A caller that forgot would
+   * have driven another project's browser.
    */
   async runCommand(input: {
     readonly browserSessionId: string;
+    readonly projectId: string;
     readonly controller: ControllerIdentity;
     readonly controlEpoch: number;
     readonly command: BrowserCommand;
     readonly actor: EventActor;
   }): Promise<BrowserCommandResult> {
-    const session = await this.get(input.browserSessionId);
-    if (session.status !== "READY" && session.status !== "ACTIVE") {
-      throw new ApiError(
-        "BROWSER_SESSION_NOT_ACTIVE",
-        `The browser session is ${session.status}.`,
-        { status: session.status },
-      );
+    const session = await this.get(input.browserSessionId).catch((error: unknown) => {
+      if (error instanceof ApiError && error.code === "RESOURCE_NOT_FOUND") return null;
+      throw error;
+    });
+    if (session === null) throw notFound("The browser session");
+
+    const denial = authoriseBrowserCommand(
+      {
+        sessionProjectId: session.project_id,
+        actorProjectId: input.projectId,
+        status: session.status,
+        currentEpoch: session.control_epoch,
+        currentController: session.current_controller,
+        presentedEpoch: input.controlEpoch,
+        presentedController: input.controller,
+        publishedServiceId: session.published_service_id,
+        routeAssociated: await this.#routeAssociated(session),
+      },
+      input.command,
+    );
+    if (denial !== null) {
+      // Every denial is recorded, not only the epoch one. Until RVP-30 exactly
+      // one of them was: a command refused for a wrong session status threw and
+      // wrote nothing, so an auditor asking "did anything try to drive that
+      // terminated session?" got the same answer as if nothing had. A denial
+      // that is correct and unrecorded is the defect class this repository has
+      // shipped twice.
+      //
+      // A cross-project attempt is recorded against the **actor's** project,
+      // never the session's. Writing it to the session's stream would let a
+      // stranger append rows to a timeline they cannot read, which is a worse
+      // outcome than the enumeration the refusal already prevents.
+      await this.#recordRejection(session, input, denial);
+      throw new ApiError(denial.code, denial.message, denial.details);
     }
-    if (input.controlEpoch !== session.control_epoch) {
-      await this.#recordRejection(session, input, "CONTROL_EPOCH_STALE");
-      throw new ApiError(
-        "CONTROL_EPOCH_STALE",
-        "Browser control changed. Refresh session state before retrying.",
-        { current_epoch: session.control_epoch },
-      );
-    }
+
     if (session.worker_id === null) {
+      await this.#recordRejection(session, input, {
+        code: "BROWSER_SESSION_NOT_ACTIVE",
+        message: "The browser session has no worker.",
+        reason: "no_worker",
+      });
       throw new ApiError("BROWSER_SESSION_NOT_ACTIVE", "The browser session has no worker.");
     }
 
@@ -458,9 +508,59 @@ export class BrowserSessionService {
           },
         });
       }
+      if (result.ok && result.screenshot !== undefined) {
+        // `docs/EVENTS.md` section 7 lists screenshot.captured under Evidence.
+        // It records that a capture was taken and which artefact it became; the
+        // artefact events record the upload itself.
+        await appendEvent(client, {
+          type: "screenshot.captured",
+          organisationId: session.organisation_id,
+          projectId: session.project_id,
+          actor: input.actor,
+          correlation: {
+            browser_session_id: session.id,
+            artefact_id: result.screenshot.artefact_id,
+          },
+          payload: {
+            purpose: input.command.take_screenshot?.purpose ?? "verification",
+            full_page: result.screenshot.full_page,
+            viewport: result.screenshot.viewport,
+            size_bytes: result.screenshot.size_bytes,
+            sha256: result.screenshot.sha256,
+            captured_at: result.screenshot.captured_at,
+          },
+        });
+      }
     });
 
     return result;
+  }
+
+  /**
+   * Whether the session's published service is still a route that authorises
+   * it (`docs/SECURITY.md` section 7, check six).
+   *
+   * `null` means the session has no published service at all, which is not a
+   * fault: such a session can reach nothing, and the worker's own egress policy
+   * already says so. `false` means the route exists but has been revoked, has
+   * expired, or no longer names this session — a state the worker cannot see,
+   * because its egress policy was fixed when its context was created and
+   * `docs/SECURITY.md` section 10 forbids widening it afterwards. The control
+   * plane is the only layer that can refuse this, so it does.
+   */
+  async #routeAssociated(session: BrowserSessionRecord): Promise<boolean | null> {
+    if (session.published_service_id === null) return null;
+    const rows = await this.#pool.query<{ associated: boolean }>(
+      `SELECT true AS associated
+         FROM published_services
+        WHERE id = $1
+          AND project_id = $2
+          AND status = 'ready'
+          AND expires_at > now()
+          AND $3 = ANY(allowed_browser_session_ids)`,
+      [session.published_service_id, session.project_id, session.id],
+    );
+    return rows.rows.length > 0;
   }
 
   /** Terminates a session and records the transition. */
@@ -525,26 +625,417 @@ export class BrowserSessionService {
     );
   }
 
+  /**
+   * Records a refusal.
+   *
+   * `docs/SECURITY.md` section 8 requires stale commands to be rejected **and
+   * logged**, so this is not optional bookkeeping: an attempt with no record is
+   * indistinguishable from one that never happened. The payload names the code,
+   * the reason and both epochs, and never the command's arguments — a refused
+   * `type_text` is exactly the command whose argument must not be written to an
+   * append-only table.
+   */
   async #recordRejection(
     session: BrowserSessionRecord,
-    input: { readonly command: BrowserCommand; readonly actor: EventActor; readonly controlEpoch: number },
-    code: string,
+    input: {
+      readonly command: BrowserCommand;
+      readonly actor: EventActor;
+      readonly controlEpoch: number;
+      readonly controller: ControllerIdentity;
+      readonly projectId: string;
+    },
+    denial: CommandDenial,
   ): Promise<void> {
+    const crossProject = denial.reason === "project_mismatch";
+    const stream = crossProject
+      ? await this.#projectStream(input.projectId)
+      : { organisationId: session.organisation_id, projectId: session.project_id };
+    if (stream === null) return;
     await inTransaction(this.#pool, async (client) => {
       await appendEvent(client, {
         type: "browser.command_rejected",
+        organisationId: stream.organisationId,
+        projectId: stream.projectId,
+        actor: input.actor,
+        correlation: { browser_session_id: session.id },
+        payload: {
+          command: input.command.command,
+          reason_code: denial.code,
+          reason: denial.reason,
+          interactive: isInteractive(input.command.command),
+          presented_epoch: input.controlEpoch,
+          presented_controller_type: input.controller.type,
+          // A cross-project attempt learns nothing about the session it named,
+          // so the record does not carry the session's epoch or status either:
+          // the audit trail is written for the actor's project, and the other
+          // project's state is not a fact this stream is entitled to.
+          ...(crossProject
+            ? { cross_project: true }
+            : { current_epoch: session.control_epoch, session_status: session.status }),
+        },
+      });
+    });
+  }
+
+  async #projectStream(
+    projectId: string,
+  ): Promise<{ organisationId: string; projectId: string } | null> {
+    const rows = await this.#pool.query<{ organisation_id: string }>(
+      "SELECT organisation_id FROM projects WHERE id = $1",
+      [projectId],
+    );
+    const organisationId = rows.rows[0]?.organisation_id;
+    return organisationId === undefined ? null : { organisationId, projectId };
+  }
+
+  // -------------------------------------------------------------------
+  // Lifecycle: pause and resume
+  // -------------------------------------------------------------------
+
+  /**
+   * Suspends agent-issued interactive commands (`docs/MCP_SPEC.md` section
+   * 7.3).
+   *
+   * A pause is a gate on authority, not a stop on the browser: the context
+   * stays open, live frames keep flowing so a human can still watch, and
+   * non-interactive system capture continues — which is what makes "pause and
+   * look at it" a usable act rather than a blackout. The worker is not told,
+   * deliberately: the lifecycle is the control plane's (`docs/DOMAIN_MODEL.md`
+   * section 12), and a worker that also held a pause flag would be a second
+   * answer to whether a command may run.
+   */
+  async pause(input: {
+    readonly browserSessionId: string;
+    readonly projectId: string;
+    readonly controller: ControllerIdentity;
+    readonly controlEpoch: number;
+    readonly actor: EventActor;
+  }): Promise<BrowserSessionRecord> {
+    const session = await this.#requireControl(input, ["READY", "ACTIVE"]);
+    await this.#setStatus(session, "PAUSED", input.actor, "browser_session.paused", {
+      controller_type: input.controller.type,
+    });
+    return this.get(session.id);
+  }
+
+  /** Re-admits interactive commands to the controller that owns the lease. */
+  async resume(input: {
+    readonly browserSessionId: string;
+    readonly projectId: string;
+    readonly controller: ControllerIdentity;
+    readonly controlEpoch: number;
+    readonly actor: EventActor;
+  }): Promise<BrowserSessionRecord> {
+    const session = await this.#requireControl(input, ["PAUSED"]);
+    // READY rather than ACTIVE: a resumed session has been sitting, and the
+    // page may have moved under it. READY is the state a fresh snapshot is
+    // taken from, and the first successful command moves it to ACTIVE again.
+    await this.#setStatus(session, "READY", input.actor, "browser_session.resumed", {
+      controller_type: input.controller.type,
+    });
+    return this.get(session.id);
+  }
+
+  /**
+   * The project, state, epoch and lease checks a lifecycle change shares with a
+   * command.
+   *
+   * Pausing or ending a browser somebody else now controls is not a lesser act
+   * than clicking in it, so it is refused by the same rules
+   * (`docs/SECURITY.md` section 8).
+   */
+  async #requireControl(
+    input: {
+      readonly browserSessionId: string;
+      readonly projectId: string;
+      readonly controller: ControllerIdentity;
+      readonly controlEpoch: number;
+    },
+    from: readonly SessionStatus[],
+  ): Promise<BrowserSessionRecord> {
+    const session = await this.get(input.browserSessionId);
+    if (session.project_id !== input.projectId) throw notFound("The browser session");
+    if (!from.includes(session.status)) {
+      throw new ApiError(
+        "BROWSER_SESSION_NOT_ACTIVE",
+        `The browser session is ${session.status}.`,
+        { status: session.status },
+      );
+    }
+    if (input.controlEpoch !== session.control_epoch) {
+      throw new ApiError(
+        "CONTROL_EPOCH_STALE",
+        "Browser control changed. Refresh session state before retrying.",
+        { current_epoch: session.control_epoch },
+      );
+    }
+    const controller = session.current_controller;
+    if (
+      controller !== null &&
+      (controller.type !== input.controller.type || controller.id !== input.controller.id)
+    ) {
+      throw new ApiError(
+        "CONTROL_NOT_OWNED",
+        "Another controller holds the interactive lease for this browser session.",
+        { current_epoch: session.control_epoch },
+      );
+    }
+    return session;
+  }
+
+  // -------------------------------------------------------------------
+  // Control leases
+  // -------------------------------------------------------------------
+
+  /**
+   * Transfers the interactive lease and increments the epoch (ADR-0007).
+   *
+   * The increment is the whole mechanism: after it, every command carrying the
+   * previous epoch is refused, which is what makes "exactly one interactive
+   * controller" true of commands in flight and not only of the lease table. The
+   * two writes are one transaction, so a lease can never exist at an epoch the
+   * session does not carry.
+   *
+   * `human` is refused with `UNSUPPORTED_CAPABILITY` in Stage 1: takeover
+   * through the control WebSocket is Stage 2 work (`docs/ROADMAP.md`). The
+   * refusal is by capability rather than by silence so that a client learns the
+   * feature is absent rather than that its request was malformed — and the
+   * epoch model is already correct, so Stage 2 adds a controller rather than
+   * reworking this.
+   */
+  async requestControl(input: {
+    readonly browserSessionId: string;
+    readonly projectId: string;
+    readonly controller: ControllerIdentity;
+    readonly reason?: string;
+    readonly actor: EventActor;
+  }): Promise<BrowserSessionRecord> {
+    const session = await this.get(input.browserSessionId);
+    if (session.project_id !== input.projectId) throw notFound("The browser session");
+    if (session.ended_at !== null || session.status === "TERMINATED" || session.status === "FAILED") {
+      throw new ApiError(
+        "BROWSER_SESSION_NOT_ACTIVE",
+        `The browser session is ${session.status}.`,
+        { status: session.status },
+      );
+    }
+    if (input.controller.type === "human") {
+      // The request is still audited: `docs/EVENTS.md` section 7 lists
+      // browser.control_requested, and a refused takeover is exactly the
+      // attempt an auditor goes looking for.
+      await inTransaction(this.#pool, async (client) => {
+        await appendEvent(client, {
+          type: "browser.control_requested",
+          organisationId: session.organisation_id,
+          projectId: session.project_id,
+          actor: input.actor,
+          correlation: { browser_session_id: session.id },
+          payload: {
+            requested_controller_type: input.controller.type,
+            granted: false,
+            reason_code: "UNSUPPORTED_CAPABILITY",
+          },
+        });
+      });
+      throw new ApiError(
+        "UNSUPPORTED_CAPABILITY",
+        "Human interactive control arrives with takeover in Stage 2. The lease, the epoch and the rejection of stale commands are already in force.",
+      );
+    }
+
+    const current = session.current_controller;
+    if (current !== null && current.type === input.controller.type && current.id === input.controller.id) {
+      // Already the controller. Re-requesting is idempotent and does **not**
+      // increment the epoch: `docs/TESTING.md` section 5 requires duplicate
+      // control commands to be idempotent, and an increment here would refuse
+      // every command the caller had already prepared.
+      return session;
+    }
+
+    const epoch = session.control_epoch + 1;
+    await inTransaction(this.#pool, async (client) => {
+      await client.query(
+        "UPDATE control_leases SET revoked_at = now(), reason = 'superseded by a new controller' WHERE browser_session_id = $1 AND revoked_at IS NULL",
+        [session.id],
+      );
+      await client.query(
+        `UPDATE browser_sessions
+            SET current_controller_type = $2,
+                current_controller_id   = $3,
+                control_epoch           = $4
+          WHERE id = $1`,
+        [session.id, input.controller.type, input.controller.id, epoch],
+      );
+      await client.query(
+        `INSERT INTO control_leases (id, browser_session_id, controller_type, controller_id, epoch, expires_at, reason)
+         VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6), $7)`,
+        [
+          newId("lse_"),
+          session.id,
+          input.controller.type,
+          input.controller.id,
+          epoch,
+          LEASE_SECONDS,
+          input.reason ?? "control requested",
+        ],
+      );
+      await appendEvent(client, {
+        type: "browser.control_requested",
+        organisationId: session.organisation_id,
+        projectId: session.project_id,
+        actor: input.actor,
+        correlation: { browser_session_id: session.id },
+        payload: { requested_controller_type: input.controller.type, granted: true },
+      });
+      await appendEvent(client, {
+        type: "browser.control_transferred",
         organisationId: session.organisation_id,
         projectId: session.project_id,
         actor: input.actor,
         correlation: { browser_session_id: session.id },
         payload: {
-          command: input.command.command,
-          reason_code: code,
-          presented_epoch: input.controlEpoch,
-          current_epoch: session.control_epoch,
+          previous_controller_type: current?.type ?? null,
+          new_controller_type: input.controller.type,
+          previous_epoch: session.control_epoch,
+          control_epoch: epoch,
         },
       });
     });
+    return this.get(session.id);
+  }
+
+  /**
+   * Releases the interactive lease.
+   *
+   * The epoch increments here too. It has to: after a release nobody holds the
+   * lease, and a command still carrying the released epoch would otherwise
+   * satisfy the epoch check and be refused only by the ownership check — which
+   * is the weaker of the two and the one Stage 2's takeover has to change.
+   */
+  async releaseControl(input: {
+    readonly browserSessionId: string;
+    readonly projectId: string;
+    readonly controller: ControllerIdentity;
+    readonly controlEpoch: number;
+    readonly actor: EventActor;
+  }): Promise<BrowserSessionRecord> {
+    const session = await this.get(input.browserSessionId);
+    if (session.project_id !== input.projectId) throw notFound("The browser session");
+    if (input.controlEpoch !== session.control_epoch) {
+      throw new ApiError(
+        "CONTROL_EPOCH_STALE",
+        "Browser control changed. Refresh session state before retrying.",
+        { current_epoch: session.control_epoch },
+      );
+    }
+    const current = session.current_controller;
+    if (current === null) return session;
+    if (current.type !== input.controller.type || current.id !== input.controller.id) {
+      throw new ApiError(
+        "CONTROL_NOT_OWNED",
+        "Another controller holds the interactive lease for this browser session.",
+        { current_epoch: session.control_epoch },
+      );
+    }
+
+    const epoch = session.control_epoch + 1;
+    await inTransaction(this.#pool, async (client) => {
+      await client.query(
+        "UPDATE control_leases SET revoked_at = now(), reason = 'released by controller' WHERE browser_session_id = $1 AND revoked_at IS NULL",
+        [session.id],
+      );
+      await client.query(
+        `UPDATE browser_sessions
+            SET current_controller_type = NULL,
+                current_controller_id   = NULL,
+                control_epoch           = $2
+          WHERE id = $1`,
+        [session.id, epoch],
+      );
+      await appendEvent(client, {
+        type: "browser.control_released",
+        organisationId: session.organisation_id,
+        projectId: session.project_id,
+        actor: input.actor,
+        correlation: { browser_session_id: session.id },
+        payload: {
+          previous_controller_type: current.type,
+          previous_epoch: session.control_epoch,
+          control_epoch: epoch,
+        },
+      });
+    });
+    return this.get(session.id);
+  }
+
+  // -------------------------------------------------------------------
+  // Timeline and reconciliation
+  // -------------------------------------------------------------------
+
+  /**
+   * The audit record of one browser session, newest first
+   * (`docs/API.md` section 11).
+   *
+   * It is read from the event table rather than from a second log, because
+   * `AGENTS.md` requires every meaningful state change to produce an event and
+   * a timeline assembled from anything else would be a different set of facts.
+   */
+  async timeline(
+    browserSessionId: string,
+    projectId: string,
+    limit = 100,
+  ): Promise<readonly TimelineEntry[]> {
+    const session = await this.get(browserSessionId);
+    if (session.project_id !== projectId) throw notFound("The browser session");
+    const rows = await this.#pool.query<{
+      id: string;
+      type: string;
+      occurred_at: Date;
+      actor_type: string;
+      actor_display: string | null;
+      payload: Record<string, unknown>;
+    }>(
+      `SELECT id, type, occurred_at, actor_type, actor_display, payload
+         FROM events
+        WHERE project_id = $1
+          AND correlation ->> 'browser_session_id' = $2
+        ORDER BY occurred_at DESC, sequence DESC
+        LIMIT $3`,
+      [projectId, browserSessionId, Math.min(Math.max(limit, 1), 200)],
+    );
+    return rows.rows.map((row) => ({
+      id: row.id,
+      type: row.type,
+      occurred_at: row.occurred_at.toISOString(),
+      actor: { type: row.actor_type, display: row.actor_display },
+      payload: row.payload,
+    }));
+  }
+
+  /**
+   * Applies a status the reconciler concluded (`docs/OPERATIONS.md` section 9).
+   *
+   * `DEGRADED` is the answer for "the worker is no longer reporting this
+   * session": `docs/DOMAIN_MODEL.md` section 12 requires the session and its
+   * metadata to be retained and to remain diagnosable rather than to be
+   * terminated. `FAILED` is for a worker that is gone; evidence already
+   * uploaded stays exactly where it is.
+   */
+  async markReconciled(
+    browserSessionId: string,
+    status: "DEGRADED" | "FAILED",
+    reason: string,
+  ): Promise<void> {
+    const session = await this.get(browserSessionId);
+    if (session.status === status) return;
+    if (status === "FAILED") await this.#revokeLeases(session.id, reason);
+    await this.#setStatus(
+      session,
+      status,
+      { type: "system", display: "browser session reconciler" },
+      status === "FAILED" ? "browser_session.failed" : "browser_session.degraded",
+      { reason, trigger: "reconciliation" },
+    );
   }
 
   async #setStatus(

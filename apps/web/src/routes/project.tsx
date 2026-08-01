@@ -26,6 +26,7 @@ import { useState, type FormEvent, type ReactElement } from "react";
 
 import { ApiFailure, api, isActive, type Project } from "../api/client.ts";
 import { PublishedServices } from "../components/PublishedServices.tsx";
+import { StartBrowserSession } from "../components/StartBrowserSession.tsx";
 import { StatusBadge } from "../components/StatusBadge.tsx";
 import { formatViewport } from "./projects.tsx";
 import { rootRoute } from "./root.tsx";
@@ -205,6 +206,13 @@ function ProjectLive(): ReactElement {
         <h2 id="project-live-heading" className="text-lg font-semibold">
           Live
         </h2>
+        {/*
+          Starting comes before the list it adds to, and before publication:
+          `docs/UX_FLOWS.md` section 6 puts the human flow on this page, and the
+          capacity state its refusals name sends a reader to the list below.
+        */}
+        <StartBrowserSession projectId={projectId} />
+        <h3 className="mt-10 text-base font-semibold">Sessions running now</h3>
         {active.length === 0 ? (
           <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">
             No browser session is running in this project. One appears here as soon as an agent or

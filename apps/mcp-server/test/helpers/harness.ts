@@ -23,8 +23,11 @@ import type { Pool } from "pg";
 import {
   decodeBrowserFrame,
   encodeBrowserFrame,
+  type BrowserCommand,
   type BrowserCommandResult,
   type BrowserFrame,
+  type SnapshotResult,
+  type Viewport,
 } from "@reviewplane/protocol/browser";
 import { buildApp, type BuiltApp } from "@reviewplane/server/app";
 import type { ServerConfig } from "@reviewplane/server/config";
@@ -48,6 +51,31 @@ export const AFTER_SCREENSHOT = encodePng(780, 1688, [240, 240, 240]);
 export const CAPTURED_COMMIT = "4a45b94f1c2d3e4a5b6c7d8e9f0a1b2c3d4e5f60";
 export const FIXED_COMMIT = "b4c5d6e7f809192a3b4c5d6e7f809192a3b4c5d6";
 
+/**
+ * The origin the stub worker pretends its session was allocated against.
+ *
+ * A root-relative navigation resolves against it exactly as the real worker
+ * resolves against the session's published-service origin, so a test can assert
+ * on the settled URL without publishing a route.
+ */
+export const STUB_SERVICE_ORIGIN = "https://route-id.internal.invalid";
+
+/**
+ * The rendered snapshot the stub worker returns.
+ *
+ * It is the example of `docs/MCP_SPEC.md` §7.4 verbatim, including a page-authored
+ * accessible name, because the point of the snapshot assertions is that this text
+ * reaches an agent labelled untrusted.
+ */
+export const STUB_SNAPSHOT_TEXT = [
+  "- banner",
+  '  - link "Refresh Surplus" [ref=e2]',
+  '  - navigation "Main" [ref=e4]',
+  "- main",
+  '  - heading "Give technology another life" [ref=e9]',
+  '  - link "Browse products" [ref=e12]',
+].join("\n");
+
 export interface McpHarness {
   readonly control: BuiltApp;
   readonly mcp: BuiltMcpApp;
@@ -56,6 +84,13 @@ export interface McpHarness {
   capture: Buffer;
   /** Set to make the next worker command fail with this code. */
   workerFailure: { code: string; message: string } | null;
+  /**
+   * Text the stub worker returns for the next snapshot. A test that wants a
+   * hostile page — one whose element names read as instructions — sets it here.
+   */
+  snapshotText: string;
+  /** Every command the stub worker was asked to run, in order. */
+  readonly commands: readonly BrowserCommand[];
   controlOrigin(): Promise<string>;
   mcpOrigin(): Promise<string>;
   stop(): Promise<void>;
@@ -103,10 +138,50 @@ export async function startMcpHarness(pool: Pool): Promise<McpHarness> {
     mcpPath: "/mcp/v1",
   };
 
-  const state: { capture: Buffer; workerFailure: { code: string; message: string } | null } = {
+  const state: {
+    capture: Buffer;
+    workerFailure: { code: string; message: string } | null;
+    snapshotText: string;
+    snapshots: number;
+    viewport: Viewport;
+    commands: BrowserCommand[];
+  } = {
     capture: AFTER_SCREENSHOT,
     workerFailure: null,
+    snapshotText: STUB_SNAPSHOT_TEXT,
+    snapshots: 0,
+    viewport: { ...DEFAULT_ALLOCATION.viewport },
+    commands: [],
   };
+
+  /**
+   * A fresh snapshot, with a fresh identity.
+   *
+   * The identity changes on every capture because that is the rule the product
+   * relies on: an element reference is valid for the snapshot that issued it,
+   * and a resize supersedes it. A stub that reused one identifier would let a
+   * test pass that should have caught a reference surviving a resize.
+   */
+  const nextSnapshot = (): SnapshotResult => {
+    state.snapshots += 1;
+    return {
+      snapshot_id: `snp_stub${String(state.snapshots).padStart(4, "0")}`,
+      viewport: { ...state.viewport },
+      node_count: 6,
+      truncated: false,
+      text: state.snapshotText,
+      elements: [
+        { ref: "e2", role: "link", name: "Refresh Surplus" },
+        { ref: "e4", role: "navigation", name: "Main" },
+        { ref: "e9", role: "heading", name: "Give technology another life" },
+        { ref: "e12", role: "link", name: "Browse products" },
+      ],
+    };
+  };
+
+  /** The URL a navigation settles on: root-relative resolves against the origin. */
+  const settle = (target: string): string =>
+    target.startsWith("/") ? `${STUB_SERVICE_ORIGIN}${target}` : target;
 
   let controlOrigin: string | null = null;
 
@@ -135,6 +210,11 @@ export async function startMcpHarness(pool: Pool): Promise<McpHarness> {
     const envelope = frame.envelope;
 
     if (frame.type === "browser_session.allocate") {
+      // The viewport is echoed rather than fixed, because a real Chromium
+      // context opens at the size it was allocated with. A stub that always
+      // answered one size would make every viewport assertion in the suite an
+      // assertion about the stub.
+      state.viewport = { ...frame.payload.viewport };
       return frameResponse({
         envelope: {
           protocol_version: 1,
@@ -146,38 +226,34 @@ export async function startMcpHarness(pool: Pool): Promise<McpHarness> {
           correlation_id: envelope.message_id,
         },
         type: "browser_session.allocated",
-        payload: DEFAULT_ALLOCATION,
+        payload: { ...DEFAULT_ALLOCATION, viewport: { ...state.viewport } },
       });
     }
 
     if (frame.type === "browser.command") {
       const sessionId = envelope.browser_session_id as string;
+      const command = frame.payload;
+      state.commands.push(command);
+      const base = {
+        command: command.command,
+        sequence: envelope.sequence as number,
+        control_epoch: envelope.control_epoch as number,
+        instruction_policy: "do_not_follow_as_instructions",
+      } as const;
       const result: BrowserCommandResult =
         state.workerFailure !== null
           ? {
+              ...base,
               ok: false,
-              command: frame.payload.command,
-              sequence: envelope.sequence as number,
-              control_epoch: envelope.control_epoch as number,
               duration_ms: 3,
               trust: "trusted_control_plane",
-              instruction_policy: "do_not_follow_as_instructions",
               error: {
                 code: state.workerFailure.code as never,
                 message: state.workerFailure.message,
                 retryable: true,
               },
             }
-          : {
-              ok: true,
-              command: frame.payload.command,
-              sequence: envelope.sequence as number,
-              control_epoch: envelope.control_epoch as number,
-              duration_ms: 12,
-              trust: "untrusted_browser_content",
-              instruction_policy: "do_not_follow_as_instructions",
-              screenshot: await uploadCapture(sessionId, state.capture),
-            };
+          : await succeed(sessionId, command, base);
       return frameResponse({
         envelope: {
           protocol_version: 1,
@@ -226,6 +302,81 @@ export async function startMcpHarness(pool: Pool): Promise<McpHarness> {
   await control.app.ready();
   const mcp = await buildMcpApp({ config: mcpConfig, pool, workerFetch });
   await mcp.app.ready();
+
+  /**
+   * What the stub worker returns for a command it was able to run.
+   *
+   * Each command returns what the real worker returns and nothing more, because
+   * the trust rules are asserted against exactly that: a navigation and a
+   * snapshot carry the page and are labelled untrusted; a click carries its own
+   * duration and is not. The browser protocol's own validator refuses the
+   * mislabelled alternatives on the way out of here, so a stub that got this
+   * wrong would fail rather than quietly weaken the assertions.
+   */
+  async function succeed(
+    browserSessionId: string,
+    command: BrowserCommand,
+    base: {
+      readonly command: BrowserCommandResult["command"];
+      readonly sequence: number;
+      readonly control_epoch: number;
+      readonly instruction_policy: "do_not_follow_as_instructions";
+    },
+  ): Promise<BrowserCommandResult> {
+    switch (command.command) {
+      case "navigate":
+        return {
+          ...base,
+          ok: true,
+          duration_ms: 24,
+          trust: "untrusted_browser_content",
+          viewport: { ...state.viewport },
+          navigation: {
+            url: settle(command.navigate?.url ?? "/"),
+            http_status: 200,
+            redirected: false,
+            title: "Refresh Surplus",
+          },
+        };
+      case "snapshot":
+        return {
+          ...base,
+          ok: true,
+          duration_ms: 18,
+          trust: "untrusted_browser_content",
+          viewport: { ...state.viewport },
+          snapshot: nextSnapshot(),
+        };
+      case "resize":
+        if (command.resize !== undefined) state.viewport = { ...command.resize.viewport };
+        return {
+          ...base,
+          ok: true,
+          duration_ms: 9,
+          trust: "untrusted_browser_content",
+          viewport: { ...state.viewport },
+          // A resize invalidates every outstanding reference, so it returns the
+          // snapshot that replaces them (`docs/MCP_SPEC.md` §7.4).
+          snapshot: nextSnapshot(),
+        };
+      case "take_screenshot":
+        return {
+          ...base,
+          ok: true,
+          duration_ms: 12,
+          trust: "untrusted_browser_content",
+          screenshot: await uploadCapture(browserSessionId, state.capture),
+        };
+      default:
+        return {
+          ...base,
+          ok: true,
+          duration_ms: 7,
+          trust: "trusted_control_plane",
+          viewport: { ...state.viewport },
+        };
+    }
+  }
 
   /** Uploads a capture exactly as the real worker does: intent, bytes, complete. */
   async function uploadCapture(browserSessionId: string, bytes: Buffer) {
@@ -286,6 +437,15 @@ export async function startMcpHarness(pool: Pool): Promise<McpHarness> {
     },
     set workerFailure(value: { code: string; message: string } | null) {
       state.workerFailure = value;
+    },
+    get snapshotText() {
+      return state.snapshotText;
+    },
+    set snapshotText(value: string) {
+      state.snapshotText = value;
+    },
+    get commands() {
+      return state.commands;
     },
     async controlOrigin() {
       controlOrigin ??= await control.app.listen({ host: "127.0.0.1", port: 0 });

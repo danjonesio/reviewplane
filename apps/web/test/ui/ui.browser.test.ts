@@ -256,7 +256,14 @@ test("status is conveyed as text and announced politely", async () => {
   const session = await openSignedIn(DESKTOP);
   await openLiveView(session);
 
-  const live = session.page.locator("[role='status']").first();
+  // The live surface's own region, not merely the first on the page. The
+  // session room now also announces control changes (`docs/UX_FLOWS.md` §19),
+  // and that region is deliberately empty until something happens — a live
+  // region has to be in the document before its content changes to be
+  // announced at all.
+  const live = session.page.locator(
+    "section[aria-labelledby='live-surface-heading'] [role='status']",
+  );
   await live.waitFor();
   assert.equal(await live.getAttribute("aria-live"), "polite");
   const text = (await live.textContent()) ?? "";

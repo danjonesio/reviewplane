@@ -418,6 +418,27 @@ Stale epochs are rejected.
 
 These five fields are the envelope of every browser command, not only of human input: they are declared once in `packages/protocol/schemas/browser/v1.schema.json` and required by the generated validators on both sides, so a command cannot omit one. The control plane checks them before dispatch and the worker checks them again before touching a page. An epoch that is not the current one is rejected whether it is older or newer, and a sequence number that is not greater than the last accepted one is rejected as a replay. Non-interactive system capture is authorised without the interactive lease and never transfers it.
 
+**The controller identity is derived from the authenticated actor and is never
+taken from a request.** It was a field of the `docs/API.md` §11 command body
+until RVP-30, which made it a claim *about* the actor rather than the actor: the
+lease-ownership check could be satisfied by naming its owner. The control plane
+now derives it — a human acts as the `system` controller bound to their session,
+an agent as its own agent session — and a body that still carries one is refused
+(ADR-0028).
+
+**All six checks of `SECURITY.md` §7 run in the control plane before dispatch**,
+not only the epoch and the session state. The worker repeats what it can, and
+one check it structurally cannot make: its egress policy is fixed when its
+context is created and §6.2 forbids widening it afterwards, so a route that has
+been revoked, has expired or no longer authorises this session is invisible to
+the worker while its origin still resolves. That check has to be here.
+
+Every refusal — stale epoch, foreign project, non-owning controller, wrong
+session status, missing worker, unassociated route, policy denial — is recorded
+as `browser.command_rejected`. `SECURITY.md` §8 requires a rejected command to be
+logged as well as refused, and a denial that is correct and unrecorded is
+indistinguishable from an attempt that never happened.
+
 ## 7. Development-service routing
 
 ### 7.1 Problem
@@ -649,8 +670,15 @@ introduced, now bound to a user and carrying a CSRF token
 
 The bootstrap administrator token remains, as this list says it may: it is the
 machine credential the worker channel, the provisioning routes and the operator
-harnesses use, and it is deliberately not a human session — it carries no CSRF
-token, so it cannot reach a state-changing browser route.
+harnesses use. It resolves to an organisation-wide human principal, so it reaches
+the same routes an administrator's account session does, including the
+state-changing browser-session routes of `docs/API.md` §11 — which is what lets
+an operator drive a session from a script. The CSRF rule does not apply to it and
+does not need to: CSRF exists because a browser attaches a **cookie** to a
+request another origin caused, and nothing attaches a bearer token that way. What
+the token cannot do is authenticate as a project-scoped session, and what a
+project-scoped session cannot do is administer the organisation — assign a
+browser worker, read the fleet, or read the worker protocol example.
 
 Later:
 
@@ -667,6 +695,28 @@ Later:
 - Revocation support
 
 The mechanism is ADR-0014: a control-plane certificate authority, generated at bootstrap and persisted server-side, issues one X.509 client certificate per connector. Its private key never leaves the control plane; the CA certificate is exported so that the tunnel gateway can verify the same identities. Stage 0 terminates the connector channels on a dedicated mutually authenticated listener rather than behind the shared gateway of §4.1, because the human API does not request client certificates.
+
+### Browser worker
+
+A browser worker presents its own credential, which is not the administrator
+token and is accepted on the internal worker channel and nowhere administrative
+(`docs/SECURITY.md` §6.4). It is scoped to the projects an administrator has
+assigned to it; there is no wildcard, and an unassigned worker serves nothing.
+
+**The assignment is restated on every heartbeat** (ADR-0026), so an assignment
+added or removed takes effect within one heartbeat interval rather than at the
+worker's next restart. A removal also terminates the sessions the worker is
+running for that project: a browser session is a live window into a development
+machine held open by an authorisation that has just been withdrawn, and letting
+it run to its duration limit would mean the withdrawal took up to two hours to
+become true. Evidence already uploaded is untouched.
+
+The control plane keeps the authority. The worker's copy is a cache and never a
+source: allocation is refused against the control plane's record before the
+worker is contacted, and refused again by the worker on arrival.
+
+Worker liveness is a swept state and a term in every query that decides something
+(ADR-0027, `docs/OPERATIONS.md` §8.1).
 
 ### Agent
 

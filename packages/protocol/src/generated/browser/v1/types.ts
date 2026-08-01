@@ -49,6 +49,9 @@ export const MESSAGE_TYPE_VALUES = [
   "worker.register",
   "worker.register.ack",
   "worker.heartbeat",
+  "worker.heartbeat.ack",
+  "worker.contexts.request",
+  "worker.contexts",
   "browser_session.allocate",
   "browser_session.allocated",
   "browser_session.status",
@@ -61,6 +64,9 @@ export type MessageType =
   | "worker.register"
   | "worker.register.ack"
   | "worker.heartbeat"
+  | "worker.heartbeat.ack"
+  | "worker.contexts.request"
+  | "worker.contexts"
   | "browser_session.allocate"
   | "browser_session.allocated"
   | "browser_session.status"
@@ -202,6 +208,9 @@ export const COMMAND_NAME_VALUES = [
   "snapshot",
   "click",
   "type_text",
+  "select_option",
+  "press_key",
+  "scroll",
   "resize",
   "wait",
   "take_screenshot",
@@ -212,9 +221,68 @@ export type CommandName =
   | "snapshot"
   | "click"
   | "type_text"
+  | "select_option"
+  | "press_key"
+  | "scroll"
   | "resize"
   | "wait"
   | "take_screenshot";
+
+/**
+ * A key press, optionally with modifiers. The vocabulary is closed on purpose: a key name
+ * reaches the browser as a control instruction, so it is drawn from a fixed set rather
+ * than passed through from an argument a page could influence.
+ */
+export const KEY_NAME_VALUES = [
+  "Enter",
+  "Tab",
+  "Shift+Tab",
+  "Escape",
+  "Backspace",
+  "Delete",
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown",
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+  "Space",
+] as const;
+
+export type KeyName =
+  | "Enter"
+  | "Tab"
+  | "Shift+Tab"
+  | "Escape"
+  | "Backspace"
+  | "Delete"
+  | "Home"
+  | "End"
+  | "PageUp"
+  | "PageDown"
+  | "ArrowUp"
+  | "ArrowDown"
+  | "ArrowLeft"
+  | "ArrowRight"
+  | "Space";
+
+/**
+ * Direction of a scroll command.
+ */
+export const SCROLL_DIRECTION_VALUES = [
+  "up",
+  "down",
+  "left",
+  "right",
+] as const;
+
+export type ScrollDirection =
+  | "up"
+  | "down"
+  | "left"
+  | "right";
 
 /**
  * Bounded navigation wait condition (docs/MCP_SPEC.md section 7.4). Every value completes
@@ -313,6 +381,9 @@ export const MESSAGE_DIRECTIONS: Readonly<Record<MessageType, "control_plane_to_
   "worker.register": "worker_to_control_plane",
   "worker.register.ack": "control_plane_to_worker",
   "worker.heartbeat": "worker_to_control_plane",
+  "worker.heartbeat.ack": "control_plane_to_worker",
+  "worker.contexts.request": "control_plane_to_worker",
+  "worker.contexts": "worker_to_control_plane",
   "browser_session.allocate": "control_plane_to_worker",
   "browser_session.allocated": "worker_to_control_plane",
   "browser_session.status": "worker_to_control_plane",
@@ -328,6 +399,9 @@ export const MESSAGE_CHANNELS: Readonly<Record<MessageType, Channel>> = {
   "worker.register": "control",
   "worker.register.ack": "control",
   "worker.heartbeat": "control",
+  "worker.heartbeat.ack": "control",
+  "worker.contexts.request": "control",
+  "worker.contexts": "control",
   "browser_session.allocate": "control",
   "browser_session.allocated": "control",
   "browser_session.status": "events",
@@ -344,6 +418,9 @@ export const PAYLOAD_MAX_BYTES: Readonly<Record<MessageType, number>> = {
   "worker.register": 4096,
   "worker.register.ack": 32768,
   "worker.heartbeat": 2048,
+  "worker.heartbeat.ack": 32768,
+  "worker.contexts.request": 512,
+  "worker.contexts": 16384,
   "browser_session.allocate": 8192,
   "browser_session.allocated": 2048,
   "browser_session.status": 2048,
@@ -420,6 +497,9 @@ export const INTERACTIVE_COMMANDS = [
   "navigate",
   "click",
   "type_text",
+  "select_option",
+  "press_key",
+  "scroll",
   "resize",
   "wait",
 ] as const;
@@ -531,6 +611,12 @@ export type AccessibleRole = string;
  * docs/MCP_SPEC.md section 7.9 secret injection is the supported path.
  */
 export type InputText = string;
+
+/**
+ * Value of one option of a select. Page-derived in practice, so bounded in length and
+ * character class.
+ */
+export type OptionValue = string;
 
 /**
  * CSS selector used by a bounded wait condition. Selectors are hints, not identity
@@ -768,6 +854,74 @@ export interface WorkerHeartbeat {
 }
 
 /**
+ * Answer to a heartbeat. It restates the assignment rather than describing a change, so a
+ * worker that missed an earlier answer converges anyway and no side has to keep a diff
+ * (ADR-0026).
+ */
+export interface WorkerHeartbeatAck {
+  /**
+   * The complete set of projects this worker may accept sessions for, as of this answer.
+   * An assignment removed here MUST stop being served without waiting for a restart
+   * (docs/SECURITY.md section 6.4).
+   */
+  readonly assigned_projects: readonly Identifier[];
+  /**
+   * How often the worker must heartbeat before the control plane treats it as lost.
+   * Repeated here so an operator can change the cadence without restarting the worker.
+   */
+  readonly heartbeat_interval_seconds: number;
+  /**
+   * When the control plane read the assignment.
+   */
+  readonly observed_at: Timestamp;
+}
+
+/**
+ * Asks the worker what it is holding. It takes no arguments: a reconciler that could name
+ * the sessions it expects would be told what it already believes.
+ */
+export interface WorkerContextsRequest {
+}
+
+/**
+ * One browser context the worker is holding.
+ */
+export interface WorkerContext {
+  /**
+   * Browser session the context was allocated for.
+   */
+  readonly browser_session_id: Identifier;
+  /**
+   * Project the context belongs to.
+   */
+  readonly project_id: Identifier;
+  /**
+   * Status the worker believes the session is in.
+   */
+  readonly status: SessionStatus;
+  /**
+   * Control epoch the worker is enforcing for this context.
+   */
+  readonly control_epoch: number;
+}
+
+/**
+ * Every browser context the worker holds, for reconciliation (docs/OPERATIONS.md section
+ * 9).
+ */
+export interface WorkerContexts {
+  /**
+   * The contexts the worker holds. An empty array means the worker holds none, which is a
+   * fact rather than an absence of one.
+   */
+  readonly contexts: readonly WorkerContext[];
+  /**
+   * When the worker enumerated its contexts.
+   */
+  readonly observed_at: Timestamp;
+}
+
+/**
  * Allocation request for one isolated browser context.
  */
 export interface SessionAllocate {
@@ -950,6 +1104,69 @@ export interface TypeTextParams {
 }
 
 /**
+ * Input for select_option. The values name options of the select the reference points at;
+ * the schema bounds how many and how long, so a hostile page cannot make one command
+ * unbounded.
+ */
+export interface SelectOptionParams {
+  /**
+   * Snapshot the reference was issued by.
+   */
+  readonly snapshot_id: Identifier;
+  /**
+   * Element reference from that snapshot.
+   */
+  readonly ref: ElementReference;
+  /**
+   * Option values to select. More than one is meaningful only on a multiple select.
+   */
+  readonly values: readonly OptionValue[];
+}
+
+/**
+ * Input for press_key. The key set is closed: a key name is a control instruction to the
+ * browser, so it is drawn from a fixed vocabulary rather than passed through.
+ */
+export interface PressKeyParams {
+  /**
+   * Key or modifier combination to press.
+   */
+  readonly key: KeyName;
+  /**
+   * Snapshot the reference was issued by, when the key is directed at one element rather
+   * than at the page.
+   */
+  readonly snapshot_id?: Identifier;
+  /**
+   * Element the key is directed at. Absent means the page has focus.
+   */
+  readonly ref?: ElementReference;
+}
+
+/**
+ * Input for scroll. The distance is bounded, so a scroll is a movement rather than an
+ * unbounded loop.
+ */
+export interface ScrollParams {
+  /**
+   * Direction to scroll in.
+   */
+  readonly direction: ScrollDirection;
+  /**
+   * Distance in CSS pixels.
+   */
+  readonly amount_px: number;
+  /**
+   * Snapshot the reference was issued by, when the scroll is inside one element.
+   */
+  readonly snapshot_id?: Identifier;
+  /**
+   * Element to scroll. Absent means the page scrolls.
+   */
+  readonly ref?: ElementReference;
+}
+
+/**
  * Input for resize. A resize invalidates every outstanding element reference
  * (docs/MCP_SPEC.md section 7.4).
  */
@@ -1041,6 +1258,18 @@ export interface BrowserCommand {
    * Parameters for type_text.
    */
   readonly type_text?: TypeTextParams;
+  /**
+   * Parameters for select_option.
+   */
+  readonly select_option?: SelectOptionParams;
+  /**
+   * Parameters for press_key.
+   */
+  readonly press_key?: PressKeyParams;
+  /**
+   * Parameters for scroll.
+   */
+  readonly scroll?: ScrollParams;
   /**
    * Parameters for resize.
    */
@@ -1266,6 +1495,21 @@ export type BrowserFrame =
       readonly envelope: Envelope;
       readonly type: "worker.heartbeat";
       readonly payload: WorkerHeartbeat;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "worker.heartbeat.ack";
+      readonly payload: WorkerHeartbeatAck;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "worker.contexts.request";
+      readonly payload: WorkerContextsRequest;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "worker.contexts";
+      readonly payload: WorkerContexts;
     }
   | {
       readonly envelope: Envelope;

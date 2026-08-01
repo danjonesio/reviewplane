@@ -30,6 +30,11 @@ import { connect as tlsConnect } from "node:tls";
 import { migrationState } from "../../db/migrate.ts";
 import type { Pool } from "../../db/pool.ts";
 import { describeFailure, readBuildInfo, type BuildInfo } from "../../health.ts";
+import { DEFAULT_BROWSER_WORKER_CONFIG } from "../browser-sessions/config.ts";
+import {
+  SCHEDULABLE_WORKER_STATUSES,
+  workerLivePredicate,
+} from "../browser-sessions/liveness.ts";
 
 /** Days before expiry at which a certificate becomes a warning. */
 export const CERTIFICATE_WARNING_DAYS = 30;
@@ -37,21 +42,20 @@ export const CERTIFICATE_WARNING_DAYS = 30;
 /**
  * Silence after which a browser worker's capacity stops being counted.
  *
- * A worker heartbeats every fifteen seconds — the interval the control plane
- * advertises in its registration acknowledgement — so this is three missed
- * heartbeats, the same margin `REVIEWPLANE_CONNECTOR_DEGRADED_AFTER_SECONDS`
- * gives a connector.
+ * Three missed heartbeats, the same margin
+ * `REVIEWPLANE_CONNECTOR_DEGRADED_AFTER_SECONDS` gives a connector.
  *
- * It is applied here, in the reporting, and nowhere else. Nothing reaps a
- * stopped worker's row: it stays `active` in `browser_workers` until something
- * marks it otherwise, which is worker-lifecycle work this command does not do.
- * What this command must not do is answer "four slots free" about a container
- * that is gone — an operator asking why a session will not start would read
- * that as the scheduler's problem and look in the wrong place. The row is still
- * reported, as `stale_workers`, because "a worker registered and went quiet" and
- * "no worker ever registered" are different faults with different fixes.
+ * It is re-exported from the browser-session module rather than declared here.
+ * RVP-15 applied this predicate in the reporting and nowhere else, and the
+ * comment that stood here said so: nothing reaped a stopped worker's row, and
+ * nothing else filtered on it, so the scheduler could still dispatch a session
+ * to a container that was gone. RVP-70 made liveness a state and put the same
+ * term in every path that decides something (ADR-0027). A report and a reaper
+ * that disagreed about what "live" means would be worse than either alone, so
+ * there is one definition and this reads it.
  */
-export const WORKER_STALE_AFTER_SECONDS = 45;
+export const WORKER_STALE_AFTER_SECONDS =
+  DEFAULT_BROWSER_WORKER_CONFIG.degradedAfterSeconds;
 
 export interface DatabaseStatus {
   readonly reachable: boolean;
@@ -473,11 +477,13 @@ async function browserCapacityStatus(
 ): Promise<BrowserCapacityStatus> {
   staleAfterSeconds ??= WORKER_STALE_AFTER_SECONDS;
   try {
-    // `greatest(last_heartbeat_at, registered_at)`: `greatest` ignores nulls, so
-    // a worker that has registered and not yet reached its first heartbeat
-    // counts from its registration. Without that a freshly started stack would
-    // report no capacity for the first fifteen seconds, which is a false alarm
-    // in exactly the minute an operator is watching the installation come up.
+    // The liveness term is `workerLivePredicate` from the browser-session
+    // module, so this report, the scheduler, the reaper and the reconciler
+    // cannot drift apart (ADR-0027). `greatest` ignores nulls, so a worker that
+    // has registered and not yet reached its first heartbeat counts from its
+    // registration: without that a freshly started stack would report no
+    // capacity for the first heartbeat interval, which is a false alarm in
+    // exactly the minute an operator is watching the installation come up.
     const result = await pool.query<{
       workers: string;
       stale: string;
@@ -494,12 +500,11 @@ async function browserCapacityStatus(
            select capacity,
                   active_sessions,
                   sandbox_enabled,
-                  greatest(last_heartbeat_at, registered_at)
-                    > now() - make_interval(secs => $1::double precision) as live
+                  ${workerLivePredicate(1)} as live
              from browser_workers
-            where status in ('active', 'degraded')
+            where status = any($2)
          ) as worker`,
-      [staleAfterSeconds],
+      [staleAfterSeconds, SCHEDULABLE_WORKER_STATUSES],
     );
     const row = result.rows[0];
     const capacity = Number(row?.capacity ?? 0);

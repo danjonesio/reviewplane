@@ -37,6 +37,8 @@ import {
 } from "./modules/artefacts/config.ts";
 import { createArtefactStore } from "./modules/artefacts/store/index.ts";
 import type { ArtefactStore } from "./modules/artefacts/store/index.ts";
+import { loadBrowserWorkerConfig, type BrowserWorkerConfig } from "./modules/browser-sessions/config.ts";
+import { BrowserWorkerMonitor } from "./modules/browser-sessions/monitor.ts";
 import { registerBrowserSessionRoutes } from "./modules/browser-sessions/routes.ts";
 import { BrowserSessionService } from "./modules/browser-sessions/service.ts";
 import { BrowserWorkerClient } from "./modules/browser-sessions/worker-client.ts";
@@ -73,6 +75,8 @@ export interface BuildAppOptions {
   readonly config: ServerConfig;
   readonly pool: Pool;
   readonly connectorConfig?: ConnectorModuleConfig;
+  /** Browser-worker liveness thresholds, for tests that need a short sweep. */
+  readonly browserWorkerConfig?: BrowserWorkerConfig;
   /** Substituted in tests; defaults to the HTTP client. */
   readonly gateway?: TunnelGateway;
   /**
@@ -283,7 +287,9 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
   // recorded outside the transaction that refused it, so a database failure at
   // that moment loses the record silently unless somebody is told.
   const reviews = new ReviewService(pool, artefacts, app.log);
-  const workers = new WorkerRegistry(pool, config.workerCredential);
+  const browserWorkerConfig =
+    options.browserWorkerConfig ?? loadBrowserWorkerConfig(options.environment ?? process.env);
+  const workers = new WorkerRegistry(pool, config.workerCredential, browserWorkerConfig);
   const workerClient = new BrowserWorkerClient({
     endpoint: config.workerEndpoint,
     credential: config.workerCommandCredential,
@@ -298,6 +304,19 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     workerClient,
     new PublishedServiceBinder(publishedServices),
   );
+  // The liveness sweep and the session reconciler of `docs/OPERATIONS.md`
+  // sections 8 and 9. Started with the server and stopped with it, in the shape
+  // the connector monitor already uses.
+  const browserMonitor = new BrowserWorkerMonitor({
+    pool,
+    workers,
+    client: workerClient,
+    sessions,
+    config: browserWorkerConfig,
+    log: (message, detail) => {
+      app.log.info(detail, message);
+    },
+  });
   const viewers = new ViewerSessionStore(pool);
   const liveClient = new WorkerLiveClient({
     endpoint: config.workerEndpoint,
@@ -404,13 +423,7 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     workerCredential: config.workerCredential,
     viewerAuth,
   });
-  await registerBrowserSessionRoutes(app, {
-    sessions,
-    workers,
-    bootstrapToken: config.bootstrapToken,
-    workerCredential: config.workerCredential,
-    viewerAuth,
-  });
+  await registerBrowserSessionRoutes(app, { pool, sessions, workers });
   await registerLiveRoutes(app, {
     pool,
     sessions,
@@ -475,12 +488,14 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     async start(): Promise<void> {
       await app.listen({ host: config.host, port: config.port });
       await connectors.start();
+      browserMonitor.start();
       outbox.start();
       jobs?.start();
     },
     async stop(): Promise<void> {
       await jobs?.stop();
       await outbox.stop();
+      browserMonitor.stop();
       await connectors.stop();
       await app.close();
     },

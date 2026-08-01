@@ -95,6 +95,30 @@ export interface StubOptions {
    */
   readonly withoutBrowserSession?: boolean;
   /**
+   * Refuse every browser-session start with this stable code and message,
+   * answered with the status the control plane answers it with
+   * (`apps/server/src/errors.ts`). `BROWSER_CAPACITY_EXHAUSTED` is the case
+   * `docs/UX_FLOWS.md` §18 names and the one a full deployment meets, so it has
+   * to be reachable without a full deployment.
+   */
+  readonly startRefusal?: { readonly code: string; readonly message: string };
+  /**
+   * Take browser control elsewhere immediately before answering the first pause
+   * or resume, so the epoch the page holds is stale by the time it arrives.
+   *
+   * This is the real mechanism rather than a canned refusal: the stub advances
+   * its own control epoch and its own controller, and the ordinary epoch check
+   * then refuses. A page that had refetched afterwards sees the epoch that is
+   * now current, which is what the surface has to prove it does.
+   */
+  readonly staleControlEpoch?: boolean;
+  /**
+   * Start with one carried route already published, so a browser session has
+   * something to be started against. Without it the only honest choice is a
+   * session that reaches nothing, which is the other case worth covering.
+   */
+  readonly routePublished?: boolean;
+  /**
    * How far the review's delivery to an agent has got
    * (`docs/UX_FLOWS.md` section 11). `none` is the default and means the review
    * is assigned to nobody and no inbox item carries it, which is what the
@@ -166,25 +190,48 @@ const PROJECT = {
   updated_at: "2026-07-30T09:00:00.000Z",
 };
 
-export const SESSION: {
+/**
+ * A browser session as `docs/API.md` §11 answers it. Every member the control
+ * plane may not know is spelled `null` rather than omitted, exactly as the
+ * server's `BrowserSessionRecord` answers it, so a page that only handled the
+ * absent spelling fails here rather than in a deployment.
+ */
+export interface StubBrowserSession {
   readonly id: string;
   readonly project_id: string;
   readonly organisation_id: string;
   readonly status: SessionStatus;
+  // The fixture session reaches a route, so both are strings here. A session
+  // that reaches nothing is a record the stub builds at run time, and it spells
+  // both `null` — which is what the control plane answers.
+  readonly published_service_id: string;
   readonly service_origin: string;
   readonly browser_version: string;
-  readonly viewport: { width: number; height: number; device_scale_factor: number };
+  readonly viewport: { readonly width: number; readonly height: number; readonly device_scale_factor: number };
+  readonly current_controller: { readonly type: string; readonly id: string } | null;
   readonly control_epoch: number;
   readonly created_at: string;
   readonly ended_at: string | null;
-} = {
+}
+
+/**
+ * The agent session that drives the fixtures, named here rather than beside the
+ * inbox item because the browser session below is already controlled by it: a
+ * session with no controller and a non-zero epoch is not a state the control
+ * plane produces.
+ */
+export const AGENT_SESSION_ID = "ags_ui_suite";
+
+export const SESSION: StubBrowserSession = {
   id: "brs_ui_suite_session",
   project_id: PROJECT.id,
   organisation_id: PROJECT.organisation_id,
   status: "ACTIVE",
+  published_service_id: "svc_ui_suite_seed",
   service_origin: "https://route-ui-suite.internal.invalid",
   browser_version: "143.0.7499.4",
   viewport: { width: 1440, height: 900, device_scale_factor: 1 },
+  current_controller: { type: "agent_session", id: AGENT_SESSION_ID },
   control_epoch: 1,
   created_at: "2026-07-30T10:00:00.000Z",
   ended_at: null,
@@ -230,14 +277,13 @@ export const REVIEW = {
 };
 
 /**
- * The agent session the review is delivered to, and the item that delivers it.
+ * The item that delivers the review to `AGENT_SESSION_ID`.
  *
  * The session identifier is the only name for it there is: nothing in the API
  * resolves an agent session to a client's name, so a panel that printed one
  * would have invented it. The acknowledgement time is fixed so the acknowledged
  * case asserts on a value rather than on "some date appeared".
  */
-export const AGENT_SESSION_ID = "ags_ui_suite";
 export const INBOX_ITEM_ID = "inb_ui_suite";
 export const INBOX_CREATED_AT = "2026-07-30T11:30:00.000Z";
 export const INBOX_ACKNOWLEDGED_AT = "2026-07-30T11:34:00.000Z";
@@ -276,6 +322,12 @@ export const REFUSAL_STATUS: Readonly<Record<string, number>> = {
   VALIDATION_FAILED: 422,
   RESOURCE_NOT_FOUND: 404,
   AUTHORISATION_DENIED: 403,
+  PROJECT_CONTEXT_MISMATCH: 403,
+  BROWSER_CAPACITY_EXHAUSTED: 503,
+  BROWSER_SESSION_NOT_ACTIVE: 409,
+  CONTROL_NOT_OWNED: 409,
+  CONTROL_EPOCH_STALE: 409,
+  UNSUPPORTED_CAPABILITY: 400,
 };
 
 /** The internal suffix the control plane builds a route's origin under. */
@@ -529,6 +581,70 @@ export async function startStubControlPlane(options: StubOptions): Promise<StubC
   /** Routes this deployment carries, so publishing and revoking are real. */
   const published = new Map<string, Record<string, unknown>>();
   let publications = 0;
+
+  /** The route the fixture session was allocated against, where one is asked for. */
+  const SEEDED_ROUTE_ALIAS = "svc-ui-suite-seed";
+  if (options.routePublished === true) {
+    published.set(SESSION.published_service_id, {
+      id: SESSION.published_service_id,
+      project_id: PROJECT.id,
+      connector_id: CONNECTOR_ID,
+      workspace_id: "wsp_ui_suite",
+      local_host: "127.0.0.1",
+      local_port: 4321,
+      protocol: "http",
+      public_alias: SEEDED_ROUTE_ALIAS,
+      internal_origin: `https://${SEEDED_ROUTE_ALIAS}.${INTERNAL_SUFFIX}/`,
+      scope: "browser_session",
+      allowed_browser_session_ids: [SESSION.id],
+      expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+      status: "ready",
+      failure_class: null,
+      observed_destination: "127.0.0.1:4321",
+    });
+  }
+
+  // ---------------------------------------------------- browser sessions
+  /**
+   * Sessions this deployment holds, so starting, pausing, resuming and ending
+   * are real rather than canned. The fixture session is copied in rather than
+   * used directly: these records are mutated, and the exported fixture is
+   * shared by every stub a suite starts.
+   */
+  const sessions = new Map<string, Record<string, unknown>>(
+    options.withoutBrowserSession === true ? [] : [[SESSION.id, { ...SESSION }]],
+  );
+  let sessionsStarted = 0;
+  /** Whether control has already been taken elsewhere (`staleControlEpoch`). */
+  let controlTaken = false;
+  /** Each session's own event timeline, newest first (`docs/API.md` §11). */
+  const timelines = new Map<string, Record<string, unknown>[]>();
+
+  function recordEvent(
+    sessionId: string,
+    type: string,
+    actor: { type: string; display: string | null },
+    payload: Record<string, unknown>,
+  ): void {
+    const entries = timelines.get(sessionId) ?? [];
+    entries.unshift({
+      id: `evt_ui_${sessionId}_${String(entries.length + 1)}`,
+      type,
+      occurred_at: new Date().toISOString(),
+      actor,
+      payload,
+    });
+    timelines.set(sessionId, entries);
+  }
+
+  if (options.withoutBrowserSession !== true) {
+    recordEvent(
+      SESSION.id,
+      "browser.session_started",
+      { type: "agent_session", display: null },
+      { viewport: SESSION.viewport, published_service_id: SESSION.published_service_id },
+    );
+  }
 
   // ---------------------------------------------------- connector enrolment
   /** When the enrolled connector becomes visible; null until something arms it. */
@@ -882,14 +998,201 @@ export async function startStubControlPlane(options: StubOptions): Promise<StubC
       });
       return;
     }
-    if (path === `/api/v1/projects/${PROJECT.id}/browser-sessions`) {
+    // ----------------------------------------------------- browser sessions
+    const projectSessionsMatch = /^\/api\/v1\/projects\/([^/]+)\/browser-sessions$/u.exec(path);
+    if (projectSessionsMatch !== null) {
+      const owner = projectSessionsMatch[1] as string;
+      if (!projects.has(owner)) {
+        sendJson(response, 404, {
+          error: { code: "RESOURCE_NOT_FOUND", message: "The project was not found." },
+        });
+        return;
+      }
+      if (request.method !== "POST") {
+        sendJson(response, 200, {
+          data: [...sessions.values()].filter((entry) => entry["project_id"] === owner),
+        });
+        return;
+      }
+      if (!hasCsrf(request)) {
+        sendJson(response, 403, {
+          error: {
+            code: "AUTHORISATION_DENIED",
+            message: "This request changes state and must carry the session's CSRF token.",
+          },
+        });
+        return;
+      }
+      const body = await readJsonBody(request);
+      if (options.startRefusal !== undefined) {
+        sendJson(response, REFUSAL_STATUS[options.startRefusal.code] ?? 503, {
+          error: { code: options.startRefusal.code, message: options.startRefusal.message },
+        });
+        return;
+      }
+      // The organisation is the project's, and the control plane resolves it.
+      // A caller that named one would be naming a second authority for the same
+      // fact, so the stub refuses it rather than accepting it quietly.
+      if (body["organisation_id"] !== undefined) {
+        sendJson(response, 422, {
+          error: {
+            code: "VALIDATION_FAILED",
+            message: "organisation_id is derived from the project and must not be sent.",
+          },
+        });
+        return;
+      }
+      const viewport = body["viewport"];
+      if (typeof viewport !== "object" || viewport === null) {
+        sendJson(response, 422, {
+          error: { code: "VALIDATION_FAILED", message: "viewport is required." },
+        });
+        return;
+      }
+      const serviceId =
+        typeof body["published_service_id"] === "string" ? body["published_service_id"] : null;
+      // The origin is derived from the route record, never taken from the
+      // caller: the origin is the worker's egress allow-list.
+      const route = serviceId === null ? undefined : published.get(serviceId);
+      sessionsStarted += 1;
+      const startedRecord: Record<string, unknown> = {
+        id: `brs_ui_started_${String(sessionsStarted)}`,
+        project_id: owner,
+        organisation_id: PROJECT.organisation_id,
+        status: "READY",
+        published_service_id: serviceId,
+        service_origin: route === undefined ? null : (route["internal_origin"] as string),
+        browser_version: SESSION.browser_version,
+        viewport,
+        current_controller: { type: "human_user", id: "vwr_ui" },
+        control_epoch: 1,
+        created_at: new Date().toISOString(),
+        ended_at: null,
+      };
+      sessions.set(startedRecord["id"] as string, startedRecord);
+      recordEvent(
+        startedRecord["id"] as string,
+        "browser.session_started",
+        { type: "human_user", display: "Administrator" },
+        { viewport, published_service_id: serviceId },
+      );
+      sendJson(response, 201, { data: startedRecord });
+      return;
+    }
+
+    const sessionActionMatch =
+      /^\/api\/v1\/browser-sessions\/([^/]+)\/(pause|resume|terminate)$/u.exec(path);
+    if (sessionActionMatch !== null && request.method === "POST") {
+      if (!hasCsrf(request)) {
+        sendJson(response, 403, {
+          error: {
+            code: "AUTHORISATION_DENIED",
+            message: "This request changes state and must carry the session's CSRF token.",
+          },
+        });
+        return;
+      }
+      const target = sessions.get(sessionActionMatch[1] as string);
+      if (target === undefined) {
+        sendJson(response, 404, {
+          error: { code: "RESOURCE_NOT_FOUND", message: "The browser session was not found." },
+        });
+        return;
+      }
+      const body = await readJsonBody(request);
+      const action = sessionActionMatch[2] as string;
+
+      if (action === "terminate") {
+        target["status"] = "TERMINATED";
+        target["ended_at"] = new Date().toISOString();
+        target["current_controller"] = null;
+        recordEvent(
+          target["id"] as string,
+          "browser.session_terminated",
+          { type: "human_user", display: "Administrator" },
+          { reason: "requested" },
+        );
+        sendJson(response, 200, { data: target });
+        return;
+      }
+
+      // Control moves elsewhere before the first pause or resume is answered,
+      // so the epoch the page holds is stale by the time it arrives. The
+      // ordinary check below then refuses it; nothing here is canned.
+      if (options.staleControlEpoch === true && !controlTaken) {
+        controlTaken = true;
+        target["control_epoch"] = (target["control_epoch"] as number) + 1;
+        target["current_controller"] = { type: "human_user", id: "vwr_other" };
+        recordEvent(
+          target["id"] as string,
+          "browser.control_taken",
+          { type: "human_user", display: "Another operator" },
+          { control_epoch: target["control_epoch"] },
+        );
+      }
+
+      if (body["control_epoch"] !== target["control_epoch"]) {
+        sendJson(response, REFUSAL_STATUS["CONTROL_EPOCH_STALE"] ?? 409, {
+          error: {
+            code: "CONTROL_EPOCH_STALE",
+            message: "The control epoch presented is not the one that is current.",
+          },
+          // The epoch that *is* current, so a caller need not guess at it.
+          meta: { control_epoch: target["control_epoch"] },
+        });
+        return;
+      }
+
+      const status = target["status"] as string;
+      const allowed =
+        action === "pause" ? status === "READY" || status === "ACTIVE" : status === "PAUSED";
+      if (!allowed) {
+        sendJson(response, REFUSAL_STATUS["BROWSER_SESSION_NOT_ACTIVE"] ?? 409, {
+          error: {
+            code: "BROWSER_SESSION_NOT_ACTIVE",
+            message: `A ${status} browser session cannot be ${action}d.`,
+          },
+        });
+        return;
+      }
+      target["status"] = action === "pause" ? "PAUSED" : "ACTIVE";
+      recordEvent(
+        target["id"] as string,
+        action === "pause" ? "browser.session_paused" : "browser.session_resumed",
+        { type: "human_user", display: "Administrator" },
+        { control_epoch: target["control_epoch"] },
+      );
+      sendJson(response, 200, { data: target });
+      return;
+    }
+
+    const timelineMatch = /^\/api\/v1\/browser-sessions\/([^/]+)\/timeline$/u.exec(path);
+    if (timelineMatch !== null) {
+      const owner = timelineMatch[1] as string;
+      if (!sessions.has(owner)) {
+        sendJson(response, 404, {
+          error: { code: "RESOURCE_NOT_FOUND", message: "The browser session was not found." },
+        });
+        return;
+      }
+      const limit = Number.parseInt(url.searchParams.get("limit") ?? "20", 10);
+      const entries = timelines.get(owner) ?? [];
       sendJson(response, 200, {
-        data: options.withoutBrowserSession === true ? [] : [SESSION],
+        data: entries.slice(0, Number.isInteger(limit) && limit > 0 ? limit : 20),
       });
       return;
     }
-    if (path === `/api/v1/browser-sessions/${SESSION.id}`) {
-      sendJson(response, 200, { data: SESSION });
+
+    const sessionMatch = /^\/api\/v1\/browser-sessions\/([^/]+)$/u.exec(path);
+    if (sessionMatch !== null) {
+      const target = sessions.get(sessionMatch[1] as string);
+      if (target === undefined) {
+        sendJson(response, 404, {
+          error: { code: "RESOURCE_NOT_FOUND", message: "The browser session was not found." },
+        });
+        return;
+      }
+      sendJson(response, 200, { data: target });
       return;
     }
 
@@ -1303,6 +1606,15 @@ export async function startStubControlPlane(options: StubOptions): Promise<StubC
 
   function attach(client: WebSocket, browserSessionId: string, mode: LiveMode): void {
     state.viewers += 1;
+    // The stream reports the session this deployment actually holds, so a
+    // session started, paused or ended through the API is not contradicted by
+    // its own live view.
+    const live = sessions.get(browserSessionId);
+    const liveStatus = (live?.["status"] as SessionStatus | undefined) ?? SESSION.status;
+    const liveOrigin = (live?.["service_origin"] as string | null | undefined) ?? null;
+    const liveViewport =
+      (live?.["viewport"] as typeof SESSION.viewport | undefined) ?? SESSION.viewport;
+    const liveEpoch = (live?.["control_epoch"] as number | undefined) ?? SESSION.control_epoch;
     const envelope = (type: "live.attached" | "live.session_state" | "live.frame") => ({
       protocol_version: 1 as const,
       // Identifiers are opaque and bounded to `[A-Za-z0-9_-]`; a message type
@@ -1319,10 +1631,10 @@ export async function startStubControlPlane(options: StubOptions): Promise<StubC
         envelope: envelope("live.session_state"),
         type: "live.session_state",
         payload: {
-          status: SESSION.status,
-          url: `${SESSION.service_origin}/checkout`,
-          viewport: SESSION.viewport,
-          control_epoch: SESSION.control_epoch,
+          status: liveStatus,
+          ...(liveOrigin === null ? {} : { url: `${liveOrigin}/checkout` }),
+          viewport: liveViewport,
+          control_epoch: liveEpoch,
           live_capture: true,
           observed_at: new Date().toISOString(),
         },
@@ -1356,8 +1668,8 @@ export async function startStubControlPlane(options: StubOptions): Promise<StubC
         captured_at: new Date().toISOString(),
         mode,
         format: "image/jpeg",
-        width: SESSION.viewport.width,
-        height: SESSION.viewport.height,
+        width: liveViewport.width,
+        height: liveViewport.height,
         quality: 70,
         byte_length: payload.byteLength,
         dropped_before: 0,

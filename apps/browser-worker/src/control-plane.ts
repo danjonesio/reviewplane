@@ -18,12 +18,14 @@
 import { createHash } from "node:crypto";
 
 import {
+  decodeBrowserFrame,
   encodeBrowserFrame,
   type BrowserFrame,
   type Envelope,
   type ScreenshotResult,
   type SessionLimits,
   type SessionStatusReport,
+  type WorkerHeartbeatAck,
   type WorkerRegistrationAck,
 } from "@reviewplane/protocol/browser";
 
@@ -155,11 +157,26 @@ export class ControlPlaneClient {
     return { workerId, ack };
   }
 
+  /**
+   * Heartbeats and returns the acknowledgement, which restates the worker's
+   * current project assignment (ADR-0026).
+   *
+   * The assignment used to arrive once, in the registration acknowledgement,
+   * and was cached for the life of the process. So an assignment an
+   * administrator *removed* went on being served until the worker restarted —
+   * an authorisation gap, not merely an inconvenience. It is restated here so
+   * that a revocation takes effect within one heartbeat interval.
+   *
+   * A heartbeat the control plane could not answer returns `null`. The caller
+   * keeps the assignment it has: losing an answer is not the same as being told
+   * the set is empty, and treating it as empty would take a working worker out
+   * of service every time the control plane restarted.
+   */
   async heartbeat(state: {
     readonly activeSessions: number;
     readonly capacity: number;
     readonly residentMemoryMb: number;
-  }): Promise<void> {
+  }): Promise<WorkerHeartbeatAck | null> {
     const frame: BrowserFrame = {
       envelope: this.#envelope("worker.heartbeat"),
       type: "worker.heartbeat",
@@ -170,7 +187,17 @@ export class ControlPlaneClient {
         observed_at: new Date().toISOString(),
       },
     };
-    await this.#send("/internal/v1/workers/heartbeat", encodeBrowserFrame(frame), "application/json");
+    const response = await this.#send(
+      "/internal/v1/workers/heartbeat",
+      encodeBrowserFrame(frame),
+      "application/json",
+    );
+    if (!response.ok) return null;
+    const text = await response.text();
+    if (text === "") return null;
+    const decoded = decodeBrowserFrame(text);
+    if (!decoded.ok || decoded.value.type !== "worker.heartbeat.ack") return null;
+    return decoded.value.payload;
   }
 
   /** Reports a lifecycle transition the worker observed. */

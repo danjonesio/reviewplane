@@ -291,6 +291,23 @@ satisfied.
 capabilities the session was granted and the client capabilities it declared.
 The client's name is description and never an authorisation input.
 
+### Browser worker
+
+- `browser_worker.registered`
+- `browser_worker.degraded`
+- `browser_worker.lost`
+
+A worker that stops heartbeating is moved `active` → `degraded` → `lost` by the
+liveness sweep of `OPERATIONS.md` §8, and each move emits its event with
+`previous_status`, `new_status`, the trigger and the silence budget it exceeded.
+`browser_worker.registered` also records a **recovery**: a degraded or lost
+worker that heartbeats again returns to `active`, with `trigger:
+heartbeat_recovered`, because "it came back" and "it never went" are different
+facts to somebody reading a timeline.
+
+These events belong to the deployment rather than to a project, so they carry no
+`project_id` and are recorded on the organisation stream.
+
 ### Browser session
 
 - `browser_session.requested`
@@ -302,6 +319,15 @@ The client's name is description and never an authorisation input.
 - `browser_session.degraded`
 - `browser_session.terminated`
 - `browser_session.failed`
+- `browser_session.reconciled`
+
+`browser_session.paused` and `browser_session.resumed` record a change of
+*authority*, not of the browser: a paused session's context stays open, its live
+frames keep flowing and non-interactive system capture continues
+(`MCP_SPEC.md` §7.3). `browser_session.reconciled` records an action the
+reconciliation of `OPERATIONS.md` §9 took that is not itself a session
+transition — currently the termination of an orphan worker context, whose
+`browser_session_id` names a session the control plane no longer considers live.
 
 ### Control
 
@@ -314,6 +340,26 @@ The client's name is description and never an authorisation input.
 - `browser.live_view_stopped`
 
 Do not emit every pointer movement as a durable event. High-frequency input may be sampled or summarised.
+
+**Every** refused browser command produces `browser.command_rejected`, not only
+a stale epoch: a wrong session status, a foreign project, a non-owning
+controller, a missing worker, a route that no longer authorises the session and a
+policy denial each produce one, carrying the stable error code, a `reason` token,
+the presented epoch and the presented controller type. `SECURITY.md` §8 requires
+a rejected command to be *logged* as well as refused, and until RVP-30 only one
+of the denials in the command path was — so an auditor asking whether anything
+had tried to drive a terminated session received the same answer as if nothing
+had.
+
+A payload here never carries the command's arguments. A refused `browser_type`
+is exactly the command whose argument must not enter an append-only table.
+
+A **cross-project** attempt is recorded on the **actor's** project stream and
+never on the named session's. Writing it to the other project's stream would let
+a caller with no authority there append rows to a timeline they cannot read. That
+record omits the other session's epoch and status for the same reason, and the
+refusal the caller receives stays byte-identical to the one an unknown identifier
+earns (`API.md` §5).
 
 The live-view pair is per viewer attachment, not per frame. A frame is not an
 event, and a payload here never carries frame content: `started` records the

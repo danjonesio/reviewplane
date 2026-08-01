@@ -186,7 +186,7 @@ The issuing call takes `project_ids`, `capabilities`, `label` and an optional
     "credential_id": "agc_...",
     "token": "rpa_...",
     "project_ids": ["prj_..."],
-    "capabilities": ["review:read", "review:write", "finding:read", "finding:write", "verification:submit", "browser:capture", "service:publish"],
+    "capabilities": ["review:read", "review:write", "finding:read", "finding:write", "verification:submit", "browser:capture", "browser:control", "service:publish"],
     "expires_at": "2026-07-30T11:41:02Z",
     "expires_in_seconds": 3600
   }
@@ -796,12 +796,30 @@ PUT    /api/v1/browser-workers/:workerId/assignments
 
 A worker serves only the projects an assignment names. There is no wildcard: an unassigned worker receives no sessions.
 
+### Who may call these endpoints
+
+A human session scoped to the project, or the bootstrap administrator token,
+which maps to an organisation-wide human principal (ADR-0016). `UX_FLOWS.md` §6
+requires a reader to start a session from the project Live page, so these are not
+administrator-only routes; every state-changing one applies the CSRF rule of §4,
+because a cookie can authenticate them and starting a browser session opens a
+central Chromium against a private development machine. A browser-worker, agent
+or connector credential reaches none of them (`SECURITY.md` §6.3); an agent acts
+through `/mcp/v1`.
+
+Worker assignment (`PUT /api/v1/browser-workers/:workerId/assignments`) and the
+worker listing remain organisation-wide: a project-scoped session may not assign
+a worker.
+
+Every session lookup is filtered by the caller's project scope and organisation
+in one predicate, so a session in another project answers `RESOURCE_NOT_FOUND`
+byte for byte as an unknown identifier does (§5).
+
 ### Command request
 
 ```json
 {
   "control_epoch": 12,
-  "controller": {"type": "agent", "id": "ags_..."},
   "command": {
     "command": "navigate",
     "timeout_ms": 30000,
@@ -810,25 +828,110 @@ A worker serves only the projects an assignment names. There is no wildcard: an 
 }
 ```
 
-The command body is the `browser_command` of `packages/protocol/schemas/browser/v1.schema.json`. A stale `control_epoch` returns `CONTROL_EPOCH_STALE` with the epoch that is current, and the command never reaches the worker. Responses carry the `browser_command_result`, whose `trust` and `instruction_policy` fields the schema requires on every result.
+The command body is the `browser_command` of `packages/protocol/schemas/browser/v1.schema.json`.
+
+`controller` is **not** part of this request and MUST NOT be sent; a body that
+carries one is refused with `VALIDATION_FAILED`. It appeared here until RVP-30,
+and it was an impersonation surface: a controller in a request body is a claim
+*about* the actor rather than the actor, so the lease-ownership check of
+`SECURITY.md` §7 could be satisfied by naming its owner. The control plane
+derives the controller from the authenticated principal — a human acts as the
+`system` controller bound to their session, an agent as its own agent session
+(ADR-0028).
+
+All six checks of `SECURITY.md` §7 run before the command reaches the worker. A
+stale `control_epoch` returns `CONTROL_EPOCH_STALE` with `details.current_epoch`;
+a caller that does not hold the lease and is not issuing a non-interactive system
+capture returns `CONTROL_NOT_OWNED`; a paused session returns
+`BROWSER_SESSION_NOT_ACTIVE` for an interactive command and admits a capture; a
+route that no longer authorises the session returns `AUTHORISATION_DENIED` on
+navigation; a value that looks like secret material returns `POLICY_DENIED`
+naming the shape and never the value. Every one of them is recorded as
+`browser.command_rejected` (`EVENTS.md` §7).
+
+Responses carry the `browser_command_result`, whose `trust` and
+`instruction_policy` fields the schema requires on every result.
 
 ### Start request
 
 ```json
 {
-  "organisation_id": "org_...",
   "published_service_id": "svc_...",
   "viewport": {
     "width": 1440,
     "height": 900,
     "device_scale_factor": 1
-  },
-  "trace_enabled": true,
-  "video_enabled": false
+  }
 }
 ```
 
-`organisation_id` and `viewport` are required. `published_service_id` names the route the session may reach; the control plane resolves the origin from that record and mints the session-scoped capability itself. Neither the origin nor the capability is accepted from the caller: the origin *is* the worker's egress allow-list (`SECURITY.md` §9) and the capability is a bearer credential the control plane alone mints (`ARCHITECTURE.md` §7.3).
+`viewport` is required. `organisation_id` is **derived from the project** in the
+path and does not need to be sent; it is still accepted for compatibility and is
+refused with `VALIDATION_FAILED` when it disagrees with the project's
+organisation, rather than ignored — a caller that believes it chose the
+organisation and did not is worse off than one that is told. On a project route
+an organisation the caller names is an authorisation input the caller chose,
+which §5 and `SECURITY.md` §7 both forbid.
+
+`published_service_id` names the route the session may reach; the control plane
+resolves the origin from that record and mints the session-scoped capability
+itself. Neither the origin nor the capability is accepted from the caller: the
+origin *is* the worker's egress allow-list (`SECURITY.md` §9) and the capability
+is a bearer credential the control plane alone mints (`ARCHITECTURE.md` §7.3).
+
+Stage 1 does not implement trace or video capture, so `trace_enabled` and
+`video_enabled` are not part of this request. Trace capture arrives in Stage 2
+and video stays disabled.
+
+When no live browser worker has capacity the request is refused with
+`BROWSER_CAPACITY_EXHAUSTED`. A registered worker that has stopped heartbeating
+is **not** counted as capacity (ADR-0027), so this is the answer an operator
+receives when the worker container has stopped — rather than a session that never
+becomes ready.
+
+### Pause, resume and control
+
+```text
+POST /api/v1/browser-sessions/:sessionId/pause
+POST /api/v1/browser-sessions/:sessionId/resume
+POST /api/v1/browser-sessions/:sessionId/control/request
+POST /api/v1/browser-sessions/:sessionId/control/release
+```
+
+`pause` and `resume` take `{"control_epoch": 12}`. A pause suspends interactive
+commands and leaves non-interactive system capture and live frames running
+(`MCP_SPEC.md` §7.3): the browser context stays open, so a pause is a change of
+authority rather than a blackout. Resuming returns the session to `READY` rather
+than `ACTIVE`, because a resumed session has been sitting and the page may have
+moved; the first successful command moves it to `ACTIVE` again.
+
+`control/request` takes `{"controller_type": "agent" | "system" | "human",
+"controller_id": "...", "reason": "..."}` and transfers the interactive lease,
+incrementing the control epoch in the same transaction. Requesting control the
+caller already holds is idempotent and does **not** increment. `controller_type:
+"human"` is refused with `UNSUPPORTED_CAPABILITY` in Stage 1 — takeover through
+the control WebSocket is Stage 2 — and the refused request is still audited as
+`browser.control_requested` with `granted: false`.
+
+`control/release` takes `{"control_epoch": 12}` and also increments the epoch:
+after a release nobody holds the lease, and a command still carrying the released
+epoch must not pass the epoch check.
+
+### Session timeline
+
+```text
+GET /api/v1/browser-sessions/:sessionId/timeline?limit=100
+```
+
+Returns the session's events, newest first, from the event store rather than from
+a second log — every meaningful state change produces an event, so a timeline
+assembled from anything else would be a different set of facts. Each entry is
+`{"id", "type", "occurred_at", "actor": {"type", "display"}, "payload"}`. `limit`
+is bounded at 200.
+
+A payload here can carry page-derived data: `browser_session.navigated` records
+the URL the browser settled on. It is data and never an instruction
+(`MCP_SPEC.md` §6).
 
 ### Reserving a session before publishing a route
 
