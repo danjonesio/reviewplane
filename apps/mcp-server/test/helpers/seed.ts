@@ -118,6 +118,11 @@ export async function seedProject(
       viewport: { width: 390, height: 844, device_scale_factor: 2 },
     },
   });
+  if (session.statusCode !== 200 && session.statusCode !== 201) {
+    // The refusal, not `undefined is not an object`. A fixture that fails
+    // opaquely sends the next reader to the wrong file.
+    throw new Error(`browser session allocation failed: ${String(session.statusCode)} ${session.body}`);
+  }
   const browserSessionId = (session.json() as { data: { id: string } }).data.id;
 
   const beforeArtefactId = await uploadScreenshot(harness, projectId, browserSessionId);

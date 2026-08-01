@@ -206,6 +206,7 @@ test("reviewplane status does not count a stale worker's capacity", async () => 
 
   const healthy = await gatherStatus({
     pool: postgres.pool,
+    artefactPath: harness.artefactRoot,
     workerStaleAfterSeconds: FAST.degradedAfterSeconds,
   });
   assert.equal(healthy.browser_capacity.workers, 1);
@@ -214,6 +215,7 @@ test("reviewplane status does not count a stale worker's capacity", async () => 
   await silenceFor(workerId, FAST.degradedAfterSeconds + 1);
   const stale = await gatherStatus({
     pool: postgres.pool,
+    artefactPath: harness.artefactRoot,
     workerStaleAfterSeconds: FAST.degradedAfterSeconds,
   });
   assert.equal(stale.browser_capacity.workers, 0);
@@ -258,7 +260,7 @@ test("a heartbeat is answered with the assignment that is current now", async ()
   assert.ok(decoded.ok, "the heartbeat answer must be a decodable frame");
   assert.equal(decoded.value.type, "worker.heartbeat.ack");
   assert.deepEqual(
-    (decoded.value.payload as { assigned_projects: string[] }).assigned_projects,
+    [...(decoded.value.payload as { assigned_projects: readonly string[] }).assigned_projects],
     [projectId],
   );
 
@@ -276,7 +278,7 @@ test("a heartbeat is answered with the assignment that is current now", async ()
   const afterRevocation = decodeBrowserFrame(revoked.body);
   assert.ok(afterRevocation.ok);
   assert.deepEqual(
-    (afterRevocation.value.payload as { assigned_projects: string[] }).assigned_projects,
+    [...(afterRevocation.value.payload as { assigned_projects: readonly string[] }).assigned_projects],
     [],
   );
 });
@@ -365,13 +367,12 @@ test("a session on a worker that has been lost is failed", async () => {
   const sessionId = (started.json() as { data: { id: string } }).data.id;
 
   await silenceFor(workerId, FAST.lostAfterSeconds + 1);
-  await sweep();
+  // The first sweep concludes the worker is lost. The session is reconciled in
+  // the same pass, because a worker moved out of the schedulable set is exactly
+  // the one whose sessions can no longer be recovered by asking it.
+  const first = await sweep();
   assert.equal(await workerStatus(workerId), "lost");
-
-  // The worker is out of the schedulable set, so its sessions can no longer be
-  // reconciled by asking it.
-  const second = await sweep();
-  assert.equal(second.sessionsFailed, 1);
+  assert.equal(first.sessionsFailed, 1);
   const record = await harness.built.sessions.get(sessionId);
   assert.equal(record.status, "FAILED");
   const leases = await postgres.pool.query(

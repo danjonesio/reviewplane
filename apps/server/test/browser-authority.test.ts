@@ -569,7 +569,7 @@ test("a controller supplied in the command body is refused rather than honoured"
       command: SNAPSHOT,
     },
   });
-  assert.equal(response.statusCode, 400);
+  assert.equal(response.statusCode, 422);
   assert.equal((response.json() as { error: { code: string } }).error.code, "VALIDATION_FAILED");
   assert.equal(commandRequests(), 0);
 });
@@ -592,4 +592,78 @@ test("the timeline returns the session's events newest first", async () => {
   assert.ok(entries.length >= 3);
   assert.equal(entries[0]?.type, "browser_session.ready");
   assert.ok(entries.some((entry) => entry.type === "browser_session.requested"));
+});
+
+// ---------------------------------------------------------------------------
+// Refused allocation and controller-aware termination
+// ---------------------------------------------------------------------------
+
+test("an allocation refused before the worker is contacted does not keep holding a browser slot", async () => {
+  const { projectId } = await seedProjectAndWorker(harness);
+  // The seeded worker declares a capacity of two, so four refused starts used to
+  // be enough to make the project unable to start any session at all: a
+  // REQUESTED row with ended_at IS NULL is exactly what the capacity query
+  // counts.
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const refused = await startSession(projectId, { published_service_id: "svc_does_not_exist" });
+    assert.notEqual(refused.statusCode, 201, refused.body);
+  }
+
+  const held = await postgres.pool.query<{ count: string }>(
+    `SELECT count(*) AS count FROM browser_sessions
+      WHERE project_id = $1 AND ended_at IS NULL AND status NOT IN ('TERMINATED', 'FAILED')`,
+    [projectId],
+  );
+  assert.equal(Number(held.rows[0]?.count), 0, "a refusal must not consume the resource it refused");
+
+  // And the project can still start a session.
+  assert.equal((await startSession(projectId)).statusCode, 201);
+});
+
+test("ending a session with a superseded epoch is refused and the session survives", async () => {
+  const { projectId } = await seedProjectAndWorker(harness);
+  const sessionId = await sessionIdFor(projectId);
+  await harness.built.sessions.requestControl({
+    browserSessionId: sessionId,
+    projectId,
+    controller: { type: "agent", id: "ags_new" },
+    actor: { type: "agent_session", id: "ags_new" },
+  });
+
+  await assert.rejects(
+    () =>
+      harness.built.sessions.end({
+        browserSessionId: sessionId,
+        projectId,
+        controller: OPERATOR,
+        controlEpoch: 1,
+        reason: "requested",
+        actor: { type: "human_user", display: "operator" },
+      }),
+    (error: { code?: string }) => error.code === "CONTROL_EPOCH_STALE",
+  );
+  const record = await harness.built.sessions.get(sessionId);
+  assert.notEqual(record.status, "TERMINATED");
+  assert.equal(record.ended_at, null);
+});
+
+test("ending a session as a controller that does not hold the lease is refused", async () => {
+  const { projectId } = await seedProjectAndWorker(harness);
+  const sessionId = await sessionIdFor(projectId, {
+    controller: { type: "agent", id: "ags_owner" },
+  });
+
+  await assert.rejects(
+    () =>
+      harness.built.sessions.end({
+        browserSessionId: sessionId,
+        projectId,
+        controller: { type: "agent", id: "ags_intruder" },
+        controlEpoch: 1,
+        reason: "requested",
+        actor: { type: "agent_session", id: "ags_intruder" },
+      }),
+    (error: { code?: string }) => error.code === "CONTROL_NOT_OWNED",
+  );
+  assert.notEqual((await harness.built.sessions.get(sessionId)).status, "TERMINATED");
 });

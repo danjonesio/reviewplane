@@ -34,7 +34,12 @@ import {
   startMcpHarness,
   type McpHarness,
 } from "./helpers/harness.ts";
-import { issueAgentCredential, seedProject, type SeededProject } from "./helpers/seed.ts";
+import {
+  issueAgentCredential,
+  seedProject,
+  startBrowserSessionForAgent,
+  type SeededProject,
+} from "./helpers/seed.ts";
 
 let postgres: MigratedDatabase;
 let harness: McpHarness;
@@ -171,10 +176,9 @@ async function transcribe(
     `${TRANSCRIPTS}${name}.json`,
     `${JSON.stringify(
       {
-        note: "Captured by apps/mcp-server/test/browser.test.ts. The response is exactly what the MCP client received.",
+        note: "Captured by apps/mcp-server/test/browser.test.ts against a real MCP client. `response.content[0].text` is the envelope exactly as it arrived on the wire; `response.structuredContent` is the same bytes parsed.",
         request: { method: "tools/call", params: request },
         response: result,
-        envelope: envelopeOf(result),
       },
       null,
       2,
@@ -335,6 +339,71 @@ test("a session starts at the default viewport, pauses, resumes and ends", async
   }
 });
 
+test("a retried start consumes one browser slot rather than two", async () => {
+  const agent = await connected();
+  try {
+    const once = await call(agent.client, "browser_session_start", {
+      idempotency_key: "start-retried-0001",
+    });
+    const twice = await call(agent.client, "browser_session_start", {
+      idempotency_key: "start-retried-0001",
+    });
+    assert.equal(once.envelope["ok"], true, JSON.stringify(once.envelope));
+    assert.equal(twice.envelope["ok"], true, JSON.stringify(twice.envelope));
+    // The stored response is replayed verbatim, so the retry names the session
+    // the first call allocated rather than a second one.
+    assert.equal(
+      sessionOf(twice.envelope)["browser_session_id"],
+      sessionOf(once.envelope)["browser_session_id"],
+    );
+
+    const allocated = await postgres.pool.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM browser_sessions WHERE project_id = $1 AND agent_session_id IS NOT NULL",
+      [agent.seeded.projectId],
+    );
+    assert.equal(allocated.rows[0]?.n, 1, "the retry allocated a second browser");
+  } finally {
+    await agent.close();
+  }
+});
+
+test("a published service cannot yet be bound from the MCP endpoint, and says so", async () => {
+  const agent = await connected();
+  try {
+    // The MCP process holds no capability signing key on purpose
+    // (`apps/mcp-server/src/app.ts`: a process that cannot mint cannot leak a
+    // minting key), and binding a route to a session is a mint. So the
+    // documented `published_service_id` argument of section 7.3 cannot be
+    // honoured here yet.
+    //
+    // This asserts the refusal is *stable and honest* rather than a crash or a
+    // session that quietly reaches nothing. It is a tripwire: when the endpoint
+    // gains a way to have `api` allocate, this test fails, and the person who
+    // fixed it is the right person to replace it with the positive case.
+    const started = await call(agent.client, "browser_session_start", {
+      published_service_id: "svc_notboundfromhere",
+      idempotency_key: key("start-service"),
+    });
+    assert.equal(started.envelope["ok"], false, JSON.stringify(started.envelope));
+    assert.equal(errorOf(started.envelope).code, "UNSUPPORTED_CAPABILITY");
+    assert.equal(errorOf(started.envelope).retryable, false);
+
+    // And it holds no browser slot. Allocation reserves the session row before
+    // it can resolve the route, so a start that fails after the reservation
+    // used to leave a REQUESTED row counting against the worker's capacity for
+    // ever — four refused starts would fill a default worker, which turns a
+    // mistyped identifier into a denial of service against the project.
+    const held = await postgres.pool.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM browser_sessions
+        WHERE project_id = $1 AND ended_at IS NULL AND status NOT IN ('TERMINATED', 'FAILED')`,
+      [agent.seeded.projectId],
+    );
+    assert.equal(held.rows[0]?.n, 1, "a refused start kept a browser slot");
+  } finally {
+    await agent.close();
+  }
+});
+
 test("browser_session_status reports the URL the browser settled on, labelled untrusted", async () => {
   const agent = await connected();
   try {
@@ -370,15 +439,25 @@ test("browser_session_status reports the URL the browser settled on, labelled un
 test("a navigation and a snapshot reach the agent labelled untrusted_browser_content", async () => {
   const agent = await connected();
   try {
-    const started = await startSession(agent);
+    const startArgs = {
+      viewport: { width: 1440, height: 900, device_scale_factor: 1 },
+      idempotency_key: key("transcript-start"),
+    };
+    const startResult = await agent.client.callTool({
+      name: "browser_session_start",
+      arguments: startArgs,
+    });
+    const startEnvelope = envelopeOf(startResult);
+    assert.equal(startEnvelope["ok"], true, JSON.stringify(startEnvelope));
     await transcribe(
       "browser_session_start",
-      { name: "browser_session_start", arguments: { idempotency_key: "start-0001" } },
-      await agent.client.callTool({
-        name: "browser_session_status",
-        arguments: { browser_session_id: started.id },
-      }),
+      { name: "browser_session_start", arguments: startArgs },
+      startResult,
     );
+    const started = {
+      id: sessionOf(startEnvelope)["browser_session_id"] as string,
+      epoch: sessionOf(startEnvelope)["control_epoch"] as number,
+    };
 
     const navigateArgs = {
       browser_session_id: started.id,
@@ -668,20 +747,31 @@ test("a session without browser:control may look at a page and may not drive it"
     assert.equal(errorOf(started.envelope).code, "AUTHORISATION_DENIED");
     assert.match(errorOf(started.envelope).message, /browser:control/u);
 
+    // A human starts one for it instead, which is the arrangement this
+    // capability split exists to support.
+    const status = await call(agent.client, "agent_session_status", {});
+    const browser = await startBrowserSessionForAgent(
+      harness,
+      agent.seeded,
+      dataOf(status.envelope)["agent_session_id"] as string,
+    );
+
     const navigated = await call(agent.client, "browser_navigate", {
-      browser_session_id: agent.seeded.browserSessionId,
-      control_epoch: 1,
+      browser_session_id: browser.browserSessionId,
+      control_epoch: browser.controlEpoch,
       url: "/checkout",
     });
     assert.equal(errorOf(navigated.envelope).code, "AUTHORISATION_DENIED");
+    assert.match(errorOf(navigated.envelope).message, /browser:control/u);
 
     // The capture capability still reads the page, which is the whole point of
-    // keeping them apart.
+    // keeping them apart: this agent may look and may not act.
     const snapshot = await call(agent.client, "browser_snapshot", {
-      browser_session_id: agent.seeded.browserSessionId,
-      control_epoch: 1,
+      browser_session_id: browser.browserSessionId,
+      control_epoch: browser.controlEpoch,
     });
     assert.equal(snapshot.envelope["ok"], true, JSON.stringify(snapshot.envelope));
+    assert.equal(snapshot.envelope["trust"], "untrusted_browser_content");
   } finally {
     await agent.close();
   }
@@ -841,13 +931,16 @@ test("a bounded wait is bounded, and a command timeout is a stable code", async 
 test("a snapshot larger than the response bound is truncated rather than thrown away", async () => {
   const agent = await connected();
   try {
-    // A page whose rendered snapshot is longer than the MCP schema permits and
-    // whose newlines double under JSON escaping. Before the assembly rule of
-    // section 13, this was a permanent failure for that page.
+    // A page the browser protocol carries whole — its own bound is 65536 — and
+    // that the smaller MCP response bound cannot. Before the assembly rule of
+    // section 13, a page this size was a permanent failure rather than a
+    // shorter answer.
     harness.snapshotText = Array.from(
-      { length: 4000 },
+      { length: 1600 },
       (_unused, index) => `  - link "Product ${String(index)}" [ref=e${String(index + 1)}]`,
-    ).join("\n");
+    )
+      .join("\n")
+      .slice(0, 60000);
     const started = await startSession(agent);
     const snapshot = await call(agent.client, "browser_snapshot", {
       browser_session_id: started.id,

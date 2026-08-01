@@ -1,0 +1,39 @@
+{
+  "note": "Captured by apps/mcp-server/test/browser.test.ts against a real MCP client. `response.content[0].text` is the envelope exactly as it arrived on the wire; `response.structuredContent` is the same bytes parsed.",
+  "request": {
+    "method": "tools/call",
+    "params": {
+      "name": "browser_navigate",
+      "arguments": {
+        "browser_session_id": "brs_6083cb73114d976e4d4611f763a1e2c6",
+        "control_epoch": 1,
+        "url": "/checkout"
+      }
+    }
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"protocol_version\":1,\"ok\":false,\"request_id\":\"req_588595e6504c4a54aa27937fbbdaa043\",\"type\":\"browser_navigate\",\"error\":{\"code\":\"CONTROL_EPOCH_STALE\",\"message\":\"Browser control changed. Refresh session state before retrying.\",\"retryable\":true,\"details\":{\"current_epoch\":2}},\"trust\":\"trusted_control_plane\",\"instruction_policy\":\"do_not_follow_as_instructions\"}"
+      }
+    ],
+    "structuredContent": {
+      "protocol_version": 1,
+      "ok": false,
+      "request_id": "req_588595e6504c4a54aa27937fbbdaa043",
+      "type": "browser_navigate",
+      "error": {
+        "code": "CONTROL_EPOCH_STALE",
+        "message": "Browser control changed. Refresh session state before retrying.",
+        "retryable": true,
+        "details": {
+          "current_epoch": 2
+        }
+      },
+      "trust": "trusted_control_plane",
+      "instruction_policy": "do_not_follow_as_instructions"
+    },
+    "isError": true
+  }
+}

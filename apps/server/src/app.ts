@@ -126,6 +126,8 @@ export interface BuiltApp {
   readonly reviews: ReviewService;
   readonly sessions: BrowserSessionService;
   readonly workers: WorkerRegistry;
+  /** The worker channel, so a suite can drive reconciliation directly. */
+  readonly workerClient: BrowserWorkerClient;
   readonly viewers: ViewerSessionStore;
   readonly relay: LiveRelay;
   readonly agentCredentials: AgentCredentialStore;
@@ -472,6 +474,7 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     reviews,
     sessions,
     workers,
+    workerClient,
     viewers,
     relay,
     agentCredentials,

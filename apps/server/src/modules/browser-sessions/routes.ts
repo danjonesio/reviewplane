@@ -415,12 +415,16 @@ export async function registerBrowserSessionRoutes(
 
   app.post("/api/v1/browser-sessions/:sessionId/terminate", async (request, reply) => {
     const { sessionId } = request.params as { sessionId: string };
-    const { principal } = await sessionFor(request, sessionId, true);
-    const record = await options.sessions.terminate(
-      sessionId,
-      "requested",
-      actorOfPrincipal(principal),
-    );
+    const { principal, session } = await sessionFor(request, sessionId, true);
+    const body = (request.body ?? {}) as { control_epoch?: number };
+    const record = await options.sessions.end({
+      browserSessionId: sessionId,
+      projectId: session.project_id,
+      controller: session.current_controller ?? systemController(principal),
+      controlEpoch: body.control_epoch ?? session.control_epoch,
+      reason: "requested",
+      actor: actorOfPrincipal(principal),
+    });
     return reply.send({ data: record, meta: { request_id: request.id } });
   });
 

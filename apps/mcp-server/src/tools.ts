@@ -1533,25 +1533,50 @@ const TOOLS: readonly ToolDefinition[] = [
     validate: validateBrowserSessionStartInput,
     async run(args, context) {
       const { connection, services } = context;
-      const record = await services.browserSessions.start({
+      const actor = agentActor(connection.session, connection.client.name);
+      // Reserved and allocated as two steps rather than through `start`, so
+      // that a failed allocation can be cleaned up.
+      //
+      // Allocation reserves the row first, because a route has to be able to
+      // name the session it authorises before the session exists. Every way
+      // allocation can then fail *before* the worker is contacted — no binder,
+      // a published service in another project, one that does not exist —
+      // throws out of a reserved `REQUESTED` row, and that row counts against
+      // the worker's capacity for ever: `ended_at IS NULL` and a status that is
+      // neither `TERMINATED` nor `FAILED`. Four refused starts would fill a
+      // default worker, which makes a mistyped identifier a denial of service
+      // against the whole project. So the reservation is released here.
+      const reserved = await services.browserSessions.create({
         organisationId: connection.credential.organisationId,
         // Neither the project nor the agent session is an argument. A caller
         // that could name either would be starting a browser somewhere it has
         // no authority, and the schema has no member to put them in.
         projectId: connection.project.id,
         agentSessionId: connection.session.id,
-        ...(args["published_service_id"] === undefined
-          ? {}
-          : { publishedServiceId: args["published_service_id"] as string }),
         viewport: (args["viewport"] as Viewport | undefined) ?? DEFAULT_VIEWPORT,
         controller: agentController(context),
         // Everything captured in a session an agent started is evidence a human
         // will judge, so it is retained on the evidence window rather than the
         // shorter action-screenshot one (`docs/DEPLOYMENT.md` retention).
         retentionClass: "verification_evidence",
-        actor: agentActor(connection.session, connection.client.name),
-        requestId: context.requestId,
+        actor,
       });
+      const record = await services.browserSessions
+        .allocate({
+          browserSessionId: reserved.id,
+          ...(args["published_service_id"] === undefined
+            ? {}
+            : { publishedServiceId: args["published_service_id"] as string }),
+          actor,
+          requestId: context.requestId,
+        })
+        .catch(async (error: unknown) => {
+          // Best effort, and the refusal the agent reads is the original one:
+          // a browser that never opened is not a more interesting failure than
+          // the reason it never opened.
+          await services.browserSessions.terminate(reserved.id, "failure", actor).catch(() => undefined);
+          throw error;
+        });
       return {
         // A newly allocated session has been nowhere, so this view is a lease,
         // an epoch and a viewport: control-plane fact throughout.

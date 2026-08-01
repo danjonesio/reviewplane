@@ -274,6 +274,9 @@ export class BrowserSessionService {
   }): Promise<BrowserSessionRecord> {
     const session = await this.get(input.browserSessionId);
     if (session.status !== "REQUESTED") {
+      // Deliberately does not fail the session: it is already allocated, and a
+      // second allocation attempt is the caller's mistake rather than the
+      // session's.
       throw new ApiError(
         "BROWSER_SESSION_NOT_ACTIVE",
         "Only a reserved browser session can be allocated.",
@@ -281,24 +284,42 @@ export class BrowserSessionService {
       );
     }
     if (session.worker_id === null) {
+      await this.#failReservation(session, input.actor, "the reservation has no worker");
       throw new ApiError("BROWSER_CAPACITY_EXHAUSTED", "This session has no worker.");
     }
 
     let binding: ServiceBinding | null = null;
     if (input.publishedServiceId !== undefined) {
-      if (this.#binder === null) {
-        throw new ApiError(
-          "UNSUPPORTED_CAPABILITY",
-          "This control plane cannot bind a published service to a browser session.",
+      // Every failure between here and the worker call ends the reservation.
+      //
+      // It did not, and the consequence was worse than an untidy row: a
+      // `REQUESTED` session with `ended_at IS NULL` is exactly what the capacity
+      // query counts, so four refused starts — a mistyped published-service
+      // identifier is enough — filled a default worker and no further session
+      // could be started in the project at all. A refusal that consumes the
+      // resource it refused to allocate is a denial of service with extra steps.
+      try {
+        if (this.#binder === null) {
+          throw new ApiError(
+            "UNSUPPORTED_CAPABILITY",
+            "This control plane cannot bind a published service to a browser session.",
+          );
+        }
+        binding = await this.#binder.bind({
+          publishedServiceId: input.publishedServiceId,
+          projectId: session.project_id,
+          browserSessionId: session.id,
+          actor: input.actor,
+          requestId: input.requestId,
+        });
+      } catch (error) {
+        await this.#failReservation(
+          session,
+          input.actor,
+          error instanceof Error ? error.message : String(error),
         );
+        throw error;
       }
-      binding = await this.#binder.bind({
-        publishedServiceId: input.publishedServiceId,
-        projectId: session.project_id,
-        browserSessionId: session.id,
-        actor: input.actor,
-        requestId: input.requestId,
-      });
       await this.#pool.query(
         "UPDATE browser_sessions SET published_service_id = $2, service_origin = $3 WHERE id = $1",
         [session.id, binding.publishedServiceId, binding.serviceOrigin],
@@ -368,6 +389,27 @@ export class BrowserSessionService {
         : { publishedServiceId: input.publishedServiceId }),
       actor: input.actor,
       requestId: input.requestId ?? "req_internal",
+    });
+  }
+
+  /**
+   * Ends a reservation that could not be allocated, so it stops counting
+   * against the worker's capacity.
+   *
+   * `FAILED` rather than `TERMINATED`: nothing was ever allocated, and the
+   * session is a record of an attempt that did not succeed. The lease goes with
+   * it, because a lease on a session that will never exist is a lease nobody
+   * can release.
+   */
+  async #failReservation(
+    session: BrowserSessionRecord,
+    actor: EventActor,
+    reason: string,
+  ): Promise<void> {
+    await this.#revokeLeases(session.id, `allocation refused: ${reason}`);
+    await this.#setStatus(session, "FAILED", actor, "browser_session.failed", {
+      reason,
+      trigger: "allocation_refused",
     });
   }
 
@@ -563,7 +605,47 @@ export class BrowserSessionService {
     return rows.rows.length > 0;
   }
 
-  /** Terminates a session and records the transition. */
+  /**
+   * Ends a session on behalf of a controller.
+   *
+   * `docs/MCP_SPEC.md` section 7.3 puts ending a session under the same epoch
+   * and lease rules as pausing one, on the stated grounds that "pausing or
+   * ending a browser somebody else now controls is not a lesser act than
+   * clicking in it". {@link terminate} below applies no such check because its
+   * callers are the reconciler and the worker report, which are not
+   * controllers; this is the controller-facing door, and it is the one every
+   * human and agent path uses.
+   */
+  async end(input: {
+    readonly browserSessionId: string;
+    readonly projectId: string;
+    readonly controller: ControllerIdentity;
+    readonly controlEpoch: number;
+    readonly reason: TerminationReason;
+    readonly actor: EventActor;
+  }): Promise<BrowserSessionRecord> {
+    const session = await this.get(input.browserSessionId);
+    if (session.project_id !== input.projectId) throw notFound("The browser session");
+    if (session.status === "TERMINATED" || session.status === "FAILED") return session;
+    await this.#requireControl(
+      {
+        browserSessionId: input.browserSessionId,
+        projectId: input.projectId,
+        controller: input.controller,
+        controlEpoch: input.controlEpoch,
+      },
+      ["REQUESTED", "ALLOCATING", "READY", "ACTIVE", "PAUSED", "DEGRADED"],
+    );
+    return this.terminate(input.browserSessionId, input.reason, input.actor);
+  }
+
+  /**
+   * Terminates a session and records the transition.
+   *
+   * This applies no controller or epoch check: it is the internal door, used by
+   * the reconciler, by worker-reported failure and by administrative cleanup.
+   * A controller ending its own session goes through {@link end}.
+   */
   async terminate(
     browserSessionId: string,
     reason: TerminationReason,
