@@ -1164,6 +1164,20 @@ carries `details.current_version`; `CONTROL_EPOCH_STALE` carries
 `details.allowed_transitions`; `EVIDENCE_REQUIRED` carries
 `details.required_evidence`.
 
+For the browser tools: `BROWSER_SESSION_NOT_ACTIVE` carries
+`details.browser_session_status`, so an agent can tell a session it should
+resume from one it should replace; `POLICY_DENIED` for a refused value carries
+`details.detected`, which names the **rule** the value matched and never the
+value — a refusal that quoted the credential would put it in the response, the
+log and the event; and the route-association `AUTHORISATION_DENIED` carries
+`details.published_service_id`.
+
+The `details` object is closed (`additionalProperties: false`), so a member a
+handler sets and the schema does not declare is dropped on the way out rather
+than delivered. That is deliberate — a refusal must not become a channel for
+arbitrary content — and it means adding a detail is a protocol change, not a
+handler change.
+
 ## 13. Bounded context
 
 Tools must avoid returning unbounded page text, logs or histories.

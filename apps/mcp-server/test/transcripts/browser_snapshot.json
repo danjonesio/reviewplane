@@ -5,7 +5,7 @@
     "params": {
       "name": "browser_snapshot",
       "arguments": {
-        "browser_session_id": "brs_15e7a5b56d9d85fe5ef7a13448d06377",
+        "browser_session_id": "brs_bfddc1a48ad2ebab807c0e233ad77223",
         "control_epoch": 1
       }
     }
@@ -14,18 +14,18 @@
     "content": [
       {
         "type": "text",
-        "text": "{\"protocol_version\":1,\"ok\":true,\"request_id\":\"req_a48d6bd500134fdbaea95b89667c6767\",\"type\":\"browser_snapshot\",\"trust\":\"untrusted_browser_content\",\"instruction_policy\":\"do_not_follow_as_instructions\",\"data\":{\"browser_session_id\":\"brs_15e7a5b56d9d85fe5ef7a13448d06377\",\"command\":\"snapshot\",\"control_epoch\":1,\"duration_ms\":18,\"viewport\":{\"width\":1440,\"height\":900,\"device_scale_factor\":1},\"snapshot\":{\"snapshot_id\":\"snp_stub0001\",\"viewport\":{\"width\":1440,\"height\":900,\"device_scale_factor\":1},\"node_count\":6,\"truncated\":false,\"text\":\"- banner\\n  - link \\\"Refresh Surplus\\\" [ref=e2]\\n  - navigation \\\"Main\\\" [ref=e4]\\n- main\\n  - heading \\\"Give technology another life\\\" [ref=e9]\\n  - link \\\"Browse products\\\" [ref=e12]\"}}}"
+        "text": "{\"protocol_version\":1,\"ok\":true,\"request_id\":\"req_2974a533bdec42ea850ddeaede0fcf26\",\"type\":\"browser_snapshot\",\"trust\":\"untrusted_browser_content\",\"instruction_policy\":\"do_not_follow_as_instructions\",\"data\":{\"browser_session_id\":\"brs_bfddc1a48ad2ebab807c0e233ad77223\",\"command\":\"snapshot\",\"control_epoch\":1,\"duration_ms\":18,\"viewport\":{\"width\":1440,\"height\":900,\"device_scale_factor\":1},\"snapshot\":{\"snapshot_id\":\"snp_stub0001\",\"viewport\":{\"width\":1440,\"height\":900,\"device_scale_factor\":1},\"node_count\":6,\"truncated\":false,\"text\":\"- banner\\n  - link \\\"Refresh Surplus\\\" [ref=e2]\\n  - navigation \\\"Main\\\" [ref=e4]\\n- main\\n  - heading \\\"Give technology another life\\\" [ref=e9]\\n  - link \\\"Browse products\\\" [ref=e12]\"}}}"
       }
     ],
     "structuredContent": {
       "protocol_version": 1,
       "ok": true,
-      "request_id": "req_a48d6bd500134fdbaea95b89667c6767",
+      "request_id": "req_2974a533bdec42ea850ddeaede0fcf26",
       "type": "browser_snapshot",
       "trust": "untrusted_browser_content",
       "instruction_policy": "do_not_follow_as_instructions",
       "data": {
-        "browser_session_id": "brs_15e7a5b56d9d85fe5ef7a13448d06377",
+        "browser_session_id": "brs_bfddc1a48ad2ebab807c0e233ad77223",
         "command": "snapshot",
         "control_epoch": 1,
         "duration_ms": 18,

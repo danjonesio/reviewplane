@@ -284,6 +284,9 @@ export function decodeErrorDetails(value: unknown): ErrorDetails {
     ...(source["required_evidence"] === undefined ? {} : { required_evidence: (source["required_evidence"] as unknown[]).map((item) => item as string) }),
     ...(source["allowed_transitions"] === undefined ? {} : { allowed_transitions: (source["allowed_transitions"] as unknown[]).map((item) => item as string) }),
     ...(source["retry_after_ms"] === undefined ? {} : { retry_after_ms: source["retry_after_ms"] as number }),
+    ...(source["browser_session_status"] === undefined ? {} : { browser_session_status: source["browser_session_status"] as BrowserLifecycleStatus }),
+    ...(source["detected"] === undefined ? {} : { detected: source["detected"] as string }),
+    ...(source["published_service_id"] === undefined ? {} : { published_service_id: source["published_service_id"] as string }),
   };
 }
 

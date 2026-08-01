@@ -286,6 +286,15 @@ export function encodeErrorDetails(value: ErrorDetails): string {
   if (value.retry_after_ms !== undefined) {
     fields.push(`"retry_after_ms":${jsonInteger(value.retry_after_ms)}`);
   }
+  if (value.browser_session_status !== undefined) {
+    fields.push(`"browser_session_status":${jsonString(value.browser_session_status)}`);
+  }
+  if (value.detected !== undefined) {
+    fields.push(`"detected":${jsonString(value.detected)}`);
+  }
+  if (value.published_service_id !== undefined) {
+    fields.push(`"published_service_id":${jsonString(value.published_service_id)}`);
+  }
   return `{${fields.join(",")}}`;
 }
 

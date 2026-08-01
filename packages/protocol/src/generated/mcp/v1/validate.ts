@@ -1093,7 +1093,7 @@ export function validateErrorDetailsAllowedTransitions(value: unknown, path: str
  * cannot become a channel for arbitrary content.
  */
 export function validateErrorDetails(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["current_version", "expected_version", "current_epoch", "field", "candidates", "required_evidence", "allowed_transitions", "retry_after_ms"], []);
+  const source = checkObject(value, path, out, ["current_version", "expected_version", "current_epoch", "field", "candidates", "required_evidence", "allowed_transitions", "retry_after_ms", "browser_session_status", "detected", "published_service_id"], []);
   if (source === null) return;
   if (source["current_version"] !== undefined) {
     validateVersionNumber(source["current_version"], `${path}.current_version`, out);
@@ -1118,6 +1118,15 @@ export function validateErrorDetails(value: unknown, path: string, out: SchemaVi
   }
   if (source["retry_after_ms"] !== undefined) {
     validateRetryAfterMs(source["retry_after_ms"], `${path}.retry_after_ms`, out);
+  }
+  if (source["browser_session_status"] !== undefined) {
+    validateBrowserLifecycleStatus(source["browser_session_status"], `${path}.browser_session_status`, out);
+  }
+  if (source["detected"] !== undefined) {
+    validateReasonText(source["detected"], `${path}.detected`, out);
+  }
+  if (source["published_service_id"] !== undefined) {
+    validateIdentifier(source["published_service_id"], `${path}.published_service_id`, out);
   }
 }
 

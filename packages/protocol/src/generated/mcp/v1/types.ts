@@ -1706,6 +1706,24 @@ export interface ErrorDetails {
    * How long to wait before retrying, returned with RATE_LIMITED.
    */
   readonly retry_after_ms?: RetryAfterMs;
+  /**
+   * Lifecycle status the browser session actually holds, returned with
+   * BROWSER_SESSION_NOT_ACTIVE. A caller told only that the session is not active cannot
+   * tell a session it should resume from one it should replace.
+   */
+  readonly browser_session_status?: BrowserLifecycleStatus;
+  /**
+   * The name of the rule a refused value matched, returned with POLICY_DENIED — for
+   * example the shape of secret material a browser_type value was refused for. It names
+   * the rule and never the value: a refusal that quoted the credential would put it in the
+   * response, the log and the event (docs/SECURITY.md section 18).
+   */
+  readonly detected?: ReasonText;
+  /**
+   * The published service a refusal concerns, returned with AUTHORISATION_DENIED when the
+   * route a browser session was allocated against no longer authorises it.
+   */
+  readonly published_service_id?: Identifier;
 }
 
 /**
