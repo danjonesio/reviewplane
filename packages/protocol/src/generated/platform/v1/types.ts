@@ -927,6 +927,7 @@ export const EVENT_TYPES = [
   "finding.verification_submitted",
   "finding.verification_accepted",
   "finding.verification_rejected",
+  "review.completion_evaluated",
   "finding.resolved",
   "finding.reopened",
   "finding.status_change_denied",

@@ -130,6 +130,13 @@
       "note": "An agent's note on a finding, clearly attributed. The reproduction detail is recorded as a comment rather than as a status change, because it is information and not a decision."
     },
     {
+      "name": "review-completion-evaluated",
+      "kind": "review_event",
+      "file": "valid/review-completion-evaluated.json",
+      "message_type": "review.completion_evaluated",
+      "note": "The completion gate of docs/MCP_SPEC.md section 7.8, recorded. An agent asked whether it had finished and was told blocked_missing_evidence with the one viewport it had not covered. Nothing moved: the event records what an agent was told, and the summary beside it is the agent's own claim rather than evidence."
+    },
+    {
       "name": "finding-verification-submitted",
       "kind": "review_event",
       "file": "valid/finding-verification-submitted.json",

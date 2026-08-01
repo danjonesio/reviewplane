@@ -333,7 +333,7 @@ export function validateUntrustedFieldPath(value: unknown, path: string, out: Sc
  * that cannot consume image content still completes the workflow.
  */
 export function validateWarningCode(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["image_content_unsupported","resource_content_unsupported","findings_truncated","text_truncated","workspace_unresolved","verification_branch_uncorroborated","staleness_unavailable","inbox_unavailable","results_truncated","idempotent_replay"] });
+  checkString(value, path, out, { values: ["image_content_unsupported","resource_content_unsupported","findings_truncated","text_truncated","workspace_unresolved","verification_branch_uncorroborated","staleness_unavailable","inbox_unavailable","results_truncated","idempotent_replay","completion_blocked_pending_review"] });
 }
 
 /**

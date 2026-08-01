@@ -116,6 +116,7 @@ export const WARNING_CODE_VALUES = [
   "inbox_unavailable",
   "results_truncated",
   "idempotent_replay",
+  "completion_blocked_pending_review",
 ] as const;
 
 export type WarningCode =
@@ -128,7 +129,8 @@ export type WarningCode =
   | "staleness_unavailable"
   | "inbox_unavailable"
   | "results_truncated"
-  | "idempotent_replay";
+  | "idempotent_replay"
+  | "completion_blocked_pending_review";
 
 /**
  * Stable refusal code (docs/MCP_SPEC.md section 12). Adding a code is additive within a

@@ -68,6 +68,7 @@ import type {
   ReviewAssigned,
   ReviewClaimed,
   ReviewCommentAdded,
+  ReviewCompletionEvaluated,
   ReviewCreateRequest,
   ReviewCreated,
   ReviewNamed,
@@ -79,6 +80,7 @@ import type {
   ScreenshotCaptured,
   ScrollPosition,
   VerificationChecks,
+  VerificationCreateRequest,
   VerificationReference,
   Viewport,
 } from "./types.ts";
@@ -721,6 +723,23 @@ export function encodeFindingTransitionRequest(value: FindingTransitionRequest):
 }
 
 /**
+ * Canonically encodes a VerificationCreateRequest.
+ */
+export function encodeVerificationCreateRequest(value: VerificationCreateRequest): string {
+  const fields: string[] = [];
+  if (value.expected_version !== undefined) {
+    fields.push(`"expected_version":${jsonInteger(value.expected_version)}`);
+  }
+  fields.push(`"summary":${jsonString(value.summary)}`);
+  fields.push(`"branch":${jsonString(value.branch)}`);
+  fields.push(`"commit":${jsonString(value.commit)}`);
+  fields.push(`"tested_viewports":${`[${value.tested_viewports.map((item) => encodeViewport(item)).join(",")}]`}`);
+  fields.push(`"checks":${encodeVerificationChecks(value.checks)}`);
+  fields.push(`"artefact_ids":${`[${value.artefact_ids.map((item) => jsonString(item)).join(",")}]`}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
  * Canonically encodes a CommentCreateRequest.
  */
 export function encodeCommentCreateRequest(value: CommentCreateRequest): string {
@@ -1250,6 +1269,24 @@ export function encodeFindingVerificationSubmitted(value: FindingVerificationSub
   fields.push(`"version":${jsonInteger(value.version)}`);
   if (value.supersedes_verification_id !== undefined) {
     fields.push(`"supersedes_verification_id":${jsonString(value.supersedes_verification_id)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ReviewCompletionEvaluated.
+ */
+export function encodeReviewCompletionEvaluated(value: ReviewCompletionEvaluated): string {
+  const fields: string[] = [];
+  fields.push(`"review_id":${jsonString(value.review_id)}`);
+  if (value.finding_id !== undefined) {
+    fields.push(`"finding_id":${jsonString(value.finding_id)}`);
+  }
+  fields.push(`"result":${jsonString(value.result)}`);
+  fields.push(`"missing":${`[${value.missing.map((item) => jsonString(item)).join(",")}]`}`);
+  fields.push(`"finding_count":${jsonInteger(value.finding_count)}`);
+  if (value.summary !== undefined) {
+    fields.push(`"summary":${jsonString(value.summary)}`);
   }
   return `{${fields.join(",")}}`;
 }

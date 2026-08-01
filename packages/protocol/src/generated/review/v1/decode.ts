@@ -39,6 +39,7 @@ import type {
   Comment,
   CommentCreateRequest,
   CommentUpdateRequest,
+  CompletionResult,
   ContentRectangle,
   Correlation,
   CssPixelBox,
@@ -85,6 +86,7 @@ import type {
   ReviewAssigned,
   ReviewClaimed,
   ReviewCommentAdded,
+  ReviewCompletionEvaluated,
   ReviewCreateRequest,
   ReviewCreated,
   ReviewNamed,
@@ -99,6 +101,7 @@ import type {
   ScrollPosition,
   ThumbnailState,
   VerificationChecks,
+  VerificationCreateRequest,
   VerificationReference,
   VerificationStatus,
   Viewport,
@@ -566,6 +569,22 @@ export function decodeFindingTransitionRequest(value: unknown): FindingTransitio
 }
 
 /**
+ * Decodes a validated VerificationCreateRequest.
+ */
+export function decodeVerificationCreateRequest(value: unknown): VerificationCreateRequest {
+  const source = value as Record<string, unknown>;
+  return {
+    ...(source["expected_version"] === undefined ? {} : { expected_version: source["expected_version"] as number }),
+    summary: source["summary"] as string,
+    branch: source["branch"] as string,
+    commit: source["commit"] as string,
+    tested_viewports: (source["tested_viewports"] as unknown[]).map((item) => decodeViewport(item)),
+    checks: decodeVerificationChecks(source["checks"]),
+    artefact_ids: (source["artefact_ids"] as unknown[]).map((item) => item as string),
+  };
+}
+
+/**
  * Decodes a validated CommentCreateRequest.
  */
 export function decodeCommentCreateRequest(value: unknown): CommentCreateRequest {
@@ -1014,6 +1033,21 @@ export function decodeFindingVerificationSubmitted(value: unknown): FindingVerif
     review_id: source["review_id"] as string,
     version: source["version"] as number,
     ...(source["supersedes_verification_id"] === undefined ? {} : { supersedes_verification_id: source["supersedes_verification_id"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated ReviewCompletionEvaluated.
+ */
+export function decodeReviewCompletionEvaluated(value: unknown): ReviewCompletionEvaluated {
+  const source = value as Record<string, unknown>;
+  return {
+    review_id: source["review_id"] as string,
+    ...(source["finding_id"] === undefined ? {} : { finding_id: source["finding_id"] as string }),
+    result: source["result"] as CompletionResult,
+    missing: (source["missing"] as unknown[]).map((item) => item as string),
+    finding_count: source["finding_count"] as number,
+    ...(source["summary"] === undefined ? {} : { summary: source["summary"] as string }),
   };
 }
 

@@ -1226,5 +1226,104 @@
         }
       }
     }
+  },
+  "task_validation_status": {
+    "title": "What this project requires before the work counts as done",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "Arguments of task_validation_status. The review is resolved inside the current project only, as everywhere else on this interface.",
+      "additionalProperties": false,
+      "required": [
+        "review"
+      ],
+      "properties": {
+        "review": {
+          "$ref": "#/$defs/review_selector",
+          "description": "Immutable identifier or project-scoped slug of the review whose work is being evaluated."
+        },
+        "finding_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "One finding to narrow to. Absent evaluates every finding of the review."
+        }
+      },
+      "$defs": {
+        "identifier": {
+          "type": "string",
+          "description": "Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the value as opaque: the schema bounds only its length and character class and never its documented prefix.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "review_selector": {
+          "type": "string",
+          "description": "How an agent names a review: an immutable identifier or a project-scoped slug. Both resolve inside the current project only, and no cross-project search is performed.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9._-]+$"
+        }
+      }
+    }
+  },
+  "task_complete": {
+    "title": "Evaluate the completion policy and report what remains",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "Arguments of task_complete. There is no argument that asserts a result and none that could terminate the session: the caller names the work and the control plane evaluates it.",
+      "additionalProperties": false,
+      "required": [
+        "review",
+        "idempotency_key"
+      ],
+      "properties": {
+        "review": {
+          "$ref": "#/$defs/review_selector",
+          "description": "Immutable identifier or project-scoped slug of the review being reported on."
+        },
+        "finding_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "One finding to narrow to. Absent evaluates every finding of the review."
+        },
+        "summary": {
+          "$ref": "#/$defs/body_text",
+          "description": "What the agent believes it finished. Recorded with the evaluation as a claim by the agent; it is not evidence and does not affect the result."
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/idempotency_key",
+          "description": "Key for this evaluation. Section 10 requires one on every tool that records, and this one records the evaluation."
+        }
+      },
+      "$defs": {
+        "body_text": {
+          "type": "string",
+          "description": "Human-authored or agent-authored prose: a description, instruction, comment, resolution note or verification summary.",
+          "minLength": 1,
+          "maxLength": 4000,
+          "pattern": "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f]+$"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "description": "Caller-chosen key for a state-changing tool (docs/MCP_SPEC.md section 10). It is scoped to actor, tool and project: reuse with the same arguments returns the first result and creates no second record, and reuse with different arguments is refused with IDEMPOTENCY_CONFLICT.",
+          "minLength": 8,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:-]+$"
+        },
+        "identifier": {
+          "type": "string",
+          "description": "Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the value as opaque: the schema bounds only its length and character class and never its documented prefix.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "review_selector": {
+          "type": "string",
+          "description": "How an agent names a review: an immutable identifier or a project-scoped slug. Both resolve inside the current project only, and no cross-project search is performed.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9._-]+$"
+        }
+      }
+    }
   }
 }

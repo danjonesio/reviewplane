@@ -735,7 +735,8 @@
         "staleness_unavailable",
         "inbox_unavailable",
         "results_truncated",
-        "idempotent_replay"
+        "idempotent_replay",
+        "completion_blocked_pending_review"
       ]
     },
     "error_class": {
