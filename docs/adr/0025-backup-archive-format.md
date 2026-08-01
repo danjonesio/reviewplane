@@ -69,6 +69,26 @@ when it finishes, because the two-pass restore cannot read a pipe twice.
 **Backup and restore are operator commands in the image and are exposed through
 no network interface.** Restore truncates and repopulates every table.
 
+**A restore is one transaction, migrations included.** PostgreSQL rolls back
+schema changes as it rolls back rows, so a failed restore leaves the database
+exactly as it found it and nothing has to be cleaned up afterwards. This is a
+correction: the first version of this decision migrated first and, on failure,
+removed the schema with `drop schema public cascade`, guarded by a check that
+counted base tables — so a database holding a view, a function, a sequence, a
+type or an extension in `public` passed the guard and lost them. Managed
+PostgreSQL commonly pre-installs extensions there, and `docs/DEPLOYMENT.md` §11
+supports an operator-managed external database. A rollback cannot make that
+mistake, because it undoes what the transaction did and nothing else.
+
+The cost is a constraint on migrations: every one MUST be able to run inside a
+transaction. `CREATE INDEX CONCURRENTLY`, `VACUUM`, `CREATE DATABASE`, `CREATE
+TABLESPACE`, `ALTER SYSTEM` and `CREATE EXTENSION` are refused by
+`apps/server/test/migrate.test.ts`. None of the committed migrations uses one,
+and a forward-only schema of plain `CREATE` and `ALTER` statements is what
+`docs/DEVELOPMENT.md` §7 already asks for. A migration that genuinely needed a
+concurrent index would force this decision to be revisited rather than quietly
+weakened.
+
 ## Consequences
 
 ### Positive
@@ -85,9 +105,13 @@ no network interface.** Restore truncates and repopulates every table.
   beside them.
 - A new table is backed up the day its migration lands, without anyone
   remembering.
-- Deferred foreign keys make the load atomic: a load that would leave a dangling
-  reference aborts and writes nothing, so an interrupted restore leaves an
-  installation with a schema and no data rather than a half-populated one.
+- A restore is one transaction — migrations, load, credential rotation and audit
+  event — with foreign keys deferred inside it. PostgreSQL rolls back schema
+  changes as it rolls back rows, so a failed restore leaves the database exactly
+  as it found it and can simply be run again. Nothing is dropped: the command
+  creates nothing outside its transaction and therefore has nothing to clean up,
+  which is what keeps a view, a function or an extension that was already in
+  `public` out of harm's way.
 - The operator never has to get a file out of a Docker volume.
 
 ### Negative
@@ -135,6 +159,17 @@ cp` it out.** Rejected: it puts a copy of every review, annotation and
 screenshot on the installation's own volume, needs a second command to be useful,
 and inverts awkwardly for restore, where the archive has to be copied *in*
 before a stopped `api` container exists to copy it into.
+
+**Migrate outside the restore's transaction and drop the schema on failure.**
+This is what the first version did, and it is recorded here because it looked
+safe: the restore already refused a target that was not an empty installation,
+so the drop appeared to be undoing only what the command had just created. It
+was not. The emptiness check counted base tables and the drop removed the
+schema, so a database with no tables but a view, a function, a sequence, a type
+or an extension in `public` lost all of them; the check and the action were also
+separated by every migration and the whole load, so an object created in that
+window was destroyed too. Rejected in favour of transactional DDL, which removes
+the dangerous operation from the product rather than guarding it.
 
 **Bind-mount a host backup directory into the `api` service.** Rejected: Docker
 creates a missing bind-mount source owned by `root`, the service runs as uid

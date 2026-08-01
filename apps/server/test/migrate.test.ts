@@ -8,6 +8,7 @@
 
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
@@ -16,8 +17,10 @@ import {
   MIGRATION_LOCK_KEY,
   MIGRATIONS_DIRECTORY,
   MigrationLockUnavailableError,
+  NON_TRANSACTIONAL_STATEMENTS,
   listMigrations,
   migrate,
+  migrateInTransaction,
   migrationDeclarations,
   migrationReport,
   migrationState,
@@ -161,6 +164,72 @@ describe("the migration runner", () => {
         entry.downgrade === "supported" || entry.downgrade === "not_supported",
         `${entry.filename} declares ${entry.downgrade}`,
       );
+    }
+  });
+
+  /**
+   * `reviewplane restore` applies migrations inside its load transaction, so
+   * that a failed restore rolls the schema back with the rows and nothing has
+   * to be dropped by hand. That only holds while every migration is
+   * transactional.
+   *
+   * The rule is asserted over the files rather than remembered, because the
+   * consequence of breaking it is not a failing migration — it is a restore
+   * that cannot roll back cleanly, discovered by whoever needed the rollback.
+   */
+  test("no migration contains a statement that cannot run in a transaction", async () => {
+    const directory = MIGRATIONS_DIRECTORY;
+    const offenders: string[] = [];
+    for (const file of await listMigrations(directory)) {
+      const sql = await readFile(join(directory, file), "utf8");
+      // Comments are stripped first: several migrations discuss indexes and
+      // extensions in prose, and a scan that reported what a file says rather
+      // than what it does would be noise.
+      const statements = sql
+        .split("\n")
+        .filter((line) => !line.trimStart().startsWith("--"))
+        .join("\n");
+      for (const pattern of NON_TRANSACTIONAL_STATEMENTS) {
+        if (pattern.test(statements)) offenders.push(`${file}: ${pattern.source}`);
+      }
+    }
+    assert.deepEqual(
+      offenders,
+      [],
+      "these migrations cannot run inside a transaction, which reviewplane restore requires",
+    );
+  });
+
+  test("migrations applied in a caller's transaction disappear when it rolls back", async () => {
+    // The property `restore` depends on, asserted directly: PostgreSQL rolls
+    // back DDL, so a rolled-back migration leaves no table behind and there is
+    // nothing for a restore to clean up.
+    const isolated = await startPostgres();
+    const isolatedPool = createPool(isolated.url);
+    const client = await isolatedPool.connect();
+    try {
+      await client.query("begin");
+      const result = await migrateInTransaction(client, MIGRATIONS_DIRECTORY, {
+        through: "0002_organisations_and_projects.sql",
+      });
+      assert.deepEqual(result.applied, [
+        "0001_events.sql",
+        "0002_organisations_and_projects.sql",
+      ]);
+      const inside = await client.query<{ count: string }>(
+        "select count(*)::text as count from information_schema.tables where table_schema = 'public'",
+      );
+      assert.ok(Number(inside.rows[0]?.count) > 0, "the migrations created nothing");
+
+      await client.query("rollback");
+      const after = await client.query<{ count: string }>(
+        "select count(*)::text as count from information_schema.tables where table_schema = 'public'",
+      );
+      assert.equal(after.rows[0]?.count, "0", "a rolled-back migration left a table behind");
+    } finally {
+      client.release();
+      await isolatedPool.end();
+      await isolated.stop();
     }
   });
 

@@ -1141,6 +1141,90 @@ describe("restoring an archive from an older schema", () => {
   });
 
   /**
+   * A failed restore must leave the database as it found it — **including the
+   * things an empty-installation check cannot see**.
+   *
+   * The check counts base tables in `public`. A database with no base tables
+   * can still hold a view, a function, a sequence, a type and an extension, and
+   * managed PostgreSQL commonly pre-installs extensions there;
+   * `docs/DEPLOYMENT.md` §11 supports an operator-managed external database. An
+   * earlier fix migrated first and then ran `drop schema public cascade` on
+   * failure, guarded by that table count, and destroyed all five.
+   *
+   * They survive now because nothing is dropped: the migrations run inside the
+   * restore's transaction and a rollback undoes them.
+   */
+  test("a failure leaves objects the emptiness check cannot see untouched", async () => {
+    const places = await scratch();
+    const source = await oldInstallation();
+    const restored = await startPostgres();
+    const restoredPool = createPool(restored.url);
+    try {
+      // A database with no base table, and a great deal to lose.
+      await restoredPool.query("create extension if not exists pgcrypto");
+      await restoredPool.query("create sequence tenancy_counter");
+      await restoredPool.query("create type tenancy_kind as enum ('internal', 'external')");
+      await restoredPool.query("create view tenancy_report as select 1 as one");
+      await restoredPool.query(
+        "create function tenancy_answer() returns integer language sql as $$ select 42 $$",
+      );
+      const inventory = async (): Promise<Record<string, string | undefined>> => {
+        const { rows } = await restoredPool.query<Record<string, string>>(
+          `select (select count(*)::text from information_schema.tables
+                    where table_schema = 'public' and table_type = 'BASE TABLE') as base_tables,
+                  (select count(*)::text from information_schema.views where table_schema = 'public') as views,
+                  (select count(*)::text from information_schema.sequences where sequence_schema = 'public') as sequences,
+                  (select count(*)::text from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                    where n.nspname = 'public' and p.proname = 'tenancy_answer') as functions,
+                  (select count(*)::text from pg_type t join pg_namespace n on n.oid = t.typnamespace
+                    where n.nspname = 'public' and t.typname = 'tenancy_kind') as types,
+                  (select count(*)::text from pg_extension where extname = 'pgcrypto') as extensions`,
+        );
+        return rows[0] ?? {};
+      };
+      const before = await inventory();
+      assert.equal(before["base_tables"], "0", "the emptiness check would not have passed");
+      assert.deepEqual(
+        [before["views"], before["sequences"], before["functions"], before["types"], before["extensions"]],
+        ["1", "1", "1", "1", "1"],
+        "the fixture did not create what it meant to",
+      );
+
+      await createBackup({
+        pool: source.pool,
+        output: places.archive,
+        mode: "database",
+        artefactPath: places.store,
+        artefactDriver: "filesystem",
+        environment: {},
+      });
+      const broken = await rebuildArchive(places.archive, (_path, data) => data, {
+        editManifest: (manifest) => ({
+          ...manifest,
+          tables: manifest.tables.map((table) =>
+            table.name === "organisations" ? { ...table, rows: table.rows + 5 } : table,
+          ),
+        }),
+      });
+
+      await assert.rejects(() =>
+        restoreBackup({
+          pool: restoredPool,
+          archive: broken,
+          artefactPath: places.restoreStore,
+        }),
+      );
+
+      assert.deepEqual(await inventory(), before, "a failed restore changed the database");
+    } finally {
+      await restoredPool.end().catch(() => undefined);
+      await restored.stop();
+      await source.pool.end().catch(() => undefined);
+      await source.database.stop();
+    }
+  });
+
+  /**
    * The wedge the post-commit phase created: a failure after the load left the
    * data committed, so the operator's retry was refused with "the target
    * installation already has N table(s)" and there was no way forward.

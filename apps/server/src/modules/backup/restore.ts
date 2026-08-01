@@ -26,11 +26,12 @@
  *     event. They used to run after the commit, which is how a failure in any
  *     of them left the data committed with no audit record and the credentials
  *     a hostname change was meant to rotate still live.
- *   * A failure also removes the schema the restore itself created, so the
- *     target returns to the state the command found it in and the operator can
- *     simply run it again. The migrations run outside the transaction, so a
- *     rollback alone left a schema behind — and a schema is enough to fail the
- *     next attempt's empty-installation check.
+ *   * The migrations run in that transaction too. PostgreSQL rolls back DDL, so
+ *     a failed restore leaves no schema, no rows and no trace, and the operator
+ *     simply runs it again. Nothing in this module drops anything: an earlier
+ *     version migrated first and removed the schema by hand on failure, and its
+ *     guard counted base tables, so a database holding a view, a function or an
+ *     extension in `public` passed the guard and lost them.
  *   * Every post-load step is guarded against **the archive's** schema rather
  *     than this build's, per column and not merely per table. A Stage 0 archive
  *     restores to `0054`, where `event_outbox` (`0056`), `install_tokens`
@@ -54,7 +55,12 @@ import { StringDecoder } from "node:string_decoder";
 
 import type { BackupManifest } from "@reviewplane/protocol/platform";
 
-import { listMigrations, migrate, migrationState, MIGRATIONS_DIRECTORY } from "../../db/migrate.ts";
+import {
+  listMigrations,
+  migrateInTransaction,
+  migrationState,
+  MIGRATIONS_DIRECTORY,
+} from "../../db/migrate.ts";
 import type { Pool, PoolClient } from "../../db/pool.ts";
 import { appendEvent } from "../../events/append.ts";
 import { readArchive, type ArchiveMember, type EntryWriter } from "./archive.ts";
@@ -378,11 +384,21 @@ export async function restoreBackup(options: RestoreOptions): Promise<RestoreRes
     agentCredentials: 0,
   };
   try {
+    // One transaction for the whole restore, migrations included.
+    //
+    // PostgreSQL has transactional DDL, so the schema this creates is undone by
+    // a rollback exactly as the rows are. That is what makes a failed restore
+    // leave the database untouched *without* anything in this product ever
+    // running `drop schema` — the version before this one migrated first and
+    // then removed the schema by hand on failure, guarded by a check that
+    // counted base tables, which destroyed views, functions, sequences and
+    // extensions that the guard could not see.
+    await client.query("begin");
     log(
       `applying ${String(plan.migrationsToApply.length)} migration(s) to reach ${manifest.schema_version}`,
     );
-    await migrate(options.pool, directory, { through: manifest.schema_version });
-    const reached = await migrationState(options.pool, directory);
+    await migrateInTransaction(client, directory, { through: manifest.schema_version });
+    const reached = await migrationState(client, directory);
     const applied = [...reached.applied].sort();
     const archived = [...inspection.archivedMigrations];
     if (archived.length > 0 && JSON.stringify(applied) !== JSON.stringify(archived)) {
@@ -391,7 +407,6 @@ export async function restoreBackup(options: RestoreOptions): Promise<RestoreRes
       );
     }
 
-    await client.query("begin");
     // The migrations seed an organisation and a user on a fresh database
     // (0055). The archive is the authority for every row, so the seed is
     // removed before the load rather than merged with it: two organisations
@@ -437,33 +452,15 @@ export async function restoreBackup(options: RestoreOptions): Promise<RestoreRes
     await client.query("commit");
   } catch (error) {
     await client.query("rollback").catch(() => undefined);
-    // The rollback undoes the load. It does not undo the migrations, which run
-    // outside a transaction and created the schema a moment earlier — and a
-    // schema is enough to make the next attempt fail the empty-installation
-    // check, which is how a failed restore used to leave an operator with no
-    // way forward at all. The schema this command created is therefore removed
-    // with it, returning the target to the state it was in when the command
-    // started.
-    //
-    // It is only ever reached on a target that had **no table** when the
-    // command began — that is the empty-installation check, made before
-    // anything was applied — and only after the load has already rolled back,
-    // so there is nothing here to lose.
-    let returnedToEmpty = true;
-    try {
-      await client.query("drop schema public cascade");
-      await client.query("create schema public");
-    } catch {
-      // A role that cannot drop the schema it just migrated is unusual, and the
-      // operator has to be told: the alternative is their retry being refused
-      // as a non-empty installation with no explanation of why.
-      returnedToEmpty = false;
-    }
-    log("restore did not complete: the database was rolled back and holds no restored data.");
+    // The rollback undoes everything, migrations included: they ran on this
+    // client inside this transaction, and PostgreSQL rolls back DDL. Nothing
+    // is dropped, nothing is recreated, and the database is left exactly as the
+    // command found it — including any view, function, sequence, type or
+    // extension that was already in `public` and that no table-counting guard
+    // would have seen.
+    log("restore did not complete: the database was rolled back.");
     log(
-      returnedToEmpty
-        ? "The installation has been returned to empty, so the restore can be run again."
-        : "The schema this restore created could not be removed. Drop and recreate the database before running the restore again; it will otherwise be refused as a non-empty installation.",
+      "The schema this restore created was rolled back with it, so the database is as it was before the command ran and the restore can simply be run again.",
     );
     throw error;
   } finally {

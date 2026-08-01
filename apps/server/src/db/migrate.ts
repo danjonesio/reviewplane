@@ -21,7 +21,7 @@ import type {
   MigrationState as MigrationReport,
 } from "@reviewplane/protocol/platform";
 
-import type { Pool } from "./pool.ts";
+import type { Pool, PoolClient } from "./pool.ts";
 
 /**
  * Lock key for the migration advisory lock. Any stable value works.
@@ -91,7 +91,7 @@ export interface MigrationState {
  * error: every file is pending.
  */
 export async function migrationState(
-  pool: Pool,
+  pool: Pool | PoolClient,
   directory = MIGRATIONS_DIRECTORY,
 ): Promise<MigrationState> {
   const files = await listMigrations(directory);
@@ -185,7 +185,7 @@ export async function migrationDeclarations(
  * migrations about to be applied cannot be undone.
  */
 export async function migrationReport(
-  pool: Pool,
+  pool: Pool | PoolClient,
   directory = MIGRATIONS_DIRECTORY,
 ): Promise<MigrationReport> {
   const state = await migrationState(pool, directory);
@@ -230,29 +230,111 @@ export interface MigrateOptions {
 /** Thrown when `noWait` was asked for and another process holds the lock. */
 export class MigrationLockUnavailableError extends Error {}
 
+/** The files `through` selects, refusing a name this build does not have. */
+function filesThrough(all: readonly string[], through: string | undefined): readonly string[] {
+  if (through === undefined) return all;
+  if (!all.includes(through)) {
+    throw new Error(
+      `this build has no migration ${through}, so it cannot bring a database to that schema version`,
+    );
+  }
+  return all.slice(0, all.indexOf(through) + 1);
+}
+
+/** The table the runner keeps its own record in. Created on first use. */
+const SCHEMA_MIGRATIONS_DDL = `create table if not exists schema_migrations (
+   filename    text        primary key,
+   applied_at  timestamptz not null default now()
+ )`;
+
+/**
+ * Applies pending migrations **on the caller's client, inside the caller's
+ * transaction**, committing nothing.
+ *
+ * `reviewplane restore` uses it, and the reason is worth stating because it is
+ * the difference between a safe restore and a destructive one. PostgreSQL has
+ * transactional DDL: a `CREATE TABLE` that is rolled back leaves no table. So a
+ * restore that creates its schema inside the same transaction as its load has
+ * nothing to undo when it fails — the schema, the rows and the audit event all
+ * disappear together and the database is exactly as the command found it.
+ *
+ * The alternative, which this replaced, was to migrate first and then remove
+ * the schema by hand if the load failed. That meant `drop schema public
+ * cascade` existing in the product, guarded by a check that counted **base
+ * tables** — so a database holding a view, a function, a sequence or an
+ * extension in `public` (which managed PostgreSQL commonly pre-installs, and
+ * `docs/DEPLOYMENT.md` §11 supports) passed the guard and lost them. A rollback
+ * cannot make that mistake, because it undoes what this transaction did and
+ * nothing else.
+ *
+ * Every committed migration is transactional: none uses `CREATE INDEX
+ * CONCURRENTLY`, `VACUUM`, `CREATE DATABASE` or `CREATE EXTENSION`, and
+ * `apps/server/test/migrate.test.ts` asserts that, so a migration that could
+ * not run this way cannot land unnoticed.
+ *
+ * The advisory lock is taken for the **transaction**, so it is released by the
+ * commit or the rollback rather than needing a matching unlock.
+ */
+export async function migrateInTransaction(
+  client: PoolClient,
+  directory = MIGRATIONS_DIRECTORY,
+  options: { readonly through?: string } = {},
+): Promise<MigrationResult> {
+  const files = filesThrough(await listMigrations(directory), options.through);
+  await client.query(SCHEMA_MIGRATIONS_DDL);
+  await client.query("select pg_advisory_xact_lock($1)", [MIGRATION_LOCK_KEY]);
+  const existing = await client.query<{ filename: string }>("select filename from schema_migrations");
+  const done = new Set(existing.rows.map((row) => row.filename));
+  const applied: string[] = [];
+  const alreadyApplied: string[] = [];
+  for (const file of files) {
+    if (done.has(file)) {
+      alreadyApplied.push(file);
+      continue;
+    }
+    const sql = await readFile(join(directory, file), "utf8");
+    try {
+      await client.query(sql);
+      await client.query("insert into schema_migrations (filename) values ($1)", [file]);
+    } catch (error) {
+      // No rollback here: the caller owns the transaction, and rolling it back
+      // would discard work this function did not do.
+      throw new Error(`migration ${file} failed: ${String(error)}`, { cause: error });
+    }
+    applied.push(file);
+  }
+  return { applied, alreadyApplied };
+}
+
+/**
+ * Statements no migration may contain, because they cannot run inside a
+ * transaction — and {@link migrateInTransaction} runs every migration inside
+ * one.
+ *
+ * Adding one of these to a migration would make a restore impossible to roll
+ * back safely, which is why the rule is asserted over the files rather than
+ * remembered.
+ */
+export const NON_TRANSACTIONAL_STATEMENTS: readonly RegExp[] = [
+  /\bconcurrently\b/iu,
+  /\bvacuum\b/iu,
+  /\bcreate\s+database\b/iu,
+  /\bcreate\s+tablespace\b/iu,
+  /\balter\s+system\b/iu,
+  /\bcreate\s+extension\b/iu,
+];
+
 export async function migrate(
   pool: Pool,
   directory = MIGRATIONS_DIRECTORY,
   options: MigrateOptions = {},
 ): Promise<MigrationResult> {
-  const all = await listMigrations(directory);
-  const through = options.through;
-  if (through !== undefined && !all.includes(through)) {
-    throw new Error(
-      `this build has no migration ${through}, so it cannot bring a database to that schema version`,
-    );
-  }
-  const files = through === undefined ? all : all.slice(0, all.indexOf(through) + 1);
+  const files = filesThrough(await listMigrations(directory), options.through);
   const client = await pool.connect();
   const applied: string[] = [];
   const alreadyApplied: string[] = [];
   try {
-    await client.query(
-      `create table if not exists schema_migrations (
-         filename    text        primary key,
-         applied_at  timestamptz not null default now()
-       )`,
-    );
+    await client.query(SCHEMA_MIGRATIONS_DDL);
     if (options.noWait === true) {
       const taken = await client.query<{ locked: boolean }>(
         "select pg_try_advisory_lock($1) as locked",

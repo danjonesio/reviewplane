@@ -578,9 +578,12 @@ neither the destination nor the `.partial` file behind; a load that would leave
 a dangling reference aborts and leaves no row; a migration lock held by another
 process is reported rather than waited on; an artefact referenced by metadata
 but absent from the store is reported by both the backup and the restore instead
-of being passed over; and a restore that fails after its migrations have run
-removes the schema it created, so the next attempt is not refused as a non-empty
-installation.
+of being passed over; and a restore that fails leaves the database exactly as
+it found it, because its migrations run inside its own transaction and roll back
+with everything else. That last case is asserted against the objects an
+emptiness check cannot see — a view, a function, a sequence, a type and an
+extension in `public`, all still present after a forced failure — and by a
+retry that then succeeds.
 
 Two cases exist because they were defects rather than because they were
 foreseen. **Text is round-tripped byte for byte** through content chosen so that

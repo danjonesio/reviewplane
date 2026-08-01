@@ -907,13 +907,24 @@ Production restore SHOULD be tested periodically.
 | New hostname | `--hostname HOST` records the move and revokes the credentials issued for the previous host: sign-in sessions, unspent installation tokens and agent credentials. It reports which settings to change; see below |
 | Key-reference remapping | Not implemented, because envelope encryption is not (`docs/SECURITY.md` §15). The manifest's `key_references` is reported, and this release has nothing to remap |
 
-The load is one transaction with every foreign key deferred, and **every step
-after the load is in that transaction too**: the hostname rotation, the artefact
-check and the audit event. A failure anywhere therefore writes nothing, and a
-restore that failed also removes the schema it created on the way in — so the
-installation is returned to the empty state the command found it in and the
-restore can simply be run again. Nothing is left half-applied, and nothing is
-left in a state the next attempt would refuse.
+The whole restore is one transaction: the migrations that create the schema, the
+load, the hostname rotation, the artefact check and the audit event. Foreign
+keys are deferred inside it, so a load that would leave a dangling reference
+aborts and writes nothing.
+
+PostgreSQL rolls back schema changes as it rolls back rows, so **a failed
+restore leaves the database exactly as the command found it** — no schema, no
+rows, no audit event — and the restore can simply be run again. The command
+drops nothing and creates nothing outside its transaction, so an object that was
+already in the database is not at risk: a view, a function, a sequence, a type or
+an extension that a managed PostgreSQL had put in `public` is untouched by a
+failure, and `apps/server/test/backup.test.ts` asserts exactly that against all
+five.
+
+This is why every migration must be transactional, and why
+`apps/server/test/migrate.test.ts` refuses one containing `CREATE INDEX
+CONCURRENTLY`, `VACUUM`, `CREATE DATABASE`, `CREATE TABLESPACE`, `ALTER SYSTEM`
+or `CREATE EXTENSION`.
 
 Each of those post-load steps is guarded against the schema **the archive
 restores to**, not this build's. A Stage 0 archive restores to `0054`, where
