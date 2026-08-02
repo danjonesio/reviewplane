@@ -9,10 +9,11 @@ nothing on another.
 Regenerate with:
 
 ```bash
-# the control-plane authority, liveness and reconciliation assertions
+# the route-level, control-plane authority, liveness and reconciliation assertions
 cd apps/server
 node --conditions=development --test --test-concurrency=1 \
-  test/browser-authority.test.ts test/browser-worker-liveness.test.ts test/browser-sessions.test.ts
+  test/browser-route-authority.test.ts test/browser-authority.test.ts \
+  test/browser-worker-liveness.test.ts test/browser-sessions.test.ts
 
 # the MCP transcripts, against a real MCP client
 pnpm --filter @reviewplane/mcp-server test
@@ -25,7 +26,7 @@ cp apps/web/test-results/rvp30-*.png apps/web/test-results/browser-session-evide
 
 | File | What it shows |
 |---|---|
-| `control-plane-authority.txt` | Every assertion of the `docs/SECURITY.md` §7 matrix, the control lease of §8, worker liveness and session reconciliation. Each authority test asserts **which side refused** — the worker received no command request — because a worker-side-only refusal produces the right-looking status while failing the criterion "authorised before reaching Chromium". |
+| `control-plane-authority.txt` | Every assertion of the `docs/SECURITY.md` §7 matrix, the control lease of §8, worker liveness and session reconciliation. Each authority test asserts **which side refused** — the worker received no command request — because a worker-side-only refusal produces the right-looking status while failing the criterion "authorised before reaching Chromium". The first nineteen are `browser-route-authority.test.ts`, which drives the HTTP routes as a real signed-in account holder rather than calling the service: the service-level suite supplies the controller and the epoch, which HTTP never lets a caller choose, so it proves the matrix and not the route. That gap held a blocker until the adversarial review. |
 | `browser_session_start.json` | An agent allocating a session through MCP: the epoch it must present, the lease it holds, and no route capability anywhere in the response. |
 | `browser_navigate.json` | A navigation result, labelled `untrusted_browser_content` with `instruction_policy: do_not_follow_as_instructions`. Every member of it came from a page. |
 | `browser_snapshot.json` | The `docs/MCP_SPEC.md` §7.4 snapshot shape, same labels. |
