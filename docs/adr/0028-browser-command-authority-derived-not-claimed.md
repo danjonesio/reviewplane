@@ -96,9 +96,55 @@ command earns would make the audit record depend on which layer caught it.
 `docs/SECURITY.md` §7 records the ordering and this reason, so the list is no
 longer read as a required sequence.
 
+### A lifecycle act obeys the same rule, and the rule is about where the inputs come from
+
+`pause`, `resume`, `end` and `control/release` are authorised by the same
+`#requireControl` the command path uses. What makes that guard real is that its
+two authority inputs come from outside the record: the controller from the
+authenticated principal, the epoch from the request body, where it is
+**required** with no fallback.
+
+This is stated as its own decision because the first implementation got it
+wrong in a way that looked right. The four routes read `controller` from
+`session.current_controller` and `control_epoch` from `session.control_epoch`,
+and handed both to a check that compares them **against that same record**. The
+guard was correct and unreachable: it compared the record to itself and admitted
+any caller who could reach the route, catching only somebody who volunteered a
+wrong epoch. The audit record was wrong in the same motion, naming the displaced
+controller as the actor.
+
+It also survived the test suite, which is the more useful lesson. The
+service-level tests call `pause`/`end` directly and supply the controller and
+the epoch — the two arguments HTTP never lets a caller choose — so they proved
+the matrix and not the route, and the defect lived exactly in that gap. A
+route-level suite driven over HTTP as a real signed-in human now exists
+alongside them, and restoring the defect fails twelve of its nineteen tests.
+
+**Reclaiming.** A human who needs to act on a session an agent holds takes
+control first, as the `system` controller. That is not a bypass: the epoch
+moves, the incumbent's in-flight commands are refused with
+`CONTROL_EPOCH_STALE`, and `browser.control_transferred` records it. It is
+strictly better than a lifecycle route that quietly acts in the incumbent's
+name, and it needs nothing Stage 2 adds — takeover introduces *human interactive
+input*, not the ability to hold a lease.
+
+**`controller_id` is not accepted on `control/request`.** It let any project
+member plant a lease owned by an identity that does not exist —
+`ags_not_a_real_session` was enough — and revoke the incumbent's as a side
+effect. It is the same claim-about-the-actor the command path already refuses;
+this route had simply not been given the same treatment. `controller_type:
+"agent"` is refused there too: an agent requests control under its own identity
+through MCP, and a human doing it on an agent's behalf is one person acquiring
+authority in another's name.
+
 ### Every denial is recorded
 
-`browser.command_rejected` is written for **every** refusal in the command path —
+`browser.command_rejected` is written for **every** refusal in the command path and
+in the lifecycle path — the latter with `kind: "lifecycle"` and `command` naming
+the act, sharing one event type because the question an auditor asks is "did
+anything try to act on this session and get refused?" and splitting the answer
+across two types would let an auditor who checked one get a confident wrong
+answer. The command-path denials are —
 stale epoch, foreign project, non-owner, session not active, no worker,
 unassociated route, policy denial — carrying the stable code, a reason token,
 the presented epoch and the presented controller type. It never carries the
@@ -158,6 +204,14 @@ word. Stage 1 has no secret store and no injection tool, so there is no
 supported way to type a credential into a page at all; this is a guard rail on
 that rule, not a substitute for it.
 
+A **capacity** refusal is not recorded, deliberately.
+`BROWSER_CAPACITY_EXHAUSTED` is a scheduling outcome rather than an authority
+denial: no session exists to correlate a record to, nobody was refused an
+authority they might have held, and `browser_worker.degraded` /
+`browser_worker.lost` plus `reviewplane status` already say *why* there was no
+capacity. Recording one per attempt would also let a client retrying in a loop
+write to an append-only table at request rate.
+
 ## Consequences
 
 ### Positive
@@ -176,7 +230,8 @@ that rule, not a substitute for it.
 ### Negative
 
 - **Breaking API change.** A client sending `controller` on a command is now
-  refused. The MCP surface is unaffected (it never exposed the field) and the
+  refused, `controller_id` on `control/request` is refused, and `control_epoch`
+  is required on all four lifecycle routes rather than defaulted. The MCP surface is unaffected (it never exposed the field) and the
   in-repo callers are updated, but an external script written against
   `docs/API.md` §11 will break, loudly, on its next call.
 - Route association costs one query per navigation. It is an indexed primary-key

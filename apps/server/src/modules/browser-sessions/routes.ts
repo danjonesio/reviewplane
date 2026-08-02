@@ -137,28 +137,51 @@ export async function registerBrowserSessionRoutes(
   };
 
   /**
-   * Resolves a session by identifier inside the caller's scope.
+   * Resolves a session by identifier inside the caller's scope, in one query.
    *
-   * The session is read first and then its project is resolved through the
-   * authorisation layer, so a session whose project the caller cannot reach
-   * produces `RESOURCE_NOT_FOUND` from `resolveProject` — the same refusal an
-   * unknown session identifier produces. Neither can be used to enumerate the
-   * other.
+   * This used to read the session unscoped and then resolve its project through
+   * the authorisation layer. Both refused correctly and the two refusals said
+   * different things — "The browser session was not found." for an unknown
+   * identifier, "The project was not found." for another organisation's session
+   * — so the wording distinguished the two exactly as a status difference would
+   * have. `docs/TESTING.md` §10 requires the *bodies* to be equal.
    */
   const sessionFor = async (
     request: FastifyRequest,
     sessionId: string,
     write: boolean,
-  ): Promise<{
-    principal: ViewerPrincipal;
-    project: AuthorisedProject;
-    session: BrowserSessionRecord;
-  }> => {
+  ): Promise<{ principal: ViewerPrincipal; session: BrowserSessionRecord }> => {
     const principal = requireHuman(request);
     if (write) requireCsrfToken(request, principal);
-    const session = await options.sessions.get(sessionId);
-    const project = await resolveProject(options.pool, principal, session.project_id);
-    return { principal, project, session };
+    const session = await options.sessions.getForScope(sessionId, {
+      projectIds: principal.projectIds === null ? null : [...principal.projectIds],
+      organisationId: principal.organisationId,
+    });
+    return { principal, session };
+  };
+
+  /**
+   * The control epoch a lifecycle change must present.
+   *
+   * Required, with no fallback to the session's own epoch. A fallback was the
+   * whole defect: the route read the epoch **out of the record it was about to
+   * authorise against**, so `#requireControl` compared the record to itself and
+   * passed for anybody. The guard only caught a caller who volunteered a wrong
+   * epoch, which no attacker does.
+   *
+   * `docs/API.md` §11 documents `{"control_epoch": 12}` on these routes, so
+   * requiring it is what the document already said.
+   */
+  const requireControlEpoch = (body: { control_epoch?: unknown }): number => {
+    const value = body.control_epoch;
+    if (typeof value !== "number" || !Number.isInteger(value)) {
+      throw new ApiError(
+        "VALIDATION_FAILED",
+        "control_epoch is required on a lifecycle change, and is the epoch the caller believes is current (docs/API.md section 11).",
+        { field: "control_epoch" },
+      );
+    }
+    return value;
   };
 
   // ---------------------------------------------------------------------
@@ -356,8 +379,8 @@ export async function registerBrowserSessionRoutes(
     const record = await options.sessions.pause({
       browserSessionId: sessionId,
       projectId: session.project_id,
-      controller: session.current_controller ?? systemController(principal),
-      controlEpoch: body.control_epoch ?? session.control_epoch,
+      controller: systemController(principal),
+      controlEpoch: requireControlEpoch(body),
       actor: actorOfPrincipal(principal),
     });
     return reply.send({ data: record, meta: { request_id: request.id } });
@@ -370,8 +393,8 @@ export async function registerBrowserSessionRoutes(
     const record = await options.sessions.resume({
       browserSessionId: sessionId,
       projectId: session.project_id,
-      controller: session.current_controller ?? systemController(principal),
-      controlEpoch: body.control_epoch ?? session.control_epoch,
+      controller: systemController(principal),
+      controlEpoch: requireControlEpoch(body),
       actor: actorOfPrincipal(principal),
     });
     return reply.send({ data: record, meta: { request_id: request.id } });
@@ -382,17 +405,45 @@ export async function registerBrowserSessionRoutes(
     const { principal, session } = await sessionFor(request, sessionId, true);
     const body = (request.body ?? {}) as {
       controller_type?: ControllerIdentity["type"];
-      controller_id?: string;
+      controller_id?: unknown;
       reason?: string;
     };
+    // `controller_id` is not accepted. It let any project member plant a lease
+    // owned by an identity that does not exist — `ags_not_a_real_session` was
+    // enough — and revoke the incumbent's lease as a side effect, because
+    // taking control revokes what it supersedes. A controller identity a caller
+    // names is the same claim-about-the-actor the command path already refuses
+    // (ADR-0028); the only difference was that this route had not been given
+    // the same treatment.
+    if (body.controller_id !== undefined) {
+      throw new ApiError(
+        "VALIDATION_FAILED",
+        "controller_id is not accepted: the control plane derives the controller from the authenticated caller (docs/API.md section 11).",
+        { field: "controller_id" },
+      );
+    }
     const controllerType = body.controller_type ?? "human";
+    if (controllerType === "agent") {
+      // A human cannot take control *on behalf of* an agent. The agent path
+      // exists on the service so an agent session can request control through
+      // MCP under its own identity; reaching it from a human session would be
+      // one person acquiring authority in another's name.
+      throw new ApiError(
+        "AUTHORISATION_DENIED",
+        "A human session cannot take browser control on behalf of an agent.",
+        { field: "controller_type" },
+      );
+    }
     const record = await options.sessions.requestControl({
       browserSessionId: sessionId,
       projectId: session.project_id,
-      controller: {
-        type: controllerType,
-        id: body.controller_id ?? systemController(principal).id,
-      },
+      // `human` reaches the service and is refused there with
+      // UNSUPPORTED_CAPABILITY, audited: takeover is Stage 2. `system` is the
+      // caller acting as itself, which is how a human reclaims a session whose
+      // lease somebody else holds — auditably, and by moving the epoch so the
+      // incumbent's in-flight commands are refused rather than silently
+      // overtaken.
+      controller: { type: controllerType, id: systemController(principal).id },
       ...(body.reason === undefined ? {} : { reason: body.reason }),
       actor: actorOfPrincipal(principal),
     });
@@ -406,8 +457,8 @@ export async function registerBrowserSessionRoutes(
     const record = await options.sessions.releaseControl({
       browserSessionId: sessionId,
       projectId: session.project_id,
-      controller: session.current_controller ?? systemController(principal),
-      controlEpoch: body.control_epoch ?? session.control_epoch,
+      controller: systemController(principal),
+      controlEpoch: requireControlEpoch(body),
       actor: actorOfPrincipal(principal),
     });
     return reply.send({ data: record, meta: { request_id: request.id } });
@@ -420,8 +471,8 @@ export async function registerBrowserSessionRoutes(
     const record = await options.sessions.end({
       browserSessionId: sessionId,
       projectId: session.project_id,
-      controller: session.current_controller ?? systemController(principal),
-      controlEpoch: body.control_epoch ?? session.control_epoch,
+      controller: systemController(principal),
+      controlEpoch: requireControlEpoch(body),
       reason: "requested",
       actor: actorOfPrincipal(principal),
     });

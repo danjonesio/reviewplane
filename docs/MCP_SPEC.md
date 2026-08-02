@@ -460,6 +460,15 @@ require `control_epoch` and are refused with `CONTROL_EPOCH_STALE` or
 ending a browser somebody else now controls is not a lesser act than clicking in
 it.
 
+The epoch is required rather than defaulted, on this surface and on the HTTP one
+(`API.md` §11). A caller that could omit it would be authorised against an epoch
+read from the record the check compares it to, which is no check at all — and
+`CONTROL_EPOCH_STALE` carries `details.current_epoch`, so a caller that does not
+know the current epoch is told it rather than left to guess.
+
+Every refusal of a lifecycle act is recorded as `browser.command_rejected` with
+`kind: "lifecycle"` (`EVENTS.md` §7).
+
 ## 7.4 Browser interaction tools
 
 All interactive tools require:

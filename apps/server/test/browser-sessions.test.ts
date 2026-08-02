@@ -137,6 +137,9 @@ test("a command on a terminated session returns BROWSER_SESSION_NOT_ACTIVE", asy
     method: "POST",
     url: `/api/v1/browser-sessions/${sessionId}/terminate`,
     headers: { authorization: `Bearer ${BOOTSTRAP_TOKEN}` },
+    // Required, with no fallback to the session's own epoch: a route that read
+    // it from the record would be authorising the record against itself.
+    payload: { control_epoch: 1 },
   });
   assert.equal((terminated.json() as { data: { status: string } }).data.status, "TERMINATED");
 

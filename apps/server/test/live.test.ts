@@ -177,6 +177,7 @@ test("a terminated browser session refuses a live viewer", async () => {
     method: "POST",
     url: `/api/v1/browser-sessions/${sessionId}/terminate`,
     headers: { authorization: `Bearer ${BOOTSTRAP_TOKEN}` },
+    payload: { control_epoch: 1 },
   });
   const cookie = await administratorCookie();
   await assert.rejects(

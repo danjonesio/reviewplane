@@ -66,7 +66,7 @@ function SessionView(): ReactElement {
       const epoch = session.data?.control_epoch ?? 0;
       if (action === "paused") return api.pauseBrowserSession(sessionId, epoch);
       if (action === "resumed") return api.resumeBrowserSession(sessionId, epoch);
-      return api.terminateBrowserSession(sessionId);
+      return api.terminateBrowserSession(sessionId, epoch);
     },
     onSuccess: async (record, action) => {
       setActivity(controlSentence(record, action));

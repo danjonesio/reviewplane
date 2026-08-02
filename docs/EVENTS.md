@@ -351,6 +351,20 @@ of the denials in the command path was — so an auditor asking whether anything
 had tried to drive a terminated session received the same answer as if nothing
 had.
 
+`browser.command_rejected` covers refused **lifecycle acts** as well as refused
+browser commands: a pause, resume, end, control request or control release that
+is refused writes one, with `kind: "lifecycle"` and `command` naming the act
+(`pause`, `resume`, `end`, `control_request`, `control_release`). A browser
+command carries `kind: "command"`'s absence — it is the default shape — and
+`command` from the browser command vocabulary.
+
+Sharing one type is deliberate. The question an auditor asks is "did anything
+try to act on this session and get refused?", and splitting the answer across
+two event types would mean an auditor who checked one and not the other got a
+confident wrong answer. Until the adversarial review of RVP-30 the lifecycle
+half wrote nothing at all, which is the same defect the command path had already
+been fixed for, reproduced one layer up.
+
 The payload members are `command`, `reason_code`, `reason`, `interactive`,
 `presented_epoch` and `presented_controller_type` on every rejection;
 `current_epoch` and `session_status` where the actor was entitled to know them;
@@ -359,6 +373,14 @@ the record is correlated to `browser_session_id`, so every member is about that
 one session by construction — which is the opposite of the refusal `details`
 object of `API.md` §5, one object serving reviews, findings and sessions, where
 a bare `status` would say nothing about which record it described.
+
+A **capacity** refusal is deliberately not one of these. `BROWSER_CAPACITY_EXHAUSTED`
+is a scheduling outcome rather than an authority denial: no session exists for
+the record to be correlated to, nobody was refused an authority they might have
+held, and the operator's trail for it is `browser_worker.degraded` /
+`browser_worker.lost` plus `reviewplane status`, which say *why* there was no
+capacity. Recording one event per refused attempt would also let a client
+retrying in a loop write to an append-only table at request rate.
 
 Nothing validates these names. There is no per-type payload schema for
 `browser.command_rejected`, so `pnpm protocol:check` and typecheck are both

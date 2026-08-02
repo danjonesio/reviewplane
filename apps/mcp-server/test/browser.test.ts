@@ -644,7 +644,10 @@ test("a superseded control epoch is refused with the epoch that is current", asy
       method: "POST",
       url: `/api/v1/browser-sessions/${started.id}/control/request`,
       headers: ADMIN,
-      payload: { controller_type: "system", controller_id: "sys_takeover0001" },
+      // No `controller_id`: the control plane derives the controller from the
+      // authenticated caller, so a takeover cannot be attributed to an
+      // identity the caller invented (ADR-0028).
+      payload: { controller_type: "system" },
     });
     assert.equal(takeover.statusCode, 200, takeover.body);
     const current = (takeover.json() as { data: { control_epoch: number } }).data.control_epoch;
@@ -707,7 +710,7 @@ test("ending a session with a superseded epoch is refused, and the session survi
       method: "POST",
       url: `/api/v1/browser-sessions/${started.id}/control/request`,
       headers: ADMIN,
-      payload: { controller_type: "system", controller_id: "sys_takeover0002" },
+      payload: { controller_type: "system" },
     });
 
     const ended = await call(agent.client, "browser_session_end", {

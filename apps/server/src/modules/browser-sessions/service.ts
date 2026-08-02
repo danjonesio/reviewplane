@@ -81,6 +81,19 @@ export interface ServiceBinding {
   readonly serviceCapability: string;
 }
 
+/**
+ * A lifecycle act a controller performs on a session.
+ *
+ * It is what `browser.command_rejected` records under `command` when one is
+ * refused, with `kind: "lifecycle"` distinguishing it from a browser command.
+ */
+export type LifecycleAct =
+  | "pause"
+  | "resume"
+  | "end"
+  | "control_request"
+  | "control_release";
+
 /** One event of a browser session's timeline (`docs/API.md` section 11). */
 export interface TimelineEntry {
   readonly id: string;
@@ -422,6 +435,45 @@ export class BrowserSessionService {
     return toRecord(row);
   }
 
+  /**
+   * Reads a session inside a caller's scope, in one query.
+   *
+   * The identifier, the caller's project scope and the caller's organisation
+   * are all in the same `WHERE` clause, so a row satisfying one and not the
+   * others is never returned and then refused by a later branch — and the
+   * refusal for a session in another tenancy is the **same refusal**, message
+   * included, that an unknown identifier earns.
+   *
+   * The route used to read the session unscoped and then resolve its project
+   * through the authorisation layer. Both calls refused correctly and the two
+   * refusals said different things: "The browser session was not found." for an
+   * unknown identifier and "The project was not found." for another
+   * organisation's session. `docs/TESTING.md` §10 requires the *bodies* to be
+   * equal and not merely the statuses, because wording is as much an existence
+   * oracle as a status code is.
+   */
+  async getForScope(
+    browserSessionId: string,
+    scope: { readonly projectIds: readonly string[] | null; readonly organisationId: string | null },
+  ): Promise<BrowserSessionRecord> {
+    const rows = await this.#pool.query(
+      `SELECT s.*
+         FROM browser_sessions s
+         JOIN projects p ON p.id = s.project_id
+        WHERE s.id = $1
+          AND ($2::text[] IS NULL OR s.project_id = ANY($2))
+          AND ($3::text IS NULL OR p.organisation_id = $3)`,
+      [
+        browserSessionId,
+        scope.projectIds === null ? null : [...scope.projectIds],
+        scope.organisationId,
+      ],
+    );
+    const row = rows.rows[0] as Record<string, unknown> | undefined;
+    if (row === undefined) throw notFound("The browser session");
+    return toRecord(row);
+  }
+
   async listForProject(projectId: string): Promise<BrowserSessionRecord[]> {
     const rows = await this.#pool.query(
       "SELECT * FROM browser_sessions WHERE project_id = $1 ORDER BY created_at DESC LIMIT 100",
@@ -633,6 +685,8 @@ export class BrowserSessionService {
         projectId: input.projectId,
         controller: input.controller,
         controlEpoch: input.controlEpoch,
+        act: "end",
+        actor: input.actor,
       },
       ["REQUESTED", "ALLOCATING", "READY", "ACTIVE", "PAUSED", "DEGRADED"],
     );
@@ -803,7 +857,10 @@ export class BrowserSessionService {
     readonly controlEpoch: number;
     readonly actor: EventActor;
   }): Promise<BrowserSessionRecord> {
-    const session = await this.#requireControl(input, ["READY", "ACTIVE"]);
+    const session = await this.#requireControl(
+      { ...input, act: "pause" },
+      ["READY", "ACTIVE"],
+    );
     await this.#setStatus(session, "PAUSED", input.actor, "browser_session.paused", {
       controller_type: input.controller.type,
     });
@@ -818,7 +875,10 @@ export class BrowserSessionService {
     readonly controlEpoch: number;
     readonly actor: EventActor;
   }): Promise<BrowserSessionRecord> {
-    const session = await this.#requireControl(input, ["PAUSED"]);
+    const session = await this.#requireControl(
+      { ...input, act: "resume" },
+      ["PAUSED"],
+    );
     // READY rather than ACTIVE: a resumed session has been sitting, and the
     // page may have moved under it. READY is the state a fresh snapshot is
     // taken from, and the first successful command moves it to ACTIVE again.
@@ -842,37 +902,121 @@ export class BrowserSessionService {
       readonly projectId: string;
       readonly controller: ControllerIdentity;
       readonly controlEpoch: number;
+      readonly act: LifecycleAct;
+      readonly actor: EventActor;
     },
     from: readonly SessionStatus[],
   ): Promise<BrowserSessionRecord> {
     const session = await this.get(input.browserSessionId);
-    if (session.project_id !== input.projectId) throw notFound("The browser session");
+    if (session.project_id !== input.projectId) {
+      await this.#recordLifecycleRejection(session, input, {
+        code: "RESOURCE_NOT_FOUND",
+        message: "The browser session was not found.",
+        reason: "project_mismatch",
+      });
+      throw notFound("The browser session");
+    }
     if (!from.includes(session.status)) {
-      throw new ApiError(
-        "BROWSER_SESSION_NOT_ACTIVE",
-        `The browser session is ${session.status}.`,
-        { browser_session_status: session.status },
-      );
+      return this.#refuseLifecycle(session, input, {
+        code: "BROWSER_SESSION_NOT_ACTIVE",
+        message: `The browser session is ${session.status}.`,
+        details: { browser_session_status: session.status },
+        reason: "session_not_active",
+      });
     }
     if (input.controlEpoch !== session.control_epoch) {
-      throw new ApiError(
-        "CONTROL_EPOCH_STALE",
-        "Browser control changed. Refresh session state before retrying.",
-        { current_epoch: session.control_epoch },
-      );
+      return this.#refuseLifecycle(session, input, {
+        code: "CONTROL_EPOCH_STALE",
+        message: "Browser control changed. Refresh session state before retrying.",
+        details: { current_epoch: session.control_epoch },
+        reason: "control_epoch_stale",
+      });
     }
     const controller = session.current_controller;
     if (
       controller !== null &&
       (controller.type !== input.controller.type || controller.id !== input.controller.id)
     ) {
-      throw new ApiError(
-        "CONTROL_NOT_OWNED",
-        "Another controller holds the interactive lease for this browser session.",
-        { current_epoch: session.control_epoch },
-      );
+      return this.#refuseLifecycle(session, input, {
+        code: "CONTROL_NOT_OWNED",
+        message: "Another controller holds the interactive lease for this browser session.",
+        details: { current_epoch: session.control_epoch },
+        reason: "control_not_owned",
+      });
     }
     return session;
+  }
+
+  /** Records the refusal and then raises it, so neither can happen alone. */
+  async #refuseLifecycle(
+    session: BrowserSessionRecord,
+    input: {
+      readonly act: LifecycleAct;
+      readonly controlEpoch: number;
+      readonly controller: ControllerIdentity;
+      readonly actor: EventActor;
+      readonly projectId: string;
+    },
+    denial: CommandDenial,
+  ): Promise<never> {
+    await this.#recordLifecycleRejection(session, input, denial);
+    throw new ApiError(denial.code, denial.message, denial.details);
+  }
+
+  /**
+   * Records a refused lifecycle act.
+   *
+   * It shares `browser.command_rejected` with the command path rather than
+   * having a type of its own. The question an auditor asks is "did anything try
+   * to act on this session and get refused?", and splitting the answer across
+   * two event types would mean an auditor who checked one and not the other got
+   * a confident wrong answer. `kind` distinguishes them, and `command` carries
+   * the act.
+   *
+   * This existed only on the command path until the adversarial pass on PR
+   * #123. Every denial from `#requireControl`, `releaseControl` and
+   * `requestControl` threw with no event — the same shape as the defect the
+   * command path had already been fixed for, reproduced one layer up.
+   * `docs/SECURITY.md` §8 requires a refused act to be logged as well as
+   * rejected.
+   */
+  async #recordLifecycleRejection(
+    session: BrowserSessionRecord,
+    input: {
+      readonly act: LifecycleAct;
+      readonly controlEpoch: number;
+      readonly controller: ControllerIdentity;
+      readonly actor: EventActor;
+      readonly projectId: string;
+    },
+    denial: CommandDenial,
+  ): Promise<void> {
+    const crossProject = denial.reason === "project_mismatch";
+    const stream = crossProject
+      ? await this.#projectStream(input.projectId)
+      : { organisationId: session.organisation_id, projectId: session.project_id };
+    if (stream === null) return;
+    await inTransaction(this.#pool, async (client) => {
+      await appendEvent(client, {
+        type: "browser.command_rejected",
+        organisationId: stream.organisationId,
+        projectId: stream.projectId,
+        actor: input.actor,
+        correlation: { browser_session_id: session.id },
+        payload: {
+          kind: "lifecycle",
+          command: input.act,
+          reason_code: denial.code,
+          reason: denial.reason,
+          interactive: true,
+          presented_epoch: input.controlEpoch,
+          presented_controller_type: input.controller.type,
+          ...(crossProject
+            ? { cross_project: true }
+            : { current_epoch: session.control_epoch, session_status: session.status }),
+        },
+      });
+    });
   }
 
   // -------------------------------------------------------------------
@@ -903,13 +1047,32 @@ export class BrowserSessionService {
     readonly actor: EventActor;
   }): Promise<BrowserSessionRecord> {
     const session = await this.get(input.browserSessionId);
-    if (session.project_id !== input.projectId) throw notFound("The browser session");
+    // A refused *grant* of control has its own event below —
+    // `browser.control_requested` with `granted: false` — but these two
+    // refusals happen before there is a decision to record, so they are
+    // recorded as rejections like every other refused act. The presented epoch
+    // is the session's own: this route takes none, because requesting control
+    // is how a caller who does not know the current epoch acquires one.
+    const denialContext = {
+      ...input,
+      controlEpoch: session.control_epoch,
+      act: "control_request" as const,
+    };
+    if (session.project_id !== input.projectId) {
+      await this.#recordLifecycleRejection(session, denialContext, {
+        code: "RESOURCE_NOT_FOUND",
+        message: "The browser session was not found.",
+        reason: "project_mismatch",
+      });
+      throw notFound("The browser session");
+    }
     if (session.ended_at !== null || session.status === "TERMINATED" || session.status === "FAILED") {
-      throw new ApiError(
-        "BROWSER_SESSION_NOT_ACTIVE",
-        `The browser session is ${session.status}.`,
-        { browser_session_status: session.status },
-      );
+      return this.#refuseLifecycle(session, denialContext, {
+        code: "BROWSER_SESSION_NOT_ACTIVE",
+        message: `The browser session is ${session.status}.`,
+        details: { browser_session_status: session.status },
+        reason: "session_not_active",
+      });
     }
     if (input.controller.type === "human") {
       // The request is still audited: `docs/EVENTS.md` section 7 lists
@@ -1012,22 +1175,32 @@ export class BrowserSessionService {
     readonly actor: EventActor;
   }): Promise<BrowserSessionRecord> {
     const session = await this.get(input.browserSessionId);
-    if (session.project_id !== input.projectId) throw notFound("The browser session");
+    const denialContext = { ...input, act: "control_release" as const };
+    if (session.project_id !== input.projectId) {
+      await this.#recordLifecycleRejection(session, denialContext, {
+        code: "RESOURCE_NOT_FOUND",
+        message: "The browser session was not found.",
+        reason: "project_mismatch",
+      });
+      throw notFound("The browser session");
+    }
     if (input.controlEpoch !== session.control_epoch) {
-      throw new ApiError(
-        "CONTROL_EPOCH_STALE",
-        "Browser control changed. Refresh session state before retrying.",
-        { current_epoch: session.control_epoch },
-      );
+      return this.#refuseLifecycle(session, denialContext, {
+        code: "CONTROL_EPOCH_STALE",
+        message: "Browser control changed. Refresh session state before retrying.",
+        details: { current_epoch: session.control_epoch },
+        reason: "control_epoch_stale",
+      });
     }
     const current = session.current_controller;
     if (current === null) return session;
     if (current.type !== input.controller.type || current.id !== input.controller.id) {
-      throw new ApiError(
-        "CONTROL_NOT_OWNED",
-        "Another controller holds the interactive lease for this browser session.",
-        { current_epoch: session.control_epoch },
-      );
+      return this.#refuseLifecycle(session, denialContext, {
+        code: "CONTROL_NOT_OWNED",
+        message: "Another controller holds the interactive lease for this browser session.",
+        details: { current_epoch: session.control_epoch },
+        reason: "control_not_owned",
+      });
     }
 
     const epoch = session.control_epoch + 1;

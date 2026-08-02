@@ -469,7 +469,19 @@ second authority for one question.
 
 **Every refusal is recorded** as `browser.command_rejected`, with its stable
 code, a reason token, the presented epoch and the presented controller type, and
-never the command's arguments. See §8 and `EVENTS.md` §7.
+never the command's arguments. That includes a refused **lifecycle act** — a
+pause, resume, end, control request or control release — under the same event
+type with `kind: "lifecycle"`. See §8 and `EVENTS.md` §7.
+
+**A lifecycle act is authorised by the same matrix**, and its two authority
+inputs come from the same places a command's do: the controller from the
+authenticated caller, the epoch from the request. Neither may be defaulted from
+the session record. A route that read either out of the record it was about to
+authorise against would be comparing the record to itself, so the ownership and
+epoch checks would pass for anybody who could reach the route — and would keep
+passing every test that supplied those arguments explicitly. Four routes did
+exactly this until the adversarial review of RVP-30, and the audit record was
+wrong in the same way: it named the displaced controller as the actor.
 
 ## 8. Control-lease security
 
@@ -502,6 +514,18 @@ never the command's arguments. See §8 and `EVENTS.md` §7.
   `UNSUPPORTED_CAPABILITY` until takeover arrives in Stage 2, and the refused
   request is still audited as `browser.control_requested` with `granted: false` —
   a refused takeover is exactly the attempt an auditor goes looking for.
+- **A controller identity is never accepted from a request.** `controller_id`
+  on `control/request` let any project member plant a lease owned by an identity
+  that does not exist and revoke the incumbent's as a side effect, because
+  taking control revokes what it supersedes. The control plane derives the
+  identity from the caller, and a human may not request control on an agent's
+  behalf.
+- **Reclaiming is a transfer, not a bypass.** A human who needs to pause or end
+  a session an agent holds takes control first, as the `system` controller.
+  That moves the epoch, so the incumbent's in-flight commands are refused with
+  `CONTROL_EPOCH_STALE` rather than silently overtaken, and
+  `browser.control_transferred` records it. The lifecycle routes themselves
+  refuse a non-owner with `CONTROL_NOT_OWNED`.
 
 ## 9. Tunnel security
 

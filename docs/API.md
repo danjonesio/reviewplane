@@ -898,20 +898,51 @@ POST /api/v1/browser-sessions/:sessionId/control/request
 POST /api/v1/browser-sessions/:sessionId/control/release
 ```
 
-`pause` and `resume` take `{"control_epoch": 12}`. A pause suspends interactive
+`pause`, `resume`, `control/release` and `terminate` all take
+`{"control_epoch": 12}`, and it is **required**: a request that omits it is
+refused with `VALIDATION_FAILED`. There is no fallback to the session's own
+epoch, and the absence of one is load-bearing. A route that filled the epoch in
+from the record it was about to authorise against would be comparing the record
+to itself, and the ownership and epoch checks of `SECURITY.md` §7 would pass for
+any caller who could reach the route — which is precisely what these four routes
+did until the adversarial review of RVP-30. The guard only caught a caller who
+*volunteered* a wrong epoch, which no attacker does.
+
+The controller is likewise derived from the authenticated caller on all four,
+exactly as on `commands`.
+
+A pause suspends interactive
 commands and leaves non-interactive system capture and live frames running
 (`MCP_SPEC.md` §7.3): the browser context stays open, so a pause is a change of
 authority rather than a blackout. Resuming returns the session to `READY` rather
 than `ACTIVE`, because a resumed session has been sitting and the page may have
 moved; the first successful command moves it to `ACTIVE` again.
 
-`control/request` takes `{"controller_type": "agent" | "system" | "human",
-"controller_id": "...", "reason": "..."}` and transfers the interactive lease,
-incrementing the control epoch in the same transaction. Requesting control the
-caller already holds is idempotent and does **not** increment. `controller_type:
-"human"` is refused with `UNSUPPORTED_CAPABILITY` in Stage 1 — takeover through
-the control WebSocket is Stage 2 — and the refused request is still audited as
-`browser.control_requested` with `granted: false`.
+`control/request` takes `{"controller_type": "system" | "human", "reason":
+"..."}` and transfers the interactive lease, incrementing the control epoch in
+the same transaction. Requesting control the caller already holds is idempotent
+and does **not** increment.
+
+`controller_id` is **not** accepted and a request carrying one is refused with
+`VALIDATION_FAILED`. It let any project member plant a lease owned by an
+identity that does not exist and revoke the incumbent's as a side effect, since
+taking control revokes what it supersedes. A controller identity a caller names
+is the same claim-about-the-actor this API refuses on `commands`.
+
+`controller_type: "human"` is refused with `UNSUPPORTED_CAPABILITY` in Stage 1 —
+takeover through the control WebSocket is Stage 2 — and the refused request is
+still audited as `browser.control_requested` with `granted: false`.
+`controller_type: "agent"` is refused on this route with `AUTHORISATION_DENIED`:
+a human cannot take control *on behalf of* an agent. An agent session requests
+control under its own identity through `/mcp/v1`.
+
+`controller_type: "system"` is how a human **reclaims** a session whose lease
+somebody else holds. It is not a bypass: the epoch moves, so the incumbent's
+in-flight commands are refused with `CONTROL_EPOCH_STALE` rather than silently
+overtaken, and `browser.control_transferred` records it. That is the Stage 1
+path for ending or pausing a session an agent is driving — a lifecycle route
+alone will refuse with `CONTROL_NOT_OWNED`, because pausing or ending a browser
+somebody else controls is not a lesser act than clicking in it.
 
 `control/release` takes `{"control_epoch": 12}` and also increments the epoch:
 after a release nobody holds the lease, and a command still carrying the released

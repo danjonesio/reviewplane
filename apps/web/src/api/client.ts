@@ -644,10 +644,16 @@ export const api = {
    * Ends a session. Termination is not an epoch-authorised command — it takes
    * the browser away from whoever holds it — so it carries no epoch.
    */
-  async terminateBrowserSession(sessionId: string): Promise<BrowserSession> {
+  async terminateBrowserSession(
+    sessionId: string,
+    controlEpoch: number,
+  ): Promise<BrowserSession> {
+    // The epoch is required, like every other lifecycle change: ending a
+    // browser somebody else now controls is not a lesser act than clicking in
+    // it (`docs/API.md` §11).
     return request<BrowserSession>(
       `/api/v1/browser-sessions/${encodeURIComponent(sessionId)}/terminate`,
-      { method: "POST", body: JSON.stringify({}) },
+      { method: "POST", body: JSON.stringify({ control_epoch: controlEpoch }) },
     );
   },
 

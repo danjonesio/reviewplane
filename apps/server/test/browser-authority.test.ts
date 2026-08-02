@@ -330,7 +330,10 @@ test("human interactive control is refused with UNSUPPORTED_CAPABILITY and the a
     method: "POST",
     url: `/api/v1/browser-sessions/${sessionId}/control/request`,
     headers: AUTH,
-    payload: { controller_type: "human", controller_id: "usr_reader" },
+    // No `controller_id`: the control plane derives the identity from the
+    // caller, and a body that names one is refused before the capability
+    // refusal is reached.
+    payload: { controller_type: "human" },
   });
   assert.equal((response.json() as { error: { code: string } }).error.code, "UNSUPPORTED_CAPABILITY");
 
@@ -536,12 +539,13 @@ test("a navigation is refused once the route no longer authorises the session", 
 test("a command against a terminated session is refused and recorded", async () => {
   const { projectId } = await seedProjectAndWorker(harness);
   const sessionId = await sessionIdFor(projectId);
-  await harness.built.app.inject({
+  const ended = await harness.built.app.inject({
     method: "POST",
     url: `/api/v1/browser-sessions/${sessionId}/terminate`,
     headers: AUTH,
-    payload: {},
+    payload: { control_epoch: 1 },
   });
+  assert.equal(ended.statusCode, 200, ended.body);
 
   const response = await harness.built.app.inject({
     method: "POST",
