@@ -10,18 +10,31 @@
  */
 
 import { Link, createRoute } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { useCallback, useState, type ReactElement } from "react";
 
-import { api, ApiFailure } from "../api/client.ts";
+import { api, ApiFailure, type BrowserSession } from "../api/client.ts";
 import { GitContextPanel } from "../components/GitContext.tsx";
 import { LiveSurface } from "../components/LiveSurface.tsx";
+import { BROWSER_SESSION_REFUSALS, RefusalPanel } from "../components/refusals.tsx";
 import { StatusBadge } from "../components/StatusBadge.tsx";
 import { rootRoute } from "./root.tsx";
+
+const CONTROL =
+  "rounded border border-slate-400 px-3 py-2 text-sm font-medium disabled:opacity-60 dark:border-slate-600";
+
+/** Statuses a running browser can be paused from (`docs/DOMAIN_MODEL.md` §12). */
+const PAUSABLE: readonly string[] = ["READY", "ACTIVE"];
+
+/** What a control action left behind, as a sentence rather than a state change. */
+function controlSentence(session: BrowserSession, verb: string): string {
+  return `The browser session was ${verb}. It is now ${session.status}, at control epoch ${String(session.control_epoch)}.`;
+}
 
 function SessionView(): ReactElement {
   const { sessionId } = sessionRoute.useParams();
   const [liveStatus, setLiveStatus] = useState<{ status: string; url: string | null } | null>(null);
+  const [activity, setActivity] = useState("");
 
   const session = useQuery({
     queryKey: ["browser-session", sessionId],
@@ -37,6 +50,36 @@ function SessionView(): ReactElement {
   const onSessionStatus = useCallback((status: string, url: string | null) => {
     setLiveStatus({ status, url });
   }, []);
+
+  /**
+   * Pause, resume and end, as one mutation.
+   *
+   * All three answer with the session as it now is, and all three fail in the
+   * same vocabulary, so one refusal panel and one live region serve them. Both
+   * failures that mean "what this page believes is out of date" read the record
+   * again before the reader is asked to act on it: leaving a stale control
+   * epoch on screen would invite a second request refused for the same reason
+   * (`docs/DESIGN_PRINCIPLES.md` §6).
+   */
+  const control = useMutation({
+    mutationFn: async (action: "paused" | "resumed" | "ended") => {
+      const epoch = session.data?.control_epoch ?? 0;
+      if (action === "paused") return api.pauseBrowserSession(sessionId, epoch);
+      if (action === "resumed") return api.resumeBrowserSession(sessionId, epoch);
+      return api.terminateBrowserSession(sessionId, epoch);
+    },
+    onSuccess: async (record, action) => {
+      setActivity(controlSentence(record, action));
+      await session.refetch();
+    },
+    onError: async (error) => {
+      if (!(error instanceof ApiFailure)) return;
+      if (error.code !== "CONTROL_EPOCH_STALE" && error.code !== "BROWSER_SESSION_NOT_ACTIVE") {
+        return;
+      }
+      await session.refetch();
+    },
+  });
 
   if (session.isPending) {
     return <p role="status">Loading the browser session.</p>;
@@ -89,6 +132,81 @@ function SessionView(): ReactElement {
         </div>
       </div>
 
+      {/*
+        Pause, resume and end (`docs/UX_FLOWS.md` section 7). What is offered is
+        decided by the record rather than by the live stream: the control plane
+        is authoritative for a session's lifecycle, and a stream reporting a
+        status it observed a moment ago would otherwise offer an action the
+        control plane is about to refuse.
+      */}
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-wrap gap-2">
+          {PAUSABLE.includes(record.status) ? (
+            <button
+              type="button"
+              id="session-pause"
+              disabled={control.isPending}
+              onClick={() => {
+                control.mutate("paused");
+              }}
+              className={CONTROL}
+            >
+              {control.isPending && control.variables === "paused" ? "Pausing…" : "Pause"}
+            </button>
+          ) : null}
+          {record.status === "PAUSED" ? (
+            <button
+              type="button"
+              id="session-resume"
+              disabled={control.isPending}
+              onClick={() => {
+                control.mutate("resumed");
+              }}
+              className={CONTROL}
+            >
+              {control.isPending && control.variables === "resumed" ? "Resuming…" : "Resume"}
+            </button>
+          ) : null}
+          {record.ended_at === null ? (
+            <button
+              type="button"
+              id="session-end"
+              disabled={control.isPending}
+              onClick={() => {
+                control.mutate("ended");
+              }}
+              className="rounded border border-red-700 px-3 py-2 text-sm font-medium text-red-800 disabled:opacity-60 dark:border-red-500 dark:text-red-300"
+            >
+              {control.isPending && control.variables === "ended" ? "Ending…" : "End session"}
+            </button>
+          ) : null}
+        </div>
+
+        {/* Outcomes are announced here without moving focus. */}
+        <p
+          id="session-control-activity"
+          role="status"
+          aria-live="polite"
+          className="text-sm text-slate-700 dark:text-slate-300"
+        >
+          {activity}
+        </p>
+
+        {control.error === null ? null : (
+          <RefusalPanel
+            code={control.error instanceof ApiFailure ? control.error.code : "INTERNAL_ERROR"}
+            message={
+              control.error instanceof ApiFailure
+                ? control.error.message
+                : "The browser session could not be changed."
+            }
+            attribute="data-refusal"
+            table={BROWSER_SESSION_REFUSALS}
+            surface="session-control"
+          />
+        )}
+      </div>
+
       <dl className="grid grid-cols-1 gap-x-6 gap-y-3 text-sm sm:grid-cols-3">
         <div className="sm:col-span-2">
           <dt className="text-slate-600 dark:text-slate-400">Current URL</dt>
@@ -111,7 +229,23 @@ function SessionView(): ReactElement {
         </div>
         <div>
           <dt className="text-slate-600 dark:text-slate-400">Control epoch</dt>
-          <dd className="font-mono">{record.control_epoch}</dd>
+          <dd id="session-control-epoch" className="font-mono">
+            {record.control_epoch}
+          </dd>
+        </div>
+        <div className="min-w-0">
+          {/*
+            Exactly one controller drives a browser at a time, and the epoch
+            above is meaningless without knowing whose it is. Nobody holding
+            control is a real state, not a missing value, so it is written as
+            words rather than left blank.
+          */}
+          <dt className="text-slate-600 dark:text-slate-400">Controller</dt>
+          <dd id="session-controller" className="break-all font-mono">
+            {record.current_controller === null || record.current_controller === undefined
+              ? "nobody holds control"
+              : `${record.current_controller.type} ${record.current_controller.id}`}
+          </dd>
         </div>
         <div>
           <dt className="text-slate-600 dark:text-slate-400">Started</dt>

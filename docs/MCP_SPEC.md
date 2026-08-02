@@ -402,21 +402,72 @@ Input:
 
 Output includes browser session ID, control epoch, current controller and live-view availability.
 
+`recording` is not accepted in Stage 1: trace capture arrives in Stage 2 and
+video stays disabled, so a field that could ask for either would be answering a
+request the product cannot honour.
+
+`published_service_id` names the route the session may reach. **In Stage 1 the
+MCP endpoint cannot bind one**: binding mints a session-scoped route capability,
+and the MCP process deliberately holds no signing key — a process that cannot
+mint cannot leak a minting key (`ARCHITECTURE.md` §7.3). A start request naming
+one is refused with `UNSUPPORTED_CAPABILITY` and says so. A session started
+without one allocates normally and reaches nothing until a route is bound through
+`API.md` §11 or the project Live page, which is where the human flow of
+`UX_FLOWS.md` §6 binds it.
+
 ### `browser_session_status`
 
-Returns lifecycle, URL, pages, viewport, controller, epoch and policy state.
+Returns lifecycle, viewport, controller, epoch and policy state, and the URL the
+browser last settled on. That URL is page-derived, so this response carries
+`untrusted_browser_content`; the other four lifecycle tools return control-plane
+fact only and are labelled `trusted_control_plane`.
 
 ### `browser_session_pause`
 
 Pauses agent-issued interactive commands. Non-interactive system capture may continue.
 
+A pause is a change of **authority**, not a stop on the browser: the context
+stays open, live frames keep flowing so a human can still watch, and
+`browser_snapshot` and `browser_take_screenshot` continue to work. An interactive
+command issued while paused is refused with `BROWSER_SESSION_NOT_ACTIVE` and
+recorded as `browser.command_rejected`.
+
+The worker is not told a session is paused. The lifecycle belongs to the control
+plane (`DOMAIN_MODEL.md` §12), and a worker holding its own pause flag would be a
+second authority for one question.
+
 ### `browser_session_resume`
 
 Resumes when the agent owns or regains control.
 
+The session returns to `READY` rather than `ACTIVE`: it has been sitting and the
+page may have moved, and `READY` is the state a fresh snapshot is taken from. Any
+element reference held across the pause should be treated as spent.
+
 ### `browser_session_end`
 
 Terminates the browser context and finalises configured traces.
+
+The ephemeral per-session profile directory is destroyed with it, the control
+lease is revoked, and evidence already uploaded is untouched — it belongs to the
+artefact store and to the review, not to the session.
+
+### Epoch and lease on a lifecycle change
+
+`browser_session_pause`, `browser_session_resume` and `browser_session_end`
+require `control_epoch` and are refused with `CONTROL_EPOCH_STALE` or
+`CONTROL_NOT_OWNED` on the same terms as an interactive command. Pausing or
+ending a browser somebody else now controls is not a lesser act than clicking in
+it.
+
+The epoch is required rather than defaulted, on this surface and on the HTTP one
+(`API.md` §11). A caller that could omit it would be authorised against an epoch
+read from the record the check compares it to, which is no check at all — and
+`CONTROL_EPOCH_STALE` carries `details.current_epoch`, so a caller that does not
+know the current epoch is told it rather than left to guess.
+
+Every refusal of a lifecycle act is recorded as `browser.command_rejected` with
+`kind: "lifecycle"` (`EVENTS.md` §7).
 
 ## 7.4 Browser interaction tools
 
@@ -424,6 +475,25 @@ All interactive tools require:
 
 - `browser_session_id`
 - `control_epoch`
+
+They do **not** take a controller. The control plane derives it from the agent
+session behind the credential; a controller an agent could name would be a claim
+about the actor rather than the actor, and would satisfy the lease-ownership
+check of `SECURITY.md` §7 by naming its owner (ADR-0028).
+
+`browser_snapshot` and `browser_take_screenshot` are issued as the **system**
+controller. They are non-interactive captures, so they are admitted without the
+interactive lease and they never transfer or revoke it (`TESTING.md` §5) — but
+they still require a current `control_epoch`, so a superseded epoch is refused
+rather than captured from a browser somebody else now controls.
+
+Every one of these tools is refused before the command reaches Chromium if any of
+the six checks of `SECURITY.md` §7 fails, and every refusal is recorded as
+`browser.command_rejected`. A session in another project answers
+`RESOURCE_NOT_FOUND`, byte for byte as an unknown identifier does.
+
+Every tool accepts an optional `timeout_ms`, bounded and clamped to the session's
+own maximum. Nothing here waits without a bound.
 
 ### `browser_navigate`
 
@@ -465,15 +535,47 @@ Uses an element reference from a recent snapshot or an explicit selector where p
 
 Types into a target. Secret values must not be supplied through this tool. Use secret injection tools.
 
+Stage 1 has no secret store and no injection tool, so there is no supported path
+for a credential at all — which makes this a rule with no escape hatch rather
+than a preference. A value matching a known credential shape (a `rpa_` agent
+token, a bearer header pasted whole, a PEM private-key block, an AWS or GitHub
+key, a `password=`-style assignment) is refused with `POLICY_DENIED`. The refusal
+names **which shape** matched and never the value.
+
+Shape detection is a heuristic and is stated as one: it catches the forms a
+credential actually arrives in and cannot catch a password that looks like a
+word. It is a guard rail on the rule above, not a substitute for it
+(`SECURITY.md` §12).
+
 ### `browser_select_option`
+
+Selects one or more options of a select element named by a snapshot reference.
+Selecting can change what the page shows, so outstanding references are spent.
 
 ### `browser_press_key`
 
+Presses one key, optionally directed at an element. The key vocabulary is
+**closed** — a key name reaches the browser as a control instruction, so it is
+drawn from a fixed set rather than passed through: `Enter`, `Tab`, `Shift+Tab`,
+`Escape`, `Backspace`, `Delete`, `Home`, `End`, `PageUp`, `PageDown`, the four
+arrows and `Space`. Anything else is refused by the schema. A key press can
+navigate, submit or open a dialog and nothing can tell in advance which, so every
+outstanding reference is spent.
+
 ### `browser_scroll`
+
+Scrolls the page, or an element, a bounded distance in CSS pixels. A scroll moves
+elements without changing the document, and references resolve through element
+handles rather than coordinates, so they survive it.
 
 ### `browser_resize`
 
 Resizing must produce a new snapshot and invalidate element references.
+
+Both halves are required. The result **carries** the replacement snapshot, so an
+agent is not told its references are gone with no way to obtain new ones — and an
+agent that had not read this rule cannot go on using dead references without
+noticing.
 
 ### `browser_wait`
 
@@ -503,7 +605,7 @@ Input:
 }
 ```
 
-Stage 0 accepts `purpose: "verification"` only, and always persists: a capture
+Stage 1 accepts `purpose: "verification"` only, and always persists: a capture
 that produced no artefact would produce no evidence, and evidence is the only
 reason the tool exists in Stage 0. The result is an `artefact_link` — identifier,
 digest, content rectangle and a short-lived content path minted for this agent
@@ -1169,6 +1271,20 @@ carries `details.current_version`; `CONTROL_EPOCH_STALE` carries
 `details.allowed_transitions`; `EVIDENCE_REQUIRED` carries
 `details.required_evidence`.
 
+For the browser tools: `BROWSER_SESSION_NOT_ACTIVE` carries
+`details.browser_session_status`, so an agent can tell a session it should
+resume from one it should replace; `POLICY_DENIED` for a refused value carries
+`details.detected`, which names the **rule** the value matched and never the
+value — a refusal that quoted the credential would put it in the response, the
+log and the event; and the route-association `AUTHORISATION_DENIED` carries
+`details.published_service_id`.
+
+The `details` object is closed (`additionalProperties: false`), so a member a
+handler sets and the schema does not declare is dropped on the way out rather
+than delivered. That is deliberate — a refusal must not become a channel for
+arbitrary content — and it means adding a detail is a protocol change, not a
+handler change.
+
 ## 13. Bounded context
 
 Tools must avoid returning unbounded page text, logs or histories.
@@ -1250,6 +1366,20 @@ registered set and the schema's set are the same list.
 | `finding_add_comment` | 7.7 | `finding:write` |
 | `finding_submit_verification` | 7.7 | `verification:submit` |
 | `browser_take_screenshot` | 7.4 | `browser:capture` |
+| `browser_session_start` | 7.3 | `browser:control` |
+| `browser_session_status` | 7.3 | `browser:control` |
+| `browser_session_pause` | 7.3 | `browser:control` |
+| `browser_session_resume` | 7.3 | `browser:control` |
+| `browser_session_end` | 7.3 | `browser:control` |
+| `browser_navigate` | 7.4 | `browser:control` |
+| `browser_snapshot` | 7.4 | `browser:capture` |
+| `browser_click` | 7.4 | `browser:control` |
+| `browser_type` | 7.4 | `browser:control` |
+| `browser_select_option` | 7.4 | `browser:control` |
+| `browser_press_key` | 7.4 | `browser:control` |
+| `browser_scroll` | 7.4 | `browser:control` |
+| `browser_resize` | 7.4 | `browser:control` |
+| `browser_wait` | 7.4 | `browser:control` |
 | `development_services_list` | 7.2 | `project:read` |
 | `development_service_publish` | 7.2 | `service:publish` |
 | `development_service_unpublish` | 7.2 | `service:publish` |
@@ -1260,12 +1390,19 @@ The two completion tools require `finding:read` and no new capability. Neither
 moves a review or a finding, so a capability that named a write would overstate
 what they do; `task_complete` records its own evaluation and nothing else.
 
+`browser_snapshot` requires `browser:capture` rather than `browser:control`
+because it reads what is on the page and cannot change it — it is a capture in
+the same sense a screenshot is, and a credential issued to gather evidence should
+be able to take one without also being able to drive the browser.
+
 Everything else in the section 7 catalogue is **absent** rather than present and
-failing:
+failing. The two tables together name every `###` tool heading in section 7, once
+each — a client reading this section to decide what to rely on must not find a
+tool missing from both, which four of them were until RVP-30:
 
 | Absent | Section | Arrives |
 |---|---|---|
-| `browser_session_*` lifecycle, `browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_wait`, `browser_console_messages`, `browser_network_requests` | 7.3, 7.4 | Stage 1, its own issue |
+| `browser_console_messages`, `browser_network_requests` | 7.4 | Stage 2, with console and network evidence |
 | `visual_inspect`, `finding_create_from_observation` | 7.5 | Later |
 | `secret_list_references`, `secret_inject_browser`, `secret_inject_header` | 7.9 | Stage 2 |
 

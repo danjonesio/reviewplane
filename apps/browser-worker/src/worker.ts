@@ -95,13 +95,26 @@ export async function startWorker(options: StartWorkerOptions): Promise<RunningW
     });
     const interval = registration.ack.heartbeat_interval_seconds * 1000;
     heartbeat = setInterval(() => {
-      void controlPlane
-        .heartbeat({
-          activeSessions: manager.activeSessions,
-          capacity: config.capacity,
-          residentMemoryMb: Math.round(process.memoryUsage.rss() / (1024 * 1024)),
-        })
-        .catch(() => undefined);
+      void (async () => {
+        const ack = await controlPlane
+          .heartbeat({
+            activeSessions: manager.activeSessions,
+            capacity: config.capacity,
+            residentMemoryMb: Math.round(process.memoryUsage.rss() / (1024 * 1024)),
+          })
+          .catch(() => null);
+        // An answer the control plane could not give is not an empty
+        // assignment. Applying `[]` on a failed heartbeat would take a working
+        // worker out of service every time the control plane restarted, which
+        // is the opposite of what ADR-0026 is for.
+        if (ack === null) return;
+        const revoked = await manager.applyAssignment(ack.assigned_projects);
+        for (const browserSessionId of revoked) {
+          logger.warn("terminated a browser session whose project assignment was revoked", {
+            browser_session_id: browserSessionId,
+          });
+        }
+      })();
     }, interval);
     heartbeat.unref();
   }

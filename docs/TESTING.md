@@ -213,6 +213,22 @@ Required authority and audit tests:
 - Two users cannot both obtain lease
 - System screenshot does not steal interactive lease
 
+These live in `apps/server/test/browser-authority.test.ts`, except the two that
+need human takeover — "human takeover increments epoch" and "hand-back captures
+fresh state" — which arrive with Stage 2 (RVP-25). What is asserted in their
+place is that `control/request` for a `human` controller is refused with
+`UNSUPPORTED_CAPABILITY` **and audited**, so the absence is a recorded refusal
+rather than a silent gap.
+
+Every test in this group asserts **which side refused**. A refusal that reached
+the worker and came back is not the same as one the control plane made, and only
+the second satisfies the `SECURITY.md` §7 requirement that a command is
+authorised before it reaches Chromium — so the assertion is that the worker
+received no command request, not merely that the caller received a non-2xx.
+Assertions about `browser.command_rejected` read the event store directly rather
+than inferring the event from the error code, because the payload has no schema
+and a denial that refuses correctly and records nothing would otherwise pass.
+
 ## 6. Connector and tunnel tests
 
 - Loopback HTTP route
@@ -350,6 +366,15 @@ A stream deadline and a socket deadline are two clocks and MUST NOT be confused.
 - Trace finalisation
 - Worker crash and orphan cleanup
 - Browser sandbox configuration check
+
+Worker liveness, assignment refresh and session reconciliation are asserted in
+`apps/server/test/browser-worker-liveness.test.ts` against a real database and
+the stub worker, because they are control-plane behaviour and need no Chromium.
+Two properties are asserted separately there because they fail separately: the
+**sweep** makes the stored state honest, and the **liveness term in the query**
+makes the decision safe for a worker that dies between two sweeps. The
+scheduler test deliberately never runs the sweep — if it did, it would pass with
+the liveness term removed and would be asserting the sweep twice.
 
 These live in `apps/browser-worker/test/browser/` and run with `pnpm test:browser`, which builds the worker image and runs the suite inside it under the same container controls `deploy/compose/compose.yaml` applies. Running them anywhere laxer would not answer the question the sandbox check asks. They are excluded from `pnpm test` because they need a Chromium and its system libraries.
 

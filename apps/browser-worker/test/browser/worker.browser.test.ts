@@ -364,6 +364,113 @@ test("a resize invalidates references so a stale one fails rather than mis-targe
   assert.notEqual(after.snapshot?.snapshot_id, snapshotId);
 });
 
+test("a resize returns the snapshot that replaces the references it invalidated", async () => {
+  // `docs/MCP_SPEC.md` section 7.4 requires a resize to produce a new snapshot
+  // *and* invalidate element references. Only the second half was implemented:
+  // the result carried the new viewport and nothing else, so an agent was told
+  // its references were gone with no way to obtain replacements, and an agent
+  // that had not read the rule would have gone on using the dead ones.
+  const id = newId("brs_");
+  await manager.allocate(id, allocationFor());
+  await run(id, navigate("/"));
+  const before = await run(id, snapshot());
+  const snapshotId = before.snapshot?.snapshot_id as string;
+
+  const resized = await run(id, {
+    command: "resize",
+    timeout_ms: 10000,
+    resize: { viewport: MOBILE },
+  });
+  assert.equal(resized.ok, true, JSON.stringify(resized.error));
+  assert.ok(resized.snapshot !== undefined, "a resize must return the replacement snapshot");
+  assert.notEqual(resized.snapshot?.snapshot_id, snapshotId);
+  assert.deepEqual(resized.snapshot?.viewport, MOBILE);
+  // Page-derived content obliges the untrusted label (ADR-0010).
+  assert.equal(resized.trust, "untrusted_browser_content");
+
+  // The reference the resize returned is usable immediately.
+  const reference = resized.snapshot?.elements[0]?.ref as string;
+  const usable = await run(id, {
+    command: "click",
+    timeout_ms: 10000,
+    click: { snapshot_id: resized.snapshot?.snapshot_id as string, ref: reference },
+  });
+  assert.notEqual(usable.error?.code, "RESOURCE_STALE");
+});
+
+test("select_option selects by value and the page observes it", async () => {
+  const id = newId("brs_");
+  await manager.allocate(id, allocationFor());
+  await run(id, navigate("/form"));
+  const before = await run(id, snapshot());
+  const select = before.snapshot?.elements.find((element) =>
+    /combobox|listbox|select/iu.test(element.role),
+  );
+  assert.ok(select !== undefined, `no select in ${before.snapshot?.text ?? ""}`);
+
+  const chosen = await run(id, {
+    command: "select_option",
+    timeout_ms: 10000,
+    select_option: {
+      snapshot_id: before.snapshot?.snapshot_id as string,
+      ref: select.ref,
+      values: ["next-day"],
+    },
+  });
+  assert.equal(chosen.ok, true, JSON.stringify(chosen.error));
+
+  // What the browser actually did, not that the command returned ok.
+  const after = await run(id, snapshot());
+  assert.match(after.snapshot?.text ?? "", /chosen: next-day/u);
+});
+
+test("press_key reaches the page and a key outside the vocabulary never gets there", async () => {
+  const id = newId("brs_");
+  await manager.allocate(id, allocationFor());
+  await run(id, navigate("/form"));
+  const before = await run(id, snapshot());
+  const input = before.snapshot?.elements.find((element) => /textbox/iu.test(element.role));
+  assert.ok(input !== undefined, `no text input in ${before.snapshot?.text ?? ""}`);
+
+  const pressed = await run(id, {
+    command: "press_key",
+    timeout_ms: 10000,
+    press_key: {
+      key: "ArrowDown",
+      snapshot_id: before.snapshot?.snapshot_id as string,
+      ref: input.ref,
+    },
+  });
+  assert.equal(pressed.ok, true, JSON.stringify(pressed.error));
+  const after = await run(id, snapshot());
+  assert.match(after.snapshot?.text ?? "", /keyed: ArrowDown/u);
+});
+
+test("scroll moves the page a bounded distance", async () => {
+  const id = newId("brs_");
+  await manager.allocate(id, allocationFor());
+  await run(id, navigate("/form"));
+  await run(id, snapshot());
+  const session = manager.get(id);
+  assert.ok(session !== undefined);
+  const page = session.requirePage();
+  assert.equal(await page.evaluate(() => window.scrollY), 0);
+
+  const scrolled = await run(id, {
+    command: "scroll",
+    timeout_ms: 10000,
+    scroll: { direction: "down", amount_px: 600 },
+  });
+  assert.equal(scrolled.ok, true, JSON.stringify(scrolled.error));
+  // A wheel event is delivered asynchronously and the compositor applies it on
+  // its own schedule, so the assertion waits for the scroll rather than for a
+  // fixed delay — waiting on a timer here would be waiting on a proxy for the
+  // thing being asserted.
+  await page.waitForFunction(() => window.scrollY > 0, undefined, { timeout: 5000 });
+  const offset = await page.evaluate(() => window.scrollY);
+  assert.ok(offset > 0, `the page did not scroll (scrollY ${String(offset)})`);
+});
+
 test("a reference from a different snapshot is never renumbered onto this one", async () => {
   const id = newId("brs_");
   await manager.allocate(id, allocationFor());

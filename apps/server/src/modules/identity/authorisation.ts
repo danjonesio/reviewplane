@@ -95,7 +95,14 @@ export interface AuthorisationOptions {
 export function registerAuthorisation(app: FastifyInstance, options: AuthorisationOptions): void {
   app.decorateRequest("reviewplaneActor", undefined);
   app.addHook("onRequest", async (request) => {
-    if (!request.url.startsWith("/api/")) return;
+    // `/internal/v1/protocol` is the one internal-prefixed route that is
+    // administrative rather than part of the worker channel: it returns an
+    // example frame so an operator can confirm the encoding without attaching a
+    // debugger. It has to resolve an actor like any other administrative route,
+    // or a worker credential presented to it would be answered "sign in" —
+    // reporting a request that authenticated perfectly well and is simply not
+    // allowed as unauthenticated, which is the distinction section 6.3 turns on.
+    if (!request.url.startsWith("/api/") && request.url !== "/internal/v1/protocol") return;
     request.reviewplaneActor = await resolveActor(request, options);
   });
 }

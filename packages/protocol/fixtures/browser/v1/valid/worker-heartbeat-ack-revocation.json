@@ -1,0 +1,13 @@
+{
+  "protocol_version": 1,
+  "message_id": "msg_01JHEARTBEATACK",
+  "type": "worker.heartbeat.ack",
+  "sent_at": "2026-07-29T09:15:17.000Z",
+  "worker_id": "wkr_01JBROWSERWORKER01",
+  "correlation_id": "msg_01JHEARTBEAT",
+  "payload": {
+    "assigned_projects": [],
+    "heartbeat_interval_seconds": 15,
+    "observed_at": "2026-07-29T09:15:17.000Z"
+  }
+}

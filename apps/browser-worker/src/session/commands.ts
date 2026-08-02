@@ -293,14 +293,113 @@ async function runTypeText(
   return {};
 }
 
+async function runSelectOption(
+  context: CommandContext,
+  command: BrowserCommand,
+): Promise<CommandOutcome> {
+  const parameters = command.select_option;
+  if (parameters === undefined) throw new Error("select_option parameters are missing");
+  const element = await requireElement(context, parameters.snapshot_id, parameters.ref);
+  if (element === null) throw new Error("unreachable: element was verified above");
+  await element.selectOption([...parameters.values], { timeout: command.timeout_ms });
+  // Selecting can change what the page shows, so previous references die here.
+  await context.session.replaceSnapshot(null);
+  return {};
+}
+
+async function runPressKey(
+  context: CommandContext,
+  page: Page,
+  command: BrowserCommand,
+): Promise<CommandOutcome> {
+  const parameters = command.press_key;
+  if (parameters === undefined) throw new Error("press_key parameters are missing");
+  if (parameters.snapshot_id !== undefined && parameters.ref !== undefined) {
+    const element = await requireElement(context, parameters.snapshot_id, parameters.ref);
+    if (element === null) throw new Error("unreachable: element was verified above");
+    await element.press(parameters.key, { timeout: command.timeout_ms });
+  } else {
+    await page.keyboard.press(parameters.key);
+  }
+  // A key press can navigate, submit or open a dialog. Nothing here can tell
+  // which, so every outstanding reference is dropped rather than kept on the
+  // assumption that this one was harmless.
+  await context.session.replaceSnapshot(null);
+  return {};
+}
+
+async function runScroll(
+  context: CommandContext,
+  page: Page,
+  command: BrowserCommand,
+): Promise<CommandOutcome> {
+  const parameters = command.scroll;
+  if (parameters === undefined) throw new Error("scroll parameters are missing");
+  const horizontal =
+    parameters.direction === "left"
+      ? -parameters.amount_px
+      : parameters.direction === "right"
+        ? parameters.amount_px
+        : 0;
+  const vertical =
+    parameters.direction === "up"
+      ? -parameters.amount_px
+      : parameters.direction === "down"
+        ? parameters.amount_px
+        : 0;
+  if (parameters.snapshot_id !== undefined && parameters.ref !== undefined) {
+    const element = await requireElement(context, parameters.snapshot_id, parameters.ref);
+    if (element === null) throw new Error("unreachable: element was verified above");
+    await element.scrollIntoViewIfNeeded({ timeout: command.timeout_ms });
+  }
+  await withTimeout(page.mouse.wheel(horizontal, vertical), command.timeout_ms, "scroll");
+  // A scroll moves elements without changing the document. The geometry a
+  // reference resolves through is the element handle rather than a coordinate,
+  // so references survive — and `docs/MCP_SPEC.md` section 7.4 names only
+  // resize as the operation that must invalidate them.
+  return {};
+}
+
+/**
+ * Applies a new viewport and returns the snapshot that replaces every
+ * reference the resize invalidated.
+ *
+ * `docs/MCP_SPEC.md` section 7.4: "Resizing must produce a new snapshot and
+ * invalidate element references." Both halves are required and only the second
+ * was implemented — the result carried the new viewport and nothing else, so an
+ * agent was told its references were gone with no way to obtain replacements
+ * except by asking again, and an agent that did not read the rule would have
+ * gone on using the dead ones.
+ */
 async function runResize(
   context: CommandContext,
+  page: Page,
   command: BrowserCommand,
 ): Promise<CommandOutcome> {
   const parameters = command.resize;
   if (parameters === undefined) throw new Error("resize parameters are missing");
   await context.session.resize(parameters.viewport);
-  return { viewport: parameters.viewport };
+  const limits = context.session.limits;
+  const snapshot = await withTimeout(
+    captureSnapshot(page, newId("bsn_"), parameters.viewport, {
+      maxNodes: limits.snapshot_max_nodes,
+      maxBytes: limits.snapshot_max_bytes,
+    }),
+    command.timeout_ms,
+    "snapshot",
+  );
+  await context.session.replaceSnapshot(snapshot);
+  return {
+    viewport: parameters.viewport,
+    snapshot: {
+      snapshot_id: snapshot.id,
+      viewport: snapshot.viewport,
+      node_count: snapshot.elements.length,
+      truncated: snapshot.truncated,
+      text: snapshot.text,
+      elements: snapshot.elements,
+    },
+  };
 }
 
 async function runWait(
@@ -417,8 +516,17 @@ export async function executeCommand(
       case "type_text":
         outcome = await runTypeText(context, command);
         break;
+      case "select_option":
+        outcome = await runSelectOption(context, command);
+        break;
+      case "press_key":
+        outcome = await runPressKey(context, page, command);
+        break;
+      case "scroll":
+        outcome = await runScroll(context, page, command);
+        break;
       case "resize":
-        outcome = await runResize(context, command);
+        outcome = await runResize(context, page, command);
         break;
       case "wait":
         outcome = await runWait(context, page, command);

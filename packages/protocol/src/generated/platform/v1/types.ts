@@ -395,6 +395,7 @@ export const AGENT_CAPABILITY_VALUES = [
   "finding:write",
   "verification:submit",
   "browser:capture",
+  "browser:control",
 ] as const;
 
 export type AgentCapability =
@@ -404,7 +405,8 @@ export type AgentCapability =
   | "finding:read"
   | "finding:write"
   | "verification:submit"
-  | "browser:capture";
+  | "browser:capture"
+  | "browser:control";
 
 /**
  * How a human authenticated. bootstrap_token is the ADR-0016 exchange, install_token is
@@ -904,6 +906,10 @@ export const EVENT_TYPES = [
   "browser.command_executed",
   "browser.live_view_started",
   "browser.live_view_stopped",
+  "browser_worker.registered",
+  "browser_worker.degraded",
+  "browser_worker.lost",
+  "browser_session.reconciled",
   "screenshot.captured",
   "artefact.upload_started",
   "artefact.upload_completed",

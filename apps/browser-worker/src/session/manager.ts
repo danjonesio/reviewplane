@@ -103,6 +103,67 @@ export class SessionManager {
     this.#assignedProjects = new Set(projects);
   }
 
+  get assignedProjects(): readonly string[] {
+    return this.#assignedProjects === null ? [] : [...this.#assignedProjects];
+  }
+
+  /**
+   * Applies an assignment the control plane restated on a heartbeat
+   * (ADR-0026), and enforces a revocation on sessions already running.
+   *
+   * The documented policy for the revoke direction is here rather than
+   * anywhere else, because this is the only place both halves are known:
+   *
+   *   * a project **added** takes effect immediately for new allocations;
+   *   * a project **removed** takes effect immediately for new allocations,
+   *     and every session already running for that project is **terminated**,
+   *     not left to finish.
+   *
+   * Terminating is the deliberate choice. A browser session is a live window
+   * into a development machine, held open by an authorisation an administrator
+   * has just withdrawn; letting it run to its duration limit would mean the
+   * withdrawal took up to two hours to be true. The session's evidence is
+   * already uploaded and stays exactly where it is — nothing captured is lost,
+   * and the control plane records the termination like any other.
+   *
+   * Returns the sessions it ended, so the caller can log them by identity.
+   */
+  async applyAssignment(projects: readonly string[]): Promise<readonly string[]> {
+    const next = new Set(projects);
+    const revoked: string[] = [];
+    for (const session of [...this.#sessions.values()]) {
+      if (next.has(session.projectId)) continue;
+      revoked.push(session.id);
+      await this.terminate(session.id, "policy", "project assignment revoked").catch(
+        () => undefined,
+      );
+    }
+    this.#assignedProjects = next;
+    return revoked;
+  }
+
+  /**
+   * What this worker is holding, for the reconciliation of
+   * `docs/OPERATIONS.md` section 9.
+   *
+   * It reports the contexts that exist, including ones the control plane may
+   * not know about — that is the entire point: a context nobody claims is the
+   * orphan the reconciler exists to terminate.
+   */
+  contexts(): readonly {
+    browser_session_id: string;
+    project_id: string;
+    status: SessionStatus;
+    control_epoch: number;
+  }[] {
+    return [...this.#sessions.values()].map((session) => ({
+      browser_session_id: session.id,
+      project_id: session.projectId,
+      status: session.status,
+      control_epoch: session.controlEpoch,
+    }));
+  }
+
   get activeSessions(): number {
     return this.#sessions.size;
   }

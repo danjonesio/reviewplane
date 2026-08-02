@@ -39,6 +39,9 @@ ADRs record decisions that materially affect architecture, security, protocols o
 | [0023](0023-connector-issued-agent-credentials.md) | A connector exchanges its device identity for a short-lived, single-project agent credential | Accepted |
 | [0024](0024-transition-tables-as-protocol-data.md) | The review and finding transition tables, with their authority column, are protocol data | Accepted |
 | [0025](0025-backup-archive-format.md) | A backup archive is a self-describing row-level export the product writes and reads, streamed through the operator's shell | Accepted |
+| [0026](0026-worker-assignment-restated-on-every-heartbeat.md) | A browser worker's project assignment is restated on every heartbeat, and a revocation ends the sessions it covered | Accepted |
+| [0027](0027-browser-worker-liveness-is-a-state-and-a-query-term.md) | Browser-worker liveness is both a swept state and a term in every query that decides something | Accepted |
+| [0028](0028-browser-command-authority-derived-not-claimed.md) | Browser-command authority is derived from the authenticated actor, and the whole authorisation matrix runs in the control plane | Accepted |
 | [0029](0029-completion-gate-is-advisory-and-non-terminating.md) | The completion gate reports and never decides, and never terminates the agent | Accepted |
 | [0030](0030-verification-supersession.md) | A second verification supersedes the first, and exactly one is current | Accepted |
 | [0031](0031-agent-assertions-are-not-control-plane-verification.md) | Agent-asserted checks are recorded as assertions, never as control-plane verification | Accepted |

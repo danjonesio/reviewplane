@@ -193,17 +193,67 @@ export interface Viewport {
   readonly device_scale_factor: number;
 }
 
+/**
+ * Who holds interactive control of a browser (`docs/DOMAIN_MODEL.md` section
+ * 13). Exactly one controller drives a session at a time, and this is the
+ * record of which one; `null` is nobody, which is a real state rather than a
+ * missing value.
+ */
+export interface ControllerIdentity {
+  readonly type: string;
+  readonly id: string;
+}
+
+/**
+ * A browser session as `docs/API.md` section 11 answers it, which is the
+ * server's `BrowserSessionRecord` minus the members no viewer surface reads.
+ *
+ * Every member the control plane may not know arrives as `null` rather than
+ * absent, so none of them is optional. `control_epoch` and `current_controller`
+ * are read together: the epoch is what a pause, a resume or a command is
+ * authorised against, and the controller is who it would be taken from.
+ */
 export interface BrowserSession {
   readonly id: string;
   readonly project_id: string;
   readonly organisation_id: string;
   readonly status: string;
+  readonly published_service_id: string | null;
   readonly service_origin: string | null;
   readonly browser_version: string | null;
   readonly viewport: Viewport;
+  readonly current_controller: ControllerIdentity | null;
   readonly control_epoch: number;
   readonly created_at: string;
   readonly ended_at: string | null;
+}
+
+/** What the start form sends (`docs/API.md` section 11). */
+export interface BrowserSessionDraft {
+  /**
+   * The route this session may reach, or absent for a session that reaches
+   * nothing. The origin and the capability are derived from this record by the
+   * control plane and are never sent by a caller: the origin *is* the worker's
+   * egress allow-list (`docs/SECURITY.md` §9).
+   */
+  readonly published_service_id?: string;
+  readonly viewport: Viewport;
+}
+
+/**
+ * One entry of a session's own timeline (`docs/API.md` section 11).
+ *
+ * It is the event record of `docs/EVENTS.md` section 2 narrowed to one session:
+ * what happened, when, and who caused it. `payload` is left opaque because the
+ * shape differs per event type and a surface renders what it recognises rather
+ * than assuming a member is there.
+ */
+export interface BrowserSessionTimelineEntry {
+  readonly id: string;
+  readonly type: string;
+  readonly occurred_at: string;
+  readonly actor: { readonly type: string; readonly display: string | null };
+  readonly payload: Record<string, unknown>;
 }
 
 export interface ViewerSession {
@@ -549,6 +599,72 @@ export const api = {
 
   async browserSession(sessionId: string): Promise<BrowserSession> {
     return request<BrowserSession>(`/api/v1/browser-sessions/${encodeURIComponent(sessionId)}`);
+  },
+
+  /**
+   * Starts a browser session in a project.
+   *
+   * The organisation is not sent: it is the project's, and the control plane
+   * resolves it. A caller that named one would be naming a second authority for
+   * the same fact, and the only interesting case would be the two disagreeing.
+   */
+  async startBrowserSession(
+    projectId: string,
+    draft: BrowserSessionDraft,
+  ): Promise<BrowserSession> {
+    return request<BrowserSession>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/browser-sessions`,
+      { method: "POST", body: JSON.stringify(draft) },
+    );
+  },
+
+  /**
+   * Pauses a session against the control epoch the caller last read.
+   *
+   * The epoch travels with the request because exactly one controller drives a
+   * browser at a time (`docs/DESIGN_PRINCIPLES.md` §6). A stale one is refused
+   * with `CONTROL_EPOCH_STALE` and never reaches the worker, so a page holding
+   * an old number changes nothing by asking twice.
+   */
+  async pauseBrowserSession(sessionId: string, controlEpoch: number): Promise<BrowserSession> {
+    return request<BrowserSession>(
+      `/api/v1/browser-sessions/${encodeURIComponent(sessionId)}/pause`,
+      { method: "POST", body: JSON.stringify({ control_epoch: controlEpoch }) },
+    );
+  },
+
+  async resumeBrowserSession(sessionId: string, controlEpoch: number): Promise<BrowserSession> {
+    return request<BrowserSession>(
+      `/api/v1/browser-sessions/${encodeURIComponent(sessionId)}/resume`,
+      { method: "POST", body: JSON.stringify({ control_epoch: controlEpoch }) },
+    );
+  },
+
+  /**
+   * Ends a session. Termination is not an epoch-authorised command — it takes
+   * the browser away from whoever holds it — so it carries no epoch.
+   */
+  async terminateBrowserSession(
+    sessionId: string,
+    controlEpoch: number,
+  ): Promise<BrowserSession> {
+    // The epoch is required, like every other lifecycle change: ending a
+    // browser somebody else now controls is not a lesser act than clicking in
+    // it (`docs/API.md` §11).
+    return request<BrowserSession>(
+      `/api/v1/browser-sessions/${encodeURIComponent(sessionId)}/terminate`,
+      { method: "POST", body: JSON.stringify({ control_epoch: controlEpoch }) },
+    );
+  },
+
+  /** What has happened to one session, newest first. */
+  async browserSessionTimeline(
+    sessionId: string,
+    limit = 20,
+  ): Promise<BrowserSessionTimelineEntry[]> {
+    return request<BrowserSessionTimelineEntry[]>(
+      `/api/v1/browser-sessions/${encodeURIComponent(sessionId)}/timeline?limit=${String(limit)}`,
+    );
   },
 
   /**

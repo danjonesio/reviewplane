@@ -21,6 +21,7 @@ import {
   type BrowserCommandResult,
   type BrowserFrame,
   type SessionStatusReport,
+  type WorkerContext,
 } from "@reviewplane/protocol/browser";
 import {
   LIVE_RECORD_FRAME_PAYLOAD,
@@ -36,6 +37,10 @@ import { buildApp, type BuiltApp } from "../../src/app.ts";
 import type { TunnelGateway } from "../../src/modules/published-services/gateway-client.ts";
 import type { RoutePublisher } from "../../src/modules/published-services/service.ts";
 import type { ServerConfig } from "../../src/config.ts";
+import {
+  DEFAULT_BROWSER_WORKER_CONFIG,
+  type BrowserWorkerConfig,
+} from "../../src/modules/browser-sessions/config.ts";
 import { newId } from "../../src/ids.ts";
 import { testServerConfig } from "./config.ts";
 
@@ -58,6 +63,13 @@ export interface StubWorkerBehaviour {
   terminate?: (frame: FrameOf<"browser_session.terminate">) => SessionStatusReport;
   /** Set to refuse everything with this status and code. */
   refuseWith?: { status: number; code: string; message: string };
+  /**
+   * What the worker reports it is holding when the reconciler asks
+   * (`docs/OPERATIONS.md` section 9). Empty by default, which is what a worker
+   * that has just restarted reports — and is exactly the state that makes every
+   * session the control plane believes in a candidate for DEGRADED.
+   */
+  contexts?: WorkerContext[];
 }
 
 /**
@@ -120,6 +132,12 @@ export interface HarnessOptions {
    * every other suite's assertions race work it did not ask for.
    */
   readonly runJobs?: boolean;
+  /**
+   * Browser-worker liveness thresholds. A suite exercising the sweep sets them
+   * to something it can wait out; without this it would have to sleep past the
+   * 45-second production default, which is not a test.
+   */
+  readonly browserWorkerConfig?: BrowserWorkerConfig;
 }
 
 const DEFAULT_ALLOCATION = {
@@ -253,6 +271,24 @@ export async function startHarness(pool: Pool, options: HarnessOptions = {}): Pr
       });
     }
 
+    if (frame.type === "worker.contexts.request") {
+      return frameResponse({
+        envelope: {
+          protocol_version: 1,
+          message_id: newId("msg_"),
+          type: "worker.contexts",
+          sent_at: new Date().toISOString(),
+          worker_id: envelope.worker_id as string,
+          correlation_id: envelope.message_id,
+        },
+        type: "worker.contexts",
+        payload: {
+          contexts: [...(worker.contexts ?? [])],
+          observed_at: new Date().toISOString(),
+        },
+      });
+    }
+
     if (frame.type === "browser_session.terminate") {
       const report: SessionStatusReport = worker.terminate?.(frame) ?? {
         status: "TERMINATED",
@@ -288,6 +324,7 @@ export async function startHarness(pool: Pool, options: HarnessOptions = {}): Pr
     ...(options.publisher === undefined ? {} : { publisher: options.publisher }),
     ...(options.gateway === undefined ? {} : { gateway: options.gateway }),
     ...(options.runJobs === true ? { runJobs: true } : {}),
+    browserWorkerConfig: options.browserWorkerConfig ?? DEFAULT_BROWSER_WORKER_CONFIG,
   });
   await built.app.ready();
 

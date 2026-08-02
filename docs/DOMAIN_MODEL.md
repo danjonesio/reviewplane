@@ -435,6 +435,26 @@ FAILED
 - Each command is authorised against project, session and control epoch
 - Live frames are not durable by default
 - A connector outage moves a session to `DEGRADED`, never to `TERMINATED` or `FAILED`: the session and its metadata are retained and remain diagnosable, and the session returns to `READY` when reconciliation continues the route it was allocated against (`ARCHITECTURE.md` §14, `CONNECTOR_PROTOCOL.md` §17)
+- A worker that stops reporting a session moves it to `DEGRADED` for the same reason; a worker that has gone entirely moves its sessions to `FAILED`, and evidence already uploaded is untouched (`OPERATIONS.md` §9)
+
+### What the statuses mean
+
+The lifecycle is the control plane's. The worker keeps its own view of a context
+it is holding, and where the two can differ the control plane is authoritative.
+
+`PAUSED` suspends **interactive** commands and admits non-interactive system
+capture: the browser context stays open, live frames keep flowing, and
+`browser_snapshot` and `browser_take_screenshot` continue to work
+(`MCP_SPEC.md` §7.3). It is a change of authority rather than a stop on the
+browser, and the worker is not told — a worker holding its own pause flag would
+be a second authority for one question. Resuming returns the session to `READY`
+rather than `ACTIVE`, because a resumed session has been sitting and the page may
+have moved; the first successful command moves it to `ACTIVE` again.
+
+`REQUESTED` is a reserved session with an identifier and a chosen worker that no
+worker has been contacted about. It exists so a route can name the session in its
+`allowed_browser_session_ids` before the session's egress origin is fixed
+(`API.md` §11).
 
 "Live frames are not durable by default" is enforced by there being no path
 that persists one: `docs/ARCHITECTURE.md` section 5.3 records how, and
@@ -461,6 +481,28 @@ Time-bounded control grant.
 - `reason`
 
 Only one non-revoked interactive lease may exist for the current epoch.
+
+### Invariants
+
+- **Every controller transition increments the epoch**, and the increment, the
+  revocation of the outstanding lease and the new lease are one transaction — so
+  a lease can never exist at an epoch the session does not carry. Releasing
+  control increments too: after a release nobody holds the lease, and a command
+  still carrying the released epoch must not pass the epoch check
+  (`SECURITY.md` §8).
+- **Requesting control the caller already holds is idempotent** and does not
+  increment. An increment there would refuse every command the caller had already
+  prepared (`TESTING.md` §5).
+- **Leases expire.** `expires_at` is enforced by the reconciliation of
+  `OPERATIONS.md` §9, which revokes the lease when it passes. Expiry does not
+  move the epoch: nobody has taken control.
+- **A non-interactive system capture never takes the lease.** A `system`
+  controller may issue `snapshot` and `take_screenshot` without holding it, and
+  doing so neither transfers nor revokes it.
+- Stage 1 issues interactive leases to `agent` and `system` controllers only.
+  `human` is in the vocabulary because ADR-0007 fixes it, and takeover arrives in
+  Stage 2; a request for it is refused with `UNSUPPORTED_CAPABILITY` and the
+  refusal is audited.
 
 ## 14. Review
 

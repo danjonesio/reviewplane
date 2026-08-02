@@ -95,13 +95,24 @@ export function successEnvelope(input: EnvelopeInput): { json: string; value: un
  * Bounds a detail object to the members the refusal schema declares.
  *
  * The filter is an allow list rather than a copy because `error_details` is a
- * closed schema: a member it does not declare would be refused by the codec on
- * the way out, turning a useful refusal into an unhelpful one. A domain refusal
- * carrying a detail this list does not name therefore loses it — which is a
- * real cost, and the right response is to add the member to
+ * closed schema: a member it does not declare would be refused by a conforming
+ * client's validator, turning a useful refusal into an unparseable one. A
+ * domain refusal carrying a detail this list does not name therefore loses it —
+ * which is a real cost, and the right response is to add the member to
  * `packages/protocol` and to `docs/MCP_SPEC.md` section 12 rather than to widen
  * this list, because a detail an agent cannot rely on being present is not one
  * it can act on.
+ *
+ * That is what happened to the last three. `browser_session_status`, `detected`
+ * and `published_service_id` were being dropped here, and each loss cost the
+ * agent something specific: a caller told only that a session is "not active"
+ * cannot tell one it should resume from one it should replace; a caller told
+ * only `POLICY_DENIED` cannot tell which rule its value matched. They are
+ * declared by the schema now, so they are carried.
+ *
+ * `reason` is still dropped, and deliberately: the domain sets it alongside
+ * `detected` and it restates the error class in prose, which is the one detail
+ * an agent already has.
  */
 function refusalDetails(details: Readonly<Record<string, unknown>>): ToolError["details"] {
   const permitted = [
@@ -113,10 +124,22 @@ function refusalDetails(details: Readonly<Record<string, unknown>>): ToolError["
     "required_evidence",
     "allowed_transitions",
     "retry_after_ms",
+    "browser_session_status",
+    "detected",
+    "published_service_id",
   ];
   const out: Record<string, unknown> = {};
   for (const key of permitted) {
     if (details[key] !== undefined) out[key] = details[key];
+  }
+  // The domain calls the lifecycle status `status`; the schema calls it
+  // `browser_session_status`, because `status` in a refusal that may concern a
+  // review, a finding or a session says nothing about which. The alias is a
+  // bridge, not a design: it exists so that renaming the domain's key is a
+  // no-op here rather than a silent loss of the member, and it should be
+  // deleted once that rename has landed.
+  if (out["browser_session_status"] === undefined && details["status"] !== undefined) {
+    out["browser_session_status"] = details["status"];
   }
   return Object.keys(out).length === 0 ? undefined : (out as ToolError["details"]);
 }

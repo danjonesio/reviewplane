@@ -25,6 +25,20 @@
       "note": "Capacity report used to detect a lost worker."
     },
     {
+      "name": "worker-heartbeat-ack-revocation",
+      "kind": "browser_frame",
+      "file": "valid/worker-heartbeat-ack-revocation.json",
+      "message_type": "worker.heartbeat.ack",
+      "note": "The revocation direction of ADR-0026: the answer restates the whole assignment, and an empty list means the worker now serves nothing. A worker that acted on the previous answer stops within one heartbeat interval rather than at its next restart."
+    },
+    {
+      "name": "worker-contexts",
+      "kind": "browser_frame",
+      "file": "valid/worker-contexts.json",
+      "message_type": "worker.contexts",
+      "note": "What the worker is actually holding, which reconciliation compares against control-plane state (docs/OPERATIONS.md section 9)."
+    },
+    {
       "name": "session-allocate",
       "kind": "browser_frame",
       "file": "valid/session-allocate.json",
@@ -44,6 +58,27 @@
       "file": "valid/command-navigate-relative.json",
       "message_type": "browser.command",
       "note": "The docs/MCP_SPEC.md section 7.4 example: a relative URL and a bounded wait condition, with the section 6.4 envelope fields present."
+    },
+    {
+      "name": "command-select-option",
+      "kind": "browser_frame",
+      "file": "valid/command-select-option.json",
+      "message_type": "browser.command",
+      "note": "select_option addresses the element by a reference from the current snapshot, so a stale reference fails rather than selecting whatever now occupies that position."
+    },
+    {
+      "name": "command-press-key",
+      "kind": "browser_frame",
+      "file": "valid/command-press-key.json",
+      "message_type": "browser.command",
+      "note": "A key press with no element reference goes to whatever the page has focused. The key comes from the closed vocabulary of key_name."
+    },
+    {
+      "name": "command-scroll",
+      "kind": "browser_frame",
+      "file": "valid/command-scroll.json",
+      "message_type": "browser.command",
+      "note": "A scroll is a bounded movement in CSS pixels, not a request to reach the end of an infinite list."
     },
     {
       "name": "command-result-snapshot",
@@ -151,6 +186,13 @@
       "file": "invalid/allocate-unknown-property.json",
       "expect_reason": "schema_violation",
       "note": "Unknown properties are refused, so a request cannot smuggle a sandbox-disabling flag past the schema."
+    },
+    {
+      "name": "press-key-outside-vocabulary",
+      "kind": "browser_frame",
+      "file": "invalid/press-key-outside-vocabulary.json",
+      "expect_reason": "schema_violation",
+      "note": "The key vocabulary is closed. A combination outside it — here the developer-tools shortcut — is refused by the schema rather than passed to Chromium to interpret."
     },
     {
       "name": "unknown-message-type",

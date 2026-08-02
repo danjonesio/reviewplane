@@ -33,6 +33,32 @@ const document = source as unknown as SchemaDocument;
 
 const REF_PREFIX = "#/$defs/";
 
+/**
+ * Tools whose argument definition is not named after them.
+ *
+ * Most tools have a `${tool}_input` of their own. The browser tools of
+ * `docs/MCP_SPEC.md` sections 7.3 and 7.4 do not, because several of them take
+ * *exactly* the same arguments and the schema declares that once: pausing,
+ * resuming and ending a session are all "a session and the epoch you believe is
+ * current", and clicking is "a session, an epoch and one element of the current
+ * snapshot". Sharing the definition is what makes it impossible for one of them
+ * to drift into accepting an argument the others refuse.
+ *
+ * The map is here rather than in the schema because the schema already says it
+ * — `x-protocol.messages` names each tool's *result* — and adding a parallel
+ * input pointer for the fifteen tools that do not need one would be a second
+ * declaration to keep in step. This is the exception list, and
+ * `assertToolSetMatchesSchema` plus the contract test mean an entry that stops
+ * resolving fails loudly rather than silently advertising nothing.
+ */
+const INPUT_DEFINITION: Partial<Record<MessageType, string>> = {
+  browser_session_status: "browser_session_reference_input",
+  browser_session_pause: "browser_session_control_input",
+  browser_session_resume: "browser_session_control_input",
+  browser_session_end: "browser_session_control_input",
+  browser_click: "browser_element_input",
+};
+
 /** Every `$defs` name reachable from a node, including the node's own refs. */
 function collectReferences(node: unknown, into: Set<string>): void {
   if (Array.isArray(node)) {
@@ -61,7 +87,7 @@ function collectReferences(node: unknown, into: Set<string>): void {
  * schema invites somebody to depend on it.
  */
 export function toolInputSchema(tool: MessageType): Record<string, unknown> {
-  const definitionName = `${tool}_input`;
+  const definitionName = INPUT_DEFINITION[tool] ?? `${tool}_input`;
   const definition = document.$defs[definitionName];
   if (definition === undefined) {
     throw new Error(`the MCP schema declares no ${definitionName}`);
@@ -101,6 +127,6 @@ export function toolResultDescription(tool: MessageType): string {
 
 /** The argument description a client sees, taken from the input definition. */
 export function toolInputDescription(tool: MessageType): string {
-  const definition = document.$defs[`${tool}_input`];
+  const definition = document.$defs[INPUT_DEFINITION[tool] ?? `${tool}_input`];
   return (definition?.["description"] as string | undefined) ?? "";
 }

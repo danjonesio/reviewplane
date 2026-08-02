@@ -118,6 +118,11 @@ export async function seedProject(
       viewport: { width: 390, height: 844, device_scale_factor: 2 },
     },
   });
+  if (session.statusCode !== 200 && session.statusCode !== 201) {
+    // The refusal, not `undefined is not an object`. A fixture that fails
+    // opaquely sends the next reader to the wrong file.
+    throw new Error(`browser session allocation failed: ${String(session.statusCode)} ${session.body}`);
+  }
   const browserSessionId = (session.json() as { data: { id: string } }).data.id;
 
   const beforeArtefactId = await uploadScreenshot(harness, projectId, browserSessionId);
@@ -278,24 +283,30 @@ export async function assignReviewToAgent(
   return { status: response.statusCode, body: response.json() };
 }
 
-/** Associates a browser session with an agent session, as a human would. */
+/**
+ * A browser session whose interactive lease belongs to an agent session.
+ *
+ * Through the control plane's service rather than its HTTP API, because that is
+ * where this state legitimately comes from: `browser_session_start` supplies
+ * the agent controller from the credential behind the MCP connection, and the
+ * HTTP route derives the controller from its caller and refuses one in the body
+ * (ADR-0028 — no route accepts an actor identity in a request body). A human
+ * cannot hand a lease to an agent, so a helper that set this up over HTTP would
+ * be exercising a surface that no longer exists.
+ */
 export async function startBrowserSessionForAgent(
   harness: McpHarness,
   seeded: SeededProject,
   agentSessionId: string,
 ): Promise<{ browserSessionId: string; controlEpoch: number }> {
-  const response = await harness.control.app.inject({
-    method: "POST",
-    url: `/api/v1/projects/${seeded.projectId}/browser-sessions`,
-    headers: ADMIN,
-    payload: {
-      organisation_id: seeded.organisationId,
-      viewport: { width: 390, height: 844, device_scale_factor: 2 },
-      agent_session_id: agentSessionId,
-      controller: { type: "agent", id: agentSessionId },
-      retention_class: "verification_evidence",
-    },
+  const record = await harness.control.sessions.start({
+    organisationId: seeded.organisationId,
+    projectId: seeded.projectId,
+    agentSessionId,
+    viewport: { width: 390, height: 844, device_scale_factor: 2 },
+    controller: { type: "agent", id: agentSessionId },
+    retentionClass: "verification_evidence",
+    actor: { type: "agent_session", id: agentSessionId },
   });
-  const data = (response.json() as { data: { id: string; control_epoch: number } }).data;
-  return { browserSessionId: data.id, controlEpoch: data.control_epoch };
+  return { browserSessionId: record.id, controlEpoch: record.control_epoch };
 }

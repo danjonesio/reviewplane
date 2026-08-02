@@ -10,6 +10,7 @@ import {
   checkObject,
   checkPlainObject,
   checkString,
+  forbidProperty,
   matchesCondition,
   requireProperty,
 } from "../../../validate-runtime.ts";
@@ -24,15 +25,20 @@ const PATTERN_6 = new RegExp("^[A-Za-z0-9 ._-]+$", "u");
 const PATTERN_7 = new RegExp("^[A-Za-z0-9 ._+-]+$", "u");
 const PATTERN_8 = new RegExp("^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f]+$", "u");
 const PATTERN_9 = new RegExp("^[!-~]+$", "u");
-const PATTERN_10 = new RegExp("^(review|finding|artefact|screenshot)://[A-Za-z0-9._~/-]{1,300}$", "u");
-const PATTERN_11 = new RegExp("^/[!-~]*$", "u");
-const PATTERN_12 = new RegExp("^[0-9a-f]{7,64}$", "u");
-const PATTERN_13 = new RegExp("^[0-9a-f]{64}$", "u");
-const PATTERN_14 = new RegExp("^[A-Za-z0-9_.\\[\\]-]+$", "u");
-const PATTERN_15 = new RegExp("^[0-9A-Fa-f:.]{1,45}$", "u");
-const PATTERN_16 = new RegExp("^[a-zA-Z0-9][a-zA-Z0-9 ()@x.,:_-]{0,119}$", "u");
-const PATTERN_17 = new RegExp("^https://[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.[a-z0-9.-]{1,180}/$", "u");
-const PATTERN_18 = new RegExp("^(\\[[0-9A-Fa-f:.]{1,45}\\]|[0-9A-Fa-f:.]{1,45}):[0-9]{1,5}$", "u");
+const PATTERN_10 = new RegExp("^(https?://[!-~]+|/[!-~]*)$", "u");
+const PATTERN_11 = new RegExp("^[^\\u0000-\\u001f\\u007f]*$", "u");
+const PATTERN_12 = new RegExp("^[^\\u0000-\\u0009\\u000b-\\u001f\\u007f]*$", "u");
+const PATTERN_13 = new RegExp("^e[0-9]{1,6}$", "u");
+const PATTERN_14 = new RegExp("^[A-Za-z][A-Za-z0-9 _-]*$", "u");
+const PATTERN_15 = new RegExp("^(review|finding|artefact|screenshot)://[A-Za-z0-9._~/-]{1,300}$", "u");
+const PATTERN_16 = new RegExp("^/[!-~]*$", "u");
+const PATTERN_17 = new RegExp("^[0-9a-f]{7,64}$", "u");
+const PATTERN_18 = new RegExp("^[0-9a-f]{64}$", "u");
+const PATTERN_19 = new RegExp("^[A-Za-z0-9_.\\[\\]-]+$", "u");
+const PATTERN_20 = new RegExp("^[0-9A-Fa-f:.]{1,45}$", "u");
+const PATTERN_21 = new RegExp("^[a-zA-Z0-9][a-zA-Z0-9 ()@x.,:_-]{0,119}$", "u");
+const PATTERN_22 = new RegExp("^https://[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.[a-z0-9.-]{1,180}/$", "u");
+const PATTERN_23 = new RegExp("^(\\[[0-9A-Fa-f:.]{1,45}\\]|[0-9A-Fa-f:.]{1,45}):[0-9]{1,5}$", "u");
 
 /**
  * Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the
@@ -153,11 +159,88 @@ export function validateCapturedUrl(value: unknown, path: string, out: SchemaVio
 }
 
 /**
+ * Absolute URL or root-relative path a browser session is asked to open. A relative path
+ * resolves against the published-service origin of the session (docs/MCP_SPEC.md section
+ * 7.4); an absolute URL outside that origin is refused, because the origin is the
+ * session's egress allow-list.
+ */
+export function validateNavigationTarget(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 2048, pattern: PATTERN_10 });
+}
+
+/**
+ * Short page-derived text: a document title, or the text a bounded wait is looking for.
+ * Untrusted (ADR-0010), so control characters are excluded and the length is bounded.
+ */
+export function validateCapturedText(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 0, maxLength: 512, pattern: PATTERN_11 });
+}
+
+/**
+ * The rendered accessibility snapshot of docs/MCP_SPEC.md section 7.4. Untrusted content:
+ * bounded, newline-separated and never interpreted as an instruction. The bound is smaller
+ * than the browser protocol's because the MCP response bound is smaller than the worker
+ * frame's; a snapshot the worker would return whole is truncated on the way to the agent
+ * rather than overflowing it.
+ */
+export function validateSnapshotText(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 0, maxLength: 32768, pattern: PATTERN_12 });
+}
+
+/**
+ * Reference to one element of a single snapshot. It is valid only for the snapshot that
+ * issued it and is invalidated by a resize (docs/MCP_SPEC.md section 7.4).
+ */
+export function validateElementReference(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 2, maxLength: 8, pattern: PATTERN_13 });
+}
+
+/**
+ * Accessibility role of a snapshot element. Page-derived and bounded.
+ */
+export function validateAccessibleRole(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 64, pattern: PATTERN_14 });
+}
+
+/**
+ * Text typed into a page input. A secret value MUST NOT travel through this field
+ * (docs/MCP_SPEC.md sections 7.4 and 7.9); the schema bounds its shape and the server
+ * refuses one flagged as secret material.
+ */
+export function validateTypedText(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 0, maxLength: 4096, pattern: PATTERN_12 });
+}
+
+/**
+ * Value of one option of a select element. Page-derived in practice, so bounded in length
+ * and character class.
+ */
+export function validateOptionValue(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 0, maxLength: 512, pattern: PATTERN_11 });
+}
+
+/**
+ * CSS selector used by a bounded wait condition. Selectors are hints, not identity
+ * (docs/DOMAIN_MODEL.md section 17).
+ */
+export function validateSelector(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 512, pattern: PATTERN_5 });
+}
+
+/**
+ * Substring a URL must contain for a url_matches wait condition to be satisfied. It is
+ * matched literally and is never interpreted as a pattern language.
+ */
+export function validateUrlPattern(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 512, pattern: PATTERN_9 });
+}
+
+/**
  * One of the docs/MCP_SPEC.md section 8 resource URI forms. A resource enforces the same
  * authorisation as the tool that returned the link.
  */
 export function validateResourceUri(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 3, maxLength: 320, pattern: PATTERN_10 });
+  checkString(value, path, out, { minLength: 3, maxLength: 320, pattern: PATTERN_15 });
 }
 
 /**
@@ -166,7 +249,7 @@ export function validateResourceUri(value: unknown, path: string, out: SchemaVio
  * why the identifier may appear in a URL at all.
  */
 export function validateContentPath(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 256, pattern: PATTERN_11 });
+  checkString(value, path, out, { minLength: 1, maxLength: 256, pattern: PATTERN_16 });
 }
 
 /**
@@ -182,7 +265,7 @@ export function validateBranchName(value: unknown, path: string, out: SchemaViol
  * was captured at: a fix cannot exist at the revision the defect was recorded from.
  */
 export function validateCommitSha(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 7, maxLength: 64, pattern: PATTERN_12 });
+  checkString(value, path, out, { minLength: 7, maxLength: 64, pattern: PATTERN_17 });
 }
 
 /**
@@ -190,7 +273,7 @@ export function validateCommitSha(value: unknown, path: string, out: SchemaViola
  * bytes.
  */
 export function validateSha256Hex(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 64, maxLength: 64, pattern: PATTERN_13 });
+  checkString(value, path, out, { minLength: 64, maxLength: 64, pattern: PATTERN_18 });
 }
 
 /**
@@ -239,6 +322,16 @@ export function validateVersionNumber(value: unknown, path: string, out: SchemaV
  */
 export function validateControlEpoch(value: unknown, path: string, out: SchemaViolation[]): void {
   checkInteger(value, path, out, { minimum: 1, maximum: 2147483647 });
+}
+
+/**
+ * Bound on one browser command. Every browser tool is bounded: exceeding it fails with
+ * BROWSER_COMMAND_TIMEOUT rather than holding the browser for as long as the page likes
+ * (docs/MCP_SPEC.md section 7.4). The server clamps it to the session's own maximum, so a
+ * larger value here buys nothing.
+ */
+export function validateCommandTimeoutMs(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 100, maximum: 120000 });
 }
 
 /**
@@ -324,7 +417,7 @@ export function validateInstructionPolicy(value: unknown, path: string, out: Sch
  * page.
  */
 export function validateUntrustedFieldPath(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 128, pattern: PATTERN_14 });
+  checkString(value, path, out, { minLength: 1, maxLength: 128, pattern: PATTERN_19 });
 }
 
 /**
@@ -351,7 +444,7 @@ export function validateErrorClass(value: unknown, path: string, out: SchemaViol
  * advertises always has a result schema and a bound.
  */
 export function validateMessageType(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["project_current","agent_session_status","agent_inbox_list","agent_inbox_acknowledge","review_list","review_search","review_get","review_claim","review_update_status","review_add_comment","finding_get","finding_claim","finding_update_status","finding_mark_blocked","finding_add_comment","finding_submit_verification","browser_take_screenshot","development_services_list","development_service_publish","development_service_unpublish","task_validation_status","task_complete"] });
+  checkString(value, path, out, { values: ["project_current","agent_session_status","agent_inbox_list","agent_inbox_acknowledge","review_list","review_search","review_get","review_claim","review_update_status","review_add_comment","finding_get","finding_claim","finding_update_status","finding_mark_blocked","finding_add_comment","finding_submit_verification","browser_take_screenshot","browser_session_start","browser_session_status","browser_session_pause","browser_session_resume","browser_session_end","browser_navigate","browser_snapshot","browser_click","browser_type","browser_select_option","browser_press_key","browser_scroll","browser_resize","browser_wait","development_services_list","development_service_publish","development_service_unpublish","task_validation_status","task_complete"] });
 }
 
 /**
@@ -361,7 +454,16 @@ export function validateMessageType(value: unknown, path: string, out: SchemaVio
  * section 11).
  */
 export function validateAgentCapability(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["project:read","review:read","review:write","finding:read","finding:write","verification:submit","browser:capture","service:publish"] });
+  checkString(value, path, out, { values: ["project:read","review:read","review:write","finding:read","finding:write","verification:submit","browser:capture","service:publish","browser:control"] });
+}
+
+/**
+ * Browser-session lifecycle status (docs/DOMAIN_MODEL.md section 12). This enumeration
+ * MUST equal the browser protocol's session_status: an agent and a worker that disagreed
+ * about what PAUSED meant would disagree about whether a command may run.
+ */
+export function validateBrowserLifecycleStatus(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["REQUESTED","ALLOCATING","READY","ACTIVE","PAUSED","DEGRADED","TERMINATING","TERMINATED","FAILED"] });
 }
 
 /**
@@ -488,6 +590,47 @@ export function validateActorType(value: unknown, path: string, out: SchemaViola
 }
 
 /**
+ * A key press. The vocabulary is closed on purpose: a key name reaches the browser as a
+ * control instruction, so it is drawn from a fixed set rather than passed through from an
+ * argument a page could influence. This enumeration MUST equal the browser protocol's
+ * key_name.
+ */
+export function validateKeyName(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["Enter","Tab","Shift+Tab","Escape","Backspace","Delete","Home","End","PageUp","PageDown","ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Space"] });
+}
+
+/**
+ * Direction of a scroll.
+ */
+export function validateScrollDirection(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["up","down","left","right"] });
+}
+
+/**
+ * Bounded navigation wait condition (docs/MCP_SPEC.md section 7.4). Every value completes
+ * or times out; none waits indefinitely.
+ */
+export function validateWaitUntil(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["commit","domcontentloaded","load","networkidle"] });
+}
+
+/**
+ * Bounded wait condition. docs/MCP_SPEC.md section 7.4 forbids an unbounded sleep, so
+ * every condition is paired with a timeout.
+ */
+export function validateWaitCondition(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["url_matches","selector_visible","selector_hidden","text_visible","network_idle"] });
+}
+
+/**
+ * The browser command an interaction result answers. It is the browser protocol's
+ * command_name, restated here so a result names what it was.
+ */
+export function validateBrowserCommandName(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["navigate","snapshot","click","type_text","select_option","press_key","scroll","resize","wait","take_screenshot"] });
+}
+
+/**
  * Why a capture is being taken. Stage 0 accepts verification only: a capture is evidence,
  * and an unclassified capture cannot be filed under a retention class.
  */
@@ -532,7 +675,7 @@ export function validateSessionInclude(value: unknown, path: string, out: Schema
  * resolved, and a resolver is a rebinding surface (docs/SECURITY.md section 9).
  */
 export function validateLocalHost(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 45, pattern: PATTERN_15 });
+  checkString(value, path, out, { minLength: 1, maxLength: 45, pattern: PATTERN_20 });
 }
 
 /**
@@ -571,7 +714,7 @@ export function validateCompletionResult(value: unknown, path: string, out: Sche
  * agent supplied is echoed back through this member.
  */
 export function validateRequirementLabel(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 120, pattern: PATTERN_16 });
+  checkString(value, path, out, { minLength: 1, maxLength: 120, pattern: PATTERN_21 });
 }
 
 /**
@@ -968,7 +1111,7 @@ export function validateErrorDetailsAllowedTransitions(value: unknown, path: str
  * cannot become a channel for arbitrary content.
  */
 export function validateErrorDetails(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["current_version", "expected_version", "current_epoch", "field", "candidates", "required_evidence", "allowed_transitions", "retry_after_ms"], []);
+  const source = checkObject(value, path, out, ["current_version", "expected_version", "current_epoch", "field", "candidates", "required_evidence", "allowed_transitions", "retry_after_ms", "browser_session_status", "detected", "published_service_id"], []);
   if (source === null) return;
   if (source["current_version"] !== undefined) {
     validateVersionNumber(source["current_version"], `${path}.current_version`, out);
@@ -993,6 +1136,15 @@ export function validateErrorDetails(value: unknown, path: string, out: SchemaVi
   }
   if (source["retry_after_ms"] !== undefined) {
     validateRetryAfterMs(source["retry_after_ms"], `${path}.retry_after_ms`, out);
+  }
+  if (source["browser_session_status"] !== undefined) {
+    validateBrowserLifecycleStatus(source["browser_session_status"], `${path}.browser_session_status`, out);
+  }
+  if (source["detected"] !== undefined) {
+    validateReasonText(source["detected"], `${path}.detected`, out);
+  }
+  if (source["published_service_id"] !== undefined) {
+    validateIdentifier(source["published_service_id"], `${path}.published_service_id`, out);
   }
 }
 
@@ -1511,7 +1663,7 @@ export function validateBrowserSessionView(value: unknown, path: string, out: Sc
     validateIdentifier(source["id"], `${path}.id`, out);
   }
   if (source["status"] !== undefined) {
-    validateReasonText(source["status"], `${path}.status`, out);
+    validateBrowserLifecycleStatus(source["status"], `${path}.status`, out);
   }
   if (source["control_epoch"] !== undefined) {
     validateControlEpoch(source["control_epoch"], `${path}.control_epoch`, out);
@@ -2056,6 +2208,353 @@ export function validateBrowserTakeScreenshotInput(value: unknown, path: string,
 }
 
 /**
+ * Arguments of browser_session_start (docs/MCP_SPEC.md section 7.3). There is no project
+ * argument and no origin argument: the project is the session's, and the origin is derived
+ * from the published service by the control plane, because the origin is the browser's
+ * egress allow-list (docs/SECURITY.md section 9).
+ */
+export function validateBrowserSessionStartInput(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["published_service_id", "viewport", "idempotency_key"], ["idempotency_key"]);
+  if (source === null) return;
+  if (source["published_service_id"] !== undefined) {
+    validateIdentifier(source["published_service_id"], `${path}.published_service_id`, out);
+  }
+  if (source["viewport"] !== undefined) {
+    validateViewport(source["viewport"], `${path}.viewport`, out);
+  }
+  if (source["idempotency_key"] !== undefined) {
+    validateIdempotencyKey(source["idempotency_key"], `${path}.idempotency_key`, out);
+  }
+}
+
+/**
+ * Names one browser session and nothing else. A session in another project is reported not
+ * found, byte for byte as an unknown identifier is.
+ */
+export function validateBrowserSessionReferenceInput(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["browser_session_id"], ["browser_session_id"]);
+  if (source === null) return;
+  if (source["browser_session_id"] !== undefined) {
+    validateIdentifier(source["browser_session_id"], `${path}.browser_session_id`, out);
+  }
+}
+
+/**
+ * Names one browser session and the epoch the caller believes is current. The epoch is
+ * required on a lifecycle change for the same reason it is required on a command: pausing
+ * or ending a browser somebody else now controls is not a lesser act than clicking in it.
+ */
+export function validateBrowserSessionControlInput(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["browser_session_id", "control_epoch", "idempotency_key"], ["browser_session_id", "control_epoch", "idempotency_key"]);
+  if (source === null) return;
+  if (source["browser_session_id"] !== undefined) {
+    validateIdentifier(source["browser_session_id"], `${path}.browser_session_id`, out);
+  }
+  if (source["control_epoch"] !== undefined) {
+    validateControlEpoch(source["control_epoch"], `${path}.control_epoch`, out);
+  }
+  if (source["idempotency_key"] !== undefined) {
+    validateIdempotencyKey(source["idempotency_key"], `${path}.idempotency_key`, out);
+  }
+}
+
+/**
+ * Arguments of browser_navigate (docs/MCP_SPEC.md section 7.4).
+ */
+export function validateBrowserNavigateInput(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["browser_session_id", "control_epoch", "url", "wait_until", "timeout_ms"], ["browser_session_id", "control_epoch", "url"]);
+  if (source === null) return;
+  if (source["browser_session_id"] !== undefined) {
+    validateIdentifier(source["browser_session_id"], `${path}.browser_session_id`, out);
+  }
+  if (source["control_epoch"] !== undefined) {
+    validateControlEpoch(source["control_epoch"], `${path}.control_epoch`, out);
+  }
+  if (source["url"] !== undefined) {
+    validateNavigationTarget(source["url"], `${path}.url`, out);
+  }
+  if (source["wait_until"] !== undefined) {
+    validateWaitUntil(source["wait_until"], `${path}.wait_until`, out);
+  }
+  if (source["timeout_ms"] !== undefined) {
+    validateCommandTimeoutMs(source["timeout_ms"], `${path}.timeout_ms`, out);
+  }
+}
+
+/**
+ * Largest number of elements to describe, clamped to the session's own limit.
+ */
+export function validateBrowserSnapshotInputMaxNodes(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 1, maximum: 500 });
+}
+
+/**
+ * Largest rendered snapshot to return before truncation, clamped to the session's own
+ * limit.
+ */
+export function validateBrowserSnapshotInputMaxBytes(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 1024, maximum: 65536 });
+}
+
+/**
+ * Arguments of browser_snapshot (docs/MCP_SPEC.md sections 7.4 and 13).
+ */
+export function validateBrowserSnapshotInput(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["browser_session_id", "control_epoch", "max_nodes", "max_bytes", "timeout_ms"], ["browser_session_id", "control_epoch"]);
+  if (source === null) return;
+  if (source["browser_session_id"] !== undefined) {
+    validateIdentifier(source["browser_session_id"], `${path}.browser_session_id`, out);
+  }
+  if (source["control_epoch"] !== undefined) {
+    validateControlEpoch(source["control_epoch"], `${path}.control_epoch`, out);
+  }
+  if (source["max_nodes"] !== undefined) {
+    validateBrowserSnapshotInputMaxNodes(source["max_nodes"], `${path}.max_nodes`, out);
+  }
+  if (source["max_bytes"] !== undefined) {
+    validateBrowserSnapshotInputMaxBytes(source["max_bytes"], `${path}.max_bytes`, out);
+  }
+  if (source["timeout_ms"] !== undefined) {
+    validateCommandTimeoutMs(source["timeout_ms"], `${path}.timeout_ms`, out);
+  }
+}
+
+/**
+ * Arguments of a tool that acts on one element of the current snapshot. The reference
+ * names the snapshot that issued it, so a reference from a superseded snapshot fails
+ * rather than acting on whatever now occupies that position.
+ */
+export function validateBrowserElementInput(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["browser_session_id", "control_epoch", "snapshot_id", "ref", "timeout_ms"], ["browser_session_id", "control_epoch", "snapshot_id", "ref"]);
+  if (source === null) return;
+  if (source["browser_session_id"] !== undefined) {
+    validateIdentifier(source["browser_session_id"], `${path}.browser_session_id`, out);
+  }
+  if (source["control_epoch"] !== undefined) {
+    validateControlEpoch(source["control_epoch"], `${path}.control_epoch`, out);
+  }
+  if (source["snapshot_id"] !== undefined) {
+    validateIdentifier(source["snapshot_id"], `${path}.snapshot_id`, out);
+  }
+  if (source["ref"] !== undefined) {
+    validateElementReference(source["ref"], `${path}.ref`, out);
+  }
+  if (source["timeout_ms"] !== undefined) {
+    validateCommandTimeoutMs(source["timeout_ms"], `${path}.timeout_ms`, out);
+  }
+}
+
+/**
+ * Whether to press Enter after typing.
+ */
+export function validateBrowserTypeInputSubmit(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * Arguments of browser_type. Secret values MUST NOT be supplied here (docs/MCP_SPEC.md
+ * sections 7.4 and 7.9); the server refuses a value flagged as secret material with
+ * POLICY_DENIED, and the schema cannot make that judgement for it because a secret is a
+ * fact about provenance rather than about shape.
+ */
+export function validateBrowserTypeInput(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["browser_session_id", "control_epoch", "snapshot_id", "ref", "text", "submit", "timeout_ms"], ["browser_session_id", "control_epoch", "snapshot_id", "ref", "text"]);
+  if (source === null) return;
+  if (source["browser_session_id"] !== undefined) {
+    validateIdentifier(source["browser_session_id"], `${path}.browser_session_id`, out);
+  }
+  if (source["control_epoch"] !== undefined) {
+    validateControlEpoch(source["control_epoch"], `${path}.control_epoch`, out);
+  }
+  if (source["snapshot_id"] !== undefined) {
+    validateIdentifier(source["snapshot_id"], `${path}.snapshot_id`, out);
+  }
+  if (source["ref"] !== undefined) {
+    validateElementReference(source["ref"], `${path}.ref`, out);
+  }
+  if (source["text"] !== undefined) {
+    validateTypedText(source["text"], `${path}.text`, out);
+  }
+  if (source["submit"] !== undefined) {
+    validateBrowserTypeInputSubmit(source["submit"], `${path}.submit`, out);
+  }
+  if (source["timeout_ms"] !== undefined) {
+    validateCommandTimeoutMs(source["timeout_ms"], `${path}.timeout_ms`, out);
+  }
+}
+
+/**
+ * Option values to select.
+ */
+export function validateBrowserSelectOptionInputValues(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 1, maxItems: 32, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateOptionValue(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Arguments of browser_select_option.
+ */
+export function validateBrowserSelectOptionInput(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["browser_session_id", "control_epoch", "snapshot_id", "ref", "values", "timeout_ms"], ["browser_session_id", "control_epoch", "snapshot_id", "ref", "values"]);
+  if (source === null) return;
+  if (source["browser_session_id"] !== undefined) {
+    validateIdentifier(source["browser_session_id"], `${path}.browser_session_id`, out);
+  }
+  if (source["control_epoch"] !== undefined) {
+    validateControlEpoch(source["control_epoch"], `${path}.control_epoch`, out);
+  }
+  if (source["snapshot_id"] !== undefined) {
+    validateIdentifier(source["snapshot_id"], `${path}.snapshot_id`, out);
+  }
+  if (source["ref"] !== undefined) {
+    validateElementReference(source["ref"], `${path}.ref`, out);
+  }
+  if (source["values"] !== undefined) {
+    validateBrowserSelectOptionInputValues(source["values"], `${path}.values`, out);
+  }
+  if (source["timeout_ms"] !== undefined) {
+    validateCommandTimeoutMs(source["timeout_ms"], `${path}.timeout_ms`, out);
+  }
+}
+
+/**
+ * Arguments of browser_press_key. The key vocabulary is closed, so a shortcut the product
+ * does not support is refused by the schema rather than passed to Chromium to interpret.
+ */
+export function validateBrowserPressKeyInput(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["browser_session_id", "control_epoch", "key", "snapshot_id", "ref", "timeout_ms"], ["browser_session_id", "control_epoch", "key"]);
+  if (source === null) return;
+  if (source["browser_session_id"] !== undefined) {
+    validateIdentifier(source["browser_session_id"], `${path}.browser_session_id`, out);
+  }
+  if (source["control_epoch"] !== undefined) {
+    validateControlEpoch(source["control_epoch"], `${path}.control_epoch`, out);
+  }
+  if (source["key"] !== undefined) {
+    validateKeyName(source["key"], `${path}.key`, out);
+  }
+  if (source["snapshot_id"] !== undefined) {
+    validateIdentifier(source["snapshot_id"], `${path}.snapshot_id`, out);
+  }
+  if (source["ref"] !== undefined) {
+    validateElementReference(source["ref"], `${path}.ref`, out);
+  }
+  if (source["timeout_ms"] !== undefined) {
+    validateCommandTimeoutMs(source["timeout_ms"], `${path}.timeout_ms`, out);
+  }
+}
+
+/**
+ * Distance in CSS pixels.
+ */
+export function validateBrowserScrollInputAmountPx(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 1, maximum: 100000 });
+}
+
+/**
+ * Arguments of browser_scroll.
+ */
+export function validateBrowserScrollInput(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["browser_session_id", "control_epoch", "direction", "amount_px", "snapshot_id", "ref", "timeout_ms"], ["browser_session_id", "control_epoch", "direction", "amount_px"]);
+  if (source === null) return;
+  if (source["browser_session_id"] !== undefined) {
+    validateIdentifier(source["browser_session_id"], `${path}.browser_session_id`, out);
+  }
+  if (source["control_epoch"] !== undefined) {
+    validateControlEpoch(source["control_epoch"], `${path}.control_epoch`, out);
+  }
+  if (source["direction"] !== undefined) {
+    validateScrollDirection(source["direction"], `${path}.direction`, out);
+  }
+  if (source["amount_px"] !== undefined) {
+    validateBrowserScrollInputAmountPx(source["amount_px"], `${path}.amount_px`, out);
+  }
+  if (source["snapshot_id"] !== undefined) {
+    validateIdentifier(source["snapshot_id"], `${path}.snapshot_id`, out);
+  }
+  if (source["ref"] !== undefined) {
+    validateElementReference(source["ref"], `${path}.ref`, out);
+  }
+  if (source["timeout_ms"] !== undefined) {
+    validateCommandTimeoutMs(source["timeout_ms"], `${path}.timeout_ms`, out);
+  }
+}
+
+/**
+ * Arguments of browser_resize. Section 7.4 requires a resize to produce a new snapshot and
+ * invalidate every outstanding element reference, so the result carries the replacement
+ * rather than the agent being told to guess.
+ */
+export function validateBrowserResizeInput(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["browser_session_id", "control_epoch", "viewport", "timeout_ms"], ["browser_session_id", "control_epoch", "viewport"]);
+  if (source === null) return;
+  if (source["browser_session_id"] !== undefined) {
+    validateIdentifier(source["browser_session_id"], `${path}.browser_session_id`, out);
+  }
+  if (source["control_epoch"] !== undefined) {
+    validateControlEpoch(source["control_epoch"], `${path}.control_epoch`, out);
+  }
+  if (source["viewport"] !== undefined) {
+    validateViewport(source["viewport"], `${path}.viewport`, out);
+  }
+  if (source["timeout_ms"] !== undefined) {
+    validateCommandTimeoutMs(source["timeout_ms"], `${path}.timeout_ms`, out);
+  }
+}
+
+/**
+ * Arguments of browser_wait. Every condition is bounded and each is defined by exactly one
+ * target, so a contradictory request is refused rather than resolved by precedence.
+ */
+export function validateBrowserWaitInput(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["browser_session_id", "control_epoch", "condition", "url_pattern", "selector", "text", "timeout_ms"], ["browser_session_id", "control_epoch", "condition"]);
+  if (source === null) return;
+  if (source["browser_session_id"] !== undefined) {
+    validateIdentifier(source["browser_session_id"], `${path}.browser_session_id`, out);
+  }
+  if (source["control_epoch"] !== undefined) {
+    validateControlEpoch(source["control_epoch"], `${path}.control_epoch`, out);
+  }
+  if (source["condition"] !== undefined) {
+    validateWaitCondition(source["condition"], `${path}.condition`, out);
+  }
+  if (source["url_pattern"] !== undefined) {
+    validateUrlPattern(source["url_pattern"], `${path}.url_pattern`, out);
+  }
+  if (source["selector"] !== undefined) {
+    validateSelector(source["selector"], `${path}.selector`, out);
+  }
+  if (source["text"] !== undefined) {
+    validateCapturedText(source["text"], `${path}.text`, out);
+  }
+  if (source["timeout_ms"] !== undefined) {
+    validateCommandTimeoutMs(source["timeout_ms"], `${path}.timeout_ms`, out);
+  }
+  if (matchesCondition(source["condition"], ["url_matches"])) {
+    requireProperty(source, path, "url_pattern", "a url_matches condition is defined by its pattern alone", out);
+    forbidProperty(source, path, "selector", "a url_matches condition is defined by its pattern alone", out);
+    forbidProperty(source, path, "text", "a url_matches condition is defined by its pattern alone", out);
+  }
+  if (matchesCondition(source["condition"], ["selector_visible", "selector_hidden"])) {
+    requireProperty(source, path, "selector", "a selector condition is defined by its selector alone", out);
+    forbidProperty(source, path, "url_pattern", "a selector condition is defined by its selector alone", out);
+    forbidProperty(source, path, "text", "a selector condition is defined by its selector alone", out);
+  }
+  if (matchesCondition(source["condition"], ["text_visible"])) {
+    requireProperty(source, path, "text", "a text condition is defined by its text alone", out);
+    forbidProperty(source, path, "url_pattern", "a text condition is defined by its text alone", out);
+    forbidProperty(source, path, "selector", "a text condition is defined by its text alone", out);
+  }
+  if (matchesCondition(source["condition"], ["network_idle"])) {
+    forbidProperty(source, path, "url_pattern", "network idleness has no target", out);
+    forbidProperty(source, path, "selector", "network idleness has no target", out);
+    forbidProperty(source, path, "text", "network idleness has no target", out);
+  }
+}
+
+/**
  * Payload of project_current.
  */
 export function validateProjectCurrentResult(value: unknown, path: string, out: SchemaViolation[]): void {
@@ -2428,6 +2927,221 @@ export function validateFindingSubmitVerificationResult(value: unknown, path: st
 }
 
 /**
+ * Controller kind. Stage 1 issues interactive leases to agent and system controllers;
+ * human is present because ADR-0007 fixes the vocabulary and Stage 2 adds the controller
+ * rather than the model.
+ */
+export function validateBrowserControllerType(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["agent","human","system"] });
+}
+
+/**
+ * The controller holding the interactive lease of a browser session (docs/DOMAIN_MODEL.md
+ * section 13).
+ */
+export function validateBrowserController(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["type", "id"], ["type", "id"]);
+  if (source === null) return;
+  if (source["type"] !== undefined) {
+    validateBrowserControllerType(source["type"], `${path}.type`, out);
+  }
+  if (source["id"] !== undefined) {
+    validateIdentifier(source["id"], `${path}.id`, out);
+  }
+}
+
+/**
+ * Browser engine. ADR-0001 fixes Chromium.
+ */
+export function validateBrowserSessionDetailBrowserType(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["chromium"] });
+}
+
+/**
+ * Whether a human can watch this session. Live frames are never persisted (ADR-0009).
+ */
+export function validateBrowserSessionDetailLiveViewAvailable(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * One browser session as an agent sees it (docs/DOMAIN_MODEL.md section 12). It carries no
+ * capability and no origin credential: the route capability is minted by the control plane
+ * and never leaves it.
+ */
+export function validateBrowserSessionDetail(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["browser_session_id", "status", "control_epoch", "current_controller", "viewport", "browser_type", "browser_version", "published_service_id", "service_origin", "url", "live_view_available", "created_at", "ended_at"], ["browser_session_id", "status", "control_epoch", "viewport", "live_view_available"]);
+  if (source === null) return;
+  if (source["browser_session_id"] !== undefined) {
+    validateIdentifier(source["browser_session_id"], `${path}.browser_session_id`, out);
+  }
+  if (source["status"] !== undefined) {
+    validateBrowserLifecycleStatus(source["status"], `${path}.status`, out);
+  }
+  if (source["control_epoch"] !== undefined) {
+    validateControlEpoch(source["control_epoch"], `${path}.control_epoch`, out);
+  }
+  if (source["current_controller"] !== undefined) {
+    validateBrowserController(source["current_controller"], `${path}.current_controller`, out);
+  }
+  if (source["viewport"] !== undefined) {
+    validateViewport(source["viewport"], `${path}.viewport`, out);
+  }
+  if (source["browser_type"] !== undefined) {
+    validateBrowserSessionDetailBrowserType(source["browser_type"], `${path}.browser_type`, out);
+  }
+  if (source["browser_version"] !== undefined) {
+    validateClientVersion(source["browser_version"], `${path}.browser_version`, out);
+  }
+  if (source["published_service_id"] !== undefined) {
+    validateIdentifier(source["published_service_id"], `${path}.published_service_id`, out);
+  }
+  if (source["service_origin"] !== undefined) {
+    validateCapturedUrl(source["service_origin"], `${path}.service_origin`, out);
+  }
+  if (source["url"] !== undefined) {
+    validateCapturedUrl(source["url"], `${path}.url`, out);
+  }
+  if (source["live_view_available"] !== undefined) {
+    validateBrowserSessionDetailLiveViewAvailable(source["live_view_available"], `${path}.live_view_available`, out);
+  }
+  if (source["created_at"] !== undefined) {
+    validateTimestamp(source["created_at"], `${path}.created_at`, out);
+  }
+  if (source["ended_at"] !== undefined) {
+    validateTimestamp(source["ended_at"], `${path}.ended_at`, out);
+  }
+}
+
+/**
+ * Payload of every browser lifecycle tool (docs/MCP_SPEC.md section 7.3). One shape for
+ * all five, because an agent that has started, paused, resumed or ended a session needs
+ * the same facts afterwards.
+ */
+export function validateBrowserSessionResult(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["session"], ["session"]);
+  if (source === null) return;
+  if (source["session"] !== undefined) {
+    validateBrowserSessionDetail(source["session"], `${path}.session`, out);
+  }
+}
+
+/**
+ * Number of elements described.
+ */
+export function validateBrowserSnapshotViewNodeCount(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 0, maximum: 500 });
+}
+
+/**
+ * Whether the page had more content than the bounds allowed. A truncated snapshot is a
+ * summary, never a whole-page dump.
+ */
+export function validateBrowserSnapshotViewTruncated(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * A bounded accessibility snapshot (docs/MCP_SPEC.md sections 7.4 and 13). Page-derived
+ * throughout, so any response carrying one is labelled untrusted_browser_content.
+ */
+export function validateBrowserSnapshotView(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["snapshot_id", "viewport", "node_count", "truncated", "text"], ["snapshot_id", "viewport", "node_count", "truncated", "text"]);
+  if (source === null) return;
+  if (source["snapshot_id"] !== undefined) {
+    validateIdentifier(source["snapshot_id"], `${path}.snapshot_id`, out);
+  }
+  if (source["viewport"] !== undefined) {
+    validateViewport(source["viewport"], `${path}.viewport`, out);
+  }
+  if (source["node_count"] !== undefined) {
+    validateBrowserSnapshotViewNodeCount(source["node_count"], `${path}.node_count`, out);
+  }
+  if (source["truncated"] !== undefined) {
+    validateBrowserSnapshotViewTruncated(source["truncated"], `${path}.truncated`, out);
+  }
+  if (source["text"] !== undefined) {
+    validateSnapshotText(source["text"], `${path}.text`, out);
+  }
+}
+
+/**
+ * Status of the main document response.
+ */
+export function validateBrowserNavigationViewHttpStatus(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 100, maximum: 599 });
+}
+
+/**
+ * Whether the browser settled on a different URL than requested.
+ */
+export function validateBrowserNavigationViewRedirected(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * Outcome of a navigation. Every member is page-derived and therefore untrusted.
+ */
+export function validateBrowserNavigationView(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["url", "http_status", "redirected", "title"], ["url", "redirected", "title"]);
+  if (source === null) return;
+  if (source["url"] !== undefined) {
+    validateCapturedUrl(source["url"], `${path}.url`, out);
+  }
+  if (source["http_status"] !== undefined) {
+    validateBrowserNavigationViewHttpStatus(source["http_status"], `${path}.http_status`, out);
+  }
+  if (source["redirected"] !== undefined) {
+    validateBrowserNavigationViewRedirected(source["redirected"], `${path}.redirected`, out);
+  }
+  if (source["title"] !== undefined) {
+    validateCapturedText(source["title"], `${path}.title`, out);
+  }
+}
+
+/**
+ * How long the command took.
+ */
+export function validateBrowserInteractionResultDurationMs(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 0, maximum: 600000 });
+}
+
+/**
+ * Payload of every browser interaction tool (docs/MCP_SPEC.md section 7.4). It always
+ * names the session, the command and the epoch the command actually ran under, so an agent
+ * can tell a result it asked for from one it inherited. Anything page-derived it carries —
+ * a navigation, a snapshot — obliges the untrusted label on the envelope (ADR-0010). A
+ * snapshot is returned in the rendered form of section 7.4 and not also as an array: the
+ * rendered form already names every element's reference, role and name, and a parallel
+ * array would double the bytes of the most page-derived response the product has.
+ */
+export function validateBrowserInteractionResult(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["browser_session_id", "command", "control_epoch", "duration_ms", "viewport", "navigation", "snapshot"], ["browser_session_id", "command", "control_epoch", "duration_ms"]);
+  if (source === null) return;
+  if (source["browser_session_id"] !== undefined) {
+    validateIdentifier(source["browser_session_id"], `${path}.browser_session_id`, out);
+  }
+  if (source["command"] !== undefined) {
+    validateBrowserCommandName(source["command"], `${path}.command`, out);
+  }
+  if (source["control_epoch"] !== undefined) {
+    validateControlEpoch(source["control_epoch"], `${path}.control_epoch`, out);
+  }
+  if (source["duration_ms"] !== undefined) {
+    validateBrowserInteractionResultDurationMs(source["duration_ms"], `${path}.duration_ms`, out);
+  }
+  if (source["viewport"] !== undefined) {
+    validateViewport(source["viewport"], `${path}.viewport`, out);
+  }
+  if (source["navigation"] !== undefined) {
+    validateBrowserNavigationView(source["navigation"], `${path}.navigation`, out);
+  }
+  if (source["snapshot"] !== undefined) {
+    validateBrowserSnapshotView(source["snapshot"], `${path}.snapshot`, out);
+  }
+}
+
+/**
  * Whether the whole document was captured.
  */
 export function validateBrowserTakeScreenshotResultFullPage(value: unknown, path: string, out: SchemaViolation[]): void {
@@ -2594,14 +3308,14 @@ export function validateEnvelope(value: unknown, path: string, out: SchemaViolat
  * public internet.
  */
 export function validateDevelopmentServiceViewInternalOrigin(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 256, pattern: PATTERN_17 });
+  checkString(value, path, out, { minLength: 1, maxLength: 256, pattern: PATTERN_22 });
 }
 
 /**
  * Destination the connector reported it opened. Absent until the route is ready.
  */
 export function validateDevelopmentServiceViewObservedDestination(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 3, maxLength: 64, pattern: PATTERN_18 });
+  checkString(value, path, out, { minLength: 3, maxLength: 64, pattern: PATTERN_23 });
 }
 
 /**

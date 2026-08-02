@@ -282,6 +282,42 @@ not allowed.
 
 Browser workers use dedicated identities. A worker may only receive sessions compatible with its labels, policy and organisation assignment.
 
+The assignment is a **project set an administrator holds**, and there is no
+wildcard: "not yet assigned" means "serves nothing". The control plane keeps the
+authority — allocation is refused against its record before the worker is
+contacted, and refused again by the worker on arrival — and the worker's copy is
+a cache.
+
+**That cache is refreshed on every heartbeat** (ADR-0026), so the staleness of an
+assignment is bounded by one heartbeat interval, 15 seconds by default. Before
+RVP-30 it was delivered once at registration and never again, which meant a
+project an administrator *unassigned* went on being served until the worker
+process restarted: "restricted to its assigned projects" described the worker's
+startup rather than its behaviour. The acknowledgement restates the whole set
+rather than describing a change, so a worker that missed one converges on the
+next.
+
+A heartbeat the control plane could not answer leaves the assignment as it was.
+Losing an answer is not being told the set is empty, and treating the two alike
+would take a working worker out of service every time the control plane
+restarted — in the name of a property a control plane in that state cannot be
+enforcing anyway.
+
+**A revocation ends the sessions it covered.** Every browser session the worker
+is running for a removed project is terminated, not left to finish: a session is a
+live window into a development machine held open by an authorisation that has
+just been withdrawn, and letting it run to its duration limit would make the
+withdrawal take up to two hours to become true. Evidence already uploaded is
+untouched — it belongs to the artefact store and to the review, not to the
+session.
+
+A worker that has stopped heartbeating past the thresholds of `OPERATIONS.md`
+§8.1 is moved out of the schedulable pool, and a `lost` or `revoked` worker's
+credential no longer resolves at all: it may not report a session status or
+upload evidence, because the control plane has already concluded it is not there.
+A `degraded` worker's credential still resolves — being late is not being gone,
+and refusing its heartbeat would be the one action that could not recover it.
+
 ## 7. Authorisation
 
 Every request must be authorised using:
@@ -389,6 +425,73 @@ Required checks:
 - Command is permitted by policy
 - Target route is associated with session
 
+#### How the checks are applied
+
+All six run **in the control plane, before the command is sent to the worker**
+(ADR-0028). They are one function over gathered facts
+(`apps/server/src/modules/browser-sessions/authorisation.ts`), and the actor's
+project is a required argument of the operation rather than a precondition each
+caller is trusted to have applied. The Stage 1 exit criterion is about commands,
+not about call sites: a rule enforced by every caller is a rule a new caller can
+omit.
+
+The worker applies its own checks again on arrival. Both are wanted, and neither
+is sufficient alone. The worker is what protects the browser if a command ever
+reaches it by another path; the control plane is the only layer that can see the
+*route*, because the worker's egress policy is fixed when its context is created
+and §10 forbids widening it afterwards — so a route that has been revoked, has
+expired, or no longer names this session is invisible to the worker while its
+origin still resolves.
+
+**No route on this surface accepts an actor identity in a request body.** The controller a command is attributed
+to comes from the authenticated principal: a human acts as the `system`
+controller bound to their session, and an agent acts as its own agent session. A
+controller supplied in a request body is a claim *about* the actor rather than
+the actor, and it would satisfy the ownership check by naming its owner; a body
+carrying one is refused rather than ignored. `API.md` §11 documented such a field
+until RVP-30 and no longer does.
+
+That holds for **every** route, including session creation, where the case is
+weakest — no session exists yet and the creator has authority over what it
+creates — and including `control/request`, where a caller-named `controller_id`
+let a project member plant a lease owned by an identity that does not exist. A
+rule with one documented exception is a rule nobody can apply without checking,
+and the exception is where the next defect lives. An agent acts under its own
+identity because the MCP server derives it from the credential behind the
+connection, not because a body named it.
+
+**The epoch is compared before lease ownership**, which is the reverse of the
+order the list is written in. Both refuse the same commands; the difference is
+only which refusal a superseded controller receives, and a controller whose lease
+was taken holds a stale epoch *and* no lease. `CONTROL_EPOCH_STALE` carries the
+epoch that is current and so says what to do next, while `CONTROL_NOT_OWNED` does
+not. It is also the order the worker applies, and two layers that disagreed would
+make the audit record depend on which layer caught the command. The list above is
+a set of required checks, not a required sequence.
+
+**A pause is one of these checks, not a separate mechanism.** A `PAUSED` session
+refuses interactive commands and admits non-interactive system capture
+(`MCP_SPEC.md` §7.3), so the state check and the interactivity of the command are
+decided together. The worker is not told a session is paused: the lifecycle
+belongs to the control plane, and a worker holding its own pause flag would be a
+second authority for one question.
+
+**Every refusal is recorded** as `browser.command_rejected`, with its stable
+code, a reason token, the presented epoch and the presented controller type, and
+never the command's arguments. That includes a refused **lifecycle act** — a
+pause, resume, end, control request or control release — under the same event
+type with `kind: "lifecycle"`. See §8 and `EVENTS.md` §7.
+
+**A lifecycle act is authorised by the same matrix**, and its two authority
+inputs come from the same places a command's do: the controller from the
+authenticated caller, the epoch from the request. Neither may be defaulted from
+the session record. A route that read either out of the record it was about to
+authorise against would be comparing the record to itself, so the ownership and
+epoch checks would pass for anybody who could reach the route — and would keep
+passing every test that supplied those arguments explicitly. Four routes did
+exactly this until the adversarial review of RVP-30, and the audit record was
+wrong in the same way: it named the displaced controller as the actor.
+
 ## 8. Control-lease security
 
 - Every controller transition increments the epoch
@@ -398,6 +501,40 @@ Required checks:
 - Takeover revokes agent input before human input begins
 - Hand-back captures a fresh browser snapshot
 - Unexpected controller disconnect triggers bounded grace and then revocation
+
+### How the lease rules are applied
+
+- **Transfer and release both increment the epoch**, in the same transaction
+  that revokes the outstanding lease and writes the new one, so a lease can never
+  exist at an epoch the session does not carry. Release increments too: after a
+  release nobody holds the lease, and a command still carrying the released epoch
+  would otherwise pass the epoch check and be refused only by the weaker
+  ownership check.
+- **Re-requesting control the caller already holds is idempotent and does not
+  increment.** `TESTING.md` §5 requires duplicate control commands to be
+  idempotent, and an increment there would refuse every command the caller had
+  already prepared.
+- **Expiry is enforced.** `control_leases.expires_at` is swept by the
+  reconciliation of `OPERATIONS.md` §9 and the lease is revoked when it passes.
+  Expiry does **not** move the epoch: the epoch moves when a controller changes,
+  and an expiry is nobody taking control.
+- **Stage 1 issues interactive leases to `agent` and `system` controllers only.**
+  `POST control/request` with `controller_type: human` is refused with
+  `UNSUPPORTED_CAPABILITY` until takeover arrives in Stage 2, and the refused
+  request is still audited as `browser.control_requested` with `granted: false` —
+  a refused takeover is exactly the attempt an auditor goes looking for.
+- **A controller identity is never accepted from a request.** `controller_id`
+  on `control/request` let any project member plant a lease owned by an identity
+  that does not exist and revoke the incumbent's as a side effect, because
+  taking control revokes what it supersedes. The control plane derives the
+  identity from the caller, and a human may not request control on an agent's
+  behalf.
+- **Reclaiming is a transfer, not a bypass.** A human who needs to pause or end
+  a session an agent holds takes control first, as the `system` controller.
+  That moves the epoch, so the incumbent's in-flight commands are refused with
+  `CONTROL_EPOCH_STALE` rather than silently overtaken, and
+  `browser.control_transferred` records it. The lifecycle routes themselves
+  refuse a non-owner with `CONTROL_NOT_OWNED`.
 
 ## 9. Tunnel security
 
@@ -570,6 +707,34 @@ Supported patterns may include:
 - Add an HTTP header in a scoped route
 
 The agent receives success or failure, not the raw value.
+
+### 12.3.1 Stage 1 has no injection path, so typing a secret is refused
+
+None of the patterns above is implemented yet: there is no secret store, no
+`secret_inject_browser` and no `secret_list_references` (`MCP_SPEC.md` §14.1),
+and `project_current` reports `policy.secret_tools_available: false` so an agent
+learns it without asking. There is therefore **no supported way to put a
+credential into a page**, which makes `MCP_SPEC.md` §7.4's "secret values must
+not be supplied through this tool" a rule with no escape hatch rather than a
+preference.
+
+A `browser_type` value matching a known credential shape is refused with
+`POLICY_DENIED` before it reaches the browser: a `rpa_` agent token, a bearer
+header pasted whole, a PEM private-key block, an AWS access key id, a GitHub
+token, or a `password=` / `api_key=` / `client_secret=`-style assignment. The
+refusal names **which shape** matched and never the value, so the refusal itself
+cannot put the credential into a response, a log line or an event.
+
+This is a guard rail on the rule, not a substitute for it, and the limits are
+stated rather than left to be discovered:
+
+- it matches on shape, so a password that looks like an ordinary word passes;
+- it is applied in the control plane, which means the control plane inspects the
+  typed text. It is not logged, not echoed and not stored — but a deployment that
+  wanted the control plane never to see typed text cannot have that and this
+  check at once;
+- it does not apply to text a page itself contains, only to text an actor asked
+  to type.
 
 ### 12.4 Redaction
 

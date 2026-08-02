@@ -29,15 +29,30 @@
 
 import { randomUUID } from "node:crypto";
 
-import type { BrowserCommand, ControllerIdentity } from "@reviewplane/protocol/browser";
+import type {
+  BrowserCommand,
+  BrowserCommandResult,
+  ControllerIdentity,
+  KeyName,
+  ScrollDirection,
+  WaitCondition,
+  WaitUntil,
+} from "@reviewplane/protocol/browser";
 import {
   MESSAGE_TYPE_VALUES,
+  PAYLOAD_MAX_BYTES,
   type AgentCapability,
   type ArtefactLink,
+  type BrowserCommandName,
+  type BrowserInteractionResult,
+  type BrowserNavigationView,
+  type BrowserSessionDetail,
+  type BrowserSnapshotView,
   type FindingView,
   type MessageType,
   type SchemaViolation,
   type TrustLabel,
+  type Viewport,
 } from "@reviewplane/protocol/mcp";
 import {
   validateAgentInboxAcknowledgeInput,
@@ -46,7 +61,19 @@ import {
   validateDevelopmentServicePublishInput,
   validateDevelopmentServiceUnpublishInput,
   validateDevelopmentServicesListInput,
+  validateBrowserElementInput,
+  validateBrowserNavigateInput,
+  validateBrowserPressKeyInput,
+  validateBrowserResizeInput,
+  validateBrowserScrollInput,
+  validateBrowserSelectOptionInput,
+  validateBrowserSessionControlInput,
+  validateBrowserSessionReferenceInput,
+  validateBrowserSessionStartInput,
+  validateBrowserSnapshotInput,
   validateBrowserTakeScreenshotInput,
+  validateBrowserTypeInput,
+  validateBrowserWaitInput,
   validateFindingAddCommentInput,
   validateFindingClaimInput,
   validateFindingGetInput,
@@ -71,6 +98,7 @@ import {
   assuranceFor,
   missingEvidence,
   nextActions,
+  type BrowserSessionRecord,
   type CompletionRequirements,
   type ErrorCode,
   type EvidenceAssurance,
@@ -125,7 +153,20 @@ interface ToolDefinition {
   readonly name: MessageType;
   readonly title: string;
   readonly capability: AgentCapability;
-  /** Whether the tool writes. A writing tool requires an idempotency key. */
+  /**
+   * Whether the tool writes a durable record. Such a tool requires an
+   * idempotency key, claimed before the work runs, so a retry produces one
+   * record rather than two.
+   *
+   * The browser interaction tools of `docs/MCP_SPEC.md` §7.4 are `false` and it
+   * is not an oversight: they change a browser rather than a record, and their
+   * schemas declare no key. A key is what makes a retry return the *first*
+   * result, and there is no honest first result to return — the page has
+   * already moved, so replaying a stored answer would describe a page that no
+   * longer exists. `docs/MCP_SPEC.md` §10 asks for a key "when retries can
+   * occur"; here a retry is a second click, and saying so is better than
+   * pretending the second one did not happen.
+   */
   readonly stateChanging: boolean;
   readonly validate: Validator;
   /**
@@ -142,6 +183,31 @@ interface ToolDefinition {
 
 /** Default bound for a browser command, inside the session's own maximum. */
 const SCREENSHOT_TIMEOUT_MS = 30000;
+
+/**
+ * Viewport a session starts at when the caller names none.
+ *
+ * The first of `AGENTS.md` "Browser-facing work". A default that was not one of
+ * the required validation viewports would produce evidence at a size nobody
+ * asked to be checked.
+ */
+const DEFAULT_VIEWPORT: Viewport = { width: 1440, height: 900, device_scale_factor: 1 };
+
+/** The rendered-snapshot bound of the MCP schema (`docs/MCP_SPEC.md` §13). */
+const SNAPSHOT_TEXT_MAX_CHARS = 32768;
+
+/**
+ * Share of an interaction tool's byte bound a rendered snapshot may occupy.
+ *
+ * The browser protocol lets a worker return 65536 characters and the MCP
+ * snapshot view permits 32768, but neither is the operative limit: the response
+ * bound is measured on the *encoded* payload, and a snapshot is newline-heavy,
+ * so JSON escaping can nearly double it. Bounding the text against the encoded
+ * size rather than the character count is what stops a legitimate page becoming
+ * a thrown `McpResponseEncodeError` — the failure mode `docs/MCP_SPEC.md` §13
+ * records as an outage with a byte count attached.
+ */
+const SNAPSHOT_TEXT_BUDGET = 0.75;
 
 function decode(validate: Validator, args: unknown): Record<string, unknown> {
   const violations: SchemaViolation[] = [];
@@ -249,6 +315,371 @@ async function findingWithLinks(
   const view = toFindingView(finding, context.views);
   const link = await toArtefactLink(finding.screenshot_artefact_id, role, context.views);
   return { view, link };
+}
+
+// ---------------------------------------------------------------- browser
+
+/**
+ * The browser session an argument named, when this agent session may act on it.
+ *
+ * `null` means the caller is not entitled to know: the identifier is unknown,
+ * or it names a session in another project. Both are `RESOURCE_NOT_FOUND`, and
+ * this deliberately does **not** raise it — the domain does. `runCommand`
+ * records a cross-project attempt against the **actor's** project stream with
+ * `cross_project: true`, and a refusal produced here first would leave exactly
+ * the attempt an auditor goes looking for unrecorded. The refusal the service
+ * raises is byte for byte the one an unknown identifier earns, so deferring
+ * costs the caller nothing.
+ *
+ * The ownership check is the one thing this layer must still do, and it runs
+ * **only after** the project matches. A session in another project that happens
+ * to belong to another agent session must not earn `AUTHORISATION_DENIED`: that
+ * answer says "it exists, but not for you", which is the enumeration
+ * `docs/API.md` §5 forbids.
+ */
+async function browserSessionIfPermitted(
+  browserSessionId: string,
+  context: ToolContext,
+): Promise<BrowserSessionRecord | null> {
+  const { connection, services } = context;
+  const record = await services.browserSessions.get(browserSessionId).catch(() => null);
+  if (record === null || record.project_id !== connection.project.id) return null;
+  if (record.agent_session_id !== null && record.agent_session_id !== connection.session.id) {
+    throw new ApiError(
+      "AUTHORISATION_DENIED",
+      "This browser session belongs to a different agent session.",
+    );
+  }
+  return record;
+}
+
+/**
+ * The same, for a tool with no domain call behind it to defer the refusal to.
+ *
+ * `browser_session_status` reads a record and answers; there is no command for
+ * the service to refuse and audit, so this layer raises the refusal itself, in
+ * the same words.
+ */
+async function requireBrowserSession(
+  browserSessionId: string,
+  context: ToolContext,
+): Promise<BrowserSessionRecord> {
+  const record = await browserSessionIfPermitted(browserSessionId, context);
+  if (record === null) throw new ApiError("RESOURCE_NOT_FOUND", "The browser session was not found.");
+  return record;
+}
+
+/** The controller an agent session acts as for an interactive command (ADR-0007). */
+function agentController(context: ToolContext): ControllerIdentity {
+  return { type: "agent", id: context.connection.session.id };
+}
+
+/**
+ * The controller a non-interactive capture is issued as.
+ *
+ * A snapshot and a screenshot are the two `system_capture_commands` of the
+ * browser protocol: `docs/SECURITY.md` §7 admits them without the interactive
+ * lease, and `docs/TESTING.md` §5 requires that issuing one never transfers or
+ * revokes it. Presenting the *system* controller is what makes both true, and
+ * it is why a capture must not be issued as the lease holder — a tool that sent
+ * `record.current_controller` would be acting in the name of whoever holds the
+ * lease, which is impersonation whether or not the command is harmless.
+ *
+ * The identity is derived from the agent session so the audit trail still names
+ * who captured, and it is derived rather than accepted: no argument reaches it.
+ */
+function captureController(context: ToolContext): ControllerIdentity {
+  return { type: "system", id: `sys_${context.connection.session.id}` };
+}
+
+/**
+ * The bounds a command is built against when the session is not this caller's.
+ *
+ * Such a command is refused by the service before it is sent anywhere, so these
+ * numbers are never applied to a browser. They exist so that building the
+ * command does not require reading limits out of a record the caller may not
+ * see.
+ */
+const FOREIGN_SESSION_LIMITS = { default_timeout_ms: 30000, max_command_timeout_ms: 120000 };
+
+/**
+ * The bound one command runs under: the caller's, or the session's default,
+ * and never beyond the session's own maximum.
+ *
+ * Clamping rather than refusing is right here and wrong for a route lifetime
+ * (`docs/MCP_SPEC.md` §7.2 refuses an over-long TTL). A shortened route makes an
+ * agent believe it has access it does not have; a shortened command timeout
+ * makes it wait less than it asked and then read `BROWSER_COMMAND_TIMEOUT`,
+ * which is the truthful answer either way.
+ */
+function commandTimeout(
+  args: Record<string, unknown>,
+  limits: { readonly default_timeout_ms: number; readonly max_command_timeout_ms: number },
+): number {
+  const requested = (args["timeout_ms"] as number | undefined) ?? limits.default_timeout_ms;
+  return Math.min(Math.max(requested, 100), limits.max_command_timeout_ms);
+}
+
+/**
+ * The URL the control plane last saw this browser settle on.
+ *
+ * It is read from the event stream rather than from a column because the
+ * control plane keeps no such column: `browser_session.navigated` is written in
+ * the same transaction as the command that caused it (`docs/EVENTS.md` §9), so
+ * the timeline is the record. Nothing else would be — a second copy on the
+ * session row could disagree with the audit trail.
+ *
+ * The read is bounded, so a session that has issued more than 200 events since
+ * its last navigation reports no URL. Absent means "the control plane does not
+ * know", which is the honest answer; it never means "about:blank".
+ */
+async function lastNavigatedUrl(
+  record: BrowserSessionRecord,
+  context: ToolContext,
+): Promise<string | null> {
+  const timeline = await context.services.browserSessions.timeline(
+    record.id,
+    context.connection.project.id,
+    200,
+  );
+  for (const entry of timeline) {
+    if (entry.type !== "browser_session.navigated") continue;
+    const url = entry.payload["url"];
+    if (typeof url === "string" && url !== "") return url;
+  }
+  return null;
+}
+
+/**
+ * One browser session as an agent sees it.
+ *
+ * `includeUrl` is a deliberate per-tool decision rather than a convenience.
+ * The URL a browser settled on is page-derived, so a view carrying one obliges
+ * the untrusted label on the whole response (ADR-0010) — and the codec enforces
+ * that, refusing a `session.url` under a trusted label on the way out. Only
+ * `browser_session_status` asks for it, because §7.3 says that tool returns the
+ * URL; starting, pausing, resuming and ending a session are control-plane facts
+ * about a lease and a lifecycle, and labelling those four untrusted would tell
+ * an agent to distrust the epoch it has to present on its next command.
+ *
+ * The view carries no route capability and no origin credential. It carries the
+ * origin, which is the address, and never the bearer token that opens it: the
+ * capability is minted by the control plane and never leaves it
+ * (`docs/ARCHITECTURE.md` §7.3).
+ */
+async function toBrowserSessionView(
+  record: BrowserSessionRecord,
+  context: ToolContext,
+  options: { readonly includeUrl: boolean },
+): Promise<BrowserSessionDetail> {
+  const url = options.includeUrl ? await lastNavigatedUrl(record, context) : null;
+  const liveView =
+    context.connection.serverCapabilities.browser_live &&
+    record.ended_at === null &&
+    (record.status === "READY" || record.status === "ACTIVE" || record.status === "PAUSED");
+  return {
+    browser_session_id: record.id,
+    status: record.status,
+    control_epoch: record.control_epoch,
+    ...(record.current_controller === null
+      ? {}
+      : {
+          current_controller: {
+            type: record.current_controller.type,
+            id: record.current_controller.id,
+          },
+        }),
+    viewport: record.viewport,
+    // ADR-0001 fixes Chromium, and the schema's enumeration says so. A worker
+    // that reported anything else is omitted rather than asserted.
+    ...(record.browser_type === "chromium" ? { browser_type: "chromium" as const } : {}),
+    ...(record.browser_version === null ? {} : { browser_version: record.browser_version }),
+    ...(record.published_service_id === null
+      ? {}
+      : { published_service_id: record.published_service_id }),
+    ...(record.service_origin === null ? {} : { service_origin: record.service_origin }),
+    ...(url === null ? {} : { url }),
+    live_view_available: liveView,
+    created_at: record.created_at,
+    ...(record.ended_at === null ? {} : { ended_at: record.ended_at }),
+  };
+}
+
+/**
+ * Sends one command and converts a refused result into the refusal the agent
+ * reads.
+ *
+ * A `BrowserCommandResult` that reports `ok: false` is a completed exchange
+ * carrying a stable code, so it becomes an `ApiError` with that same code
+ * rather than a new one: a refusal that started at the worker reaches the agent
+ * without being renamed, which is the property the shared error enumeration
+ * exists for (`docs/MCP_SPEC.md` §12). `current_epoch` is carried across because
+ * `CONTROL_EPOCH_STALE` is useless without it.
+ */
+async function runBrowserCommand(
+  args: Record<string, unknown>,
+  context: ToolContext,
+  build: (limits: typeof FOREIGN_SESSION_LIMITS) => BrowserCommand,
+  controller: ControllerIdentity,
+): Promise<{
+  readonly result: BrowserCommandResult;
+  readonly controlEpoch: number;
+}> {
+  const { connection, services } = context;
+  const browserSessionId = args["browser_session_id"] as string;
+  const controlEpoch = args["control_epoch"] as number;
+  // `null` is a session this caller may not see. The command is built anyway
+  // and handed to the service, which refuses it and records the attempt; the
+  // bounds it is built with are never applied to a browser.
+  const record = await browserSessionIfPermitted(browserSessionId, context);
+  const result = await services.browserSessions.runCommand({
+    browserSessionId,
+    // The **actor's** project, never the session's. Passing the session's own
+    // would make the comparison inside the service compare a value with itself.
+    projectId: connection.project.id,
+    controller,
+    controlEpoch,
+    command: build(record?.limits ?? FOREIGN_SESSION_LIMITS),
+    actor: agentActor(connection.session, connection.client.name),
+  });
+  if (!result.ok) {
+    const error = result.error;
+    throw new ApiError(
+      (error?.code ?? "INTERNAL_ERROR") as ErrorCode,
+      error?.message ?? "The browser command did not complete.",
+      error?.current_epoch === undefined ? undefined : { current_epoch: error.current_epoch },
+    );
+  }
+  return { result, controlEpoch };
+}
+
+/**
+ * A worker's snapshot as the bounded, page-derived view an agent receives.
+ *
+ * The text is truncated against the encoded size and the truncation is
+ * *reported*: a snapshot that silently lost its second half would have an agent
+ * conclude an element is absent from a page that contains it.
+ */
+function toSnapshotView(
+  snapshot: NonNullable<BrowserCommandResult["snapshot"]>,
+  tool: MessageType,
+  context: ToolContext,
+): BrowserSnapshotView {
+  const budget = Math.floor(PAYLOAD_MAX_BYTES[tool] * SNAPSHOT_TEXT_BUDGET);
+  let text = snapshot.text.slice(0, SNAPSHOT_TEXT_MAX_CHARS);
+  let truncated = snapshot.truncated || text.length < snapshot.text.length;
+  while (text.length > 0 && Buffer.byteLength(JSON.stringify(text), "utf8") > budget) {
+    text = text.slice(0, Math.floor(text.length * 0.9));
+    truncated = true;
+  }
+  if (truncated && !snapshot.truncated) {
+    context.warnings.add(
+      "text_truncated",
+      "The page described more than this response may carry, so the snapshot is a summary.",
+      "Narrow the page, or ask for a smaller max_nodes and work through the page in parts.",
+    );
+  }
+  return {
+    snapshot_id: snapshot.snapshot_id,
+    viewport: snapshot.viewport,
+    node_count: snapshot.node_count,
+    truncated,
+    text,
+  };
+}
+
+function toNavigationView(
+  navigation: NonNullable<BrowserCommandResult["navigation"]>,
+): BrowserNavigationView {
+  return {
+    url: navigation.url,
+    ...(navigation.http_status === undefined ? {} : { http_status: navigation.http_status }),
+    redirected: navigation.redirected,
+    title: navigation.title,
+  };
+}
+
+/**
+ * The payload every interaction tool answers with.
+ *
+ * It always names the session, the command and the epoch the command ran under,
+ * so an agent can tell a result it asked for from one it inherited. The epoch
+ * reported is the one the caller presented rather than the one the worker
+ * echoed: the two are equal by construction, because a mismatch is refused
+ * before the command leaves the control plane, and the presented value is the
+ * one the schema bounds to a real epoch.
+ */
+function toInteractionResult(input: {
+  readonly tool: MessageType;
+  readonly command: BrowserCommandName;
+  readonly browserSessionId: string;
+  readonly controlEpoch: number;
+  readonly result: BrowserCommandResult;
+  readonly context: ToolContext;
+}): BrowserInteractionResult {
+  const { result } = input;
+  const viewport = result.viewport ?? result.snapshot?.viewport;
+  return {
+    browser_session_id: input.browserSessionId,
+    command: input.command,
+    control_epoch: input.controlEpoch,
+    duration_ms: result.duration_ms,
+    ...(viewport === undefined ? {} : { viewport }),
+    ...(result.navigation === undefined
+      ? {}
+      : { navigation: toNavigationView(result.navigation) }),
+    ...(result.snapshot === undefined
+      ? {}
+      : { snapshot: toSnapshotView(result.snapshot, input.tool, input.context) }),
+  };
+}
+
+/**
+ * The trust label an interaction response carries.
+ *
+ * Derived from what the result turned out to contain, not from which tool
+ * produced it: a click that returns only its own duration carries nothing from
+ * the page, and labelling it untrusted would make the label mean "a browser was
+ * involved" rather than "these bytes came from a page". The two exceptions are
+ * the tools whose entire purpose is to return page content — a navigation and a
+ * snapshot are untrusted whatever a worker returned, so an empty answer from
+ * one cannot be read as a trusted one.
+ */
+function interactionTrust(tool: MessageType, payload: BrowserInteractionResult): TrustLabel {
+  if (tool === "browser_navigate" || tool === "browser_snapshot") {
+    return "untrusted_browser_content";
+  }
+  return payload.navigation !== undefined || payload.snapshot !== undefined
+    ? "untrusted_browser_content"
+    : "trusted_control_plane";
+}
+
+/**
+ * The shared body of the interaction tools.
+ *
+ * `controller` is a parameter rather than a default because the choice is the
+ * security decision: the eight interactive commands are issued as the agent and
+ * require its lease, and a snapshot is issued as the system controller, which
+ * the matrix admits without the lease and which cannot take it away.
+ */
+async function interactionRun(
+  tool: MessageType,
+  command: BrowserCommandName,
+  args: Record<string, unknown>,
+  context: ToolContext,
+  build: (limits: typeof FOREIGN_SESSION_LIMITS) => BrowserCommand,
+  controller: ControllerIdentity,
+): Promise<ToolRun> {
+  const { result, controlEpoch } = await runBrowserCommand(args, context, build, controller);
+  const payload = toInteractionResult({
+    tool,
+    command,
+    browserSessionId: args["browser_session_id"] as string,
+    controlEpoch,
+    result,
+    context,
+  });
+  return { trust: interactionTrust(tool, payload), data: payload };
 }
 
 const TOOLS: readonly ToolDefinition[] = [
@@ -1093,23 +1524,15 @@ const TOOLS: readonly ToolDefinition[] = [
     async run(args, context) {
       const { connection, services } = context;
       const browserSessionId = args["browser_session_id"] as string;
-      const record = await services.browserSessions.get(browserSessionId).catch(() => null);
-      if (record === null || record.project_id !== connection.project.id) {
-        // Another project's session is not found rather than forbidden: a
-        // distinct refusal would confirm the identifier exists.
-        throw new ApiError("RESOURCE_NOT_FOUND", "The browser session was not found.");
-      }
-      if (record.agent_session_id !== null && record.agent_session_id !== connection.session.id) {
-        throw new ApiError(
-          "AUTHORISATION_DENIED",
-          "This browser session belongs to a different agent session.",
-        );
-      }
+      await browserSessionIfPermitted(browserSessionId, context);
 
-      const controller: ControllerIdentity = record.current_controller ?? {
-        type: "agent",
-        id: connection.session.id,
-      };
+      // A capture is a system command, issued as the system controller. It used
+      // to be issued as `record.current_controller`, which is to say in the name
+      // of whoever held the interactive lease — impersonation, and unnecessary:
+      // `take_screenshot` is one of the browser protocol's two
+      // `system_capture_commands`, so the matrix admits it without the lease and
+      // issuing it can never transfer one (`docs/TESTING.md` §5).
+      const controller = captureController(context);
       const command: BrowserCommand = {
         command: "take_screenshot",
         timeout_ms: SCREENSHOT_TIMEOUT_MS,
@@ -1123,6 +1546,7 @@ const TOOLS: readonly ToolDefinition[] = [
       };
       const result = await services.browserSessions.runCommand({
         browserSessionId,
+        projectId: connection.project.id,
         controller,
         controlEpoch: args["control_epoch"] as number,
         command,
@@ -1159,6 +1583,367 @@ const TOOLS: readonly ToolDefinition[] = [
         },
       };
     },
+  },
+  {
+    name: "browser_session_start",
+    title: "Start a central browser session for this agent session",
+    capability: "browser:control",
+    stateChanging: true,
+    validate: validateBrowserSessionStartInput,
+    async run(args, context) {
+      const { connection, services } = context;
+      const publishedServiceId = args["published_service_id"] as string | undefined;
+      const record = await services.browserSessions
+        .start({
+          organisationId: connection.credential.organisationId,
+          // Neither the project nor the agent session is an argument. A caller
+          // that could name either would be starting a browser somewhere it has
+          // no authority, and the schema has no member to put them in.
+          projectId: connection.project.id,
+          agentSessionId: connection.session.id,
+          ...(publishedServiceId === undefined ? {} : { publishedServiceId }),
+          viewport: (args["viewport"] as Viewport | undefined) ?? DEFAULT_VIEWPORT,
+          controller: agentController(context),
+          // Everything captured in a session an agent started is evidence a
+          // human will judge, so it is retained on the evidence window rather
+          // than the shorter action-screenshot one.
+          retentionClass: "verification_evidence",
+          actor: agentActor(connection.session, connection.client.name),
+          requestId: context.requestId,
+        })
+        .catch((error: unknown) => {
+          // The domain's message for this one is "this control plane cannot
+          // bind a published service", which an agent reads as "the deployment
+          // is broken" and reports as such. It is not broken: this process
+          // holds no capability signing key by design, and binding a route
+          // means minting one. Saying so is the difference between an agent
+          // working round a limitation and an agent filing a fault.
+          if (
+            publishedServiceId !== undefined &&
+            error instanceof ApiError &&
+            error.code === "UNSUPPORTED_CAPABILITY"
+          ) {
+            throw new ApiError(
+              "UNSUPPORTED_CAPABILITY",
+              "The agent endpoint cannot bind a published service to a browser session: it holds no route-capability signing key, by design. This is a limitation of this interface, not a fault in the deployment. Start the session without published_service_id and ask a human to bind the route from the project's Live page.",
+              { field: "published_service_id" },
+            );
+          }
+          throw error;
+        });
+      return {
+        // A newly allocated session has been nowhere, so this view is a lease,
+        // an epoch and a viewport: control-plane fact throughout.
+        trust: "trusted_control_plane",
+        data: { session: await toBrowserSessionView(record, context, { includeUrl: false }) },
+      };
+    },
+  },
+  {
+    name: "browser_session_status",
+    title: "Read one browser session's lifecycle, controller and current URL",
+    capability: "browser:control",
+    stateChanging: false,
+    validate: validateBrowserSessionReferenceInput,
+    async run(args, context) {
+      const record = await requireBrowserSession(args["browser_session_id"] as string, context);
+      return {
+        // Fixed rather than derived, and this is the one place that is right.
+        // §7.3 says this tool returns the URL, so an agent must be able to rely
+        // on one answer: a label that was trusted until the browser navigated
+        // and untrusted afterwards would teach an agent to treat the tool as
+        // trusted and then hand it page-derived bytes under that habit.
+        trust: "untrusted_browser_content",
+        data: { session: await toBrowserSessionView(record, context, { includeUrl: true }) },
+      };
+    },
+  },
+  {
+    name: "browser_session_pause",
+    title: "Suspend agent-issued interactive commands in a browser session",
+    capability: "browser:control",
+    stateChanging: true,
+    validate: validateBrowserSessionControlInput,
+    async run(args, context) {
+      const { connection, services } = context;
+      const browserSessionId = args["browser_session_id"] as string;
+      // The project, the epoch and the lease are the service's to check, and it
+      // refuses a session in another project as not found. Only the ownership
+      // rule is this layer's, and it runs only once the project has matched.
+      await browserSessionIfPermitted(browserSessionId, context);
+      const paused = await services.browserSessions.pause({
+        browserSessionId,
+        projectId: connection.project.id,
+        controller: agentController(context),
+        controlEpoch: args["control_epoch"] as number,
+        actor: agentActor(connection.session, connection.client.name),
+      });
+      return {
+        trust: "trusted_control_plane",
+        data: { session: await toBrowserSessionView(paused, context, { includeUrl: false }) },
+      };
+    },
+  },
+  {
+    name: "browser_session_resume",
+    title: "Re-admit interactive commands to the controller holding the lease",
+    capability: "browser:control",
+    stateChanging: true,
+    validate: validateBrowserSessionControlInput,
+    async run(args, context) {
+      const { connection, services } = context;
+      const browserSessionId = args["browser_session_id"] as string;
+      await browserSessionIfPermitted(browserSessionId, context);
+      const resumed = await services.browserSessions.resume({
+        browserSessionId,
+        projectId: connection.project.id,
+        controller: agentController(context),
+        controlEpoch: args["control_epoch"] as number,
+        actor: agentActor(connection.session, connection.client.name),
+      });
+      return {
+        trust: "trusted_control_plane",
+        data: { session: await toBrowserSessionView(resumed, context, { includeUrl: false }) },
+      };
+    },
+  },
+  {
+    name: "browser_session_end",
+    title: "Terminate a browser session and destroy its context",
+    capability: "browser:control",
+    stateChanging: true,
+    validate: validateBrowserSessionControlInput,
+    async run(args, context) {
+      const { connection, services } = context;
+      const browserSessionId = args["browser_session_id"] as string;
+      await browserSessionIfPermitted(browserSessionId, context);
+      // `end`, not `terminate`. The second applies no epoch and no lease check
+      // — it is the reconciler's and the worker report's door. This is the
+      // controller-facing one, and §7.3 puts ending a session under the same
+      // rules as pausing it.
+      const ended = await services.browserSessions.end({
+        browserSessionId,
+        projectId: connection.project.id,
+        controller: agentController(context),
+        controlEpoch: args["control_epoch"] as number,
+        // The agent asked; it is not a capacity, policy or failure termination,
+        // and the reason is what the timeline will carry for ever.
+        reason: "requested",
+        actor: agentActor(connection.session, connection.client.name),
+      });
+      return {
+        trust: "trusted_control_plane",
+        data: { session: await toBrowserSessionView(ended, context, { includeUrl: false }) },
+      };
+    },
+  },
+  {
+    name: "browser_navigate",
+    title: "Open a URL inside the session's published-service origin",
+    capability: "browser:control",
+    stateChanging: false,
+    validate: validateBrowserNavigateInput,
+    run: (args, context) =>
+      interactionRun("browser_navigate", "navigate", args, context, (limits) => ({
+        command: "navigate",
+        timeout_ms: commandTimeout(args, limits),
+        navigate: {
+          // The URL is passed through unresolved. A root-relative path is
+          // resolved against the session's origin by the worker, and an
+          // absolute URL outside that origin is refused there — resolving it
+          // here would put the egress decision in the process that took the
+          // argument (`docs/SECURITY.md` §9).
+          url: args["url"] as string,
+          wait_until: (args["wait_until"] as WaitUntil | undefined) ?? "domcontentloaded",
+        },
+      }), agentController(context)),
+  },
+  {
+    name: "browser_snapshot",
+    title: "Capture a bounded accessibility snapshot of the current page",
+    // A snapshot reads the page; it does not steer it. An agent granted
+    // capture but not control can look and cannot act.
+    capability: "browser:capture",
+    stateChanging: false,
+    validate: validateBrowserSnapshotInput,
+    run: (args, context) =>
+      interactionRun("browser_snapshot", "snapshot", args, context, (limits) => ({
+        command: "snapshot",
+        timeout_ms: commandTimeout(args, limits),
+        ...(args["max_nodes"] === undefined && args["max_bytes"] === undefined
+          ? {}
+          : {
+              snapshot: {
+                ...(args["max_nodes"] === undefined
+                  ? {}
+                  : { max_nodes: args["max_nodes"] as number }),
+                ...(args["max_bytes"] === undefined
+                  ? {}
+                  : { max_bytes: args["max_bytes"] as number }),
+              },
+            }),
+        // Issued as the system controller: a snapshot reads the page without
+        // holding the interactive lease, and reading it never takes the lease
+        // away from whoever does.
+      }), captureController(context)),
+  },
+  {
+    name: "browser_click",
+    title: "Click one element of the current snapshot",
+    capability: "browser:control",
+    stateChanging: false,
+    validate: validateBrowserElementInput,
+    run: (args, context) =>
+      interactionRun("browser_click", "click", args, context, (limits) => ({
+        command: "click",
+        timeout_ms: commandTimeout(args, limits),
+        click: {
+          snapshot_id: args["snapshot_id"] as string,
+          ref: args["ref"] as string,
+        },
+      }), agentController(context)),
+  },
+  {
+    name: "browser_type",
+    title: "Type text into one element of the current snapshot",
+    capability: "browser:control",
+    stateChanging: false,
+    validate: validateBrowserTypeInput,
+    run: (args, context) =>
+      // The text is **not** inspected here. `docs/SECURITY.md` §12 puts the
+      // secret-shape refusal in the authorisation matrix, where it is applied
+      // to every caller and audited as `browser.command_rejected`; a second
+      // check in this layer would refuse a subset, silently, with no record,
+      // and would be the one somebody later "optimised" away.
+      interactionRun("browser_type", "type_text", args, context, (limits) => ({
+        command: "type_text",
+        timeout_ms: commandTimeout(args, limits),
+        type_text: {
+          snapshot_id: args["snapshot_id"] as string,
+          ref: args["ref"] as string,
+          text: args["text"] as string,
+          ...(args["submit"] === undefined ? {} : { submit: args["submit"] as boolean }),
+        },
+      }), agentController(context)),
+  },
+  {
+    name: "browser_select_option",
+    title: "Select options of a select element",
+    capability: "browser:control",
+    stateChanging: false,
+    validate: validateBrowserSelectOptionInput,
+    run: (args, context) =>
+      interactionRun("browser_select_option", "select_option", args, context, (limits) => ({
+        command: "select_option",
+        timeout_ms: commandTimeout(args, limits),
+        select_option: {
+          snapshot_id: args["snapshot_id"] as string,
+          ref: args["ref"] as string,
+          values: args["values"] as string[],
+        },
+      }), agentController(context)),
+  },
+  {
+    name: "browser_press_key",
+    title: "Press one key from the closed key vocabulary",
+    capability: "browser:control",
+    stateChanging: false,
+    validate: validateBrowserPressKeyInput,
+    run: (args, context) =>
+      interactionRun("browser_press_key", "press_key", args, context, (limits) => ({
+        command: "press_key",
+        timeout_ms: commandTimeout(args, limits),
+        press_key: {
+          key: args["key"] as KeyName,
+          ...(args["snapshot_id"] === undefined
+            ? {}
+            : { snapshot_id: args["snapshot_id"] as string }),
+          ...(args["ref"] === undefined ? {} : { ref: args["ref"] as string }),
+        },
+      }), agentController(context)),
+  },
+  {
+    name: "browser_scroll",
+    title: "Scroll the page or one element by a bounded distance",
+    capability: "browser:control",
+    stateChanging: false,
+    validate: validateBrowserScrollInput,
+    run: (args, context) =>
+      interactionRun("browser_scroll", "scroll", args, context, (limits) => ({
+        command: "scroll",
+        timeout_ms: commandTimeout(args, limits),
+        scroll: {
+          direction: args["direction"] as ScrollDirection,
+          amount_px: args["amount_px"] as number,
+          ...(args["snapshot_id"] === undefined
+            ? {}
+            : { snapshot_id: args["snapshot_id"] as string }),
+          ...(args["ref"] === undefined ? {} : { ref: args["ref"] as string }),
+        },
+      }), agentController(context)),
+  },
+  {
+    name: "browser_resize",
+    title: "Resize the viewport and return the snapshot that replaces it",
+    capability: "browser:control",
+    stateChanging: false,
+    validate: validateBrowserResizeInput,
+    async run(args, context) {
+      const { result, controlEpoch } = await runBrowserCommand(
+        args,
+        context,
+        (limits) => ({
+          command: "resize",
+          timeout_ms: commandTimeout(args, limits),
+          resize: { viewport: args["viewport"] as Viewport },
+        }),
+        agentController(context),
+      );
+      if (result.snapshot === undefined) {
+        // §7.4 requires a resize to invalidate every outstanding element
+        // reference and to produce the snapshot that replaces them. A result
+        // without one is not a smaller answer: an agent would read it as "the
+        // resize happened and my references still work", act on a reference the
+        // page no longer has, and click whatever now occupies that position.
+        // Refusing is the only honest outcome.
+        throw new ApiError(
+          "INTERNAL_ERROR",
+          "The resize returned no snapshot, so every element reference it invalidated is unreplaced. Take a fresh snapshot before acting on any reference.",
+        );
+      }
+      const payload = toInteractionResult({
+        tool: "browser_resize",
+        command: "resize",
+        browserSessionId: args["browser_session_id"] as string,
+        controlEpoch,
+        result,
+        context,
+      });
+      return { trust: interactionTrust("browser_resize", payload), data: payload };
+    },
+  },
+  {
+    name: "browser_wait",
+    title: "Wait for one bounded condition",
+    capability: "browser:control",
+    stateChanging: false,
+    validate: validateBrowserWaitInput,
+    run: (args, context) =>
+      // Each condition is defined by exactly one target and the generated
+      // validator has already refused a request that named two, so this passes
+      // through what survived rather than choosing between them by precedence.
+      interactionRun("browser_wait", "wait", args, context, (limits) => ({
+        command: "wait",
+        timeout_ms: commandTimeout(args, limits),
+        wait: {
+          condition: args["condition"] as WaitCondition,
+          ...(args["url_pattern"] === undefined
+            ? {}
+            : { url_pattern: args["url_pattern"] as string }),
+          ...(args["selector"] === undefined ? {} : { selector: args["selector"] as string }),
+          ...(args["text"] === undefined ? {} : { text: args["text"] as string }),
+        },
+      }), agentController(context)),
   },
   {
     name: "development_services_list",

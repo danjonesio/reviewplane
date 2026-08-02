@@ -243,6 +243,26 @@ Human flow:
 
 The UI should clearly show that Chromium runs centrally and the application is reached through a private connector route.
 
+Stage 1 implements steps 1, 2, 4 and 5. Step 3 is **disclosed and disabled**:
+trace capture arrives in Stage 2 and video stays disabled, so the control states
+that neither is available in this stage rather than offering a choice the
+product cannot honour or omitting the step silently.
+
+The viewport presets MUST include **1440x900** and **390x844**, which is what
+`AGENTS.md` requires browser-facing work to be validated at; the rest come from
+the project's default validation viewports.
+
+Starting a session is a state-changing act a **project-scoped human session** may
+perform, not only an administrator (`API.md` §11). It is a live browser opened
+against a private development machine, so the request carries the session's CSRF
+token like every other state-changing write.
+
+The service selector offers "no published service" explicitly rather than
+leaving the control blank. A session with no route reaches nothing, and that is a
+choice a reader may legitimately make — for the reservation-first ordering of
+`API.md` §11, where the session identifier must exist before the route that
+authorises it can be published.
+
 ## 7. Session room
 
 Recommended layout:
@@ -636,6 +656,27 @@ The UI must explain actionable causes:
 - Control lease lost
 
 Avoid generic "something went wrong" when a stable error code exists.
+
+**Browser capacity exhausted** is the state a start request produces when the
+deployment has no live browser worker with a free slot. It is a distinct state
+rather than a generic failure because the two causes need different actions from
+the reader: every slot is in use, in which case ending a session below frees one;
+or a registered worker has stopped reporting and is therefore not counted as
+capacity (ADR-0027), in which case the reader can do nothing and the operator
+should check `reviewplane status`. The copy names both, and the stable code is
+`BROWSER_CAPACITY_EXHAUSTED`.
+
+That a worker which has gone quiet is **not** counted is what makes this state
+reachable at all. Before RVP-30 nothing applied a liveness term to the
+scheduler, so a session requested against a stopped worker was accepted and then
+never became ready — a hang rather than a refusal, and a reader with nothing to
+read.
+
+**Control lease lost** is `CONTROL_EPOCH_STALE` or `CONTROL_NOT_OWNED`. The
+first means control changed under the reader: the surface must refetch the
+session rather than leave the epoch it was holding on screen, because retrying
+with the same number produces the same refusal. The second means somebody else
+holds the lease.
 
 Two of these belong to the artefact surface.
 

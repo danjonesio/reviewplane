@@ -17,7 +17,10 @@ import type {
   SessionAllocated,
   SessionStatusReport,
   SessionTerminate,
+  WorkerContexts,
+  WorkerContextsRequest,
   WorkerHeartbeat,
+  WorkerHeartbeatAck,
   WorkerRegistration,
   WorkerRegistrationAck,
 } from "./types.ts";
@@ -28,7 +31,10 @@ import {
   decodeSessionAllocated,
   decodeSessionStatusReport,
   decodeSessionTerminate,
+  decodeWorkerContexts,
+  decodeWorkerContextsRequest,
   decodeWorkerHeartbeat,
+  decodeWorkerHeartbeatAck,
   decodeWorkerRegistration,
   decodeWorkerRegistrationAck,
 } from "./decode.ts";
@@ -39,7 +45,10 @@ import {
   encodeSessionAllocated,
   encodeSessionStatusReport,
   encodeSessionTerminate,
+  encodeWorkerContexts,
+  encodeWorkerContextsRequest,
   encodeWorkerHeartbeat,
+  encodeWorkerHeartbeatAck,
   encodeWorkerRegistration,
   encodeWorkerRegistrationAck,
 } from "./encode.ts";
@@ -50,7 +59,10 @@ import {
   validateSessionAllocated,
   validateSessionStatusReport,
   validateSessionTerminate,
+  validateWorkerContexts,
+  validateWorkerContextsRequest,
   validateWorkerHeartbeat,
+  validateWorkerHeartbeatAck,
   validateWorkerRegistration,
   validateWorkerRegistrationAck,
 } from "./validate.ts";
@@ -62,6 +74,9 @@ export type BrowserPayload =
   | WorkerRegistration
   | WorkerRegistrationAck
   | WorkerHeartbeat
+  | WorkerHeartbeatAck
+  | WorkerContextsRequest
+  | WorkerContexts
   | SessionAllocate
   | SessionAllocated
   | SessionStatusReport
@@ -82,6 +97,15 @@ export function validatePayload(type: MessageType, value: unknown, path: string,
       return;
     case "worker.heartbeat":
       validateWorkerHeartbeat(value, path, out);
+      return;
+    case "worker.heartbeat.ack":
+      validateWorkerHeartbeatAck(value, path, out);
+      return;
+    case "worker.contexts.request":
+      validateWorkerContextsRequest(value, path, out);
+      return;
+    case "worker.contexts":
+      validateWorkerContexts(value, path, out);
       return;
     case "browser_session.allocate":
       validateSessionAllocate(value, path, out);
@@ -115,6 +139,12 @@ export function decodeFrame(envelope: Envelope, value: unknown): BrowserFrame {
       return { envelope, type: "worker.register.ack", payload: decodeWorkerRegistrationAck(value) };
     case "worker.heartbeat":
       return { envelope, type: "worker.heartbeat", payload: decodeWorkerHeartbeat(value) };
+    case "worker.heartbeat.ack":
+      return { envelope, type: "worker.heartbeat.ack", payload: decodeWorkerHeartbeatAck(value) };
+    case "worker.contexts.request":
+      return { envelope, type: "worker.contexts.request", payload: decodeWorkerContextsRequest(value) };
+    case "worker.contexts":
+      return { envelope, type: "worker.contexts", payload: decodeWorkerContexts(value) };
     case "browser_session.allocate":
       return { envelope, type: "browser_session.allocate", payload: decodeSessionAllocate(value) };
     case "browser_session.allocated":
@@ -141,6 +171,12 @@ export function encodeFramePayload(frame: BrowserFrame): string {
       return encodeWorkerRegistrationAck(frame.payload);
     case "worker.heartbeat":
       return encodeWorkerHeartbeat(frame.payload);
+    case "worker.heartbeat.ack":
+      return encodeWorkerHeartbeatAck(frame.payload);
+    case "worker.contexts.request":
+      return encodeWorkerContextsRequest(frame.payload);
+    case "worker.contexts":
+      return encodeWorkerContexts(frame.payload);
     case "browser_session.allocate":
       return encodeSessionAllocate(frame.payload);
     case "browser_session.allocated":

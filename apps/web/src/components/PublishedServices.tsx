@@ -14,9 +14,9 @@
  *
  * Publication is asked of another machine, so most of its failures are that
  * machine's. Each arrives as a stable class, and each class has one title and
- * one action here — what happened, and what the reader can do — because
- * `docs/UX_FLOWS.md` section 18 forbids answering a named cause with a shrug.
- * The same table renders a refused request and a `failed` route's
+ * one action in `PUBLICATION_REFUSALS` — what happened, and what the reader can
+ * do — because `docs/UX_FLOWS.md` section 18 forbids answering a named cause
+ * with a shrug. The same table renders a refused request and a `failed` route's
  * `failure_class`, so one failure reads the same wherever it is met.
  *
  * A connector that stopped reporting is not one that was revoked: the first may
@@ -40,6 +40,7 @@ import {
   type PublishedServiceDraft,
   type PublishedServiceStatus,
 } from "../api/client.ts";
+import { PUBLICATION_REFUSALS, RefusalPanel } from "./refusals.tsx";
 import { StatusBadge, type Tone } from "./StatusBadge.tsx";
 
 const FIELD =
@@ -71,96 +72,6 @@ const SERVICE_MEANING: Readonly<Record<PublishedServiceStatus, string>> = {
   expired: "its lifetime elapsed and the streams were closed",
   revoked: "revoked; the streams were closed",
 };
-
-interface Explanation {
-  readonly title: string;
-  readonly action: string;
-}
-
-/**
- * One title and one action for every stable code this surface can meet
- * (`docs/API.md` section 10, `docs/CONNECTOR_PROTOCOL.md` section 21).
- *
- * `CONNECTOR_OFFLINE` and `CONTROL_PLANE_UNAVAILABLE` share a title and not an
- * action: both are the tunnel being unavailable, and the difference is whether
- * the connector held a channel at all — which is what decides whether waiting
- * is worth anything.
- */
-const REFUSALS: Readonly<Record<string, Explanation>> = {
-  PORT_NOT_LISTENING: {
-    title: "The development service is not listening",
-    action:
-      "Nothing was listening on that host and port on the development machine, and the bounded startup grace ended without it appearing. Start the development server there and publish again.",
-  },
-  CONNECTOR_OFFLINE: {
-    title: "The tunnel is unavailable",
-    action:
-      "The connector holds no channel to this control plane, so nothing could carry the route. A connector that stopped reporting usually dials back in on its own; check the environment, then publish again.",
-  },
-  CONTROL_PLANE_UNAVAILABLE: {
-    title: "The tunnel is unavailable",
-    action:
-      "The connector holds a channel but did not answer within the bounded wait, so no route was published and none was left half-open. Publish again once the environment reports healthy.",
-  },
-  DESTINATION_NOT_ALLOWED: {
-    title: "That destination is not allowed",
-    action:
-      "The host and port fall outside the destination policy this deployment enforces, so no record was written. Publish a destination the policy permits, or have an administrator change the policy.",
-  },
-  ROUTE_LIMIT_EXCEEDED: {
-    title: "This connector is carrying too many routes",
-    action:
-      "The concurrent-route limit is already reached. Revoke a route this environment no longer needs, then publish again.",
-  },
-  ROUTE_EXPIRED: {
-    title: "The route's lifetime had already elapsed",
-    action:
-      "Publication expires by itself and is not extended in place. Publish again with a lifetime long enough for the work.",
-  },
-  PUBLISHED_SERVICE_UNAVAILABLE: {
-    title: "This deployment no longer carries that route",
-    action:
-      "The route was revoked, expired, or was never carried. Publish a new one; the browser sessions it authorises have to be named again.",
-  },
-  POLICY_DENIED: {
-    title: "Policy refused this publication",
-    action:
-      "A policy of this project or organisation forbids publishing this destination. Nothing was created; an administrator can change the policy.",
-  },
-  PROJECT_NOT_AUTHORISED: {
-    title: "The connector is not authorised for this project",
-    action:
-      "The connector refused the publication because it is not enrolled for this project. Publish from an environment that is, or enrol a connector here.",
-  },
-  WORKSPACE_NOT_FOUND: {
-    title: "The connector does not report that checkout",
-    action:
-      "Choose a checkout the environment currently reports. The list refreshes as the connector reports, so a checkout that has just moved may take a moment.",
-  },
-  VALIDATION_FAILED: {
-    title: "The publication request was incomplete",
-    action:
-      "One of the values is missing or out of range. Check the port and the lifetime, then publish again.",
-  },
-  RESOURCE_NOT_FOUND: {
-    title: "This does not exist, or this session is not authorised for it",
-    action:
-      "The control plane answers an identifier that does not exist and one this session may not reach identically, so that neither can be used to find the other. This page does not guess which it was.",
-  },
-  AUTHORISATION_DENIED: {
-    title: "This session may not publish here",
-    action: "The control plane refused the request. Nothing was created and no route changed.",
-  },
-};
-
-/**
- * The refusal, by its stable code (`docs/UX_FLOWS.md` section 18). An
- * unrecognised code is still named rather than flattened into "something went
- * wrong": a reader can act on a code, and can quote it.
- */
-function explain(code: string, message: string): Explanation {
-  return REFUSALS[code] ?? { title: code, action: message };
-}
 
 /**
  * A failed read, by its stable code.
@@ -217,33 +128,6 @@ function absenceReason(environments: readonly EnvironmentRecord[]): string {
     return "this project's connector was revoked, which is terminal: that identity is refused before a channel is established, and only enrolling a new one restores publication";
   }
   return "no connector has enrolled into this project yet";
-}
-
-/** A title and an action, as a panel rather than as a sentence in passing. */
-function RefusalPanel({
-  code,
-  message,
-  attribute,
-}: {
-  readonly code: string;
-  readonly message: string;
-  readonly attribute: "data-refusal" | "data-failure";
-}): ReactElement {
-  const explanation = explain(code, message);
-  return (
-    <div
-      data-refusal={attribute === "data-refusal" ? code : undefined}
-      data-failure={attribute === "data-failure" ? code : undefined}
-      role="alert"
-      className="mt-3 rounded border-2 border-red-700 p-3 dark:border-red-500"
-    >
-      <h5 className="text-sm font-semibold text-red-800 dark:text-red-300">{explanation.title}</h5>
-      <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">{explanation.action}</p>
-      <p className={`mt-2 ${HINT}`}>
-        Reported as <span className="font-mono">{code}</span>.
-      </p>
-    </div>
-  );
 }
 
 /** One route, with what it reaches, what it authorises, and when it lapses. */
@@ -315,6 +199,7 @@ function RouteCard({
           code={service.failure_class ?? "PUBLISHED_SERVICE_UNAVAILABLE"}
           message="The publication was refused."
           attribute="data-failure"
+          table={PUBLICATION_REFUSALS}
         />
       ) : null}
 
@@ -745,6 +630,7 @@ export function PublishedServices({ projectId }: { readonly projectId: string })
                   : "The development service could not be published."
               }
               attribute="data-refusal"
+              table={PUBLICATION_REFUSALS}
             />
           )}
         </form>
@@ -788,6 +674,7 @@ export function PublishedServices({ projectId }: { readonly projectId: string })
               : "The route could not be revoked."
           }
           attribute="data-refusal"
+          table={PUBLICATION_REFUSALS}
         />
       )}
     </section>

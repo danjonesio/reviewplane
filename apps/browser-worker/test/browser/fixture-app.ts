@@ -55,6 +55,44 @@ const CHECKOUT = `<!doctype html>
 <body><main><h1>Checkout</h1><button id="pay">Pay now</button></main></body></html>`;
 
 /**
+ * A form with the controls `select_option`, `press_key` and `scroll` operate on,
+ * and enough height for a scroll to be observable.
+ *
+ * The select reports its own value into a live region rather than submitting,
+ * so a test can assert what the browser actually did instead of asserting that
+ * a command returned `ok` — which is what a passing "it selected something"
+ * test would hide.
+ */
+const FORM = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Delivery</title>
+<style>main { height: 4000px; }</style></head>
+<body>
+  <main>
+    <h1>Delivery</h1>
+    <label for="delivery">Delivery speed</label>
+    <select id="delivery" name="delivery">
+      <option value="standard-delivery">Standard</option>
+      <option value="next-day">Next day</option>
+    </select>
+    <p id="chosen" role="status">chosen: none</p>
+    <label for="notes">Notes</label>
+    <input id="notes" name="notes" value="">
+    <p id="keyed" role="status">keyed: none</p>
+    <p id="foot">Bottom of the page</p>
+  </main>
+  <script>
+    const chosen = document.getElementById("chosen");
+    document.getElementById("delivery").addEventListener("change", (event) => {
+      chosen.textContent = "chosen: " + event.target.value;
+    });
+    const keyed = document.getElementById("keyed");
+    document.getElementById("notes").addEventListener("keydown", (event) => {
+      keyed.textContent = "keyed: " + event.key;
+    });
+  </script>
+</body></html>`;
+
+/**
  * A page whose visible content instructs the agent to do things it must not
  * do. Nothing here is a real capability; the point is that the worker returns
  * it labelled untrusted and acts on none of it.
@@ -197,6 +235,9 @@ export async function startFixtureApp(): Promise<FixtureApp> {
         return;
       case "/checkout":
         send(CHECKOUT);
+        return;
+      case "/form":
+        send(FORM);
         return;
       case "/hostile":
         send(HOSTILE);

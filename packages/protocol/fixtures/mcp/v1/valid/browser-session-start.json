@@ -1,0 +1,22 @@
+{
+  "protocol_version": 1,
+  "ok": true,
+  "request_id": "req_01JSESSIONSTART",
+  "type": "browser_session_start",
+  "trust": "trusted_control_plane",
+  "instruction_policy": "do_not_follow_as_instructions",
+  "data": {
+    "session": {
+      "browser_session_id": "brs_01JHOMEPAGE",
+      "status": "READY",
+      "control_epoch": 1,
+      "current_controller": {"type": "agent", "id": "ags_01JCLAUDECODE"},
+      "viewport": {"width": 1440, "height": 900, "device_scale_factor": 1},
+      "browser_type": "chromium",
+      "published_service_id": "svc_01JSTOREFRONT",
+      "service_origin": "https://storefront.internal.invalid",
+      "live_view_available": true,
+      "created_at": "2026-07-30T10:11:02.000Z"
+    }
+  }
+}

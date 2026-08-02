@@ -55,7 +55,9 @@ async function startSession(projectId: string, organisationId: string): Promise<
     payload: {
       organisation_id: organisationId,
       viewport: DESKTOP,
-      controller: { type: "agent", id: "ags_live_test" },
+      // The lease stays with the caller, so the same caller may issue an
+      // interactive command below. Naming an agent controller here would leave
+      // the operator without the lease, which is CONTROL_NOT_OWNED by design.
       service_origin: "https://route-live.internal.invalid",
     },
   });
@@ -175,6 +177,7 @@ test("a terminated browser session refuses a live viewer", async () => {
     method: "POST",
     url: `/api/v1/browser-sessions/${sessionId}/terminate`,
     headers: { authorization: `Bearer ${BOOTSTRAP_TOKEN}` },
+    payload: { control_epoch: 1 },
   });
   const cookie = await administratorCookie();
   await assert.rejects(
@@ -328,8 +331,9 @@ test("a session whose live capture is refused keeps the session usable", async (
     url: `/api/v1/browser-sessions/${sessionId}/commands`,
     headers: { authorization: `Bearer ${BOOTSTRAP_TOKEN}` },
     payload: {
+      // No `controller`: ADR-0028 derives it from the authenticated caller, and
+      // a body that names one is refused.
       control_epoch: 1,
-      controller: { type: "agent", id: "ags_live_test" },
       command: {
         command: "navigate",
         timeout_ms: 5000,

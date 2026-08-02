@@ -61,7 +61,6 @@ async function reserveSession(projectId: string, organisationId: string): Promis
     payload: {
       organisation_id: organisationId,
       viewport: DESKTOP,
-      controller: { type: "agent", id: "ags_test" },
       allocate: false,
     },
   });
@@ -214,7 +213,6 @@ test("a session the route does not name is refused before anything is minted", a
 test("a route from another project is absent, exactly as one that does not exist", async () => {
   const seeded = await seedProjectAndWorker(harness);
   const { projectId, organisationId } = seeded;
-  const sessionId = await reserveSession(projectId, organisationId);
 
   // A second, complete project: its own connector, workspace and browser
   // session. The route has to be a *legitimate* route somewhere else, because a
@@ -229,13 +227,31 @@ test("a route from another project is absent, exactly as one that does not exist
   assert.equal(published.statusCode, 201, published.body);
   const service = (published.json() as { data: Record<string, string> }).data;
 
-  const allocate = async (publishedServiceId: string) =>
-    harness.built.app.inject({
+  // `seedProjectAndWorker` registers one worker under a fixed name, so seeding
+  // the second project reassigned it away from the first. Both are named again
+  // here so that reserving in the first project still works; what is under test
+  // is the binder, not the assignment.
+  await harness.built.app.inject({
+    method: "PUT",
+    url: `/api/v1/browser-workers/${seeded.workerId}/assignments`,
+    headers: authorised,
+    payload: { project_ids: [projectId, elsewhere.projectId] },
+  });
+
+  // A fresh reservation per attempt. A refused allocation now *ends* the
+  // reservation (RVP-30): a `REQUESTED` row with `ended_at IS NULL` is what the
+  // capacity query counts, so leaving it behind meant four refused starts filled
+  // a worker and the project could start nothing. The consequence here is that
+  // the second attempt has to reserve again, which is what a real caller does.
+  const allocate = async (publishedServiceId: string) => {
+    const reserved = await reserveSession(projectId, organisationId);
+    return harness.built.app.inject({
       method: "POST",
-      url: `/api/v1/browser-sessions/${sessionId}/allocate`,
+      url: `/api/v1/browser-sessions/${reserved}/allocate`,
       headers: authorised,
       payload: { published_service_id: publishedServiceId },
     });
+  };
 
   // The binder reads the route inside the session's project, so a route in
   // another project produces no row at all. That is why this is

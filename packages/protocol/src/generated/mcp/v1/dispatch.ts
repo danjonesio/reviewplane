@@ -11,6 +11,8 @@ import type {
   AgentInboxAcknowledgeResult,
   AgentInboxListResult,
   AgentSessionStatusResult,
+  BrowserInteractionResult,
+  BrowserSessionResult,
   BrowserTakeScreenshotResult,
   DevelopmentServiceResult,
   DevelopmentServicesListResult,
@@ -34,6 +36,8 @@ import {
   decodeAgentInboxAcknowledgeResult,
   decodeAgentInboxListResult,
   decodeAgentSessionStatusResult,
+  decodeBrowserInteractionResult,
+  decodeBrowserSessionResult,
   decodeBrowserTakeScreenshotResult,
   decodeDevelopmentServiceResult,
   decodeDevelopmentServicesListResult,
@@ -54,6 +58,8 @@ import {
   encodeAgentInboxAcknowledgeResult,
   encodeAgentInboxListResult,
   encodeAgentSessionStatusResult,
+  encodeBrowserInteractionResult,
+  encodeBrowserSessionResult,
   encodeBrowserTakeScreenshotResult,
   encodeDevelopmentServiceResult,
   encodeDevelopmentServicesListResult,
@@ -74,6 +80,8 @@ import {
   validateAgentInboxAcknowledgeResult,
   validateAgentInboxListResult,
   validateAgentSessionStatusResult,
+  validateBrowserInteractionResult,
+  validateBrowserSessionResult,
   validateBrowserTakeScreenshotResult,
   validateDevelopmentServiceResult,
   validateDevelopmentServicesListResult,
@@ -109,6 +117,8 @@ export type McpPayload =
   | FindingAddCommentResult
   | FindingSubmitVerificationResult
   | BrowserTakeScreenshotResult
+  | BrowserSessionResult
+  | BrowserInteractionResult
   | DevelopmentServicesListResult
   | DevelopmentServiceResult
   | TaskValidationStatusResult
@@ -170,6 +180,48 @@ export function validatePayload(type: MessageType, value: unknown, path: string,
     case "browser_take_screenshot":
       validateBrowserTakeScreenshotResult(value, path, out);
       return;
+    case "browser_session_start":
+      validateBrowserSessionResult(value, path, out);
+      return;
+    case "browser_session_status":
+      validateBrowserSessionResult(value, path, out);
+      return;
+    case "browser_session_pause":
+      validateBrowserSessionResult(value, path, out);
+      return;
+    case "browser_session_resume":
+      validateBrowserSessionResult(value, path, out);
+      return;
+    case "browser_session_end":
+      validateBrowserSessionResult(value, path, out);
+      return;
+    case "browser_navigate":
+      validateBrowserInteractionResult(value, path, out);
+      return;
+    case "browser_snapshot":
+      validateBrowserInteractionResult(value, path, out);
+      return;
+    case "browser_click":
+      validateBrowserInteractionResult(value, path, out);
+      return;
+    case "browser_type":
+      validateBrowserInteractionResult(value, path, out);
+      return;
+    case "browser_select_option":
+      validateBrowserInteractionResult(value, path, out);
+      return;
+    case "browser_press_key":
+      validateBrowserInteractionResult(value, path, out);
+      return;
+    case "browser_scroll":
+      validateBrowserInteractionResult(value, path, out);
+      return;
+    case "browser_resize":
+      validateBrowserInteractionResult(value, path, out);
+      return;
+    case "browser_wait":
+      validateBrowserInteractionResult(value, path, out);
+      return;
     case "development_services_list":
       validateDevelopmentServicesListResult(value, path, out);
       return;
@@ -227,6 +279,34 @@ export function decodeFrame(envelope: Envelope, value: unknown): McpFrame {
       return { envelope, type: "finding_submit_verification", payload: decodeFindingSubmitVerificationResult(value) };
     case "browser_take_screenshot":
       return { envelope, type: "browser_take_screenshot", payload: decodeBrowserTakeScreenshotResult(value) };
+    case "browser_session_start":
+      return { envelope, type: "browser_session_start", payload: decodeBrowserSessionResult(value) };
+    case "browser_session_status":
+      return { envelope, type: "browser_session_status", payload: decodeBrowserSessionResult(value) };
+    case "browser_session_pause":
+      return { envelope, type: "browser_session_pause", payload: decodeBrowserSessionResult(value) };
+    case "browser_session_resume":
+      return { envelope, type: "browser_session_resume", payload: decodeBrowserSessionResult(value) };
+    case "browser_session_end":
+      return { envelope, type: "browser_session_end", payload: decodeBrowserSessionResult(value) };
+    case "browser_navigate":
+      return { envelope, type: "browser_navigate", payload: decodeBrowserInteractionResult(value) };
+    case "browser_snapshot":
+      return { envelope, type: "browser_snapshot", payload: decodeBrowserInteractionResult(value) };
+    case "browser_click":
+      return { envelope, type: "browser_click", payload: decodeBrowserInteractionResult(value) };
+    case "browser_type":
+      return { envelope, type: "browser_type", payload: decodeBrowserInteractionResult(value) };
+    case "browser_select_option":
+      return { envelope, type: "browser_select_option", payload: decodeBrowserInteractionResult(value) };
+    case "browser_press_key":
+      return { envelope, type: "browser_press_key", payload: decodeBrowserInteractionResult(value) };
+    case "browser_scroll":
+      return { envelope, type: "browser_scroll", payload: decodeBrowserInteractionResult(value) };
+    case "browser_resize":
+      return { envelope, type: "browser_resize", payload: decodeBrowserInteractionResult(value) };
+    case "browser_wait":
+      return { envelope, type: "browser_wait", payload: decodeBrowserInteractionResult(value) };
     case "development_services_list":
       return { envelope, type: "development_services_list", payload: decodeDevelopmentServicesListResult(value) };
     case "development_service_publish":
@@ -279,6 +359,34 @@ export function encodeFramePayload(frame: McpFrame): string {
       return encodeFindingSubmitVerificationResult(frame.payload);
     case "browser_take_screenshot":
       return encodeBrowserTakeScreenshotResult(frame.payload);
+    case "browser_session_start":
+      return encodeBrowserSessionResult(frame.payload);
+    case "browser_session_status":
+      return encodeBrowserSessionResult(frame.payload);
+    case "browser_session_pause":
+      return encodeBrowserSessionResult(frame.payload);
+    case "browser_session_resume":
+      return encodeBrowserSessionResult(frame.payload);
+    case "browser_session_end":
+      return encodeBrowserSessionResult(frame.payload);
+    case "browser_navigate":
+      return encodeBrowserInteractionResult(frame.payload);
+    case "browser_snapshot":
+      return encodeBrowserInteractionResult(frame.payload);
+    case "browser_click":
+      return encodeBrowserInteractionResult(frame.payload);
+    case "browser_type":
+      return encodeBrowserInteractionResult(frame.payload);
+    case "browser_select_option":
+      return encodeBrowserInteractionResult(frame.payload);
+    case "browser_press_key":
+      return encodeBrowserInteractionResult(frame.payload);
+    case "browser_scroll":
+      return encodeBrowserInteractionResult(frame.payload);
+    case "browser_resize":
+      return encodeBrowserInteractionResult(frame.payload);
+    case "browser_wait":
+      return encodeBrowserInteractionResult(frame.payload);
     case "development_services_list":
       return encodeDevelopmentServicesListResult(frame.payload);
     case "development_service_publish":
