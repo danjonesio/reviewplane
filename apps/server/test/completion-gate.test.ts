@@ -441,6 +441,49 @@ test("the resolution-note gate on FIXED_UNVERIFIED is unchanged", () => {
   }
 });
 
+test("the evidence requirement is graduated, and the first hop takes a note rather than a verification", () => {
+  // RVP-53's scope names both hops. ADR-0029 records why only the second is
+  // gated on a verification record: submitting one is what *performs* the first
+  // transition, so requiring one to make it would render one of the six
+  // permitted agent transitions impossible to request.
+  //
+  // This test pins the asymmetry so it cannot drift back to either extreme
+  // silently. It is here because the divergence between an issue's wording and
+  // the code is this project's most common defect, and an argued exception with
+  // no test is the same defect wearing a justification.
+
+  // First hop: a note is enough, and a verification is not required.
+  assertCompletionEvidence("FIXED_UNVERIFIED", {
+    actorType: "agent_session",
+    resolutionNote: "Raised the collapse breakpoint to 900px.",
+    missing: ["after screenshot", "390x844 verification"],
+  });
+
+  // ...but a note is genuinely required, so the hop is gated, not ungated.
+  assert.equal(
+    refusal(() => {
+      assertCompletionEvidence("FIXED_UNVERIFIED", { actorType: "agent_session" });
+    }).code,
+    "EVIDENCE_REQUIRED",
+  );
+
+  // Second hop: the note carries no weight at all, and the verification does.
+  assert.equal(
+    refusal(() => {
+      assertCompletionEvidence("AWAITING_HUMAN_REVIEW", {
+        actorType: "agent_session",
+        resolutionNote: "Raised the collapse breakpoint to 900px.",
+        missing: ["after screenshot"],
+      });
+    }).code,
+    "EVIDENCE_REQUIRED",
+  );
+  assertCompletionEvidence("AWAITING_HUMAN_REVIEW", {
+    actorType: "agent_session",
+    missing: [],
+  });
+});
+
 test("the gate applies to no other transition", () => {
   // A gate that fired on an unrelated move would block ordinary work. Every
   // status an agent may reach other than the two above passes untouched, with

@@ -838,6 +838,14 @@ refused with `EVIDENCE_REQUIRED`, `details.required_evidence` naming **every**
 gap rather than the first, and the attempt is audited as
 `finding.status_change_denied` like any other refused transition.
 
+The requirement is graduated across the two hops, and `IN_PROGRESS ->
+FIXED_UNVERIFIED` requires only a resolution note (§7.7 above). That is not an
+omission: submitting a verification is itself what performs the first
+transition, so requiring one to make it would render one of the six permitted
+agent transitions impossible to request. `FIXED_UNVERIFIED` is the agent's own
+working state and asks nothing of a human; the hand-over is where the claim is
+made, and it is the hop the Stage 1 exit criterion is about (ADR-0029).
+
 The gate applies to `agent_session` actors only, which is a decision rather than
 an oversight (ADR-0029): a human moving a finding there is exercising the very
 authority the gate defers to. Nothing is weakened by it — before this rule there

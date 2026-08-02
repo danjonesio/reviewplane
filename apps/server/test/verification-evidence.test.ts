@@ -28,6 +28,7 @@ import {
   startHarness,
   type Harness,
 } from "./support/worker-harness.ts";
+import { claimSessionFor } from "./support/identity.ts";
 import { encodePng, sha256 } from "./support/png.ts";
 import { startMigratedDatabase, truncateAll, type MigratedDatabase } from "./support/postgres.ts";
 
@@ -69,6 +70,7 @@ const CHECKS = {
 interface Fixture {
   readonly organisationId: string;
   readonly projectId: string;
+  readonly workerId: string;
   readonly browserSessionId: string;
   readonly beforeArtefactId: string;
   readonly afterArtefactId: string;
@@ -145,7 +147,56 @@ async function pendingArtefact(projectId: string, browserSessionId: string): Pro
 }
 
 async function seedFixture(slug = "bugs-on-homepage"): Promise<Fixture> {
-  const { organisationId, projectId } = await seedProjectAndWorker(harness);
+  const seeded = await seedProjectAndWorker(harness);
+  return seedInProject(seeded.organisationId, seeded.projectId, seeded.workerId, slug);
+}
+
+/**
+ * A second project inside an organisation that already has one.
+ *
+ * `seedProjectAndWorker` makes a fresh organisation each time, which is what
+ * the cross-organisation cases need and exactly what the cross-**project** case
+ * cannot use: with the two projects in different organisations the
+ * organisation term refuses the request first and the project term is never
+ * reached, so a broken project term would look defended. The worker is
+ * reassigned to both projects, because the assignment is a replace rather than
+ * an append.
+ */
+async function seedSiblingProject(sibling: Fixture, slug: string): Promise<Fixture> {
+  const app = harness.built.app;
+  const created = await app.inject({
+    method: "POST",
+    url: `/api/v1/organisations/${sibling.organisationId}/projects`,
+    headers: ADMIN,
+    payload: { name: "Second Project", slug: `second-${Date.now().toString(36)}` },
+  });
+  assert.equal(created.statusCode, 201, created.body);
+  const projectId = (created.json() as { data: { id: string } }).data.id;
+
+  const assigned = await app.inject({
+    method: "PUT",
+    url: `/api/v1/browser-workers/${sibling.workerId}/assignments`,
+    headers: ADMIN,
+    payload: { project_ids: [sibling.projectId, projectId] },
+  });
+  assert.equal(assigned.statusCode, 200, assigned.body);
+
+  // Worker registration is `ON CONFLICT (name) DO UPDATE`, so every fixture in
+  // this file shares one stub worker and its capacity of two. A third seeded
+  // project would be refused BROWSER_CAPACITY_EXHAUSTED, which is correct
+  // behaviour and irrelevant to what this fixture is for. Raising the capacity
+  // is scaffolding, not a change to anything under test.
+  await postgres.pool.query("UPDATE browser_workers SET capacity = 8");
+
+  return seedInProject(sibling.organisationId, projectId, sibling.workerId, slug);
+}
+
+async function seedInProject(
+  organisationId: string,
+  projectId: string,
+  workerId: string,
+  slug: string,
+): Promise<Fixture> {
   const app = harness.built.app;
 
   const session = await app.inject({
@@ -212,6 +263,7 @@ async function seedFixture(slug = "bugs-on-homepage"): Promise<Fixture> {
   return {
     organisationId,
     projectId,
+    workerId,
     browserSessionId,
     beforeArtefactId,
     afterArtefactId,
@@ -1116,6 +1168,157 @@ test("the human route submits a verification and derives the submitter", async (
   });
   assert.equal(history.statusCode, 200, history.body);
   assert.equal((history.json() as { data: unknown[] }).data.length, 1);
+});
+
+/**
+ * Both tenancy terms on the two new routes, exercised with the session shape
+ * the product actually issues (`docs/TESTING.md` section 10, RVP-66/67).
+ *
+ * Every other test on this surface authenticates as the bootstrap
+ * administrator, whose `organisationId` is `null`. In `scopedRecord` that makes
+ * **both** terms vacuous —
+ * `($2::text[] IS NULL OR project_id = ANY($2))` and
+ * `($3::text IS NULL OR organisation_id = $3)` each pass unconditionally — so
+ * the suite proves the routes work and proves nothing about their isolation. A
+ * regression that dropped the organisation term would have shipped green.
+ *
+ * The probe therefore uses a real sign-in, which issues `projectIds: null` with
+ * the account's organisation set (`src/modules/identity/routes.ts`). That is the
+ * shape that matters: it is the one every human actually holds, and it is the
+ * one in which the project term is vacuous and the **organisation** term is the
+ * only thing standing between two tenants. The project-scoped shape is checked
+ * beside it, because a session that is scoped to one project must not reach
+ * another either — but it is the weaker case, and testing only that shape is
+ * exactly how RVP-66 hid.
+ *
+ * A positive control runs first: the same session reaches its own finding. A
+ * probe that refused everything would otherwise pass.
+ */
+test("both tenancy terms hold on the verification routes, for the session shape a sign-in issues", async () => {
+  const mine = await seedFixture();
+  const otherOrganisation = await seedFixture("another-organisations-review");
+  // A second project inside *my* organisation, so the project term can be
+  // refused on its own. Against a target in another organisation the
+  // organisation term refuses first and a broken project term looks defended —
+  // which is how each of these masks the other.
+  const otherProject = await seedSiblingProject(mine, "a-sibling-projects-review");
+  const app = harness.built.app;
+
+  const orgWide = await claimSessionFor(harness.built, postgres.pool, mine.organisationId, {
+    email: "mine@localhost",
+  });
+
+  // A project-scoped session for one project of the same organisation.
+  const scoped = await harness.built.viewers.issue({
+    organisationId: mine.organisationId,
+    projectIds: [mine.projectId],
+    display: "project-scoped viewer",
+    withCsrfToken: true,
+  });
+  const scopedHeaders = {
+    cookie: `reviewplane_viewer=${scoped.token}; reviewplane_csrf=${scoped.csrfToken ?? ""}`,
+    "x-csrf-token": scoped.csrfToken ?? "",
+  };
+
+  const body = (fixture: Fixture) => ({
+    summary: "Checked at both required viewports.",
+    branch: "redesign",
+    commit: FIXED_COMMIT,
+    tested_viewports: BOTH_VIEWPORTS,
+    checks: CHECKS,
+    artefact_ids: [fixture.afterArtefactId],
+  });
+
+  // Positive controls, first: both sessions reach their own finding. A probe
+  // that refused everything would otherwise pass.
+  const own = await app.inject({
+    method: "POST",
+    url: `/api/v1/findings/${mine.findingId}/verifications`,
+    headers: orgWide.writeHeaders,
+    payload: body(mine),
+  });
+  assert.equal(own.statusCode, 201, own.body);
+  const scopedRead = await app.inject({
+    method: "GET",
+    url: `/api/v1/findings/${mine.findingId}/verifications`,
+    headers: scopedHeaders,
+  });
+  assert.equal(scopedRead.statusCode, 200, scopedRead.body);
+
+  const normalise = (raw: string): unknown => {
+    const parsed = JSON.parse(raw) as { meta?: { request_id?: string } };
+    if (parsed.meta !== undefined) parsed.meta.request_id = "req_normalised";
+    return parsed;
+  };
+
+  const UNKNOWN = "fin_does_not_exist_anywhere";
+
+  // Each case pairs a session with the target only *that* term can refuse.
+  const cases = [
+    {
+      // The shape every real sign-in issues: projectIds null, so the project
+      // term is vacuous and the organisation term is the only defence. This is
+      // the RVP-66 shape.
+      label: "ORG-WIDE (projectIds: null) -> another organisation",
+      headers: orgWide.writeHeaders,
+      target: otherOrganisation,
+    },
+    {
+      label: "PROJECT-SCOPED -> another project of the same organisation",
+      headers: scopedHeaders,
+      target: otherProject,
+    },
+    {
+      label: "PROJECT-SCOPED -> another organisation",
+      headers: scopedHeaders,
+      target: otherOrganisation,
+    },
+  ] as const;
+
+  for (const { label, headers, target } of cases) {
+    const foreignWrite = await app.inject({
+      method: "POST",
+      url: `/api/v1/findings/${target.findingId}/verifications`,
+      headers,
+      payload: body(target),
+    });
+    const unknownWrite = await app.inject({
+      method: "POST",
+      url: `/api/v1/findings/${UNKNOWN}/verifications`,
+      headers,
+      payload: body(target),
+    });
+    assert.equal(foreignWrite.statusCode, 404, `${label} POST -> ${foreignWrite.body}`);
+    assert.equal(unknownWrite.statusCode, 404, unknownWrite.body);
+    // Byte for byte: a distinct refusal for "exists but is not yours" is the
+    // oracle that makes another tenant's identifiers enumerable.
+    assert.deepEqual(normalise(foreignWrite.body), normalise(unknownWrite.body), label);
+
+    for (const path of ["verification", "verifications"]) {
+      const foreignRead = await app.inject({
+        method: "GET",
+        url: `/api/v1/findings/${target.findingId}/${path}`,
+        headers,
+      });
+      const unknownRead = await app.inject({
+        method: "GET",
+        url: `/api/v1/findings/${UNKNOWN}/${path}`,
+        headers,
+      });
+      assert.equal(foreignRead.statusCode, 404, `${label} GET ${path} -> ${foreignRead.body}`);
+      assert.equal(unknownRead.statusCode, 404, unknownRead.body);
+      assert.deepEqual(normalise(foreignRead.body), normalise(unknownRead.body), `${label} ${path}`);
+    }
+  }
+
+  // The refusals were refusals: nothing was written against either target, and
+  // neither finding moved.
+  for (const target of [otherOrganisation, otherProject]) {
+    assert.equal(await countVerifications(target.findingId), 0);
+    assert.equal(await findingStatus(target.findingId), "IN_PROGRESS");
+  }
+  // And this project's own submission is still the only one there is.
+  assert.equal(await countVerifications(mine.findingId), 1);
 });
 
 test("the request body cannot forge the submitter or the status", async () => {

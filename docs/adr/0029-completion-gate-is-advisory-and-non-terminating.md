@@ -120,6 +120,49 @@ the honest version of that rule is a project policy rather than an actor-type
 test. That belongs with the Stage 3 work on the finding transition table under
 concurrent editing (RVP-7), not here.
 
+### Only the hand-over is gated on a verification, and the first hop is not
+
+RVP-53 scopes the evidence gate to two transitions:
+`IN_PROGRESS -> FIXED_UNVERIFIED` **and**
+`FIXED_UNVERIFIED -> AWAITING_HUMAN_REVIEW`. This decision gates the second on a
+verification record and deliberately leaves the first gated only on a resolution
+note, which is where RVP-37 left it. The divergence is recorded here rather than
+left for a reader to discover, because an issue asserting a gate the code does
+not have is this repository's most common defect.
+
+The reason is circularity. `finding_submit_verification` is the call that
+*creates* a verification, and submitting one is itself what moves an
+`IN_PROGRESS` finding to `FIXED_UNVERIFIED`. An agent that takes the ordinary
+path therefore arrives at `FIXED_UNVERIFIED` already carrying the record. The
+only way to reach that status without one is the explicit
+`finding_update_status` call — and gating *that* on a verification would make it
+unreachable in every case where it is the caller's own next step, because
+satisfying the condition performs the transition. The transition would remain in
+`x-protocol.vocabularies.finding_status_transitions` and in
+`docs/MCP_SPEC.md` §7.7 as one of the six an agent may request, while being
+impossible to request successfully. Removing a documented capability by making
+its precondition self-satisfying is a worse divergence than the one it fixes.
+
+The evidence requirement is therefore **graduated** rather than absent, and both
+hops refuse with `EVIDENCE_REQUIRED` when their own requirement is unmet:
+
+| Transition | Evidence required |
+|---|---|
+| `IN_PROGRESS -> FIXED_UNVERIFIED` | a non-empty resolution note |
+| `FIXED_UNVERIFIED -> AWAITING_HUMAN_REVIEW` | a current verification carrying the project's configured evidence |
+
+That is defensible on its own terms and not merely convenient. `FIXED_UNVERIFIED`
+is an agent's private working state — its name says the claim is *unverified* —
+and nothing is asked of a human while a finding sits there. The hand-over is the
+point at which the claim is made to a person, and it is the hop the exit
+criterion is about. Gating the weaker status more strictly would buy nothing a
+human ever sees.
+
+What this does not do is let an agent reach a human without evidence, which is
+the property that matters: `AWAITING_HUMAN_REVIEW` is unreachable for an
+`agent_session` without a current verification, whichever route the finding took
+to `FIXED_UNVERIFIED`.
+
 ### A refused hand-over is audited like every other refusal
 
 A transition refused for missing evidence records `finding.status_change_denied`,

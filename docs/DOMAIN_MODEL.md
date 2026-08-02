@@ -654,15 +654,26 @@ Like the review table, this one is data in
   left to assume a fresh start. Section 19 is what makes that true rather than
   aspirational: a later submission supersedes an earlier one and never replaces
   it
-- **`FIXED_UNVERIFIED` to `AWAITING_HUMAN_REVIEW` requires evidence.** An
+- **The evidence requirement is graduated, and both hops refuse with
+  `EVIDENCE_REQUIRED`.** Reaching `FIXED_UNVERIFIED` requires a non-empty
+  resolution note. Reaching `AWAITING_HUMAN_REVIEW` requires more: an
   `agent_session` requesting it must have a current verification carrying what
-  the project configures: an after screenshot, every viewport in
+  the project configures — an after screenshot, every viewport in
   `default_validation_viewports` (section 6), and the console and network review
-  flags. Without them the request is refused with `EVIDENCE_REQUIRED` naming
-  every gap, and — like every other refused transition — the attempt is audited.
-  This is the point at which `AGENTS.md`'s "do not claim an issue is fixed
-  without verification evidence" stops being advice: the hand-over *is* the
-  claim, made to a person.
+  flags. Without them the request is refused naming every gap, and — like every
+  other refused transition — the attempt is audited. This is the point at which
+  `AGENTS.md`'s "do not claim an issue is fixed without verification evidence"
+  stops being advice: the hand-over *is* the claim, made to a person.
+
+  The first hop is deliberately **not** gated on a verification record, and the
+  reason is circularity rather than leniency (ADR-0029): submitting a
+  verification is itself what moves an `IN_PROGRESS` finding to
+  `FIXED_UNVERIFIED`, so requiring one to make that move would make the
+  transition impossible to request even though the table lists it. Nothing is
+  lost by it — `FIXED_UNVERIFIED` is an agent's own working state, its name says
+  the claim is unverified, and no human is asked for anything while a finding
+  sits there. `AWAITING_HUMAN_REVIEW` remains unreachable for an agent without a
+  current verification whichever route the finding took.
 
   The gate is checked for `agent_session` actors only, which is a decision and
   not an oversight (ADR-0029). A human moving a finding here is exercising the
