@@ -128,6 +128,30 @@ strictly better than a lifecycle route that quietly acts in the incumbent's
 name, and it needs nothing Stage 2 adds — takeover introduces *human interactive
 input*, not the ability to hold a lease.
 
+**Creation derives it too, and that is the whole surface.** `POST
+/api/v1/projects/:projectId/browser-sessions` accepted a `controller` in its
+body until the adversarial review. It is the weakest instance of this pattern —
+no session exists yet, nothing is being seized, and the creator has authority
+over what it creates — and it is included anyway, for two reasons. The first is
+that a caller could name an identity it is not, so its own session's lease
+belonged to somebody else: it could not end the session without taking control
+first, while the slot counted against the worker's capacity. The second is that
+nothing in the product sent it. The Live page does not, the end-to-end scenario
+does not, and `browser_session_start` supplies an agent controller through the
+**service**, derived from the credential rather than from a body. It was a test
+affordance on the public surface — which is exactly how the four lifecycle
+routes came to look reasonable.
+
+`agent_session_id` remains the way to associate a session with an agent, and it
+is a foreign key: a fabricated one is refused by the database. That a controller
+identity carried no equivalent constraint is part of why it is derived rather
+than accepted.
+
+The rule is therefore uniform and can be stated in one line: **no route on this
+surface accepts an actor identity in a request body.** A rule with one
+documented exception is a rule nobody can apply without checking, and the
+exception is where the next defect lives.
+
 **`controller_id` is not accepted on `control/request`.** It let any project
 member plant a lease owned by an identity that does not exist —
 `ags_not_a_real_session` was enough — and revoke the incumbent's as a side

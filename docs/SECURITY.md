@@ -443,13 +443,22 @@ and §10 forbids widening it afterwards — so a route that has been revoked, ha
 expired, or no longer names this session is invisible to the worker while its
 origin still resolves.
 
-**The actor is derived, never claimed.** The controller a command is attributed
+**No route on this surface accepts an actor identity in a request body.** The controller a command is attributed
 to comes from the authenticated principal: a human acts as the `system`
 controller bound to their session, and an agent acts as its own agent session. A
 controller supplied in a request body is a claim *about* the actor rather than
 the actor, and it would satisfy the ownership check by naming its owner; a body
 carrying one is refused rather than ignored. `API.md` §11 documented such a field
 until RVP-30 and no longer does.
+
+That holds for **every** route, including session creation, where the case is
+weakest — no session exists yet and the creator has authority over what it
+creates — and including `control/request`, where a caller-named `controller_id`
+let a project member plant a lease owned by an identity that does not exist. A
+rule with one documented exception is a rule nobody can apply without checking,
+and the exception is where the next defect lives. An agent acts under its own
+identity because the MCP server derives it from the credential behind the
+connection, not because a body named it.
 
 **The epoch is compared before lease ownership**, which is the reverse of the
 order the list is written in. Both refuse the same commands; the difference is

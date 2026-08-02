@@ -59,6 +59,36 @@ async function sessionIdFor(projectId: string, overrides: Record<string, unknown
   return (response.json() as { data: { id: string } }).data.id;
 }
 
+/**
+ * A session whose interactive lease belongs to an agent.
+ *
+ * Through the service, because that is how the product produces this state:
+ * `browser_session_start` supplies the agent controller from the credential
+ * behind the MCP connection.
+ *
+ * `agentSessionId` is deliberately not set: it carries a foreign key to
+ * `agent_sessions`, so a fabricated one is refused by the database. The
+ * controller identity carries no such constraint — which is part of why the
+ * route derives it rather than accepting it (ADR-0028). The HTTP route derives the controller from the
+ * caller and refuses one in the body (ADR-0028), so setting this up over HTTP
+ * would exercise a surface that no longer exists.
+ */
+async function agentHeldSession(
+  organisationId: string,
+  projectId: string,
+  agentId = "ags_owner",
+): Promise<string> {
+  const record = await harness.built.sessions.start({
+    organisationId,
+    projectId,
+    viewport: DESKTOP,
+    controller: { type: "agent", id: agentId },
+    retentionClass: "verification_evidence",
+    actor: { type: "agent_session", id: agentId },
+  });
+  return record.id;
+}
+
 function commandRequests(): number {
   return harness.workerRequests.filter((entry) => entry.path === "/internal/v1/commands").length;
 }
@@ -187,11 +217,9 @@ test("a controller that does not hold the lease is refused by the control plane,
 });
 
 test("a system capture is admitted without the lease and does not take it", async () => {
-  const { projectId } = await seedProjectAndWorker(harness);
+  const { projectId, organisationId } = await seedProjectAndWorker(harness);
   // The session's lease belongs to an agent.
-  const sessionId = await sessionIdFor(projectId, {
-    controller: { type: "agent", id: "ags_owner" },
-  });
+  const sessionId = await agentHeldSession(organisationId, projectId);
 
   const result = await harness.built.sessions.runCommand({
     browserSessionId: sessionId,
@@ -211,10 +239,8 @@ test("a system capture is admitted without the lease and does not take it", asyn
 });
 
 test("an interactive command from a system controller that does not hold the lease is refused", async () => {
-  const { projectId } = await seedProjectAndWorker(harness);
-  const sessionId = await sessionIdFor(projectId, {
-    controller: { type: "agent", id: "ags_owner" },
-  });
+  const { projectId, organisationId } = await seedProjectAndWorker(harness);
+  const sessionId = await agentHeldSession(organisationId, projectId);
 
   await assert.rejects(
     () =>
@@ -280,10 +306,8 @@ test("control transfer increments the epoch, and the previous epoch stops workin
 });
 
 test("requesting control the caller already holds is idempotent and does not move the epoch", async () => {
-  const { projectId } = await seedProjectAndWorker(harness);
-  const sessionId = await sessionIdFor(projectId, {
-    controller: { type: "agent", id: "ags_owner" },
-  });
+  const { projectId, organisationId } = await seedProjectAndWorker(harness);
+  const sessionId = await agentHeldSession(organisationId, projectId);
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const record = await harness.built.sessions.requestControl({
@@ -656,10 +680,8 @@ test("ending a session with a superseded epoch is refused and the session surviv
 });
 
 test("ending a session as a controller that does not hold the lease is refused", async () => {
-  const { projectId } = await seedProjectAndWorker(harness);
-  const sessionId = await sessionIdFor(projectId, {
-    controller: { type: "agent", id: "ags_owner" },
-  });
+  const { projectId, organisationId } = await seedProjectAndWorker(harness);
+  const sessionId = await agentHeldSession(organisationId, projectId);
 
   await assert.rejects(
     () =>

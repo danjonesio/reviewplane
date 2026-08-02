@@ -73,6 +73,35 @@ async function startSession(
   return (response.json() as { data: { id: string; control_epoch: number } }).data;
 }
 
+/**
+ * A session whose interactive lease belongs to an agent.
+ *
+ * It goes through the service rather than the HTTP route because that is how
+ * the product produces this state: `browser_session_start` supplies the agent
+ * controller from the credential behind the MCP connection. The route derives
+ * the controller from the caller and refuses one in the body, so a test that
+ * set this up over HTTP would be exercising a surface that no longer exists.
+ *
+ * `agentSessionId` is deliberately not set: it carries a foreign key to
+ * `agent_sessions`, so a fabricated one is refused by the database. The
+ * controller identity carries no such constraint — which is part of why the
+ * route derives it rather than accepting it (ADR-0028).
+ */
+async function agentHeldSession(
+  owner: Tenant,
+  agentId = "ags_owner",
+): Promise<{ id: string; control_epoch: number }> {
+  const record = await harness.built.sessions.start({
+    organisationId: owner.organisationId,
+    projectId: owner.projectId,
+    viewport: DESKTOP,
+    controller: { type: "agent", id: agentId },
+    retentionClass: "verification_evidence",
+    actor: { type: "agent_session", id: agentId },
+  });
+  return { id: record.id, control_epoch: record.control_epoch };
+}
+
 function post(caller: Tenant, path: string, payload: Record<string, unknown> = {}) {
   return harness.built.app.inject({
     method: "POST",
@@ -133,9 +162,7 @@ for (const route of LIFECYCLE) {
     const owner = await tenant("owner@localhost");
     // The lease belongs to an agent. The human is a member of the project — it
     // is their project — and holds no lease.
-    const session = await startSession(owner, {
-      controller: { type: "agent", id: "ags_owner" },
-    });
+    const session = await agentHeldSession(owner);
 
     await route.prepare?.(session.id, owner.projectId);
     const before = await statusOf(session.id);
@@ -157,9 +184,7 @@ for (const route of LIFECYCLE) {
 
   test(`${route.name} requires control_epoch rather than defaulting to the session's own`, async () => {
     const owner = await tenant("owner@localhost");
-    const session = await startSession(owner, {
-      controller: { type: "agent", id: "ags_owner" },
-    });
+    const session = await agentHeldSession(owner);
 
     // No `control_epoch`. The defect was that the route filled it in from the
     // record, so the epoch check compared the record to itself.
@@ -175,9 +200,7 @@ for (const route of LIFECYCLE) {
 
   test(`${route.name} records a browser.command_rejected when it refuses`, async () => {
     const owner = await tenant("owner@localhost");
-    const session = await startSession(owner, {
-      controller: { type: "agent", id: "ags_owner" },
-    });
+    const session = await agentHeldSession(owner);
 
     await route.prepare?.(session.id, owner.projectId);
     const before = (await eventsFor(owner.projectId)).length;
@@ -247,9 +270,7 @@ test("a pause records the human who paused it, not the controller it displaced",
 
 test("a human reclaims an agent's session through control/request, which moves the epoch", async () => {
   const owner = await tenant("owner@localhost");
-  const session = await startSession(owner, {
-    controller: { type: "agent", id: "ags_owner" },
-  });
+  const session = await agentHeldSession(owner);
 
   const taken = await post(owner, `/api/v1/browser-sessions/${session.id}/control/request`, {
     controller_type: "system",
@@ -267,9 +288,7 @@ test("a human reclaims an agent's session through control/request, which moves t
 
 test("control/request does not accept a controller identity from the caller", async () => {
   const owner = await tenant("owner@localhost");
-  const session = await startSession(owner, {
-    controller: { type: "agent", id: "ags_owner" },
-  });
+  const session = await agentHeldSession(owner);
 
   // Planting a lease owned by an identity that does not exist, and revoking the
   // incumbent's as a side effect, was possible until the adversarial pass.
@@ -301,6 +320,37 @@ test("control/request does not accept a controller identity from the caller", as
 // ---------------------------------------------------------------------------
 // Tenancy, over HTTP, with both scope terms non-vacuous
 // ---------------------------------------------------------------------------
+
+test("starting a session does not accept a controller identity from the caller", async () => {
+  const owner = await tenant("owner@localhost");
+
+  // Weaker than the lifecycle case — no session exists yet, so nothing is being
+  // seized — and the same shape. A caller could name an identity it is not,
+  // and the session's lease would belong to it: the creator would hold no lease
+  // on its own session and could not end it without taking control first, while
+  // the slot counted against the worker's capacity.
+  const planted = await post(owner, `/api/v1/projects/${owner.projectId}/browser-sessions`, {
+    viewport: DESKTOP,
+    controller: { type: "agent", id: "ags_not_a_real_session" },
+  });
+  assert.equal(planted.statusCode, 422, planted.body);
+  assert.equal(
+    (planted.json() as { error: { code: string } }).error.code,
+    "VALIDATION_FAILED",
+    planted.body,
+  );
+  const rows = await postgres.pool.query("SELECT 1 FROM browser_sessions");
+  assert.equal(rows.rows.length, 0, "a refused start must not create a session");
+
+  // And the session a caller does create is one it controls.
+  const session = await startSession(owner);
+  const record = await harness.built.sessions.get(session.id);
+  assert.equal(record.current_controller?.type, "system");
+  const ended = await post(owner, `/api/v1/browser-sessions/${session.id}/terminate`, {
+    control_epoch: record.control_epoch,
+  });
+  assert.equal(ended.statusCode, 200, ended.body);
+});
 
 test("another organisation's session is refused with the same bytes an unknown identifier earns", async () => {
   const owner = await tenant("owner@localhost");

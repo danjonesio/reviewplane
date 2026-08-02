@@ -147,7 +147,6 @@ test("a worker cannot report status for a session allocated elsewhere", async ()
     payload: {
       organisation_id: organisationId,
       viewport: { width: 1440, height: 900, device_scale_factor: 1 },
-      controller: { type: "agent", id: "ags_test" },
     },
   });
   const sessionId = (started.json() as { data: { id: string } }).data.id;
@@ -266,7 +265,6 @@ test("the control plane presents its own credential to the worker, not the worke
     payload: {
       organisation_id: organisationId,
       viewport: { width: 390, height: 844, device_scale_factor: 2 },
-      controller: { type: "agent", id: "ags_test" },
     },
   });
   assert.ok(harness.workerRequests.length > 0);

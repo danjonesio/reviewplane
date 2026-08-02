@@ -61,7 +61,6 @@ async function reserveSession(projectId: string, organisationId: string): Promis
     payload: {
       organisation_id: organisationId,
       viewport: DESKTOP,
-      controller: { type: "agent", id: "ags_test" },
       allocate: false,
     },
   });

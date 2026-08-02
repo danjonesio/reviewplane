@@ -230,12 +230,34 @@ export async function registerBrowserSessionRoutes(
     const body = (request.body ?? {}) as {
       organisation_id?: string;
       viewport?: unknown;
-      controller?: ControllerIdentity;
+      controller?: unknown;
       published_service_id?: string;
       agent_session_id?: string;
       retention_class?: "action_screenshots" | "verification_evidence";
       allocate?: boolean;
     };
+    // Creation derives the controller like every other route, and for the same
+    // reason. It is a weaker case than the others — no session exists yet, so
+    // nothing is being seized, and the creator plainly has authority over what
+    // it creates — but it is the same shape, and it had the same consequence:
+    // a caller could name an identity it is not, including one that does not
+    // exist, and the session's lease would belong to it. The creator would then
+    // hold no lease on its own session and could not even end it without taking
+    // control first, while the slot counted against the worker's capacity.
+    //
+    // Nothing in the product sent it. The Live page does not, the end-to-end
+    // scenario does not, and `browser_session_start` supplies an agent
+    // controller through the **service**, derived from the credential rather
+    // than from a body (`apps/mcp-server/src/tools.ts`). It was a test
+    // affordance on the public surface, which is how the four lifecycle routes
+    // came to look reasonable too.
+    if (body.controller !== undefined) {
+      throw new ApiError(
+        "VALIDATION_FAILED",
+        "controller is not accepted when starting a browser session: the control plane derives it from the authenticated caller. Use agent_session_id to associate the session with an agent (docs/API.md section 11).",
+        { field: "controller" },
+      );
+    }
     // The organisation is derived from the resolved project and never taken
     // from the caller: on a project route an organisation the caller names is
     // an authorisation input the caller chose. It is still accepted so that
@@ -254,7 +276,7 @@ export async function registerBrowserSessionRoutes(
       organisationId: project.organisationId,
       projectId,
       viewport,
-      controller: body.controller ?? systemController(principal),
+      controller: systemController(principal),
       retentionClass: body.retention_class ?? ("verification_evidence" as const),
       ...(body.agent_session_id === undefined ? {} : { agentSessionId: body.agent_session_id }),
       actor: actorOfPrincipal(principal),

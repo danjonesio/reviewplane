@@ -873,6 +873,22 @@ organisation and did not is worse off than one that is told. On a project route
 an organisation the caller names is an authorisation input the caller chose,
 which §5 and `SECURITY.md` §7 both forbid.
 
+`controller` is **not** accepted and a request carrying one is refused with
+`VALIDATION_FAILED`. Creation derives the controller from the authenticated
+caller like every other route on this surface. It is a weaker case than the
+others — no session exists yet, so nothing is being seized, and the creator
+plainly has authority over what it creates — but it is the same shape and it had
+the same consequence: a caller could name an identity it is not, including one
+that does not exist, and the session's lease would belong to it. The creator
+would then hold no lease on its own session and could not end it without taking
+control first, while the slot counted against the worker's capacity. Use
+`agent_session_id` to associate a session with an agent; unlike a controller
+identity, it is a foreign key and a fabricated one is refused.
+
+An agent starting its own session through `browser_session_start` does hold the
+lease, because the MCP server derives that controller from the credential behind
+the connection rather than from a request body.
+
 `published_service_id` names the route the session may reach; the control plane
 resolves the origin from that record and mints the session-scoped capability
 itself. Neither the origin nor the capability is accepted from the caller: the
