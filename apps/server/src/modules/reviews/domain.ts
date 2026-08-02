@@ -435,14 +435,47 @@ export function assertVerificationCommitContext(input: {
  */
 export function assertCompletionEvidence(
   to: FindingStatus,
-  evidence: { readonly resolutionNote?: string | undefined },
+  evidence: {
+    readonly resolutionNote?: string | undefined;
+    /**
+     * What the project's completion requirements are still short of, computed
+     * from the finding's current verification. `undefined` means the caller did
+     * not evaluate the gate, which is the shape every non-agent path takes.
+     */
+    readonly missing?: readonly string[] | undefined;
+    readonly actorType?: ActorType | undefined;
+  } = {},
 ): void {
-  if (to !== "FIXED_UNVERIFIED") return;
-  if (evidence.resolutionNote !== undefined && evidence.resolutionNote.trim() !== "") return;
+  if (to === "FIXED_UNVERIFIED") {
+    if (evidence.resolutionNote !== undefined && evidence.resolutionNote.trim() !== "") return;
+    throw new ApiError(
+      "EVIDENCE_REQUIRED",
+      "A finding cannot be claimed fixed without a resolution note describing what was changed and how it was checked.",
+      { required_evidence: ["resolution_note", "after_screenshot_artefact"] },
+    );
+  }
+
+  // Handing work to a human is the point at which the product's promise is
+  // tested: `AGENTS.md` forbids claiming an issue fixed without verification
+  // evidence, and `AWAITING_HUMAN_REVIEW` is that claim made to a person. An
+  // agent reaching it without a current verification carrying the configured
+  // evidence is refused, and the refusal names every gap rather than the first
+  // one, so a caller learns the whole requirement in one round trip.
+  //
+  // The gate is applied to `agent_session` actors only, and that is a decision
+  // rather than an oversight (ADR-0029). A human moving a finding here is
+  // exercising the very authority the gate exists to defer to; refusing a
+  // person's judgement about their own work because a screenshot is missing
+  // would be the product overruling the human it is built to serve. Nothing is
+  // weakened by it: before this rule there was no gate on this transition for
+  // anybody.
+  if (to !== "AWAITING_HUMAN_REVIEW") return;
+  if (evidence.actorType !== "agent_session") return;
+  if (evidence.missing === undefined || evidence.missing.length === 0) return;
   throw new ApiError(
     "EVIDENCE_REQUIRED",
-    "A finding cannot be claimed fixed without a resolution note describing what was changed and how it was checked.",
-    { required_evidence: ["resolution_note", "after_screenshot_artefact"] },
+    `A finding cannot be submitted for human review until its verification carries the evidence this project requires. Outstanding: ${evidence.missing.join(", ")}.`,
+    { field: "status", required_evidence: [...evidence.missing] },
   );
 }
 

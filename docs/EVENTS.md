@@ -451,6 +451,7 @@ and no expiry job run.
 - `review.reopened`
 - `review.archived`
 - `review.comment_added`
+- `review.completion_evaluated`
 - `review.status_change_denied`
 
 ### Finding
@@ -507,7 +508,30 @@ stable refusal code — and never any part of the request.
 commit, tested viewports, checks and every artefact identifier — with status
 `submitted`. The control plane has already verified that each artefact belongs
 to this project and to a browser session of this project before the event is
-written, so evidence from elsewhere never reaches the audit trail.
+written, so evidence from elsewhere never reaches the audit trail. It also
+repeats the finding and the review at the top level, so a consumer filtering one
+finding's timeline need not open the claim, and carries the `version` the finding
+holds after the submission, so a reader can order it against the status changes
+around it.
+
+Where a submission replaced an earlier claim it carries
+`supersedes_verification_id`. Supersession has **no event of its own**: it is
+recorded on the submission that caused it, in the same way an edited comment is
+recorded as another `comment_added` with a back-reference. One act, one
+occurrence, and the superseded record itself survives with its own forward
+pointer (`docs/DOMAIN_MODEL.md` section 19, ADR-0030).
+
+`review.completion_evaluated` records that an agent asked the completion gate
+whether its work was done, and what it was told (`docs/MCP_SPEC.md` section 7.8).
+It is the second event in this catalogue written for something that did not
+change anything — no review, finding or verification moves because of it — and
+it exists because the moment an agent believed it had finished is precisely the
+moment an auditor wants to reconstruct when the work turns out not to have been.
+It carries the result, the outstanding requirements, how many findings were
+covered, and the agent's own account of what it believes it finished. That
+summary is a **claim**, stored inert beside the control plane's answer rather
+than instead of it, and it MUST NOT be rendered as markup capable of executing
+script.
 - `finding.verification_accepted`
 - `finding.verification_rejected`
 - `finding.resolved`

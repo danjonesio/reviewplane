@@ -48,6 +48,7 @@ import type {
   ClientCapabilities,
   ClientIdentity,
   CommentView,
+  CompletionRequirements,
   ContentRectangle,
   DevelopmentServicePublishInput,
   DevelopmentServiceResult,
@@ -57,9 +58,11 @@ import type {
   DevelopmentServicesListResult,
   Envelope,
   ErrorDetails,
+  EvidenceAssurance,
   FindingAddCommentInput,
   FindingAddCommentResult,
   FindingClaimInput,
+  FindingCompletionState,
   FindingGetInput,
   FindingGetResult,
   FindingMarkBlockedInput,
@@ -91,6 +94,10 @@ import type {
   ServerCapabilities,
   SessionInitialisationRequest,
   SessionInitialisationResult,
+  TaskCompleteInput,
+  TaskCompleteResult,
+  TaskValidationStatusInput,
+  TaskValidationStatusResult,
   ToolError,
   ToolRefusal,
   VerificationChecks,
@@ -468,11 +475,23 @@ export function encodeVerificationView(value: VerificationView): string {
   fields.push(`"commit":${jsonString(value.commit)}`);
   fields.push(`"tested_viewports":${`[${value.tested_viewports.map((item) => encodeViewport(item)).join(",")}]`}`);
   fields.push(`"checks":${encodeVerificationChecks(value.checks)}`);
+  if (value.assurance !== undefined) {
+    fields.push(`"assurance":${encodeEvidenceAssurance(value.assurance)}`);
+  }
   if (value.artefacts !== undefined) {
     fields.push(`"artefacts":${`[${value.artefacts.map((item) => encodeArtefactLink(item)).join(",")}]`}`);
   }
   fields.push(`"submitted_by":${encodeActorReference(value.submitted_by)}`);
   fields.push(`"submitted_at":${jsonString(value.submitted_at)}`);
+  if (value.supersedes_verification_id !== undefined) {
+    fields.push(`"supersedes_verification_id":${jsonString(value.supersedes_verification_id)}`);
+  }
+  if (value.superseded_by_verification_id !== undefined) {
+    fields.push(`"superseded_by_verification_id":${jsonString(value.superseded_by_verification_id)}`);
+  }
+  if (value.superseded_at !== undefined) {
+    fields.push(`"superseded_at":${jsonString(value.superseded_at)}`);
+  }
   return `{${fields.join(",")}}`;
 }
 
@@ -1245,6 +1264,8 @@ export function encodeFindingSubmitVerificationResult(value: FindingSubmitVerifi
   const fields: string[] = [];
   fields.push(`"verification":${encodeVerificationView(value.verification)}`);
   fields.push(`"finding":${encodeFindingView(value.finding)}`);
+  fields.push(`"requirements":${encodeCompletionRequirements(value.requirements)}`);
+  fields.push(`"missing":${`[${value.missing.map((item) => jsonString(item)).join(",")}]`}`);
   return `{${fields.join(",")}}`;
 }
 
@@ -1484,5 +1505,111 @@ export function encodeDevelopmentServicesListResult(value: DevelopmentServicesLi
 export function encodeDevelopmentServiceResult(value: DevelopmentServiceResult): string {
   const fields: string[] = [];
   fields.push(`"service":${encodeDevelopmentServiceView(value.service)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a CompletionRequirements.
+ */
+export function encodeCompletionRequirements(value: CompletionRequirements): string {
+  const fields: string[] = [];
+  fields.push(`"required_viewports":${`[${value.required_viewports.map((item) => jsonString(item)).join(",")}]`}`);
+  fields.push(`"console_review":${jsonBoolean(value.console_review)}`);
+  fields.push(`"network_review":${jsonBoolean(value.network_review)}`);
+  fields.push(`"final_screenshot":${jsonBoolean(value.final_screenshot)}`);
+  if (value.accessibility_check !== undefined) {
+    fields.push(`"accessibility_check":${jsonBoolean(value.accessibility_check)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a EvidenceAssurance.
+ */
+export function encodeEvidenceAssurance(value: EvidenceAssurance): string {
+  const fields: string[] = [];
+  fields.push(`"verified_by_control_plane":${`[${value.verified_by_control_plane.map((item) => jsonString(item)).join(",")}]`}`);
+  fields.push(`"asserted_by_agent":${`[${value.asserted_by_agent.map((item) => jsonString(item)).join(",")}]`}`);
+  if (value.asserted_by !== undefined) {
+    fields.push(`"asserted_by":${encodeActorReference(value.asserted_by)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a FindingCompletionState.
+ */
+export function encodeFindingCompletionState(value: FindingCompletionState): string {
+  const fields: string[] = [];
+  fields.push(`"finding_id":${jsonString(value.finding_id)}`);
+  fields.push(`"status":${jsonString(value.status)}`);
+  fields.push(`"result":${jsonString(value.result)}`);
+  fields.push(`"missing":${`[${value.missing.map((item) => jsonString(item)).join(",")}]`}`);
+  if (value.verification_id !== undefined) {
+    fields.push(`"verification_id":${jsonString(value.verification_id)}`);
+  }
+  if (value.verification_count !== undefined) {
+    fields.push(`"verification_count":${jsonInteger(value.verification_count)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a TaskValidationStatusInput.
+ */
+export function encodeTaskValidationStatusInput(value: TaskValidationStatusInput): string {
+  const fields: string[] = [];
+  fields.push(`"review":${jsonString(value.review)}`);
+  if (value.finding_id !== undefined) {
+    fields.push(`"finding_id":${jsonString(value.finding_id)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a TaskValidationStatusResult.
+ */
+export function encodeTaskValidationStatusResult(value: TaskValidationStatusResult): string {
+  const fields: string[] = [];
+  fields.push(`"browser_required":${jsonBoolean(value.browser_required)}`);
+  fields.push(`"requirements":${encodeCompletionRequirements(value.requirements)}`);
+  fields.push(`"missing":${`[${value.missing.map((item) => jsonString(item)).join(",")}]`}`);
+  fields.push(`"assurance":${encodeEvidenceAssurance(value.assurance)}`);
+  if (value.finding_states !== undefined) {
+    fields.push(`"finding_states":${`[${value.finding_states.map((item) => encodeFindingCompletionState(item)).join(",")}]`}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a TaskCompleteInput.
+ */
+export function encodeTaskCompleteInput(value: TaskCompleteInput): string {
+  const fields: string[] = [];
+  fields.push(`"review":${jsonString(value.review)}`);
+  if (value.finding_id !== undefined) {
+    fields.push(`"finding_id":${jsonString(value.finding_id)}`);
+  }
+  if (value.summary !== undefined) {
+    fields.push(`"summary":${jsonString(value.summary)}`);
+  }
+  fields.push(`"idempotency_key":${jsonString(value.idempotency_key)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a TaskCompleteResult.
+ */
+export function encodeTaskCompleteResult(value: TaskCompleteResult): string {
+  const fields: string[] = [];
+  fields.push(`"result":${jsonString(value.result)}`);
+  fields.push(`"terminates_session":${jsonBoolean(value.terminates_session)}`);
+  fields.push(`"requirements":${encodeCompletionRequirements(value.requirements)}`);
+  fields.push(`"missing":${`[${value.missing.map((item) => jsonString(item)).join(",")}]`}`);
+  fields.push(`"assurance":${encodeEvidenceAssurance(value.assurance)}`);
+  fields.push(`"next_actions":${`[${value.next_actions.map((item) => jsonString(item)).join(",")}]`}`);
+  if (value.finding_states !== undefined) {
+    fields.push(`"finding_states":${`[${value.finding_states.map((item) => encodeFindingCompletionState(item)).join(",")}]`}`);
+  }
   return `{${fields.join(",")}}`;
 }

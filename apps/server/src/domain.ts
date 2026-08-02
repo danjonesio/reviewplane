@@ -162,6 +162,23 @@ export {
   assertVerificationCommitContext,
   isHumanActor,
 } from "./modules/reviews/domain.ts";
+export {
+  HUMAN_REVIEW_NOT_REQUESTED,
+  aggregateCompletionResult,
+  aggregateMissing,
+  assuranceFor,
+  completionRequirementsFor,
+  evidenceWarnings,
+  findingCompletionState,
+  missingEvidence,
+  nextActions,
+  viewportRequirementLabel,
+  viewportSatisfies,
+  type CompletionRequirements,
+  type EvidenceAssurance,
+  type EvidenceUnderReview,
+  type FindingCompletionState,
+} from "./modules/reviews/completion.ts";
 export { REVIEW_EXPORT_CONTENT_TYPE, reviewExportHandler } from "./modules/reviews/export-job.ts";
 export {
   ReviewService,

@@ -36,8 +36,9 @@ const PATTERN_17 = new RegExp("^[0-9a-f]{7,64}$", "u");
 const PATTERN_18 = new RegExp("^[0-9a-f]{64}$", "u");
 const PATTERN_19 = new RegExp("^[A-Za-z0-9_.\\[\\]-]+$", "u");
 const PATTERN_20 = new RegExp("^[0-9A-Fa-f:.]{1,45}$", "u");
-const PATTERN_21 = new RegExp("^https://[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.[a-z0-9.-]{1,180}/$", "u");
-const PATTERN_22 = new RegExp("^(\\[[0-9A-Fa-f:.]{1,45}\\]|[0-9A-Fa-f:.]{1,45}):[0-9]{1,5}$", "u");
+const PATTERN_21 = new RegExp("^[a-zA-Z0-9][a-zA-Z0-9 ()@x.,:_-]{0,119}$", "u");
+const PATTERN_22 = new RegExp("^https://[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.[a-z0-9.-]{1,180}/$", "u");
+const PATTERN_23 = new RegExp("^(\\[[0-9A-Fa-f:.]{1,45}\\]|[0-9A-Fa-f:.]{1,45}):[0-9]{1,5}$", "u");
 
 /**
  * Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the
@@ -425,7 +426,7 @@ export function validateUntrustedFieldPath(value: unknown, path: string, out: Sc
  * that cannot consume image content still completes the workflow.
  */
 export function validateWarningCode(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["image_content_unsupported","resource_content_unsupported","findings_truncated","text_truncated","workspace_unresolved","verification_branch_uncorroborated","staleness_unavailable","inbox_unavailable","results_truncated","idempotent_replay"] });
+  checkString(value, path, out, { values: ["image_content_unsupported","resource_content_unsupported","findings_truncated","text_truncated","workspace_unresolved","verification_branch_uncorroborated","staleness_unavailable","inbox_unavailable","results_truncated","idempotent_replay","completion_blocked_pending_review"] });
 }
 
 /**
@@ -443,7 +444,7 @@ export function validateErrorClass(value: unknown, path: string, out: SchemaViol
  * advertises always has a result schema and a bound.
  */
 export function validateMessageType(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["project_current","agent_session_status","agent_inbox_list","agent_inbox_acknowledge","review_list","review_search","review_get","review_claim","review_update_status","review_add_comment","finding_get","finding_claim","finding_update_status","finding_mark_blocked","finding_add_comment","finding_submit_verification","browser_take_screenshot","browser_session_start","browser_session_status","browser_session_pause","browser_session_resume","browser_session_end","browser_navigate","browser_snapshot","browser_click","browser_type","browser_select_option","browser_press_key","browser_scroll","browser_resize","browser_wait","development_services_list","development_service_publish","development_service_unpublish"] });
+  checkString(value, path, out, { values: ["project_current","agent_session_status","agent_inbox_list","agent_inbox_acknowledge","review_list","review_search","review_get","review_claim","review_update_status","review_add_comment","finding_get","finding_claim","finding_update_status","finding_mark_blocked","finding_add_comment","finding_submit_verification","browser_take_screenshot","browser_session_start","browser_session_status","browser_session_pause","browser_session_resume","browser_session_end","browser_navigate","browser_snapshot","browser_click","browser_type","browser_select_option","browser_press_key","browser_scroll","browser_resize","browser_wait","development_services_list","development_service_publish","development_service_unpublish","task_validation_status","task_complete"] });
 }
 
 /**
@@ -697,6 +698,23 @@ export function validateDestinationProtocol(value: unknown, path: string, out: S
  */
 export function validatePublishedServiceStatus(value: unknown, path: string, out: SchemaViolation[]): void {
   checkString(value, path, out, { values: ["requested","ready","failed","expired","revoked"] });
+}
+
+/**
+ * The result of the completion gate (docs/MCP_SPEC.md section 7.8). blocked_pending_review
+ * is a correct terminal answer for an agent and not a failure to retry.
+ */
+export function validateCompletionResult(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["completed","completed_with_warnings","blocked_missing_evidence","blocked_pending_review"] });
+}
+
+/**
+ * One requirement or gap, written for a reader rather than parsed: 390x844 verification,
+ * after screenshot, console review. The control plane composes every value, so nothing an
+ * agent supplied is echoed back through this member.
+ */
+export function validateRequirementLabel(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 120, pattern: PATTERN_21 });
 }
 
 /**
@@ -1452,7 +1470,7 @@ export function validateVerificationViewArtefacts(value: unknown, path: string, 
  * not available to an agent at all.
  */
 export function validateVerificationView(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["verification_id", "finding_id", "status", "summary", "branch", "commit", "tested_viewports", "checks", "artefacts", "submitted_by", "submitted_at"], ["verification_id", "finding_id", "status", "summary", "branch", "commit", "tested_viewports", "checks", "submitted_by", "submitted_at"]);
+  const source = checkObject(value, path, out, ["verification_id", "finding_id", "status", "summary", "branch", "commit", "tested_viewports", "checks", "assurance", "artefacts", "submitted_by", "submitted_at", "supersedes_verification_id", "superseded_by_verification_id", "superseded_at"], ["verification_id", "finding_id", "status", "summary", "branch", "commit", "tested_viewports", "checks", "submitted_by", "submitted_at"]);
   if (source === null) return;
   if (source["verification_id"] !== undefined) {
     validateIdentifier(source["verification_id"], `${path}.verification_id`, out);
@@ -1478,6 +1496,9 @@ export function validateVerificationView(value: unknown, path: string, out: Sche
   if (source["checks"] !== undefined) {
     validateVerificationChecks(source["checks"], `${path}.checks`, out);
   }
+  if (source["assurance"] !== undefined) {
+    validateEvidenceAssurance(source["assurance"], `${path}.assurance`, out);
+  }
   if (source["artefacts"] !== undefined) {
     validateVerificationViewArtefacts(source["artefacts"], `${path}.artefacts`, out);
   }
@@ -1486,6 +1507,15 @@ export function validateVerificationView(value: unknown, path: string, out: Sche
   }
   if (source["submitted_at"] !== undefined) {
     validateTimestamp(source["submitted_at"], `${path}.submitted_at`, out);
+  }
+  if (source["supersedes_verification_id"] !== undefined) {
+    validateIdentifier(source["supersedes_verification_id"], `${path}.supersedes_verification_id`, out);
+  }
+  if (source["superseded_by_verification_id"] !== undefined) {
+    validateIdentifier(source["superseded_by_verification_id"], `${path}.superseded_by_verification_id`, out);
+  }
+  if (source["superseded_at"] !== undefined) {
+    validateTimestamp(source["superseded_at"], `${path}.superseded_at`, out);
   }
 }
 
@@ -2863,17 +2893,36 @@ export function validateFindingAddCommentResult(value: unknown, path: string, ou
 }
 
 /**
+ * What this submission still does not satisfy. Empty means the evidence gate would now
+ * permit AWAITING_HUMAN_REVIEW, and nothing more than that.
+ */
+export function validateFindingSubmitVerificationResultMissing(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 16, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateRequirementLabel(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
  * Payload of finding_submit_verification. The finding is returned beside the verification
- * so the agent can see the status the submission moved it to without a second call.
+ * so the agent can see the status the submission moved it to without a second call, and
+ * the outstanding requirements beside both so it learns what is still missing here rather
+ * than from a refusal on the next transition.
  */
 export function validateFindingSubmitVerificationResult(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["verification", "finding"], ["verification", "finding"]);
+  const source = checkObject(value, path, out, ["verification", "finding", "requirements", "missing"], ["verification", "finding", "requirements", "missing"]);
   if (source === null) return;
   if (source["verification"] !== undefined) {
     validateVerificationView(source["verification"], `${path}.verification`, out);
   }
   if (source["finding"] !== undefined) {
     validateFindingView(source["finding"], `${path}.finding`, out);
+  }
+  if (source["requirements"] !== undefined) {
+    validateCompletionRequirements(source["requirements"], `${path}.requirements`, out);
+  }
+  if (source["missing"] !== undefined) {
+    validateFindingSubmitVerificationResultMissing(source["missing"], `${path}.missing`, out);
   }
 }
 
@@ -3259,14 +3308,14 @@ export function validateEnvelope(value: unknown, path: string, out: SchemaViolat
  * public internet.
  */
 export function validateDevelopmentServiceViewInternalOrigin(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 256, pattern: PATTERN_21 });
+  checkString(value, path, out, { minLength: 1, maxLength: 256, pattern: PATTERN_22 });
 }
 
 /**
  * Destination the connector reported it opened. Absent until the route is ready.
  */
 export function validateDevelopmentServiceViewObservedDestination(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 3, maxLength: 64, pattern: PATTERN_22 });
+  checkString(value, path, out, { minLength: 3, maxLength: 64, pattern: PATTERN_23 });
 }
 
 /**
@@ -3401,5 +3450,320 @@ export function validateDevelopmentServiceResult(value: unknown, path: string, o
   if (source === null) return;
   if (source["service"] !== undefined) {
     validateDevelopmentServiceView(source["service"], `${path}.service`, out);
+  }
+}
+
+/**
+ * Viewports the work must be checked at, written as widthxheight. Stage 1 defaults to
+ * 390x844 and 1440x900 (AGENTS.md "Browser-facing work").
+ */
+export function validateCompletionRequirementsRequiredViewports(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 1, maxItems: 8, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateRequirementLabel(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Whether console output must have been reviewed. It is an agent assertion, never a
+ * control-plane observation: Stage 1 captures no console artefact.
+ */
+export function validateCompletionRequirementsConsoleReview(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * Whether failed network requests must have been reviewed. An agent assertion, on the same
+ * footing as console_review.
+ */
+export function validateCompletionRequirementsNetworkReview(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * Whether a verified after screenshot must be linked. This one the control plane checks
+ * itself: the artefact must exist, be available, belong to this project and carry a
+ * digest.
+ */
+export function validateCompletionRequirementsFinalScreenshot(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * Whether keyboard navigation and visible focus must have been checked. Recorded but not
+ * required in Stage 1, so this is false and accessibility_checked never appears in a
+ * missing list.
+ */
+export function validateCompletionRequirementsAccessibilityCheck(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * What this project requires before work counts as done (docs/MCP_SPEC.md section 7.8).
+ * The viewports come from the project's default_validation_viewports (docs/DOMAIN_MODEL.md
+ * section 6), so a project that changes them changes the gate rather than the gate holding
+ * a second copy of the rule. The shape is shared by the web application and this
+ * interface, so both describe the requirement in the same words.
+ */
+export function validateCompletionRequirements(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["required_viewports", "console_review", "network_review", "final_screenshot", "accessibility_check"], ["required_viewports", "console_review", "network_review", "final_screenshot"]);
+  if (source === null) return;
+  if (source["required_viewports"] !== undefined) {
+    validateCompletionRequirementsRequiredViewports(source["required_viewports"], `${path}.required_viewports`, out);
+  }
+  if (source["console_review"] !== undefined) {
+    validateCompletionRequirementsConsoleReview(source["console_review"], `${path}.console_review`, out);
+  }
+  if (source["network_review"] !== undefined) {
+    validateCompletionRequirementsNetworkReview(source["network_review"], `${path}.network_review`, out);
+  }
+  if (source["final_screenshot"] !== undefined) {
+    validateCompletionRequirementsFinalScreenshot(source["final_screenshot"], `${path}.final_screenshot`, out);
+  }
+  if (source["accessibility_check"] !== undefined) {
+    validateCompletionRequirementsAccessibilityCheck(source["accessibility_check"], `${path}.accessibility_check`, out);
+  }
+}
+
+/**
+ * What the control plane checked for itself before recording the verification.
+ */
+export function validateEvidenceAssuranceVerifiedByControlPlane(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 12, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateRequirementLabel(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * What the submitter claimed and nothing confirmed. Empty is a truthful answer.
+ */
+export function validateEvidenceAssuranceAssertedByAgent(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 12, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateRequirementLabel(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Who established each piece of evidence. The completion gate MUST NOT present an agent's
+ * checks object as though the control plane had confirmed it: the artefacts are what the
+ * control plane verified, and the checks are a claim attributed to the actor that made it
+ * (docs/DOMAIN_MODEL.md section 19, docs/MCP_SPEC.md section 7.8).
+ */
+export function validateEvidenceAssurance(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["verified_by_control_plane", "asserted_by_agent", "asserted_by"], ["verified_by_control_plane", "asserted_by_agent"]);
+  if (source === null) return;
+  if (source["verified_by_control_plane"] !== undefined) {
+    validateEvidenceAssuranceVerifiedByControlPlane(source["verified_by_control_plane"], `${path}.verified_by_control_plane`, out);
+  }
+  if (source["asserted_by_agent"] !== undefined) {
+    validateEvidenceAssuranceAssertedByAgent(source["asserted_by_agent"], `${path}.asserted_by_agent`, out);
+  }
+  if (source["asserted_by"] !== undefined) {
+    validateActorReference(source["asserted_by"], `${path}.asserted_by`, out);
+  }
+}
+
+/**
+ * Evidence this finding still lacks. Empty when nothing is missing.
+ */
+export function validateFindingCompletionStateMissing(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 16, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateRequirementLabel(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * One finding's standing against the project's completion requirements.
+ */
+export function validateFindingCompletionState(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["finding_id", "status", "result", "missing", "verification_id", "verification_count"], ["finding_id", "status", "result", "missing"]);
+  if (source === null) return;
+  if (source["finding_id"] !== undefined) {
+    validateIdentifier(source["finding_id"], `${path}.finding_id`, out);
+  }
+  if (source["status"] !== undefined) {
+    validateFindingStatus(source["status"], `${path}.status`, out);
+  }
+  if (source["result"] !== undefined) {
+    validateCompletionResult(source["result"], `${path}.result`, out);
+  }
+  if (source["missing"] !== undefined) {
+    validateFindingCompletionStateMissing(source["missing"], `${path}.missing`, out);
+  }
+  if (source["verification_id"] !== undefined) {
+    validateIdentifier(source["verification_id"], `${path}.verification_id`, out);
+  }
+  if (source["verification_count"] !== undefined) {
+    validateRecordCount(source["verification_count"], `${path}.verification_count`, out);
+  }
+}
+
+/**
+ * Arguments of task_validation_status. The review is resolved inside the current project
+ * only, as everywhere else on this interface.
+ */
+export function validateTaskValidationStatusInput(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["review", "finding_id"], ["review"]);
+  if (source === null) return;
+  if (source["review"] !== undefined) {
+    validateReviewSelector(source["review"], `${path}.review`, out);
+  }
+  if (source["finding_id"] !== undefined) {
+    validateIdentifier(source["finding_id"], `${path}.finding_id`, out);
+  }
+}
+
+/**
+ * Whether the work must be checked in a browser. True while any required viewport is
+ * configured.
+ */
+export function validateTaskValidationStatusResultBrowserRequired(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * What is still missing, deduplicated across the evaluated findings. An empty list is the
+ * honest answer that nothing is outstanding, and is not on its own a statement that the
+ * work is accepted.
+ */
+export function validateTaskValidationStatusResultMissing(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 32, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateRequirementLabel(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Per-finding standing against the requirements, in the review's order. It is deliberately
+ * not called findings and carries no finding view: nothing here came from a page, which is
+ * why this response is labelled trusted_control_plane and why an agent must still read the
+ * finding itself for its text.
+ */
+export function validateTaskValidationStatusResultFindingStates(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 50, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateFindingCompletionState(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Payload of task_validation_status, in the shape of docs/MCP_SPEC.md section 7.8. It
+ * reports and changes nothing.
+ */
+export function validateTaskValidationStatusResult(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["browser_required", "requirements", "missing", "assurance", "finding_states"], ["browser_required", "requirements", "missing", "assurance"]);
+  if (source === null) return;
+  if (source["browser_required"] !== undefined) {
+    validateTaskValidationStatusResultBrowserRequired(source["browser_required"], `${path}.browser_required`, out);
+  }
+  if (source["requirements"] !== undefined) {
+    validateCompletionRequirements(source["requirements"], `${path}.requirements`, out);
+  }
+  if (source["missing"] !== undefined) {
+    validateTaskValidationStatusResultMissing(source["missing"], `${path}.missing`, out);
+  }
+  if (source["assurance"] !== undefined) {
+    validateEvidenceAssurance(source["assurance"], `${path}.assurance`, out);
+  }
+  if (source["finding_states"] !== undefined) {
+    validateTaskValidationStatusResultFindingStates(source["finding_states"], `${path}.finding_states`, out);
+  }
+}
+
+/**
+ * Arguments of task_complete. There is no argument that asserts a result and none that
+ * could terminate the session: the caller names the work and the control plane evaluates
+ * it.
+ */
+export function validateTaskCompleteInput(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["review", "finding_id", "summary", "idempotency_key"], ["review", "idempotency_key"]);
+  if (source === null) return;
+  if (source["review"] !== undefined) {
+    validateReviewSelector(source["review"], `${path}.review`, out);
+  }
+  if (source["finding_id"] !== undefined) {
+    validateIdentifier(source["finding_id"], `${path}.finding_id`, out);
+  }
+  if (source["summary"] !== undefined) {
+    validateBodyText(source["summary"], `${path}.summary`, out);
+  }
+  if (source["idempotency_key"] !== undefined) {
+    validateIdempotencyKey(source["idempotency_key"], `${path}.idempotency_key`, out);
+  }
+}
+
+/**
+ * Always false. This tool records validation state and returns requirements; ending the
+ * run is the client's decision.
+ */
+export function validateTaskCompleteResultTerminatesSession(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * What is still missing, deduplicated across the evaluated findings.
+ */
+export function validateTaskCompleteResultMissing(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 32, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateRequirementLabel(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * What to do next, in the vocabulary of this interface. A refusal that says only what is
+ * wrong makes an agent guess.
+ */
+export function validateTaskCompleteResultNextActions(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 16, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateRequirementLabel(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Per-finding standing against the requirements, in the review's order. It is deliberately
+ * not called findings and carries no finding view: nothing here came from a page, which is
+ * why this response is labelled trusted_control_plane and why an agent must still read the
+ * finding itself for its text.
+ */
+export function validateTaskCompleteResultFindingStates(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 50, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateFindingCompletionState(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Payload of task_complete. terminates_session is always false and is stated rather than
+ * implied, because the tool's name is the one thing about it that could be misread
+ * (docs/MCP_SPEC.md section 7.8).
+ */
+export function validateTaskCompleteResult(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["result", "terminates_session", "requirements", "missing", "assurance", "next_actions", "finding_states"], ["result", "terminates_session", "requirements", "missing", "assurance", "next_actions"]);
+  if (source === null) return;
+  if (source["result"] !== undefined) {
+    validateCompletionResult(source["result"], `${path}.result`, out);
+  }
+  if (source["terminates_session"] !== undefined) {
+    validateTaskCompleteResultTerminatesSession(source["terminates_session"], `${path}.terminates_session`, out);
+  }
+  if (source["requirements"] !== undefined) {
+    validateCompletionRequirements(source["requirements"], `${path}.requirements`, out);
+  }
+  if (source["missing"] !== undefined) {
+    validateTaskCompleteResultMissing(source["missing"], `${path}.missing`, out);
+  }
+  if (source["assurance"] !== undefined) {
+    validateEvidenceAssurance(source["assurance"], `${path}.assurance`, out);
+  }
+  if (source["next_actions"] !== undefined) {
+    validateTaskCompleteResultNextActions(source["next_actions"], `${path}.next_actions`, out);
+  }
+  if (source["finding_states"] !== undefined) {
+    validateTaskCompleteResultFindingStates(source["finding_states"], `${path}.finding_states`, out);
   }
 }

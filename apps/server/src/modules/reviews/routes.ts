@@ -39,6 +39,7 @@ import {
   validateReviewCreateRequest,
   validateReviewTransitionRequest,
   validateReviewUpdateRequest,
+  validateVerificationCreateRequest,
   type AnnotationCreateRequest,
   type CommentCreateRequest,
   type CommentUpdateRequest,
@@ -51,6 +52,7 @@ import {
   type ReviewTransitionRequest,
   type ReviewUpdateRequest,
   type SchemaViolation,
+  type VerificationCreateRequest,
 } from "@reviewplane/protocol/review";
 
 import { ApiError, notFound } from "../../errors.ts";
@@ -720,6 +722,71 @@ export async function registerReviewRoutes(
     const { findingId } = request.params as { findingId: string };
     const { scope } = await scopedRecord(request, "findings", findingId, "read");
     return send(reply, request, await reviews.latestVerification(scope, findingId));
+  });
+
+  /**
+   * Every verification a finding has accumulated, newest first
+   * (`docs/API.md` §13, `docs/DOMAIN_MODEL.md` §19).
+   *
+   * A superseded record is kept rather than deleted, and a finding may
+   * accumulate several across reopen cycles. The comparison UI needs the
+   * current one; anybody judging *whether the same thing has been claimed
+   * before* needs the rest, and a route that served only the latest would make
+   * a repeatedly-reopened finding look like a first attempt every time.
+   */
+  app.get("/api/v1/findings/:findingId/verifications", async (request, reply) => {
+    const { findingId } = request.params as { findingId: string };
+    const { scope } = await scopedRecord(request, "findings", findingId, "read");
+    return send(reply, request, await reviews.listVerifications(scope, findingId));
+  });
+
+  /**
+   * Submits a verification: a claim with evidence, never a resolution
+   * (`docs/API.md` §13, `docs/MCP_SPEC.md` §7.7, `docs/DOMAIN_MODEL.md` §19).
+   *
+   * The body has **no `submitted_by` and no `status`**. Both are derived: the
+   * submitter is the authenticated actor and the status is always `submitted`,
+   * so a caller cannot forge an attribution and cannot record the human
+   * decision that a verification is accepted. A body supplying either is
+   * refused as an unknown property by the generated validator, before any
+   * handler runs.
+   *
+   * The route is on the human API, which refuses an agent credential at the
+   * transport by token shape (`docs/SECURITY.md` §6.3). A human submitting
+   * verification for work they did themselves is an ordinary act and is what
+   * this route is for; the agent's path is `finding_submit_verification` on
+   * `/mcp/v1`, and both reach the same domain method with the same checks.
+   */
+  app.post("/api/v1/findings/:findingId/verifications", async (request, reply) => {
+    const { findingId } = request.params as { findingId: string };
+    const { scope, actor } = await scopedRecord(request, "findings", findingId, "write");
+    const body = decode<VerificationCreateRequest>(
+      validateVerificationCreateRequest,
+      request.body,
+      "the verification could not be submitted",
+    );
+    const submitted = await reviews.submitVerification(
+      scope,
+      findingId,
+      {
+        summary: body.summary,
+        branch: body.branch,
+        commit: body.commit,
+        testedViewports: body.tested_viewports,
+        checks: body.checks,
+        artefactIds: body.artefact_ids,
+        // No workspace is resolved on the human API: a person submitting from a
+        // browser has no registered workspace to corroborate a branch against,
+        // so the branch is recorded uncorroborated rather than checked against
+        // something that is not there (`docs/MCP_SPEC.md` §7.7).
+        workspaceBranch: null,
+        ...(body.expected_version === undefined
+          ? {}
+          : { expectedVersion: body.expected_version }),
+      },
+      actor,
+    );
+    return send(reply, request, submitted.verification, 201);
   });
 
   app.get("/api/v1/findings/:findingId/annotations", async (request, reply) => {

@@ -82,6 +82,12 @@
         "payload": "finding_verification_submitted",
         "description": "An agent submitted a claim with evidence that a finding is resolved (docs/DOMAIN_MODEL.md section 19). It is the event that carries the before-and-after evidence a human then judges; submitting it accepts nothing."
       },
+      "review.completion_evaluated": {
+        "channel": "review",
+        "direction": "control_plane_to_client",
+        "payload": "review_completion_evaluated",
+        "description": "An agent asked the completion gate whether its work was done, and was told (docs/MCP_SPEC.md section 7.8). It records an evaluation and never a change: no review, finding or verification moves because of it. It exists because the moment an agent believes it has finished is a moment worth being able to reconstruct — including the case where it was told blocked_pending_review and what it did next."
+      },
       "review.assigned": {
         "channel": "review",
         "direction": "control_plane_to_client",
@@ -293,6 +299,12 @@
         "def": "finding_transition_request",
         "max_bytes_limit": "max_request_bytes",
         "description": "Body of the human-only finding disposition routes of docs/API.md section 13: accept, reopen and wont-fix. They are human-only in the domain layer, so an agent credential reaching one is refused with AUTHORISATION_DENIED and audited."
+      },
+      "verification_create_request": {
+        "channel": "command",
+        "def": "verification_create_request",
+        "max_bytes_limit": "max_request_bytes",
+        "description": "Body of POST /api/v1/findings/:findingId/verifications (docs/API.md section 13). It carries no submitted_by and no status: the submitter is the authenticated actor and the status is always submitted, so neither an attribution nor a decision is a field a caller may set."
       },
       "comment_create_request": {
         "channel": "command",
@@ -768,6 +780,7 @@
         "finding.claimed",
         "finding.comment_added",
         "finding.verification_submitted",
+        "review.completion_evaluated",
         "review.assigned",
         "review.accepted",
         "review.reopened",
@@ -1737,6 +1750,18 @@
         "reviewed_at": {
           "$ref": "#/$defs/timestamp",
           "description": "When a human decided."
+        },
+        "supersedes_verification_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "The verification this one replaced as the current claim, where there was one. The earlier record is marked superseded rather than deleted, so a finding carries the whole history of what was claimed about it across reopen cycles (docs/DOMAIN_MODEL.md section 19)."
+        },
+        "superseded_by_verification_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "The verification that replaced this one. Present only where status is superseded."
+        },
+        "superseded_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When this record stopped being the current claim."
         }
       }
     },
@@ -1979,6 +2004,50 @@
         "duplicate_of_finding_id": {
           "$ref": "#/$defs/identifier",
           "description": "The finding this one duplicates, where the disposition is DUPLICATE."
+        }
+      }
+    },
+    "verification_create_request": {
+      "type": "object",
+      "description": "Body of POST /api/v1/findings/:findingId/verifications (docs/API.md section 13). There is no submitted_by field and no status field, and their absence is the point: the submitter is derived from the authenticated actor and the status is always submitted, so no caller can forge an attribution or record a decision. Accepting or rejecting a verification is a human decision recorded on separate routes.",
+      "additionalProperties": false,
+      "x-max-bytes": 12288,
+      "required": ["summary", "branch", "commit", "tested_viewports", "checks", "artefact_ids"],
+      "properties": {
+        "expected_version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version the caller last read, where it wants the submission refused if the finding moved. Checked inside the transaction that writes the new version."
+        },
+        "summary": {
+          "$ref": "#/$defs/body_text",
+          "description": "What was changed and how it was checked. Stored and rendered as text, never as markup."
+        },
+        "branch": {
+          "$ref": "#/$defs/branch_name",
+          "description": "Branch the fix was made on."
+        },
+        "commit": {
+          "$ref": "#/$defs/commit_sha",
+          "description": "Commit the fix was made in. It MUST differ from the commit the finding was captured at."
+        },
+        "tested_viewports": {
+          "type": "array",
+          "description": "Viewports the fix was checked at.",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/viewport", "description": "One viewport." }
+        },
+        "checks": {
+          "$ref": "#/$defs/verification_checks",
+          "description": "Checks the submitter claims to have performed. They are recorded as that actor's claims and never as control-plane verification."
+        },
+        "artefact_ids": {
+          "type": "array",
+          "description": "Evidence. Each must exist, be available, and belong to this project; at least one must be a screenshot.",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier", "description": "One artefact identifier." }
         }
       }
     },
@@ -2948,14 +3017,74 @@
     },
     "finding_verification_submitted": {
       "type": "object",
-      "description": "Payload of finding.verification_submitted.",
+      "description": "Payload of finding.verification_submitted. It carries the whole claim, and beside it the finding and the version that finding holds after the submission, so an auditor can order a claim against the status changes around it without a second read (docs/EVENTS.md section 7).",
       "additionalProperties": false,
       "x-max-bytes": 8192,
-      "required": ["verification"],
+      "required": ["verification", "finding_id", "review_id", "version"],
       "properties": {
         "verification": {
           "$ref": "#/$defs/verification_reference",
           "description": "The verification as submitted, with status submitted."
+        },
+        "finding_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Finding the claim concerns, at the top level so a consumer filtering one finding's timeline need not open the claim to decide whether the event belongs to it."
+        },
+        "review_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Review the finding belongs to."
+        },
+        "version": {
+          "$ref": "#/$defs/version_number",
+          "description": "Version the finding holds after the submission."
+        },
+        "supersedes_verification_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "The verification this submission replaced as the current claim, where there was one. Supersession is recorded on the submission that caused it rather than as an event of its own, in the same way an edited comment is recorded as another comment_added carrying a back-reference: one act, one occurrence."
+        }
+      }
+    },
+    "completion_result": {
+      "type": "string",
+      "description": "The result of the completion gate (docs/MCP_SPEC.md section 7.8). None of the four terminates the agent, and blocked_pending_review is a correct terminal answer for an agent rather than a failure to retry.",
+      "enum": ["completed", "completed_with_warnings", "blocked_missing_evidence", "blocked_pending_review"]
+    },
+    "requirement_label": {
+      "type": "string",
+      "description": "One outstanding requirement, composed by the control plane and written for a reader: 390x844 verification, after screenshot, console review. Nothing an agent supplied is echoed through it.",
+      "minLength": 1,
+      "maxLength": 120,
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9 ()@x.,:_-]{0,119}$"
+    },
+    "review_completion_evaluated": {
+      "type": "object",
+      "description": "Payload of review.completion_evaluated. It records what an agent was told, not what changed: the result, the outstanding requirements and the agent's own account of what it believes it finished. The summary is the agent's claim and is stored inert — it is not evidence, it did not affect the result, and it MUST NOT be rendered as markup (docs/SECURITY.md section 18, ADR-0010).",
+      "additionalProperties": false,
+      "x-max-bytes": 8192,
+      "required": ["review_id", "result", "missing", "finding_count"],
+      "properties": {
+        "review_id": { "$ref": "#/$defs/identifier", "description": "Review the evaluation covered." },
+        "finding_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "The single finding the evaluation was narrowed to, where it was."
+        },
+        "result": { "$ref": "#/$defs/completion_result", "description": "What the gate answered." },
+        "missing": {
+          "type": "array",
+          "description": "What was still outstanding when the gate ran. Empty is a truthful answer and never on its own a statement that the work was accepted.",
+          "minItems": 0,
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/requirement_label", "description": "One gap." }
+        },
+        "finding_count": {
+          "type": "integer",
+          "description": "How many findings the evaluation covered.",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "summary": {
+          "$ref": "#/$defs/body_text",
+          "description": "The agent's account of what it believes it finished. A claim, recorded beside the control plane's answer rather than instead of it."
         }
       }
     },

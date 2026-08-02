@@ -1,15 +1,18 @@
 /**
- * The tool catalogue (`docs/MCP_SPEC.md` sections 7.1, 7.2, 7.4, 7.6, 7.7).
+ * The tool catalogue (`docs/MCP_SPEC.md` sections 7.1, 7.2, 7.4, 7.6, 7.7, 7.8).
  *
  * The set is exactly `MESSAGE_TYPE_VALUES` from the schema, which is what
  * section 14 calls the tool availability set. Nothing else is registered, so a
  * client discovers the boundary from `tools/list` rather than from a refusal:
- * there is no inbox tool, no visual inspection, no completion gate, no review
- * listing or search, and — the one that matters most — **no secret tool at
- * all**. The published-service tools of section 7.2 joined the set with RVP-24;
- * they take no connector and no browser-session argument, because a caller that
- * could name either would be choosing which development machine the central
- * browser reaches (`src/development-services.ts`).
+ * there is no browser lifecycle or interaction tool, no visual inspection, and
+ * — the one that matters most — **no secret tool at all**. The
+ * published-service tools of section 7.2 joined the set with RVP-24; they take
+ * no connector and no browser-session argument, because a caller that could
+ * name either would be choosing which development machine the central browser
+ * reaches (`src/development-services.ts`). The completion gate of section 7.8
+ * joined it with RVP-53: `task_validation_status` reads, `task_complete`
+ * records its own evaluation, and **neither moves a review or a finding and
+ * neither terminates the agent**.
  *
  * Every state-changing tool goes through the same four gates, in this order:
  *
@@ -84,12 +87,22 @@ import {
   validateReviewListInput,
   validateReviewSearchInput,
   validateReviewUpdateStatusInput,
+  validateTaskCompleteInput,
+  validateTaskValidationStatusInput,
 } from "@reviewplane/protocol/mcp";
 import {
   ApiError,
   agentActor,
+  aggregateCompletionResult,
+  aggregateMissing,
+  assuranceFor,
+  missingEvidence,
+  nextActions,
   type BrowserSessionRecord,
+  type CompletionRequirements,
   type ErrorCode,
+  type EvidenceAssurance,
+  type FindingCompletionState,
   agentTransitionsFrom,
   isHumanReservedStatus,
   requestDigest,
@@ -97,7 +110,7 @@ import {
   type ReviewListFilter,
 } from "@reviewplane/server/domain";
 
-import { STAGE_0_POLICY, type McpConnection, type McpServices } from "./context.ts";
+import { STAGE_1_POLICY, type McpConnection, type McpServices } from "./context.ts";
 import {
   DEFAULT_ROUTE_TTL_SECONDS,
   scopeOf,
@@ -678,6 +691,9 @@ const TOOLS: readonly ToolDefinition[] = [
     validate: validateProjectCurrentInput,
     async run(_args, context) {
       const { connection } = context;
+      const { requirements } = await context.services.reviews.completionRequirements(
+        connection.scope,
+      );
       const workspace =
         connection.workspace === null
           ? null
@@ -709,10 +725,18 @@ const TOOLS: readonly ToolDefinition[] = [
                 },
               }),
           policy: {
-            agent_may_accept_findings: STAGE_0_POLICY.agent_may_accept_findings,
-            verification_required: STAGE_0_POLICY.verification_required,
-            secret_tools_available: STAGE_0_POLICY.secret_tools_available,
-            required_viewports: [...STAGE_0_POLICY.required_viewports],
+            agent_may_accept_findings: STAGE_1_POLICY.agent_may_accept_findings,
+            verification_required: STAGE_1_POLICY.verification_required,
+            secret_tools_available: STAGE_1_POLICY.secret_tools_available,
+            // Read from the project rather than from the constant beside the
+            // other three. The other three are product invariants that no
+            // project may vary; this one is a project setting
+            // (`docs/DOMAIN_MODEL.md` section 6), and advertising a constant
+            // here made `project_current` tell an agent to check viewports the
+            // project had not chosen while the completion gate demanded the
+            // ones it had. One of the two had to be the source, and the
+            // project is.
+            required_viewports: [...requirements.required_viewports],
           },
         },
       };
@@ -1463,11 +1487,30 @@ const TOOLS: readonly ToolDefinition[] = [
           "A human reviewer should confirm the branch before accepting.",
         );
       }
+      // What the submission still does not satisfy, answered here rather than
+      // left for the agent to discover from a refusal on the next transition.
+      // An agent that learns the gap at submission fixes it in the same turn;
+      // one that learns it from `EVIDENCE_REQUIRED` has already believed itself
+      // finished.
+      const workspaceBranch = context.connection.workspace?.branch ?? null;
+      const { settings, requirements } = await context.services.reviews.completionRequirements(
+        context.connection.scope,
+      );
+      const evidence = await context.services.reviews.completionEvidenceFor(
+        context.connection.scope,
+        findingId,
+        workspaceBranch,
+      );
       return {
         trust: trustFor({ pageDerived: true, humanAuthored: true }),
         data: {
-          verification: await toVerificationView(submitted.verification, context.views),
+          verification: {
+            ...(await toVerificationView(submitted.verification, context.views)),
+            assurance: assuranceFor(evidence),
+          },
           finding: toFindingView(submitted.finding, context.views),
+          requirements,
+          missing: missingEvidence(settings, requirements, evidence),
         },
       };
     },
@@ -2005,7 +2048,154 @@ const TOOLS: readonly ToolDefinition[] = [
       };
     },
   },
+  {
+    name: "task_validation_status",
+    title: "What this project requires before the work counts as done",
+    capability: "finding:read",
+    stateChanging: false,
+    validate: validateTaskValidationStatusInput,
+    async run(args, context) {
+      const evaluation = await evaluateCompletionFor(args, context);
+      return {
+        // Nothing here came from a page. The response carries identifiers,
+        // statuses and requirement labels the control plane composed, and no
+        // finding view, no title and no URL — which is why the member holding
+        // the per-finding detail is called `finding_states` rather than
+        // `findings`, and why this label is honest rather than convenient.
+        trust: "trusted_control_plane",
+        data: {
+          browser_required: evaluation.requirements.required_viewports.length > 0,
+          requirements: evaluation.requirements,
+          missing: aggregateMissing(evaluation.states),
+          assurance: evaluation.assurance,
+          finding_states: evaluation.states.map(toCompletionStateView),
+        },
+      };
+    },
+  },
+  {
+    name: "task_complete",
+    title: "Evaluate the completion policy and report what remains",
+    capability: "finding:read",
+    // It records the evaluation, so it takes an idempotency key like every
+    // other tool that writes. What it records is an event, never a change to a
+    // review or a finding: calling it can move nothing.
+    stateChanging: true,
+    validate: validateTaskCompleteInput,
+    async run(args, context) {
+      const evaluation = await evaluateCompletionFor(args, context);
+      const result = aggregateCompletionResult(evaluation.states);
+      const missing = aggregateMissing(evaluation.states);
+
+      await context.services.reviews.recordCompletionEvaluation(
+        context.connection.scope,
+        {
+          reviewId: evaluation.reviewId,
+          ...(args["finding_id"] === undefined
+            ? {}
+            : { findingId: args["finding_id"] as string }),
+          result,
+          missing,
+          findingCount: evaluation.states.length,
+          ...(args["summary"] === undefined
+            ? {}
+            : { summary: (args["summary"] as string).slice(0, 2000) }),
+        },
+        agentActor(context.connection.session, context.connection.client.name),
+      );
+
+      if (result === "blocked_pending_review") {
+        context.warnings.add(
+          "completion_blocked_pending_review",
+          "Everything available to an agent on this review is done and a human must now decide.",
+          "Do not retry this call and do not attempt a further transition; the next move is not one an agent may make.",
+        );
+      }
+      return {
+        trust: "trusted_control_plane",
+        data: {
+          result,
+          // Stated rather than implied. The tool's name is the one thing about
+          // it that could be misread, and `docs/MCP_SPEC.md` section 7.8
+          // requires that it does not terminate the CLI agent.
+          terminates_session: false,
+          requirements: evaluation.requirements,
+          missing,
+          assurance: evaluation.assurance,
+          next_actions: nextActions(result, evaluation.states),
+          finding_states: evaluation.states.map(toCompletionStateView),
+        },
+      };
+    },
+  },
 ];
+
+/** The completion state as the agent-facing schema carries it. */
+function toCompletionStateView(state: FindingCompletionState): Record<string, unknown> {
+  return {
+    finding_id: state.finding_id,
+    status: state.status,
+    result: state.result,
+    missing: [...state.missing],
+    ...(state.verification_id === undefined ? {} : { verification_id: state.verification_id }),
+    verification_count: state.verification_count,
+  };
+}
+
+/**
+ * The evaluation both completion tools share.
+ *
+ * They answer the same question and must answer it identically:
+ * `task_validation_status` is the read an agent takes before it decides it has
+ * finished, and `task_complete` is the same evaluation recorded. If the two
+ * could disagree, the read would stop being worth taking.
+ *
+ * `assurance` is assembled from the **current** verification of the first
+ * finding that has one. That is a deliberate simplification of a bounded
+ * response rather than an oversight: the per-finding detail carries each
+ * finding's own gaps, and the top-level assurance answers "who established the
+ * evidence on this work" for a reader who needs one sentence. Where no finding
+ * has a verification, both lists are empty and `asserted_by` is absent — which
+ * says plainly that nothing has been established rather than implying
+ * confirmation by omission.
+ */
+async function evaluateCompletionFor(
+  args: Record<string, unknown>,
+  context: ToolContext,
+): Promise<{
+  readonly reviewId: string;
+  readonly requirements: CompletionRequirements;
+  readonly states: readonly FindingCompletionState[];
+  readonly assurance: EvidenceAssurance;
+}> {
+  const review = await resolveReview(args["review"] as string, context);
+  const workspaceBranch = context.connection.workspace?.branch ?? null;
+  const evaluation = await context.services.reviews.evaluateCompletion(context.connection.scope, {
+    reviewId: review.id,
+    ...(args["finding_id"] === undefined ? {} : { findingId: args["finding_id"] as string }),
+    workspaceBranch,
+  });
+
+  let assurance: EvidenceAssurance = assuranceFor(null);
+  for (const state of evaluation.states) {
+    if (state.verification_id === undefined) continue;
+    const evidence = await context.services.reviews.completionEvidenceFor(
+      context.connection.scope,
+      state.finding_id,
+      workspaceBranch,
+    );
+    if (evidence === null) continue;
+    assurance = assuranceFor(evidence);
+    break;
+  }
+
+  return {
+    reviewId: review.id,
+    requirements: evaluation.requirements,
+    states: evaluation.states,
+    assurance,
+  };
+}
 
 const BY_NAME = new Map(TOOLS.map((tool) => [tool.name, tool]));
 

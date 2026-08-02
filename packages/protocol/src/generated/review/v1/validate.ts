@@ -23,8 +23,9 @@ const PATTERN_7 = new RegExp("^[0-9a-f]{64}$", "u");
 const PATTERN_8 = new RegExp("^sha256/[0-9a-f]{2}/[0-9a-f]{62}$", "u");
 const PATTERN_9 = new RegExp("^[A-Za-z0-9:._/-]+$", "u");
 const PATTERN_10 = new RegExp("^[A-Za-z0-9][A-Za-z0-9._-]*$", "u");
-const PATTERN_11 = new RegExp("^/[!-~]*$", "u");
-const PATTERN_12 = new RegExp("^https?://[!-~]+$", "u");
+const PATTERN_11 = new RegExp("^[a-zA-Z0-9][a-zA-Z0-9 ()@x.,:_-]{0,119}$", "u");
+const PATTERN_12 = new RegExp("^/[!-~]*$", "u");
+const PATTERN_13 = new RegExp("^https?://[!-~]+$", "u");
 
 /**
  * Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the
@@ -326,7 +327,7 @@ export function validateVerificationStatus(value: unknown, path: string, out: Sc
  * equal the keys of x-protocol.messages.
  */
 export function validateMessageType(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["review.created","review.named","review.status_changed","finding.created","finding.annotated","finding.status_changed","review.claimed","finding.claimed","finding.comment_added","finding.verification_submitted","review.assigned","review.accepted","review.reopened","review.archived","review.comment_added","finding.resolved","finding.reopened","review.status_change_denied","finding.status_change_denied","inbox_item.created","inbox_item.acknowledged","inbox_item.completed","inbox_item.dismissed","inbox_item.expired","artefact.upload_started","artefact.upload_completed","artefact.upload_failed","artefact.access_granted","artefact.deleted","artefact.thumbnail_generated","screenshot.captured"] });
+  checkString(value, path, out, { values: ["review.created","review.named","review.status_changed","finding.created","finding.annotated","finding.status_changed","review.claimed","finding.claimed","finding.comment_added","finding.verification_submitted","review.completion_evaluated","review.assigned","review.accepted","review.reopened","review.archived","review.comment_added","finding.resolved","finding.reopened","review.status_change_denied","finding.status_change_denied","inbox_item.created","inbox_item.acknowledged","inbox_item.completed","inbox_item.dismissed","inbox_item.expired","artefact.upload_started","artefact.upload_completed","artefact.upload_failed","artefact.access_granted","artefact.deleted","artefact.thumbnail_generated","screenshot.captured"] });
 }
 
 /**
@@ -383,6 +384,24 @@ export function validateInboxItemType(value: unknown, path: string, out: SchemaV
  */
 export function validateInboxItemRecipientType(value: unknown, path: string, out: SchemaViolation[]): void {
   checkString(value, path, out, { values: ["human_user","agent_session"] });
+}
+
+/**
+ * The result of the completion gate (docs/MCP_SPEC.md section 7.8). None of the four
+ * terminates the agent, and blocked_pending_review is a correct terminal answer for an
+ * agent rather than a failure to retry.
+ */
+export function validateCompletionResult(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["completed","completed_with_warnings","blocked_missing_evidence","blocked_pending_review"] });
+}
+
+/**
+ * One outstanding requirement, composed by the control plane and written for a reader:
+ * 390x844 verification, after screenshot, console review. Nothing an agent supplied is
+ * echoed through it.
+ */
+export function validateRequirementLabel(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 120, pattern: PATTERN_11 });
 }
 
 /**
@@ -907,7 +926,7 @@ export function validateArtefactUploadIntentRequest(value: unknown, path: string
  * happens, so no byte reaches storage before it passes.
  */
 export function validateArtefactUploadIntentResponseUploadPath(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 512, pattern: PATTERN_11 });
+  checkString(value, path, out, { minLength: 1, maxLength: 512, pattern: PATTERN_12 });
 }
 
 /**
@@ -917,7 +936,7 @@ export function validateArtefactUploadIntentResponseUploadPath(value: unknown, p
  * happens before any byte is stored, so this member is reserved and never present today.
  */
 export function validateArtefactUploadIntentResponseUploadUrl(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 2048, pattern: PATTERN_12 });
+  checkString(value, path, out, { minLength: 1, maxLength: 2048, pattern: PATTERN_13 });
 }
 
 /**
@@ -970,7 +989,7 @@ export function validateArtefactUploadCompletionRequest(value: unknown, path: st
  * the caller must still authenticate as the grant's subject (ADR-0019).
  */
 export function validateArtefactResourceContentPath(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 512, pattern: PATTERN_11 });
+  checkString(value, path, out, { minLength: 1, maxLength: 512, pattern: PATTERN_12 });
 }
 
 /**
@@ -1227,7 +1246,7 @@ export function validateVerificationReferenceArtefactIds(value: unknown, path: s
  * somewhere to land.
  */
 export function validateVerificationReference(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["verification_id", "finding_id", "status", "submitted_by", "summary", "branch", "commit", "before_artefact_id", "after_artefact_id", "tested_viewports", "checks", "artefact_ids", "submitted_at", "reviewed_at"], ["verification_id", "finding_id", "status", "submitted_by", "submitted_at"]);
+  const source = checkObject(value, path, out, ["verification_id", "finding_id", "status", "submitted_by", "summary", "branch", "commit", "before_artefact_id", "after_artefact_id", "tested_viewports", "checks", "artefact_ids", "submitted_at", "reviewed_at", "supersedes_verification_id", "superseded_by_verification_id", "superseded_at"], ["verification_id", "finding_id", "status", "submitted_by", "submitted_at"]);
   if (source === null) return;
   if (source["verification_id"] !== undefined) {
     validateIdentifier(source["verification_id"], `${path}.verification_id`, out);
@@ -1270,6 +1289,15 @@ export function validateVerificationReference(value: unknown, path: string, out:
   }
   if (source["reviewed_at"] !== undefined) {
     validateTimestamp(source["reviewed_at"], `${path}.reviewed_at`, out);
+  }
+  if (source["supersedes_verification_id"] !== undefined) {
+    validateIdentifier(source["supersedes_verification_id"], `${path}.supersedes_verification_id`, out);
+  }
+  if (source["superseded_by_verification_id"] !== undefined) {
+    validateIdentifier(source["superseded_by_verification_id"], `${path}.superseded_by_verification_id`, out);
+  }
+  if (source["superseded_at"] !== undefined) {
+    validateTimestamp(source["superseded_at"], `${path}.superseded_at`, out);
   }
 }
 
@@ -1494,6 +1522,60 @@ export function validateFindingTransitionRequest(value: unknown, path: string, o
   }
   if (source["duplicate_of_finding_id"] !== undefined) {
     validateIdentifier(source["duplicate_of_finding_id"], `${path}.duplicate_of_finding_id`, out);
+  }
+}
+
+/**
+ * Viewports the fix was checked at.
+ */
+export function validateVerificationCreateRequestTestedViewports(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 1, maxItems: 8, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateViewport(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Evidence. Each must exist, be available, and belong to this project; at least one must
+ * be a screenshot.
+ */
+export function validateVerificationCreateRequestArtefactIds(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 1, maxItems: 16, uniqueItems: true })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateIdentifier(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Body of POST /api/v1/findings/:findingId/verifications (docs/API.md section 13). There
+ * is no submitted_by field and no status field, and their absence is the point: the
+ * submitter is derived from the authenticated actor and the status is always submitted, so
+ * no caller can forge an attribution or record a decision. Accepting or rejecting a
+ * verification is a human decision recorded on separate routes.
+ */
+export function validateVerificationCreateRequest(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["expected_version", "summary", "branch", "commit", "tested_viewports", "checks", "artefact_ids"], ["summary", "branch", "commit", "tested_viewports", "checks", "artefact_ids"]);
+  if (source === null) return;
+  if (source["expected_version"] !== undefined) {
+    validateVersionNumber(source["expected_version"], `${path}.expected_version`, out);
+  }
+  if (source["summary"] !== undefined) {
+    validateBodyText(source["summary"], `${path}.summary`, out);
+  }
+  if (source["branch"] !== undefined) {
+    validateBranchName(source["branch"], `${path}.branch`, out);
+  }
+  if (source["commit"] !== undefined) {
+    validateCommitSha(source["commit"], `${path}.commit`, out);
+  }
+  if (source["tested_viewports"] !== undefined) {
+    validateVerificationCreateRequestTestedViewports(source["tested_viewports"], `${path}.tested_viewports`, out);
+  }
+  if (source["checks"] !== undefined) {
+    validateVerificationChecks(source["checks"], `${path}.checks`, out);
+  }
+  if (source["artefact_ids"] !== undefined) {
+    validateVerificationCreateRequestArtefactIds(source["artefact_ids"], `${path}.artefact_ids`, out);
   }
 }
 
@@ -2335,13 +2417,76 @@ export function validateFindingReopened(value: unknown, path: string, out: Schem
 }
 
 /**
- * Payload of finding.verification_submitted.
+ * Payload of finding.verification_submitted. It carries the whole claim, and beside it the
+ * finding and the version that finding holds after the submission, so an auditor can order
+ * a claim against the status changes around it without a second read (docs/EVENTS.md
+ * section 7).
  */
 export function validateFindingVerificationSubmitted(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["verification"], ["verification"]);
+  const source = checkObject(value, path, out, ["verification", "finding_id", "review_id", "version", "supersedes_verification_id"], ["verification", "finding_id", "review_id", "version"]);
   if (source === null) return;
   if (source["verification"] !== undefined) {
     validateVerificationReference(source["verification"], `${path}.verification`, out);
+  }
+  if (source["finding_id"] !== undefined) {
+    validateIdentifier(source["finding_id"], `${path}.finding_id`, out);
+  }
+  if (source["review_id"] !== undefined) {
+    validateIdentifier(source["review_id"], `${path}.review_id`, out);
+  }
+  if (source["version"] !== undefined) {
+    validateVersionNumber(source["version"], `${path}.version`, out);
+  }
+  if (source["supersedes_verification_id"] !== undefined) {
+    validateIdentifier(source["supersedes_verification_id"], `${path}.supersedes_verification_id`, out);
+  }
+}
+
+/**
+ * What was still outstanding when the gate ran. Empty is a truthful answer and never on
+ * its own a statement that the work was accepted.
+ */
+export function validateReviewCompletionEvaluatedMissing(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 32, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateRequirementLabel(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * How many findings the evaluation covered.
+ */
+export function validateReviewCompletionEvaluatedFindingCount(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkInteger(value, path, out, { minimum: 0, maximum: 100000 });
+}
+
+/**
+ * Payload of review.completion_evaluated. It records what an agent was told, not what
+ * changed: the result, the outstanding requirements and the agent's own account of what it
+ * believes it finished. The summary is the agent's claim and is stored inert — it is not
+ * evidence, it did not affect the result, and it MUST NOT be rendered as markup
+ * (docs/SECURITY.md section 18, ADR-0010).
+ */
+export function validateReviewCompletionEvaluated(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["review_id", "finding_id", "result", "missing", "finding_count", "summary"], ["review_id", "result", "missing", "finding_count"]);
+  if (source === null) return;
+  if (source["review_id"] !== undefined) {
+    validateIdentifier(source["review_id"], `${path}.review_id`, out);
+  }
+  if (source["finding_id"] !== undefined) {
+    validateIdentifier(source["finding_id"], `${path}.finding_id`, out);
+  }
+  if (source["result"] !== undefined) {
+    validateCompletionResult(source["result"], `${path}.result`, out);
+  }
+  if (source["missing"] !== undefined) {
+    validateReviewCompletionEvaluatedMissing(source["missing"], `${path}.missing`, out);
+  }
+  if (source["finding_count"] !== undefined) {
+    validateReviewCompletionEvaluatedFindingCount(source["finding_count"], `${path}.finding_count`, out);
+  }
+  if (source["summary"] !== undefined) {
+    validateBodyText(source["summary"], `${path}.summary`, out);
   }
 }
 

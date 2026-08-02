@@ -29,6 +29,7 @@ export const CHANNELS = [
   "review",
   "finding",
   "browser",
+  "completion",
   "command",
   "development_service",
   "refusal",
@@ -45,6 +46,7 @@ export const CHANNEL_DESCRIPTIONS: Readonly<Record<Channel, string>> = {
   "review": "Named review retrieval and review lifecycle (section 7.6).",
   "finding": "Finding lifecycle, comments and verification (section 7.7).",
   "browser": "Bounded browser capture (section 7.4).",
+  "completion": "The completion gate of section 7.8: what a project requires before work counts as done, and what is still missing. It reports and never terminates.",
   "command": "Tool arguments sent by an agent client.",
   "development_service": "Published development services and the scoped tunnel routes that carry them (section 7.2, docs/DOMAIN_MODEL.md section 10).",
   "refusal": "The section 5 error envelope and its stable section 12 code.",
@@ -114,6 +116,7 @@ export const WARNING_CODE_VALUES = [
   "inbox_unavailable",
   "results_truncated",
   "idempotent_replay",
+  "completion_blocked_pending_review",
 ] as const;
 
 export type WarningCode =
@@ -126,7 +129,8 @@ export type WarningCode =
   | "staleness_unavailable"
   | "inbox_unavailable"
   | "results_truncated"
-  | "idempotent_replay";
+  | "idempotent_replay"
+  | "completion_blocked_pending_review";
 
 /**
  * Stable refusal code (docs/MCP_SPEC.md section 12). Adding a code is additive within a
@@ -224,6 +228,8 @@ export const MESSAGE_TYPE_VALUES = [
   "development_services_list",
   "development_service_publish",
   "development_service_unpublish",
+  "task_validation_status",
+  "task_complete",
 ] as const;
 
 export type MessageType =
@@ -260,7 +266,9 @@ export type MessageType =
   | "browser_wait"
   | "development_services_list"
   | "development_service_publish"
-  | "development_service_unpublish";
+  | "development_service_unpublish"
+  | "task_validation_status"
+  | "task_complete";
 
 /**
  * A capability an agent credential may carry (docs/SECURITY.md section 6.3). A tool
@@ -848,6 +856,23 @@ export type PublishedServiceStatus =
   | "revoked";
 
 /**
+ * The result of the completion gate (docs/MCP_SPEC.md section 7.8). blocked_pending_review
+ * is a correct terminal answer for an agent and not a failure to retry.
+ */
+export const COMPLETION_RESULT_VALUES = [
+  "completed",
+  "completed_with_warnings",
+  "blocked_missing_evidence",
+  "blocked_pending_review",
+] as const;
+
+export type CompletionResult =
+  | "completed"
+  | "completed_with_warnings"
+  | "blocked_missing_evidence"
+  | "blocked_pending_review";
+
+/**
  * Which side of the trust boundary sends each message type.
  */
 export const MESSAGE_DIRECTIONS: Readonly<Record<MessageType, "client_to_server" | "server_to_client">> = {
@@ -885,6 +910,8 @@ export const MESSAGE_DIRECTIONS: Readonly<Record<MessageType, "client_to_server"
   "development_services_list": "server_to_client",
   "development_service_publish": "server_to_client",
   "development_service_unpublish": "server_to_client",
+  "task_validation_status": "server_to_client",
+  "task_complete": "server_to_client",
 };
 
 /**
@@ -925,6 +952,8 @@ export const MESSAGE_CHANNELS: Readonly<Record<MessageType, Channel>> = {
   "development_services_list": "development_service",
   "development_service_publish": "development_service",
   "development_service_unpublish": "development_service",
+  "task_validation_status": "completion",
+  "task_complete": "completion",
 };
 
 /**
@@ -966,6 +995,8 @@ export const PAYLOAD_MAX_BYTES: Readonly<Record<MessageType, number>> = {
   "development_services_list": 32768,
   "development_service_publish": 4096,
   "development_service_unpublish": 4096,
+  "task_validation_status": 32768,
+  "task_complete": 32768,
 };
 
 /**
@@ -1048,10 +1079,11 @@ export const RESOURCE_URI_FORMS = [
  * rely on. It equals x-protocol.messages, so a tool cannot be advertised without a result
  * schema. Everything else in the section 7 catalogue is unavailable and is absent from
  * tools/list rather than present and failing: no browser lifecycle or interaction tools,
- * no visual inspection, no completion gates and — the row that matters most — no secret
- * tool of any kind, which is the strongest available form of the rule that no raw secret
- * reaches an agent (docs/SECURITY.md section 12.1). The inbox tools joined it with RVP-49
- * and the development-service tools with RVP-24.
+ * no visual inspection and — the row that matters most — no secret tool of any kind, which
+ * is the strongest available form of the rule that no raw secret reaches an agent
+ * (docs/SECURITY.md section 12.1). The inbox tools joined it with RVP-49, the
+ * development-service tools with RVP-24 and the two completion tools of section 7.8 with
+ * RVP-53.
  */
 export const TOOL_AVAILABILITY = [
   "project_current",
@@ -1088,6 +1120,53 @@ export const TOOL_AVAILABILITY = [
   "development_services_list",
   "development_service_publish",
   "development_service_unpublish",
+  "task_validation_status",
+  "task_complete",
+] as const;
+
+/**
+ * The four results task_complete may return (docs/MCP_SPEC.md section 7.8). None of them
+ * terminates the agent: the tool records the evaluation and hands back requirements.
+ * blocked_pending_review is not a failure and MUST NOT be retried as though it were — it
+ * is the answer when everything available to an agent is done and the decision has passed
+ * to a human (docs/DOMAIN_MODEL.md section 15).
+ */
+export const COMPLETION_RESULTS = [
+  "completed",
+  "completed_with_warnings",
+  "blocked_missing_evidence",
+  "blocked_pending_review",
+] as const;
+
+/**
+ * What the control plane checks for itself before a verification is recorded, as opposed
+ * to what an agent asserts. The distinction is the point of the completion gate: an
+ * agent's checks object is a claim attributed to the agent, and presenting it as though
+ * the control plane had confirmed it would make the gate a mirror rather than a control
+ * (docs/DOMAIN_MODEL.md section 19).
+ */
+export const CONTROL_PLANE_VERIFIED_EVIDENCE = [
+  "artefact_project_ownership",
+  "artefact_browser_session_lineage",
+  "artefact_upload_completed",
+  "artefact_integrity_digest",
+  "after_screenshot_present",
+  "commit_differs_from_capture",
+  "branch_matches_workspace",
+] as const;
+
+/**
+ * The members of the checks object, which are recorded as assertions by the submitting
+ * actor and never as control-plane verification (docs/MCP_SPEC.md section 7.8,
+ * docs/DOMAIN_MODEL.md section 19). Stage 1 captures no console or network artefact, so
+ * there is nothing for the control plane to confirm them against; naming them here is what
+ * keeps the gate honest about that.
+ */
+export const AGENT_ASSERTED_EVIDENCE = [
+  "reproduced_before",
+  "console_errors_reviewed",
+  "network_failures_reviewed",
+  "accessibility_checked",
 ] as const;
 
 /**
@@ -1410,6 +1489,13 @@ export type LocalHost = string;
  * TCP port a development service listens on.
  */
 export type LocalPort = number;
+
+/**
+ * One requirement or gap, written for a reader rather than parsed: 390x844 verification,
+ * after screenshot, console review. The control plane composes every value, so nothing an
+ * agent supplied is echoed back through this member.
+ */
+export type RequirementLabel = string;
 
 /**
  * An acting principal. The type is always present, because an authority rule that depends
@@ -2049,9 +2135,15 @@ export interface VerificationView {
    */
   readonly tested_viewports: readonly Viewport[];
   /**
-   * Checks the agent claims to have performed.
+   * Checks the agent claims to have performed. They are claims by submitted_by and are
+   * never control-plane observations; assurance says so explicitly so a reader does not
+   * have to know it.
    */
   readonly checks: VerificationChecks;
+  /**
+   * Who established each piece of evidence on this submission.
+   */
+  readonly assurance?: EvidenceAssurance;
   /**
    * Evidence the submission rests on, as links rather than bytes.
    */
@@ -2064,6 +2156,21 @@ export interface VerificationView {
    * Submission time.
    */
   readonly submitted_at: Timestamp;
+  /**
+   * The verification this one replaced as current, where there was one. The earlier record
+   * is marked superseded and kept: a reopen cycle preserves the whole history rather than
+   * starting again (docs/DOMAIN_MODEL.md section 19).
+   */
+  readonly supersedes_verification_id?: Identifier;
+  /**
+   * The verification that replaced this one. Present only on a record whose status is
+   * superseded.
+   */
+  readonly superseded_by_verification_id?: Identifier;
+  /**
+   * When this record stopped being the current one.
+   */
+  readonly superseded_at?: Timestamp;
 }
 
 /**
@@ -3295,7 +3402,9 @@ export interface FindingAddCommentResult {
 
 /**
  * Payload of finding_submit_verification. The finding is returned beside the verification
- * so the agent can see the status the submission moved it to without a second call.
+ * so the agent can see the status the submission moved it to without a second call, and
+ * the outstanding requirements beside both so it learns what is still missing here rather
+ * than from a refusal on the next transition.
  */
 export interface FindingSubmitVerificationResult {
   /**
@@ -3306,6 +3415,15 @@ export interface FindingSubmitVerificationResult {
    * The finding as it now stands.
    */
   readonly finding: FindingView;
+  /**
+   * What the project requires of this work.
+   */
+  readonly requirements: CompletionRequirements;
+  /**
+   * What this submission still does not satisfy. Empty means the evidence gate would now
+   * permit AWAITING_HUMAN_REVIEW, and nothing more than that.
+   */
+  readonly missing: readonly RequirementLabel[];
 }
 
 /**
@@ -3741,6 +3859,214 @@ export interface DevelopmentServiceResult {
 }
 
 /**
+ * What this project requires before work counts as done (docs/MCP_SPEC.md section 7.8).
+ * The viewports come from the project's default_validation_viewports (docs/DOMAIN_MODEL.md
+ * section 6), so a project that changes them changes the gate rather than the gate holding
+ * a second copy of the rule. The shape is shared by the web application and this
+ * interface, so both describe the requirement in the same words.
+ */
+export interface CompletionRequirements {
+  /**
+   * Viewports the work must be checked at, written as widthxheight. Stage 1 defaults to
+   * 390x844 and 1440x900 (AGENTS.md "Browser-facing work").
+   */
+  readonly required_viewports: readonly RequirementLabel[];
+  /**
+   * Whether console output must have been reviewed. It is an agent assertion, never a
+   * control-plane observation: Stage 1 captures no console artefact.
+   */
+  readonly console_review: boolean;
+  /**
+   * Whether failed network requests must have been reviewed. An agent assertion, on the
+   * same footing as console_review.
+   */
+  readonly network_review: boolean;
+  /**
+   * Whether a verified after screenshot must be linked. This one the control plane checks
+   * itself: the artefact must exist, be available, belong to this project and carry a
+   * digest.
+   */
+  readonly final_screenshot: boolean;
+  /**
+   * Whether keyboard navigation and visible focus must have been checked. Recorded but not
+   * required in Stage 1, so this is false and accessibility_checked never appears in a
+   * missing list.
+   */
+  readonly accessibility_check?: boolean;
+}
+
+/**
+ * Who established each piece of evidence. The completion gate MUST NOT present an agent's
+ * checks object as though the control plane had confirmed it: the artefacts are what the
+ * control plane verified, and the checks are a claim attributed to the actor that made it
+ * (docs/DOMAIN_MODEL.md section 19, docs/MCP_SPEC.md section 7.8).
+ */
+export interface EvidenceAssurance {
+  /**
+   * What the control plane checked for itself before recording the verification.
+   */
+  readonly verified_by_control_plane: readonly RequirementLabel[];
+  /**
+   * What the submitter claimed and nothing confirmed. Empty is a truthful answer.
+   */
+  readonly asserted_by_agent: readonly RequirementLabel[];
+  /**
+   * The actor whose claim the assertions are. Absent when there is no verification to
+   * attribute them to.
+   */
+  readonly asserted_by?: ActorReference;
+}
+
+/**
+ * One finding's standing against the project's completion requirements.
+ */
+export interface FindingCompletionState {
+  /**
+   * The finding.
+   */
+  readonly finding_id: Identifier;
+  /**
+   * Status the finding holds now.
+   */
+  readonly status: FindingStatus;
+  /**
+   * The gate's answer for this finding alone.
+   */
+  readonly result: CompletionResult;
+  /**
+   * Evidence this finding still lacks. Empty when nothing is missing.
+   */
+  readonly missing: readonly RequirementLabel[];
+  /**
+   * The current verification, where one has been submitted. Absent means none has, which
+   * is a different statement from one that is incomplete.
+   */
+  readonly verification_id?: Identifier;
+  /**
+   * How many verifications this finding has accumulated, including superseded ones. Reopen
+   * cycles preserve the history rather than replacing it.
+   */
+  readonly verification_count?: RecordCount;
+}
+
+/**
+ * Arguments of task_validation_status. The review is resolved inside the current project
+ * only, as everywhere else on this interface.
+ */
+export interface TaskValidationStatusInput {
+  /**
+   * Immutable identifier or project-scoped slug of the review whose work is being
+   * evaluated.
+   */
+  readonly review: ReviewSelector;
+  /**
+   * One finding to narrow to. Absent evaluates every finding of the review.
+   */
+  readonly finding_id?: Identifier;
+}
+
+/**
+ * Payload of task_validation_status, in the shape of docs/MCP_SPEC.md section 7.8. It
+ * reports and changes nothing.
+ */
+export interface TaskValidationStatusResult {
+  /**
+   * Whether the work must be checked in a browser. True while any required viewport is
+   * configured.
+   */
+  readonly browser_required: boolean;
+  /**
+   * What the project requires.
+   */
+  readonly requirements: CompletionRequirements;
+  /**
+   * What is still missing, deduplicated across the evaluated findings. An empty list is
+   * the honest answer that nothing is outstanding, and is not on its own a statement that
+   * the work is accepted.
+   */
+  readonly missing: readonly RequirementLabel[];
+  /**
+   * Who established what. Present even when nothing has been submitted, so a reader never
+   * has to infer that an absent member means confirmed.
+   */
+  readonly assurance: EvidenceAssurance;
+  /**
+   * Per-finding standing against the requirements, in the review's order. It is
+   * deliberately not called findings and carries no finding view: nothing here came from a
+   * page, which is why this response is labelled trusted_control_plane and why an agent
+   * must still read the finding itself for its text.
+   */
+  readonly finding_states?: readonly FindingCompletionState[];
+}
+
+/**
+ * Arguments of task_complete. There is no argument that asserts a result and none that
+ * could terminate the session: the caller names the work and the control plane evaluates
+ * it.
+ */
+export interface TaskCompleteInput {
+  /**
+   * Immutable identifier or project-scoped slug of the review being reported on.
+   */
+  readonly review: ReviewSelector;
+  /**
+   * One finding to narrow to. Absent evaluates every finding of the review.
+   */
+  readonly finding_id?: Identifier;
+  /**
+   * What the agent believes it finished. Recorded with the evaluation as a claim by the
+   * agent; it is not evidence and does not affect the result.
+   */
+  readonly summary?: BodyText;
+  /**
+   * Key for this evaluation. Section 10 requires one on every tool that records, and this
+   * one records the evaluation.
+   */
+  readonly idempotency_key: IdempotencyKey;
+}
+
+/**
+ * Payload of task_complete. terminates_session is always false and is stated rather than
+ * implied, because the tool's name is the one thing about it that could be misread
+ * (docs/MCP_SPEC.md section 7.8).
+ */
+export interface TaskCompleteResult {
+  /**
+   * The gate's answer.
+   */
+  readonly result: CompletionResult;
+  /**
+   * Always false. This tool records validation state and returns requirements; ending the
+   * run is the client's decision.
+   */
+  readonly terminates_session: boolean;
+  /**
+   * What the project requires.
+   */
+  readonly requirements: CompletionRequirements;
+  /**
+   * What is still missing, deduplicated across the evaluated findings.
+   */
+  readonly missing: readonly RequirementLabel[];
+  /**
+   * Who established what.
+   */
+  readonly assurance: EvidenceAssurance;
+  /**
+   * What to do next, in the vocabulary of this interface. A refusal that says only what is
+   * wrong makes an agent guess.
+   */
+  readonly next_actions: readonly RequirementLabel[];
+  /**
+   * Per-finding standing against the requirements, in the review's order. It is
+   * deliberately not called findings and carries no finding view: nothing here came from a
+   * page, which is why this response is labelled trusted_control_plane and why an agent
+   * must still read the finding itself for its text.
+   */
+  readonly finding_states?: readonly FindingCompletionState[];
+}
+
+/**
  * A decoded control frame: envelope header plus the payload selected by its type.
  */
 export type McpFrame =
@@ -3913,5 +4239,15 @@ export type McpFrame =
       readonly envelope: Envelope;
       readonly type: "development_service_unpublish";
       readonly payload: DevelopmentServiceResult;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "task_validation_status";
+      readonly payload: TaskValidationStatusResult;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "task_complete";
+      readonly payload: TaskCompleteResult;
     }
 ;

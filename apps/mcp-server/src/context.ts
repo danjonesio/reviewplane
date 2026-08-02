@@ -120,14 +120,24 @@ export function negotiateCapabilities(
   };
 }
 
-/** The policy summary every session is told about itself. */
-export const STAGE_0_POLICY = {
+/**
+ * The invariants every session is told about itself.
+ *
+ * All three are product invariants that no project may vary, which is why they
+ * are a constant. The fourth member of `policy_summary` — `required_viewports`
+ * — deliberately is **not** here: it is a project setting
+ * (`docs/DOMAIN_MODEL.md` section 6), read per request through
+ * `ReviewService.completionRequirements`. It used to be a constant beside these
+ * three, which meant `project_current` advertised the two defaults whatever the
+ * project had configured, while the completion gate of `docs/MCP_SPEC.md`
+ * section 7.8 demanded the configured ones. An agent that believed the first
+ * and was judged by the second would have been told to do the wrong work.
+ */
+export const STAGE_1_POLICY = {
   // AGENTS.md: a human-authored finding cannot be finally accepted by an agent.
   agent_may_accept_findings: false,
   // AGENTS.md: do not claim an issue is fixed without verification evidence.
   verification_required: true,
   // docs/SECURITY.md section 12.1, in its strongest form: there is no tool.
   secret_tools_available: false,
-  // AGENTS.md "Browser-facing work".
-  required_viewports: ["390x844", "1440x900"],
 } as const;

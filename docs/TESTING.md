@@ -156,6 +156,20 @@ optimistic version" — run against a real database in
 `apps/server/test/review-lifecycle.test.ts`, where two callers race one row lock
 and exactly one wins.
 
+"Verification requires evidence under policy" is split the same way.
+`apps/server/test/completion-gate.test.ts` holds the pure half — requirement
+evaluation against a project's viewports, missing-list construction, the
+viewport comparison, `task_complete` result selection, the assurance split and
+the gate function itself — and needs no database.
+`apps/server/test/verification-evidence.test.ts` holds everything with a
+stateful half: a real submission, supersession, the evidence-gated hand-over and
+its denial event, the ownership and upload-completeness refusals, an unreachable
+artefact store, the concurrency of two submissions on one finding, and the two
+database backstops. Several of its assertions are on the **absence** of rows,
+because the failure this work exists to prevent is a completion claim that was
+recorded when it should not have been, and a test that only checked the response
+code would pass against code that refused the caller and wrote the row anyway.
+
 "Staleness warning does not auto-close finding" is asserted structurally rather
 than by simulating a warning: no non-human actor may request any final
 disposition, so nothing a staleness calculation could return would close a
@@ -180,6 +194,13 @@ Required authority and audit tests:
 - Comment attribution cannot be spoofed, and an edit by another actor is refused
 - A foreign review and a foreign finding are answered exactly as unknown ones
   are, on every route added with the lifecycle work
+- A terminal finding status and an accepted review cannot be written by raw SQL
+  without a human disposition actor, with the domain layer bypassed entirely. A
+  constraint that only ever sees well-formed writes from its own code proves
+  nothing
+- An artefact belonging to another **finding** of the same project cannot be
+  submitted as evidence. The project check does not catch it, because both
+  findings are legitimately in scope
 
 ## 5. Control-lease tests
 
@@ -380,10 +401,16 @@ published come from the suite rather than from a separate benchmark.
 - Inbox acknowledgement semantics
 - Completion-gate missing evidence response
 
-Every item on this list except the last is covered by
-`apps/mcp-server/test/mcp.test.ts`, which drives the endpoint with the official
-MCP TypeScript SDK client against a real database. The completion gate arrives
-with the tools it tests.
+Every item on this list is covered by `apps/mcp-server/test/mcp.test.ts`, which
+drives the endpoint with the official MCP TypeScript SDK client against a real
+database. The completion-gate cases arrived with the tools they test (RVP-53):
+the `missing` list emptying as an agent produces evidence, the hand-over refused
+with `EVIDENCE_REQUIRED` and audited, `task_complete` answering
+`blocked_missing_evidence` and then `blocked_pending_review` with
+`terminates_session: false` and no finding moved, the assurance split never
+letting an agent's assertion appear as a control-plane check, another project's
+review and finding answered as unknown ones, and `project_current` and the gate
+reporting the same configured viewports.
 
 The suite also holds the properties that are specific to the agent surface: the
 advertised tool set equals the schema's availability set; no advertised status

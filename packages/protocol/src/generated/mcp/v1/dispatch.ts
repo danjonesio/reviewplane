@@ -29,6 +29,8 @@ import type {
   ReviewListResult,
   ReviewMutationResult,
   ReviewSearchResult,
+  TaskCompleteResult,
+  TaskValidationStatusResult,
 } from "./types.ts";
 import {
   decodeAgentInboxAcknowledgeResult,
@@ -49,6 +51,8 @@ import {
   decodeReviewListResult,
   decodeReviewMutationResult,
   decodeReviewSearchResult,
+  decodeTaskCompleteResult,
+  decodeTaskValidationStatusResult,
 } from "./decode.ts";
 import {
   encodeAgentInboxAcknowledgeResult,
@@ -69,6 +73,8 @@ import {
   encodeReviewListResult,
   encodeReviewMutationResult,
   encodeReviewSearchResult,
+  encodeTaskCompleteResult,
+  encodeTaskValidationStatusResult,
 } from "./encode.ts";
 import {
   validateAgentInboxAcknowledgeResult,
@@ -89,6 +95,8 @@ import {
   validateReviewListResult,
   validateReviewMutationResult,
   validateReviewSearchResult,
+  validateTaskCompleteResult,
+  validateTaskValidationStatusResult,
 } from "./validate.ts";
 
 /**
@@ -112,7 +120,9 @@ export type McpPayload =
   | BrowserSessionResult
   | BrowserInteractionResult
   | DevelopmentServicesListResult
-  | DevelopmentServiceResult;
+  | DevelopmentServiceResult
+  | TaskValidationStatusResult
+  | TaskCompleteResult;
 
 /**
  * Validates a payload against the schema selected by message type.
@@ -221,6 +231,12 @@ export function validatePayload(type: MessageType, value: unknown, path: string,
     case "development_service_unpublish":
       validateDevelopmentServiceResult(value, path, out);
       return;
+    case "task_validation_status":
+      validateTaskValidationStatusResult(value, path, out);
+      return;
+    case "task_complete":
+      validateTaskCompleteResult(value, path, out);
+      return;
   }
 }
 
@@ -297,6 +313,10 @@ export function decodeFrame(envelope: Envelope, value: unknown): McpFrame {
       return { envelope, type: "development_service_publish", payload: decodeDevelopmentServiceResult(value) };
     case "development_service_unpublish":
       return { envelope, type: "development_service_unpublish", payload: decodeDevelopmentServiceResult(value) };
+    case "task_validation_status":
+      return { envelope, type: "task_validation_status", payload: decodeTaskValidationStatusResult(value) };
+    case "task_complete":
+      return { envelope, type: "task_complete", payload: decodeTaskCompleteResult(value) };
   }
 }
 
@@ -373,5 +393,9 @@ export function encodeFramePayload(frame: McpFrame): string {
       return encodeDevelopmentServiceResult(frame.payload);
     case "development_service_unpublish":
       return encodeDevelopmentServiceResult(frame.payload);
+    case "task_validation_status":
+      return encodeTaskValidationStatusResult(frame.payload);
+    case "task_complete":
+      return encodeTaskCompleteResult(frame.payload);
   }
 }

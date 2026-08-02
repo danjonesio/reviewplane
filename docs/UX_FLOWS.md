@@ -472,15 +472,37 @@ Before                    After
 Agent summary:
 Changed collapse breakpoint from 768px to 900px.
 
-Verified:
-✓ 768x1024
-✓ 820x1180
-✓ 900x900
-✓ Console reviewed
-✓ Network failures reviewed
+Verified by the control plane:
+✓ After screenshot stored and its digest recomputed
+✓ Evidence belongs to this project and this browser session
+✓ Commit differs from the one the finding was captured at
+
+Asserted by the agent (claude-code), not confirmed:
+· Reproduced before the change
+· Console reviewed
+· Network failures reviewed
+
+Viewports checked: 390x844, 1440x900
 
 [Accept] [Reopen] [Comment]
 ```
+
+The two headings are not decoration and MUST NOT be merged into one list of
+ticks (ADR-0031). Stage 1 captures no console or network artefact, so nothing
+confirms `console_errors_reviewed`: it is the agent's word, and a reviewer who
+read it under the same heading as a recomputed digest would be accepting a claim
+they believed had been checked. The agent-asserted lines therefore name the
+actor and are marked as claims rather than ticked.
+
+The agent summary is untrusted human-facing content. It is stored byte for byte
+and rendered as **text**, never as markup capable of executing script
+(ADR-0010, `docs/SECURITY.md` section 18).
+
+Where the finding has been claimed more than once, prior verifications are
+retained and reachable (`docs/DOMAIN_MODEL.md` section 19). A reviewer deciding
+whether to accept needs to know whether the same thing has been claimed before
+and failed, and a surface showing only the current claim would make a
+repeatedly-reopened finding look like a first attempt every time.
 
 ### Accept
 

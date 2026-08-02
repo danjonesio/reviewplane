@@ -693,7 +693,41 @@ Like the review table, this one is data in
   the same project
 - Reopening preserves prior verification history. The `finding.reopened` event
   carries how many verifications the finding already holds, so a reader is not
-  left to assume a fresh start
+  left to assume a fresh start. Section 19 is what makes that true rather than
+  aspirational: a later submission supersedes an earlier one and never replaces
+  it
+- **The evidence requirement is graduated, and both hops refuse with
+  `EVIDENCE_REQUIRED`.** Reaching `FIXED_UNVERIFIED` requires a non-empty
+  resolution note. Reaching `AWAITING_HUMAN_REVIEW` requires more: an
+  `agent_session` requesting it must have a current verification carrying what
+  the project configures — an after screenshot, every viewport in
+  `default_validation_viewports` (section 6), and the console and network review
+  flags. Without them the request is refused naming every gap, and — like every
+  other refused transition — the attempt is audited. This is the point at which
+  `AGENTS.md`'s "do not claim an issue is fixed without verification evidence"
+  stops being advice: the hand-over *is* the claim, made to a person.
+
+  The first hop is deliberately **not** gated on a verification record, and the
+  reason is circularity rather than leniency (ADR-0029): submitting a
+  verification is itself what moves an `IN_PROGRESS` finding to
+  `FIXED_UNVERIFIED`, so requiring one to make that move would make the
+  transition impossible to request even though the table lists it. Nothing is
+  lost by it — `FIXED_UNVERIFIED` is an agent's own working state, its name says
+  the claim is unverified, and no human is asked for anything while a finding
+  sits there. `AWAITING_HUMAN_REVIEW` remains unreachable for an agent without a
+  current verification whichever route the finding took.
+
+  The gate is checked for `agent_session` actors only, which is a decision and
+  not an oversight (ADR-0029). A human moving a finding here is exercising the
+  authority the whole gate defers to, and refusing a person's judgement about
+  their own work because a screenshot is missing would be the product overruling
+  the human it is built to serve. Nothing is weakened by the narrowing: before
+  this rule there was no gate on this transition for anybody
+- A terminal status cannot exist in the database without a human disposition
+  actor. `findings_disposition_is_human` constrains the actor column and
+  `findings_terminal_status_has_a_decider` constrains the status, so a finding
+  is `RESOLVED` only because a human resolved it. Governing one column and not
+  the other left the backstop resting on a convention it did not enforce
 - `source` is derived by the control plane from the authenticated actor and is
   immutable thereafter. It is never a field a client may supply: a caller able
   to set it could forge a human-authored finding, or relabel its own to escape
@@ -893,6 +927,39 @@ of a linked artefact is restricted for the same reason a finding restricts
 deletion of its screenshot: a claim whose evidence has been removed is an
 opinion.
 
+**Exactly one verification is current.** A finding may accumulate several across
+reopen cycles, and the current one is the row whose status is `submitted`. A
+second submission marks the previous one `superseded`, records `superseded_at`
+and a forward pointer, and records the identifier it replaced on itself; nothing
+is deleted (ADR-0030). The earlier claim keeps its summary, its viewports, its
+checks and its artefact links, because the history of what has been claimed
+before and failed is exactly what a human needs in order to judge the next
+claim. A partial unique index over `finding_id` where the status is `submitted`
+makes "exactly one current" a property of the database rather than a convention
+the service is trusted to keep.
+
+Supersession is recorded on the `finding.verification_submitted` event that
+caused it rather than as an event of its own, in the same way an edited comment
+is recorded as another `comment_added` carrying a back-reference: one act, one
+occurrence.
+
+**An agent MUST NOT be able to alter the finding's original annotated
+screenshot.** It is the evidence of the problem the agent was asked to fix, and
+ADR-0006 already keeps originals and overlays separate; the submission path adds
+that another finding's original screenshot cannot be submitted as *this*
+finding's evidence. Both findings may be in the same project, so the project
+check does not catch it, and without the rule a claim could rest on a picture of
+a different defect. It is refused with `POLICY_DENIED` rather than as not found,
+because the caller can already list this project's findings and their
+screenshots: a distinct refusal discloses nothing it did not have.
+
+**When the artefact store cannot be reached, nothing is recorded.** A
+verification written while the store is down is a completion claim whose
+before-and-after pair cannot be opened, which is the one thing the record exists
+to make possible. The submission is refused with `ARTEFACT_STORE_UNAVAILABLE`
+and the same call succeeds unchanged once the store returns
+(`docs/ARCHITECTURE.md` section 14).
+
 ### Checks example
 
 ```json
@@ -906,6 +973,26 @@ opinion.
   ]
 }
 ```
+
+**These are assertions, not verification** (ADR-0031). Stage 1 captures no
+console or network artefact, so there is nothing for the control plane to
+confirm `console_errors_reviewed` against: the value is the submitting actor's
+word, recorded beside `submitted_by` so a reader knows whose. Every response
+that reports evidence therefore separates what the control plane checked for
+itself — artefact ownership, browser-session lineage, upload completion,
+integrity digest, the presence of an after screenshot, that the commit differs
+from the captured one, and where a workspace is registered that the branch
+matches it — from what was merely claimed. Reporting the two in one
+undifferentiated list would let a reader conclude the control plane had
+confirmed an agent's word about its own work, which is the confusion this
+product exists to remove.
+
+An unticked check is **absent** from the asserted list rather than asserted as
+false, and where nothing has been submitted at all both lists are empty and no
+actor is named. Silence must not read as confirmation.
+
+`tests` is in the shape above and is not yet produced or required by anything:
+Stage 1 records no test results.
 
 ## 20. Artefact
 

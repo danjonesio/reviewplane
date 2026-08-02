@@ -53,6 +53,8 @@ import type {
   ClientCapabilities,
   ClientIdentity,
   CommentView,
+  CompletionRequirements,
+  CompletionResult,
   ContentRectangle,
   DestinationProtocol,
   DevelopmentServicePublishInput,
@@ -64,9 +66,11 @@ import type {
   Envelope,
   ErrorClass,
   ErrorDetails,
+  EvidenceAssurance,
   FindingAddCommentInput,
   FindingAddCommentResult,
   FindingClaimInput,
+  FindingCompletionState,
   FindingGetInput,
   FindingGetResult,
   FindingInclude,
@@ -116,6 +120,10 @@ import type {
   SessionInclude,
   SessionInitialisationRequest,
   SessionInitialisationResult,
+  TaskCompleteInput,
+  TaskCompleteResult,
+  TaskValidationStatusInput,
+  TaskValidationStatusResult,
   ToolError,
   ToolRefusal,
   TrustLabel,
@@ -429,9 +437,13 @@ export function decodeVerificationView(value: unknown): VerificationView {
     commit: source["commit"] as string,
     tested_viewports: (source["tested_viewports"] as unknown[]).map((item) => decodeViewport(item)),
     checks: decodeVerificationChecks(source["checks"]),
+    ...(source["assurance"] === undefined ? {} : { assurance: decodeEvidenceAssurance(source["assurance"]) }),
     ...(source["artefacts"] === undefined ? {} : { artefacts: (source["artefacts"] as unknown[]).map((item) => decodeArtefactLink(item)) }),
     submitted_by: decodeActorReference(source["submitted_by"]),
     submitted_at: source["submitted_at"] as string,
+    ...(source["supersedes_verification_id"] === undefined ? {} : { supersedes_verification_id: source["supersedes_verification_id"] as string }),
+    ...(source["superseded_by_verification_id"] === undefined ? {} : { superseded_by_verification_id: source["superseded_by_verification_id"] as string }),
+    ...(source["superseded_at"] === undefined ? {} : { superseded_at: source["superseded_at"] as string }),
   };
 }
 
@@ -1084,6 +1096,8 @@ export function decodeFindingSubmitVerificationResult(value: unknown): FindingSu
   return {
     verification: decodeVerificationView(source["verification"]),
     finding: decodeFindingView(source["finding"]),
+    requirements: decodeCompletionRequirements(source["requirements"]),
+    missing: (source["missing"] as unknown[]).map((item) => item as string),
   };
 }
 
@@ -1293,5 +1307,100 @@ export function decodeDevelopmentServiceResult(value: unknown): DevelopmentServi
   const source = value as Record<string, unknown>;
   return {
     service: decodeDevelopmentServiceView(source["service"]),
+  };
+}
+
+/**
+ * Decodes a validated CompletionRequirements.
+ */
+export function decodeCompletionRequirements(value: unknown): CompletionRequirements {
+  const source = value as Record<string, unknown>;
+  return {
+    required_viewports: (source["required_viewports"] as unknown[]).map((item) => item as string),
+    console_review: source["console_review"] as boolean,
+    network_review: source["network_review"] as boolean,
+    final_screenshot: source["final_screenshot"] as boolean,
+    ...(source["accessibility_check"] === undefined ? {} : { accessibility_check: source["accessibility_check"] as boolean }),
+  };
+}
+
+/**
+ * Decodes a validated EvidenceAssurance.
+ */
+export function decodeEvidenceAssurance(value: unknown): EvidenceAssurance {
+  const source = value as Record<string, unknown>;
+  return {
+    verified_by_control_plane: (source["verified_by_control_plane"] as unknown[]).map((item) => item as string),
+    asserted_by_agent: (source["asserted_by_agent"] as unknown[]).map((item) => item as string),
+    ...(source["asserted_by"] === undefined ? {} : { asserted_by: decodeActorReference(source["asserted_by"]) }),
+  };
+}
+
+/**
+ * Decodes a validated FindingCompletionState.
+ */
+export function decodeFindingCompletionState(value: unknown): FindingCompletionState {
+  const source = value as Record<string, unknown>;
+  return {
+    finding_id: source["finding_id"] as string,
+    status: source["status"] as FindingStatus,
+    result: source["result"] as CompletionResult,
+    missing: (source["missing"] as unknown[]).map((item) => item as string),
+    ...(source["verification_id"] === undefined ? {} : { verification_id: source["verification_id"] as string }),
+    ...(source["verification_count"] === undefined ? {} : { verification_count: source["verification_count"] as number }),
+  };
+}
+
+/**
+ * Decodes a validated TaskValidationStatusInput.
+ */
+export function decodeTaskValidationStatusInput(value: unknown): TaskValidationStatusInput {
+  const source = value as Record<string, unknown>;
+  return {
+    review: source["review"] as string,
+    ...(source["finding_id"] === undefined ? {} : { finding_id: source["finding_id"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated TaskValidationStatusResult.
+ */
+export function decodeTaskValidationStatusResult(value: unknown): TaskValidationStatusResult {
+  const source = value as Record<string, unknown>;
+  return {
+    browser_required: source["browser_required"] as boolean,
+    requirements: decodeCompletionRequirements(source["requirements"]),
+    missing: (source["missing"] as unknown[]).map((item) => item as string),
+    assurance: decodeEvidenceAssurance(source["assurance"]),
+    ...(source["finding_states"] === undefined ? {} : { finding_states: (source["finding_states"] as unknown[]).map((item) => decodeFindingCompletionState(item)) }),
+  };
+}
+
+/**
+ * Decodes a validated TaskCompleteInput.
+ */
+export function decodeTaskCompleteInput(value: unknown): TaskCompleteInput {
+  const source = value as Record<string, unknown>;
+  return {
+    review: source["review"] as string,
+    ...(source["finding_id"] === undefined ? {} : { finding_id: source["finding_id"] as string }),
+    ...(source["summary"] === undefined ? {} : { summary: source["summary"] as string }),
+    idempotency_key: source["idempotency_key"] as string,
+  };
+}
+
+/**
+ * Decodes a validated TaskCompleteResult.
+ */
+export function decodeTaskCompleteResult(value: unknown): TaskCompleteResult {
+  const source = value as Record<string, unknown>;
+  return {
+    result: source["result"] as CompletionResult,
+    terminates_session: source["terminates_session"] as boolean,
+    requirements: decodeCompletionRequirements(source["requirements"]),
+    missing: (source["missing"] as unknown[]).map((item) => item as string),
+    assurance: decodeEvidenceAssurance(source["assurance"]),
+    next_actions: (source["next_actions"] as unknown[]).map((item) => item as string),
+    ...(source["finding_states"] === undefined ? {} : { finding_states: (source["finding_states"] as unknown[]).map((item) => decodeFindingCompletionState(item)) }),
   };
 }

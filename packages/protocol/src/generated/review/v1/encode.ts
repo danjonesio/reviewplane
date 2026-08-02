@@ -68,6 +68,7 @@ import type {
   ReviewAssigned,
   ReviewClaimed,
   ReviewCommentAdded,
+  ReviewCompletionEvaluated,
   ReviewCreateRequest,
   ReviewCreated,
   ReviewNamed,
@@ -79,6 +80,7 @@ import type {
   ScreenshotCaptured,
   ScrollPosition,
   VerificationChecks,
+  VerificationCreateRequest,
   VerificationReference,
   Viewport,
 } from "./types.ts";
@@ -562,6 +564,15 @@ export function encodeVerificationReference(value: VerificationReference): strin
   if (value.reviewed_at !== undefined) {
     fields.push(`"reviewed_at":${jsonString(value.reviewed_at)}`);
   }
+  if (value.supersedes_verification_id !== undefined) {
+    fields.push(`"supersedes_verification_id":${jsonString(value.supersedes_verification_id)}`);
+  }
+  if (value.superseded_by_verification_id !== undefined) {
+    fields.push(`"superseded_by_verification_id":${jsonString(value.superseded_by_verification_id)}`);
+  }
+  if (value.superseded_at !== undefined) {
+    fields.push(`"superseded_at":${jsonString(value.superseded_at)}`);
+  }
   return `{${fields.join(",")}}`;
 }
 
@@ -708,6 +719,23 @@ export function encodeFindingTransitionRequest(value: FindingTransitionRequest):
   if (value.duplicate_of_finding_id !== undefined) {
     fields.push(`"duplicate_of_finding_id":${jsonString(value.duplicate_of_finding_id)}`);
   }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a VerificationCreateRequest.
+ */
+export function encodeVerificationCreateRequest(value: VerificationCreateRequest): string {
+  const fields: string[] = [];
+  if (value.expected_version !== undefined) {
+    fields.push(`"expected_version":${jsonInteger(value.expected_version)}`);
+  }
+  fields.push(`"summary":${jsonString(value.summary)}`);
+  fields.push(`"branch":${jsonString(value.branch)}`);
+  fields.push(`"commit":${jsonString(value.commit)}`);
+  fields.push(`"tested_viewports":${`[${value.tested_viewports.map((item) => encodeViewport(item)).join(",")}]`}`);
+  fields.push(`"checks":${encodeVerificationChecks(value.checks)}`);
+  fields.push(`"artefact_ids":${`[${value.artefact_ids.map((item) => jsonString(item)).join(",")}]`}`);
   return `{${fields.join(",")}}`;
 }
 
@@ -1236,6 +1264,30 @@ export function encodeFindingReopened(value: FindingReopened): string {
 export function encodeFindingVerificationSubmitted(value: FindingVerificationSubmitted): string {
   const fields: string[] = [];
   fields.push(`"verification":${encodeVerificationReference(value.verification)}`);
+  fields.push(`"finding_id":${jsonString(value.finding_id)}`);
+  fields.push(`"review_id":${jsonString(value.review_id)}`);
+  fields.push(`"version":${jsonInteger(value.version)}`);
+  if (value.supersedes_verification_id !== undefined) {
+    fields.push(`"supersedes_verification_id":${jsonString(value.supersedes_verification_id)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ReviewCompletionEvaluated.
+ */
+export function encodeReviewCompletionEvaluated(value: ReviewCompletionEvaluated): string {
+  const fields: string[] = [];
+  fields.push(`"review_id":${jsonString(value.review_id)}`);
+  if (value.finding_id !== undefined) {
+    fields.push(`"finding_id":${jsonString(value.finding_id)}`);
+  }
+  fields.push(`"result":${jsonString(value.result)}`);
+  fields.push(`"missing":${`[${value.missing.map((item) => jsonString(item)).join(",")}]`}`);
+  fields.push(`"finding_count":${jsonInteger(value.finding_count)}`);
+  if (value.summary !== undefined) {
+    fields.push(`"summary":${jsonString(value.summary)}`);
+  }
   return `{${fields.join(",")}}`;
 }
 

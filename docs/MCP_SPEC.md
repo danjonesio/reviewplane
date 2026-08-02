@@ -910,6 +910,49 @@ Submission records a verification with status `submitted` and moves an
 `AWAITING_HUMAN_REVIEW` is a separate, deliberate call, and reaching anything
 beyond it is not available to an agent at all.
 
+**Store availability.** The artefact rows say the bytes were verified when they
+arrived; they do not say the store can be reached now. A submission is refused
+with `ARTEFACT_STORE_UNAVAILABLE` when it cannot be, and **nothing is written**:
+no verification row, no event, and the finding keeps its status
+(`docs/ARCHITECTURE.md` §14, "Keep finding verification incomplete"). The same
+call succeeds unchanged once the store returns, which is why the code is not
+`ARTEFACT_UPLOAD_INCOMPLETE` — that one says the artefact is not evidence and
+must be captured again.
+
+**Supersession.** A second submission on the same finding marks the previous one
+`superseded` and records the identifier of each on the other; nothing is deleted
+(ADR-0030). Exactly one verification per finding is `submitted` at a time, which
+a partial unique index enforces rather than a convention. A finding therefore
+accumulates its whole claim history across reopen cycles, and
+`finding.verification_submitted` carries `supersedes_verification_id` when a
+submission replaced one.
+
+The response carries `requirements` and `missing` beside the record, so an agent
+learns what its submission still does not satisfy in the same call rather than
+from a refusal on the next transition. `missing` empty means the evidence gate
+below would now permit `AWAITING_HUMAN_REVIEW`, and nothing more than that.
+
+**The evidence gate.** `FIXED_UNVERIFIED -> AWAITING_HUMAN_REVIEW` requires a
+current verification carrying the evidence the project configures: an after
+screenshot, every viewport in `default_validation_viewports`, and the console
+and network review flags. An `agent_session` that requests it without them is
+refused with `EVIDENCE_REQUIRED`, `details.required_evidence` naming **every**
+gap rather than the first, and the attempt is audited as
+`finding.status_change_denied` like any other refused transition.
+
+The requirement is graduated across the two hops, and `IN_PROGRESS ->
+FIXED_UNVERIFIED` requires only a resolution note (§7.7 above). That is not an
+omission: submitting a verification is itself what performs the first
+transition, so requiring one to make it would render one of the six permitted
+agent transitions impossible to request. `FIXED_UNVERIFIED` is the agent's own
+working state and asks nothing of a human; the hand-over is where the claim is
+made, and it is the hop the Stage 1 exit criterion is about (ADR-0029).
+
+The gate applies to `agent_session` actors only, which is a decision rather than
+an oversight (ADR-0029): a human moving a finding there is exercising the very
+authority the gate defers to. Nothing is weakened by it — before this rule there
+was no gate on this transition for anybody.
+
 ### `finding_mark_blocked`
 
 Requires a reason and optional requested human action.
@@ -923,9 +966,16 @@ asking a human to do.
 
 ## 7.8 Completion tools
 
+Both tools take a `review` selector, resolved inside the current project only
+like every other read on this interface, and an optional `finding_id` that
+narrows the evaluation to one finding. A review or a finding of another project
+is answered `RESOURCE_NOT_FOUND`, byte for byte as an unknown one is.
+
 ### `task_validation_status`
 
-Returns project-policy requirements and missing evidence.
+Returns project-policy requirements and missing evidence. It reads and changes
+nothing, and carries no idempotency key: asking what is still required twice is
+asking once.
 
 Example:
 
@@ -942,6 +992,25 @@ Example:
 }
 ```
 
+`required_viewports` comes from the project's `default_validation_viewports`
+(`docs/DOMAIN_MODEL.md` §6) and not from a server constant, so a project that
+changes them changes what the gate demands. `project_current` reports the same
+list from the same source: the two used to disagree, and an agent told one
+requirement and judged by another would have been asked to do the wrong work
+(ADR-0029).
+
+`accessibility_check` is `false` and `accessibility_checked` therefore never
+appears in `missing`. It is recorded and reported as a warning instead, which is
+what `completed_with_warnings` exists for.
+
+The response also carries `assurance`, splitting what the control plane checked
+for itself from what the submitter merely claimed, and naming the actor the
+claims belong to (ADR-0031). Where nothing has been submitted both lists are
+empty and `asserted_by` is **absent**: silence must not read as confirmation.
+`finding_states` gives the per-finding detail — status, result, gaps and how many
+verifications the finding has accumulated. It is deliberately not called
+`findings` and carries no finding view, because nothing in it came from a page.
+
 ### `task_complete`
 
 The control plane evaluates completion policy.
@@ -954,6 +1023,35 @@ It may return:
 - `completed_with_warnings`
 
 This tool does not terminate the CLI agent automatically. It records validation state and returns actionable requirements.
+
+That sentence is made structural rather than left as advice. The result
+enumeration contains no member meaning stopped, so a server cannot report
+termination whatever it believes; the arguments contain nothing that could ask
+for it; and every response states `terminates_session: false` explicitly,
+because the tool's *name* is the one thing about it a reader could misread
+(ADR-0029).
+
+`blocked_pending_review` is the correct answer when the agent has done
+everything available to it and a human must now decide. An agent **MUST NOT**
+interpret it as a failure, retry the call, or attempt a further transition —
+there is no transition beyond `AWAITING_HUMAN_REVIEW` available to an agent at
+all. The response says so in `next_actions` and in a
+`completion_blocked_pending_review` warning, because this is the one result an
+agent is most likely to misread.
+
+The results are selected per finding and then aggregated worst-first: any
+finding still needing agent work makes the whole answer
+`blocked_missing_evidence`; otherwise any finding at `AWAITING_HUMAN_REVIEW` or
+`BLOCKED` makes it `blocked_pending_review`; otherwise a finding disposed as
+`WONT_FIX` or `DUPLICATE`, or resolved with an unchecked accessibility pass or
+no verification on record, makes it `completed_with_warnings`; otherwise
+`completed`. A review with no findings is `completed`.
+
+`task_complete` records what it answered as `review.completion_evaluated`
+(`docs/EVENTS.md` §7) and changes nothing else: no review, finding or
+verification moves because an agent asked whether it had finished. The agent's
+optional `summary` is recorded beside the control plane's answer as the agent's
+own claim; it is not evidence and does not affect the result.
 
 ## 7.9 Secret tools
 
@@ -1285,6 +1383,12 @@ registered set and the schema's set are the same list.
 | `development_services_list` | 7.2 | `project:read` |
 | `development_service_publish` | 7.2 | `service:publish` |
 | `development_service_unpublish` | 7.2 | `service:publish` |
+| `task_validation_status` | 7.8 | `finding:read` |
+| `task_complete` | 7.8 | `finding:read` |
+
+The two completion tools require `finding:read` and no new capability. Neither
+moves a review or a finding, so a capability that named a write would overstate
+what they do; `task_complete` records its own evaluation and nothing else.
 
 `browser_snapshot` requires `browser:capture` rather than `browser:control`
 because it reads what is on the page and cannot change it — it is a capture in
@@ -1300,7 +1404,6 @@ tool missing from both, which four of them were until RVP-30:
 |---|---|---|
 | `browser_console_messages`, `browser_network_requests` | 7.4 | Stage 2, with console and network evidence |
 | `visual_inspect`, `finding_create_from_observation` | 7.5 | Later |
-| `task_validation_status`, `task_complete` | 7.8 | Stage 1, with the completion gate |
 | `secret_list_references`, `secret_inject_browser`, `secret_inject_header` | 7.9 | Stage 2 |
 
 The secret row is the important one. `docs/PROJECT.md` section 9 and
