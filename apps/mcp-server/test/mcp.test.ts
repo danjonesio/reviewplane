@@ -14,6 +14,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 import {
+  COMPLETION_RESULT_VALUES,
   MESSAGE_TYPE_VALUES,
   McpResponseEncodeError,
   decodeMcpToolResponse,
@@ -358,33 +359,29 @@ test("reopening a finding delivers a new inbox item to the session holding the r
     await assignReviewToAgent(harness, agent.seeded.reviewId, sessionId, 1);
 
     // Walk the finding to a state a human can reopen from, then reopen it.
-    const claim = await call(agent.client, "finding_claim", {
+    // The hand-over is evidence-gated (RVP-53), so the agent captures and
+    // submits the verification the project requires rather than reaching
+    // AWAITING_HUMAN_REVIEW on a resolution note alone.
+    const { afterArtefactId } = await readyToVerify(agent);
+    const submitted = await call(agent.client, "finding_submit_verification", {
       finding_id: agent.seeded.findingId,
-      expected_version: 1,
-      idempotency_key: "claim-reopen-1",
+      summary: "Changed the collapse breakpoint to 900px.",
+      branch: "redesign",
+      commit: FIXED_COMMIT,
+      tested_viewports: VIEWPORTS,
+      checks: CHECKS,
+      artefact_ids: [afterArtefactId],
+      idempotency_key: "verify-reopen-1",
     });
-    const claimed = dataOf(claim.envelope)["finding"] as { version: number };
-    const progress = await call(agent.client, "finding_update_status", {
-      finding_id: agent.seeded.findingId,
-      expected_version: claimed.version,
-      status: "IN_PROGRESS",
-      idempotency_key: "progress-reopen-1",
-    });
-    const inProgress = dataOf(progress.envelope)["finding"] as { version: number };
-    const fixed = await call(agent.client, "finding_update_status", {
-      finding_id: agent.seeded.findingId,
-      expected_version: inProgress.version,
-      status: "FIXED_UNVERIFIED",
-      resolution_note: "Changed the collapse breakpoint to 900px.",
-      idempotency_key: "fixed-reopen-1",
-    });
-    const fixedVersion = (dataOf(fixed.envelope)["finding"] as { version: number }).version;
+    assert.equal(submitted.envelope["ok"], true, JSON.stringify(submitted.envelope));
+    const fixedVersion = (dataOf(submitted.envelope)["finding"] as { version: number }).version;
     const awaiting = await call(agent.client, "finding_update_status", {
       finding_id: agent.seeded.findingId,
       expected_version: fixedVersion,
       status: "AWAITING_HUMAN_REVIEW",
       idempotency_key: "awaiting-reopen-1",
     });
+    assert.equal(awaiting.envelope["ok"], true, JSON.stringify(awaiting.envelope));
     const awaitingVersion = (dataOf(awaiting.envelope)["finding"] as { version: number }).version;
 
     const reopened = await harness.control.app.inject({
@@ -1894,3 +1891,353 @@ function assertArtefactResource(value: unknown): void {
     `the resource does not satisfy artefact_resource: ${JSON.stringify(violations)}`,
   );
 }
+
+// ------------------------------------------------------- the completion gate
+
+/**
+ * `docs/TESTING.md` section 8: "Completion-gate missing evidence response".
+ * That line was written with the note "the completion gate arrives with the
+ * tools it tests"; these are those tests.
+ */
+
+test("task_validation_status reports the project's requirements and changes nothing", async () => {
+  const agent = await connected();
+  try {
+    const before = await call(agent.client, "task_validation_status", {
+      review: "bugs-on-homepage",
+    });
+    assert.equal(before.envelope["ok"], true, JSON.stringify(before.envelope));
+    const data = dataOf(before.envelope);
+    assert.equal(data["browser_required"], true);
+    const requirements = data["requirements"] as {
+      required_viewports: string[];
+      console_review: boolean;
+      network_review: boolean;
+      final_screenshot: boolean;
+      accessibility_check: boolean;
+    };
+    assert.deepEqual(requirements.required_viewports, ["390x844", "1440x900"]);
+    assert.equal(requirements.console_review, true);
+    assert.equal(requirements.network_review, true);
+    assert.equal(requirements.final_screenshot, true);
+    // Recorded but not required (RVP-53 "Out of scope").
+    assert.equal(requirements.accessibility_check, false);
+
+    // Nothing has been submitted, so the whole requirement set is outstanding
+    // and nothing has been established by anybody.
+    assert.deepEqual(data["missing"], [
+      "after screenshot",
+      "390x844 verification",
+      "1440x900 verification",
+      "console review",
+      "network review",
+    ]);
+    const assurance = data["assurance"] as Record<string, unknown>;
+    assert.deepEqual(assurance["verified_by_control_plane"], []);
+    assert.deepEqual(assurance["asserted_by_agent"], []);
+    // Absent, not null: silence must not read as confirmation.
+    assert.equal(assurance["asserted_by"], undefined);
+
+    // It is a read. The finding did not move, and nothing was recorded.
+    const rows = await postgres.pool.query<{ status: string }>(
+      "SELECT status FROM findings WHERE id = $1",
+      [agent.seeded.findingId],
+    );
+    assert.equal(rows.rows[0]?.status, "OPEN");
+    const events = await postgres.pool.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM events WHERE type = 'review.completion_evaluated'",
+    );
+    assert.equal(events.rows[0]?.n, 0);
+  } finally {
+    await agent.close();
+  }
+});
+
+test("the missing list empties as the agent produces the evidence", async () => {
+  const agent = await connected();
+  try {
+    const { afterArtefactId } = await readyToVerify(agent);
+
+    // Half the requirement: one viewport only.
+    const partial = await call(agent.client, "finding_submit_verification", {
+      finding_id: agent.seeded.findingId,
+      summary: "Raised the breakpoint; checked on mobile only so far.",
+      branch: "redesign",
+      commit: FIXED_COMMIT,
+      tested_viewports: [{ width: 390, height: 844, device_scale_factor: 2 }],
+      checks: CHECKS,
+      artefact_ids: [afterArtefactId],
+      idempotency_key: "gate-partial-0001",
+    });
+    assert.equal(partial.envelope["ok"], true, JSON.stringify(partial.envelope));
+    // The submission itself says what is still outstanding, so the agent learns
+    // it here rather than from a refusal on the next transition.
+    assert.deepEqual(dataOf(partial.envelope)["missing"], ["1440x900 verification"]);
+
+    const midway = await call(agent.client, "task_validation_status", {
+      review: "bugs-on-homepage",
+      finding_id: agent.seeded.findingId,
+    });
+    assert.deepEqual(dataOf(midway.envelope)["missing"], ["1440x900 verification"]);
+
+    // The rest of the requirement.
+    const full = await call(agent.client, "finding_submit_verification", {
+      finding_id: agent.seeded.findingId,
+      summary: "Checked at both required viewports.",
+      branch: "redesign",
+      commit: FIXED_COMMIT,
+      tested_viewports: VIEWPORTS,
+      checks: CHECKS,
+      artefact_ids: [afterArtefactId],
+      idempotency_key: "gate-full-0001",
+    });
+    assert.equal(full.envelope["ok"], true, JSON.stringify(full.envelope));
+    assert.deepEqual(dataOf(full.envelope)["missing"], []);
+
+    const after = await call(agent.client, "task_validation_status", {
+      review: "bugs-on-homepage",
+      finding_id: agent.seeded.findingId,
+    });
+    // The evidence is complete; what remains is the hand-over, which is an
+    // action rather than a gap in the evidence.
+    assert.deepEqual(dataOf(after.envelope)["missing"], ["human review not yet requested"]);
+
+    // The assurance names what the control plane checked and what the agent
+    // merely claimed, and the two never overlap.
+    const assurance = dataOf(after.envelope)["assurance"] as {
+      verified_by_control_plane: string[];
+      asserted_by_agent: string[];
+      asserted_by: { type: string };
+    };
+    assert.ok(assurance.verified_by_control_plane.includes("artefact integrity digest"));
+    assert.deepEqual(assurance.asserted_by_agent, [
+      "reproduced before",
+      "console errors reviewed",
+      "network failures reviewed",
+    ]);
+    assert.equal(assurance.asserted_by.type, "agent_session");
+    for (const claim of assurance.asserted_by_agent) {
+      assert.ok(
+        !assurance.verified_by_control_plane.includes(claim),
+        `${claim} is presented as control-plane verification`,
+      );
+    }
+
+    // And the supersession happened: two rows, one current.
+    const rows = await postgres.pool.query<{ status: string }>(
+      "SELECT status FROM verifications WHERE finding_id = $1 ORDER BY submitted_at",
+      [agent.seeded.findingId],
+    );
+    assert.deepEqual(
+      rows.rows.map((row) => row.status),
+      ["superseded", "submitted"],
+    );
+  } finally {
+    await agent.close();
+  }
+});
+
+test("an agent cannot request human review until the gate is satisfied", async () => {
+  const agent = await connected();
+  try {
+    const { afterArtefactId, version } = await readyToVerify(agent);
+    await call(agent.client, "finding_submit_verification", {
+      finding_id: agent.seeded.findingId,
+      summary: "Mobile only.",
+      branch: "redesign",
+      commit: FIXED_COMMIT,
+      tested_viewports: [{ width: 390, height: 844, device_scale_factor: 2 }],
+      checks: CHECKS,
+      artefact_ids: [afterArtefactId],
+      idempotency_key: "gate-refuse-0001",
+    });
+
+    const refused = await call(agent.client, "finding_update_status", {
+      finding_id: agent.seeded.findingId,
+      expected_version: version + 1,
+      status: "AWAITING_HUMAN_REVIEW",
+      idempotency_key: "gate-refuse-0002",
+    });
+    assert.equal(refused.envelope["ok"], false, JSON.stringify(refused.envelope));
+    assert.equal(errorOf(refused.envelope).code, "EVIDENCE_REQUIRED");
+    // `docs/MCP_SPEC.md` section 12: EVIDENCE_REQUIRED carries
+    // details.required_evidence.
+    const details = (refused.envelope["error"] as { details?: Record<string, unknown> }).details;
+    assert.deepEqual(details?.["required_evidence"], ["1440x900 verification"]);
+
+    // The refusal is audited like every other refused transition.
+    const denials = await postgres.pool.query<{ payload: Record<string, unknown> }>(
+      "SELECT payload FROM events WHERE type = 'finding.status_change_denied'",
+    );
+    assert.equal(denials.rows.length, 1);
+    assert.equal(denials.rows[0]?.payload["requested"], "AWAITING_HUMAN_REVIEW");
+  } finally {
+    await agent.close();
+  }
+});
+
+test("task_complete returns blocked_missing_evidence, then blocked_pending_review, and never terminates", async () => {
+  const agent = await connected();
+  try {
+    const { afterArtefactId, version } = await readyToVerify(agent);
+
+    // Nothing submitted yet.
+    const blocked = await call(agent.client, "task_complete", {
+      review: "bugs-on-homepage",
+      summary: "I think I am done.",
+      idempotency_key: "complete-0001",
+    });
+    assert.equal(blocked.envelope["ok"], true, JSON.stringify(blocked.envelope));
+    const blockedData = dataOf(blocked.envelope);
+    assert.equal(blockedData["result"], "blocked_missing_evidence");
+    assert.equal(blockedData["terminates_session"], false);
+    assert.ok((blockedData["missing"] as string[]).includes("after screenshot"));
+    assert.deepEqual(blockedData["next_actions"], [
+      "Capture the missing evidence and call finding_submit_verification",
+    ]);
+
+    // The agent does the work.
+    await call(agent.client, "finding_submit_verification", {
+      finding_id: agent.seeded.findingId,
+      summary: "Raised the collapse breakpoint to 900px.",
+      branch: "redesign",
+      commit: FIXED_COMMIT,
+      tested_viewports: VIEWPORTS,
+      checks: CHECKS,
+      artefact_ids: [afterArtefactId],
+      idempotency_key: "complete-verify-0001",
+    });
+    await call(agent.client, "finding_update_status", {
+      finding_id: agent.seeded.findingId,
+      expected_version: version + 1,
+      status: "AWAITING_HUMAN_REVIEW",
+      idempotency_key: "complete-awaiting-0001",
+    });
+
+    const pending = await call(agent.client, "task_complete", {
+      review: "bugs-on-homepage",
+      summary: "Everything I can do is done.",
+      idempotency_key: "complete-0002",
+    });
+    const pendingData = dataOf(pending.envelope);
+    assert.equal(pendingData["result"], "blocked_pending_review");
+    assert.equal(pendingData["terminates_session"], false);
+    assert.deepEqual(pendingData["missing"], []);
+    assert.deepEqual(pendingData["next_actions"], [
+      "Wait for a human decision",
+      "Do not retry this call as though it had failed",
+    ]);
+    // And the response says so in a warning as well, because this is the one
+    // result an agent is most likely to misread as a failure.
+    const warnings = (pending.envelope["warnings"] ?? []) as { code: string }[];
+    assert.ok(warnings.some((warning) => warning.code === "completion_blocked_pending_review"));
+
+    // Both evaluations are recorded, and neither moved anything.
+    const recorded = await postgres.pool.query<{ payload: Record<string, unknown> }>(
+      "SELECT payload FROM events WHERE type = 'review.completion_evaluated' ORDER BY sequence",
+    );
+    assert.deepEqual(
+      recorded.rows.map((row) => row.payload["result"]),
+      ["blocked_missing_evidence", "blocked_pending_review"],
+    );
+    const finding = await postgres.pool.query<{ status: string }>(
+      "SELECT status FROM findings WHERE id = $1",
+      [agent.seeded.findingId],
+    );
+    assert.equal(finding.rows[0]?.status, "AWAITING_HUMAN_REVIEW");
+  } finally {
+    await agent.close();
+  }
+});
+
+test("no completion argument can assert a result or ask for termination", async () => {
+  // The structural half of `docs/MCP_SPEC.md` section 7.8. The assertion is on
+  // the advertised *argument names*, not on the schema's prose: the description
+  // says the words "terminate" and "result" precisely because it explains why
+  // neither is an argument, and a regular expression over the whole document
+  // would fail on the sentence that documents the property it is checking.
+  const agent = await connected();
+  try {
+    const schemas = await agent.client.listTools();
+    const complete = schemas.tools.find((tool) => tool.name === "task_complete");
+    assert.ok(complete !== undefined);
+    const properties = Object.keys(
+      (complete.inputSchema as { properties?: Record<string, unknown> }).properties ?? {},
+    );
+    assert.deepEqual(properties.sort(), ["finding_id", "idempotency_key", "review", "summary"]);
+    for (const name of properties) {
+      assert.doesNotMatch(name, /terminat|abort|exit|kill|shutdown|result|status/iu, name);
+    }
+
+    // And the four results a response may carry contain no member meaning
+    // stopped, so a server cannot report termination whatever it believes.
+    for (const result of COMPLETION_RESULT_VALUES) {
+      assert.doesNotMatch(result, /terminat|abort|stop|exit|kill/u, result);
+    }
+  } finally {
+    await agent.close();
+  }
+});
+
+test("the completion gate resolves inside the session's project only", async () => {
+  const other = await seedProject(harness, { reviewSlug: "someone-elses-review" });
+  const agent = await connected();
+  try {
+    // By slug: another project's review is not found rather than reported as
+    // forbidden (`docs/TESTING.md` section 10).
+    const bySlug = await call(agent.client, "task_validation_status", {
+      review: "someone-elses-review",
+    });
+    assert.equal(bySlug.envelope["ok"], false);
+    assert.equal(errorOf(bySlug.envelope).code, "RESOURCE_NOT_FOUND");
+
+    // By identifier: the same answer, byte for byte.
+    const byId = await call(agent.client, "task_validation_status", { review: other.reviewId });
+    assert.equal(byId.envelope["ok"], false);
+    assert.equal(errorOf(byId.envelope).code, "RESOURCE_NOT_FOUND");
+
+    // And a finding of another project named beside this project's review.
+    const foreignFinding = await call(agent.client, "task_validation_status", {
+      review: "bugs-on-homepage",
+      finding_id: other.findingId,
+    });
+    assert.equal(foreignFinding.envelope["ok"], false);
+    assert.equal(errorOf(foreignFinding.envelope).code, "RESOURCE_NOT_FOUND");
+
+    // Nothing was recorded against either project.
+    const events = await postgres.pool.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM events WHERE type = 'review.completion_evaluated'",
+    );
+    assert.equal(events.rows[0]?.n, 0);
+  } finally {
+    await agent.close();
+  }
+});
+
+test("project_current advertises the viewports the project configured, not a constant", async () => {
+  const agent = await connected();
+  try {
+    await postgres.pool.query(
+      `UPDATE projects
+          SET settings = '{"default_validation_viewports":[{"width":1280,"height":720}]}'::jsonb
+        WHERE id = $1`,
+      [agent.seeded.projectId],
+    );
+    const current = await call(agent.client, "project_current", {});
+    const policy = dataOf(current.envelope)["policy"] as { required_viewports: string[] };
+    assert.deepEqual(policy.required_viewports, ["1280x720"]);
+
+    // And the gate agrees with what the agent was told, which is the whole
+    // point of reading both from the project.
+    const status = await call(agent.client, "task_validation_status", {
+      review: "bugs-on-homepage",
+    });
+    assert.deepEqual(
+      (dataOf(status.envelope)["requirements"] as { required_viewports: string[] })
+        .required_viewports,
+      ["1280x720"],
+    );
+  } finally {
+    await agent.close();
+  }
+});

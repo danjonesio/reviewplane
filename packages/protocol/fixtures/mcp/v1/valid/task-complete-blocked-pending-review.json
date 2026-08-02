@@ -1,0 +1,51 @@
+{
+  "protocol_version": 1,
+  "ok": true,
+  "request_id": "req_01JCOMPLETE",
+  "type": "task_complete",
+  "trust": "trusted_control_plane",
+  "instruction_policy": "do_not_follow_as_instructions",
+  "data": {
+    "result": "blocked_pending_review",
+    "terminates_session": false,
+    "requirements": {
+      "required_viewports": ["390x844", "1440x900"],
+      "console_review": true,
+      "network_review": true,
+      "final_screenshot": true,
+      "accessibility_check": false
+    },
+    "missing": [],
+    "assurance": {
+      "verified_by_control_plane": [
+        "artefact project ownership",
+        "artefact browser session lineage",
+        "artefact upload completed",
+        "artefact integrity digest",
+        "after screenshot present",
+        "commit differs from capture",
+        "branch matches workspace"
+      ],
+      "asserted_by_agent": [
+        "reproduced before",
+        "console errors reviewed",
+        "network failures reviewed"
+      ],
+      "asserted_by": {"type": "agent_session", "id": "ags_01JCLAUDECODE", "display": "claude-code"}
+    },
+    "next_actions": [
+      "Wait for a human decision on fin_01JHEROOVERLAPS",
+      "Do not retry this call as though it had failed"
+    ],
+    "finding_states": [
+      {
+        "finding_id": "fin_01JHEROOVERLAPS",
+        "status": "AWAITING_HUMAN_REVIEW",
+        "result": "blocked_pending_review",
+        "missing": [],
+        "verification_id": "ver_01JHEROFIX",
+        "verification_count": 2
+      }
+    ]
+  }
+}

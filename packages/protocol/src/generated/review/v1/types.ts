@@ -384,6 +384,7 @@ export const MESSAGE_TYPE_VALUES = [
   "finding.claimed",
   "finding.comment_added",
   "finding.verification_submitted",
+  "review.completion_evaluated",
   "review.assigned",
   "review.accepted",
   "review.reopened",
@@ -418,6 +419,7 @@ export type MessageType =
   | "finding.claimed"
   | "finding.comment_added"
   | "finding.verification_submitted"
+  | "review.completion_evaluated"
   | "review.assigned"
   | "review.accepted"
   | "review.reopened"
@@ -607,6 +609,24 @@ export type InboxItemRecipientType =
   | "agent_session";
 
 /**
+ * The result of the completion gate (docs/MCP_SPEC.md section 7.8). None of the four
+ * terminates the agent, and blocked_pending_review is a correct terminal answer for an
+ * agent rather than a failure to retry.
+ */
+export const COMPLETION_RESULT_VALUES = [
+  "completed",
+  "completed_with_warnings",
+  "blocked_missing_evidence",
+  "blocked_pending_review",
+] as const;
+
+export type CompletionResult =
+  | "completed"
+  | "completed_with_warnings"
+  | "blocked_missing_evidence"
+  | "blocked_pending_review";
+
+/**
  * Which side of the trust boundary sends each message type.
  */
 export const MESSAGE_DIRECTIONS: Readonly<Record<MessageType, "control_plane_to_client" | "client_to_control_plane">> = {
@@ -620,6 +640,7 @@ export const MESSAGE_DIRECTIONS: Readonly<Record<MessageType, "control_plane_to_
   "finding.claimed": "control_plane_to_client",
   "finding.comment_added": "control_plane_to_client",
   "finding.verification_submitted": "control_plane_to_client",
+  "review.completion_evaluated": "control_plane_to_client",
   "review.assigned": "control_plane_to_client",
   "review.accepted": "control_plane_to_client",
   "review.reopened": "control_plane_to_client",
@@ -657,6 +678,7 @@ export const MESSAGE_CHANNELS: Readonly<Record<MessageType, Channel>> = {
   "finding.claimed": "finding",
   "finding.comment_added": "finding",
   "finding.verification_submitted": "finding",
+  "review.completion_evaluated": "review",
   "review.assigned": "review",
   "review.accepted": "review",
   "review.reopened": "review",
@@ -695,6 +717,7 @@ export const PAYLOAD_MAX_BYTES: Readonly<Record<MessageType, number>> = {
   "finding.claimed": 2048,
   "finding.comment_added": 6144,
   "finding.verification_submitted": 8192,
+  "review.completion_evaluated": 8192,
   "review.assigned": 2048,
   "review.accepted": 2048,
   "review.reopened": 2048,
@@ -1069,6 +1092,13 @@ export type EncryptionKeyReference = string;
  * because a negative lookahead is not portable to every language this package generates.
  */
 export type FilenameLabel = string;
+
+/**
+ * One outstanding requirement, composed by the control plane and written for a reader:
+ * 390x844 verification, after screenshot, console review. Nothing an agent supplied is
+ * echoed through it.
+ */
+export type RequirementLabel = string;
 
 /**
  * The actor of an event or a write. The type is always present, because an authority rule
@@ -1972,6 +2002,21 @@ export interface VerificationReference {
    * When a human decided.
    */
   readonly reviewed_at?: Timestamp;
+  /**
+   * The verification this one replaced as the current claim, where there was one. The
+   * earlier record is marked superseded rather than deleted, so a finding carries the
+   * whole history of what was claimed about it across reopen cycles (docs/DOMAIN_MODEL.md
+   * section 19).
+   */
+  readonly supersedes_verification_id?: Identifier;
+  /**
+   * The verification that replaced this one. Present only where status is superseded.
+   */
+  readonly superseded_by_verification_id?: Identifier;
+  /**
+   * When this record stopped being the current claim.
+   */
+  readonly superseded_at?: Timestamp;
 }
 
 /**
@@ -2181,6 +2226,48 @@ export interface FindingTransitionRequest {
    * The finding this one duplicates, where the disposition is DUPLICATE.
    */
   readonly duplicate_of_finding_id?: Identifier;
+}
+
+/**
+ * Body of POST /api/v1/findings/:findingId/verifications (docs/API.md section 13). There
+ * is no submitted_by field and no status field, and their absence is the point: the
+ * submitter is derived from the authenticated actor and the status is always submitted, so
+ * no caller can forge an attribution or record a decision. Accepting or rejecting a
+ * verification is a human decision recorded on separate routes.
+ */
+export interface VerificationCreateRequest {
+  /**
+   * Version the caller last read, where it wants the submission refused if the finding
+   * moved. Checked inside the transaction that writes the new version.
+   */
+  readonly expected_version?: VersionNumber;
+  /**
+   * What was changed and how it was checked. Stored and rendered as text, never as markup.
+   */
+  readonly summary: BodyText;
+  /**
+   * Branch the fix was made on.
+   */
+  readonly branch: BranchName;
+  /**
+   * Commit the fix was made in. It MUST differ from the commit the finding was captured
+   * at.
+   */
+  readonly commit: CommitSha;
+  /**
+   * Viewports the fix was checked at.
+   */
+  readonly tested_viewports: readonly Viewport[];
+  /**
+   * Checks the submitter claims to have performed. They are recorded as that actor's
+   * claims and never as control-plane verification.
+   */
+  readonly checks: VerificationChecks;
+  /**
+   * Evidence. Each must exist, be available, and belong to this project; at least one must
+   * be a screenshot.
+   */
+  readonly artefact_ids: readonly Identifier[];
 }
 
 /**
@@ -3046,13 +3133,72 @@ export interface FindingReopened {
 }
 
 /**
- * Payload of finding.verification_submitted.
+ * Payload of finding.verification_submitted. It carries the whole claim, and beside it the
+ * finding and the version that finding holds after the submission, so an auditor can order
+ * a claim against the status changes around it without a second read (docs/EVENTS.md
+ * section 7).
  */
 export interface FindingVerificationSubmitted {
   /**
    * The verification as submitted, with status submitted.
    */
   readonly verification: VerificationReference;
+  /**
+   * Finding the claim concerns, at the top level so a consumer filtering one finding's
+   * timeline need not open the claim to decide whether the event belongs to it.
+   */
+  readonly finding_id: Identifier;
+  /**
+   * Review the finding belongs to.
+   */
+  readonly review_id: Identifier;
+  /**
+   * Version the finding holds after the submission.
+   */
+  readonly version: VersionNumber;
+  /**
+   * The verification this submission replaced as the current claim, where there was one.
+   * Supersession is recorded on the submission that caused it rather than as an event of
+   * its own, in the same way an edited comment is recorded as another comment_added
+   * carrying a back-reference: one act, one occurrence.
+   */
+  readonly supersedes_verification_id?: Identifier;
+}
+
+/**
+ * Payload of review.completion_evaluated. It records what an agent was told, not what
+ * changed: the result, the outstanding requirements and the agent's own account of what it
+ * believes it finished. The summary is the agent's claim and is stored inert — it is not
+ * evidence, it did not affect the result, and it MUST NOT be rendered as markup
+ * (docs/SECURITY.md section 18, ADR-0010).
+ */
+export interface ReviewCompletionEvaluated {
+  /**
+   * Review the evaluation covered.
+   */
+  readonly review_id: Identifier;
+  /**
+   * The single finding the evaluation was narrowed to, where it was.
+   */
+  readonly finding_id?: Identifier;
+  /**
+   * What the gate answered.
+   */
+  readonly result: CompletionResult;
+  /**
+   * What was still outstanding when the gate ran. Empty is a truthful answer and never on
+   * its own a statement that the work was accepted.
+   */
+  readonly missing: readonly RequirementLabel[];
+  /**
+   * How many findings the evaluation covered.
+   */
+  readonly finding_count: number;
+  /**
+   * The agent's account of what it believes it finished. A claim, recorded beside the
+   * control plane's answer rather than instead of it.
+   */
+  readonly summary?: BodyText;
 }
 
 /**
@@ -3324,6 +3470,11 @@ export type ReviewFrame =
       readonly envelope: Envelope;
       readonly type: "finding.verification_submitted";
       readonly payload: FindingVerificationSubmitted;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "review.completion_evaluated";
+      readonly payload: ReviewCompletionEvaluated;
     }
   | {
       readonly envelope: Envelope;

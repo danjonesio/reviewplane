@@ -36,7 +36,21 @@
       "kind": "mcp_tool_response",
       "file": "valid/finding-submit-verification.json",
       "message_type": "finding_submit_verification",
-      "note": "A submitted verification with summary, branch, commit, tested viewports, checks and the after artefact. Its status is submitted and the finding is FIXED_UNVERIFIED: the agent has claimed a fix with evidence, and nothing here accepts it."
+      "note": "A submitted verification with summary, branch, commit, tested viewports, checks and the after artefact. Its status is submitted and the finding is FIXED_UNVERIFIED: the agent has claimed a fix with evidence, and nothing here accepts it. assurance separates the seven things the control plane checked for itself from the three the agent asserted, and missing still names both required viewports, so the response says plainly that the claim is not yet sufficient."
+    },
+    {
+      "name": "task-validation-status-missing-viewport",
+      "kind": "mcp_tool_response",
+      "file": "valid/task-validation-status-missing-viewport.json",
+      "message_type": "task_validation_status",
+      "note": "The completion gate of docs/MCP_SPEC.md section 7.8 in the shape that section prints: browser_required, the project's requirements and a missing list naming one absent viewport. Nothing here changed state, and asserted_by names the agent whose checks these are."
+    },
+    {
+      "name": "task-complete-blocked-pending-review",
+      "kind": "mcp_tool_response",
+      "file": "valid/task-complete-blocked-pending-review.json",
+      "message_type": "task_complete",
+      "note": "The answer when the agent has done everything available to it: blocked_pending_review with an empty missing list and terminates_session false. It is not a failure and MUST NOT be retried as one — the finding is at AWAITING_HUMAN_REVIEW and the decision is a human's (docs/DOMAIN_MODEL.md section 15)."
     },
     {
       "name": "finding-update-status-awaiting-human-review",
@@ -90,6 +104,13 @@
       "file": "invalid/policy-allows-agent-acceptance.json",
       "expect_reason": "schema_violation",
       "note": "agent_may_accept_findings is a boolean. A string here would be truthy in JavaScript, which is exactly how an authority rule gets inverted by accident."
+    },
+    {
+      "name": "task-complete-terminating-result",
+      "kind": "mcp_tool_response",
+      "file": "invalid/task-complete-terminating-result.json",
+      "expect_reason": "schema_violation",
+      "note": "A task_complete result claiming the run is over. docs/MCP_SPEC.md section 7.8 says the tool does not terminate the CLI agent, and the completion_result enumeration is where that is made unsayable: there is no member meaning terminated, so a response asserting one cannot be decoded whatever a server sends."
     },
     {
       "name": "finding-without-untrusted-fields",

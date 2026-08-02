@@ -25,7 +25,7 @@ import {
 
 import { loadMcpServerConfig } from "../src/config.ts";
 
-import { STAGE_0_POLICY, negotiateCapabilities, readClientCapabilities } from "../src/context.ts";
+import { STAGE_1_POLICY, negotiateCapabilities, readClientCapabilities } from "../src/context.ts";
 import { Warnings, refusalEnvelope, successEnvelope } from "../src/envelope.ts";
 import { toolInputSchema } from "../src/schemas.ts";
 import { assertToolSetMatchesSchema, toolListing } from "../src/tools.ts";
@@ -106,10 +106,13 @@ test("a successful envelope decodes under the protocol codec", () => {
     data: {
       project: { id: "prj_one", slug: "refresh-surplus" },
       policy: {
-        agent_may_accept_findings: STAGE_0_POLICY.agent_may_accept_findings,
-        verification_required: STAGE_0_POLICY.verification_required,
-        secret_tools_available: STAGE_0_POLICY.secret_tools_available,
-        required_viewports: [...STAGE_0_POLICY.required_viewports],
+        agent_may_accept_findings: STAGE_1_POLICY.agent_may_accept_findings,
+        verification_required: STAGE_1_POLICY.verification_required,
+        secret_tools_available: STAGE_1_POLICY.secret_tools_available,
+        // Not from the constant: required_viewports is a project setting, and
+        // the tool reads it from the project (RVP-53). This literal stands in
+        // for what a default project would yield.
+        required_viewports: ["390x844", "1440x900"],
       },
     } as never,
     warnings: [],

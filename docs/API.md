@@ -967,6 +967,7 @@ POST   /api/v1/findings/:findingId/claim
 GET    /api/v1/findings/:findingId/comments
 POST   /api/v1/findings/:findingId/comments
 GET    /api/v1/findings/:findingId/verification
+GET    /api/v1/findings/:findingId/verifications
 POST   /api/v1/findings/:findingId/verifications
 POST   /api/v1/findings/:findingId/accept
 POST   /api/v1/findings/:findingId/reopen
@@ -1037,6 +1038,11 @@ check that enforces it runs unconditionally.
   the refusal says what is possible from here rather than only what is not.
 - A move to `FIXED_UNVERIFIED` without a resolution note is refused with
   `EVIDENCE_REQUIRED`.
+- A move to `AWAITING_HUMAN_REVIEW` **by an agent** without a current
+  verification carrying the project's configured evidence is refused with
+  `EVIDENCE_REQUIRED` and `details.required_evidence` naming every gap
+  (`docs/DOMAIN_MODEL.md` section 15, ADR-0029). The gate is not applied to a
+  human actor, who is the authority it defers to.
 
 **Every** refusal of a requested transition is audited as
 `finding.status_change_denied`, written outside the transaction the refusal
@@ -1060,12 +1066,33 @@ retains prior verification history. Each records `finding.resolved` or
 history. Attribution is derived from the authenticated actor, and the request
 body has no author field (`docs/DOMAIN_MODEL.md` section 18).
 
-`POST /api/v1/findings/:findingId/verifications` is **not implemented on this
-API yet**. The verification record exists and is reachable through
-`finding_submit_verification` on `/mcp/v1` (`docs/MCP_SPEC.md` section 7.7),
-which is the surface an agent uses; the human-facing route arrives with the
-evidence-gated completion work, along with the verification accept and reject
-decisions. The statuses those transitions target are the ones above.
+`POST /api/v1/findings/:findingId/verifications` submits a verification: a claim
+with evidence, never a resolution (`docs/DOMAIN_MODEL.md` section 19). The body
+carries `summary`, `branch`, `commit`, `tested_viewports`, `checks` and
+`artefact_ids`, plus an optional `expected_version` that is compared **inside**
+the transaction that writes the new version rather than by a read beforehand.
+
+It has **no `submitted_by` and no `status`**, and their absence is the point: the
+submitter is derived from the authenticated actor and the status is always
+`submitted`, so a caller can neither forge an attribution nor record the human
+decision that a verification was accepted. A body supplying either is refused as
+an unknown property by the generated validator, before any handler runs. The
+same server-side checks apply as on the MCP path — artefact ownership, project
+scope, browser-session lineage, upload completeness, at least one screenshot,
+and a commit differing from the one the finding was captured at — because both
+surfaces reach one domain method. No workspace is resolved here, so the branch is
+recorded uncorroborated rather than checked against something that is not there.
+
+Accepting and rejecting a verification remain unimplemented; they arrive with the
+review workspace UI, and the statuses those transitions target are the ones
+above.
+
+`GET /api/v1/findings/:findingId/verifications` returns every verification the
+finding has accumulated, newest first, superseded records included. The
+comparison UI needs the current one; anybody judging *whether the same thing has
+been claimed before and failed* needs the rest, and a route serving only the
+latest would make a repeatedly-reopened finding look like a first attempt every
+time.
 
 ## 14. Annotation endpoints
 

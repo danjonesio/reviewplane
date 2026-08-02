@@ -10,7 +10,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  AGENT_ASSERTED_EVIDENCE,
   AGENT_TRANSITIONS,
+  COMPLETION_RESULT_VALUES,
+  COMPLETION_RESULTS,
+  CONTROL_PLANE_VERIFIED_EVIDENCE,
   LIMITS,
   MESSAGE_TYPE_VALUES,
   PAYLOAD_MAX_BYTES,
@@ -60,16 +64,55 @@ test("the tool availability set is the message-type enumeration", () => {
   // docs/MCP_SPEC.md section 14: a client relies on negotiated availability. If
   // the two could differ, a tool could be advertised with no result schema.
   assert.deepEqual([...TOOL_AVAILABILITY], [...MESSAGE_TYPE_VALUES]);
-  assert.equal(MESSAGE_TYPE_VALUES.length, 20);
+  assert.equal(MESSAGE_TYPE_VALUES.length, 22);
 });
 
-test("no tool names a secret, a completion gate or a visual inspection", () => {
+test("no tool names a secret or a visual inspection", () => {
   // The strongest form of "no secret value is returned" is that no tool exists
-  // that could return one (docs/SECURITY.md section 12.1). The completion gate
-  // and the visual inspection are absent for the weaker reason that they are
-  // not implemented, and are absent rather than advertised and failing.
+  // that could return one (docs/SECURITY.md section 12.1). The visual
+  // inspection is absent for the weaker reason that it is not implemented, and
+  // is absent rather than advertised and failing.
   for (const tool of MESSAGE_TYPE_VALUES) {
-    assert.doesNotMatch(tool, /secret|task_|visual_inspect/u, tool);
+    assert.doesNotMatch(tool, /secret|visual_inspect/u, tool);
+  }
+});
+
+test("the completion gate is the two tools of section 7.8 and neither can report termination", () => {
+  // RVP-53 added them; before that this file asserted their absence, which is
+  // the assertion that had to change rather than be worked around.
+  const completion = MESSAGE_TYPE_VALUES.filter((tool) => tool.startsWith("task_"));
+  assert.deepEqual([...completion], ["task_validation_status", "task_complete"]);
+
+  // docs/MCP_SPEC.md section 7.8: "This tool does not terminate the CLI agent
+  // automatically." The enumeration is where that is made unsayable — there is
+  // no member meaning terminated, stopped or aborted, so a server cannot report
+  // one whatever it believes.
+  assert.deepEqual(
+    [...COMPLETION_RESULT_VALUES],
+    ["completed", "completed_with_warnings", "blocked_missing_evidence", "blocked_pending_review"],
+  );
+  // The vocabulary the documents cite and the enumeration the codec enforces
+  // are the same list, so neither can be widened on its own.
+  assert.deepEqual([...COMPLETION_RESULTS], [...COMPLETION_RESULT_VALUES]);
+  for (const result of COMPLETION_RESULT_VALUES) {
+    assert.doesNotMatch(result, /terminat|abort|stop|exit|kill/u, result);
+  }
+});
+
+test("the gate separates what the control plane verified from what an agent asserted", () => {
+  // docs/DOMAIN_MODEL.md section 19 and docs/MCP_SPEC.md section 7.8: the
+  // checks object is a claim attributed to its submitter. Every member of it
+  // appears in the asserted vocabulary and none appears in the verified one, so
+  // the gate cannot present an agent's word as a control-plane observation
+  // without the two lists first being made to overlap.
+  const asserted = new Set<string>(AGENT_ASSERTED_EVIDENCE);
+  const verified = new Set<string>(CONTROL_PLANE_VERIFIED_EVIDENCE);
+  for (const check of ["reproduced_before", "console_errors_reviewed", "network_failures_reviewed"]) {
+    assert.ok(asserted.has(check), `${check} is not recorded as an agent assertion`);
+    assert.ok(!verified.has(check), `${check} is presented as control-plane verification`);
+  }
+  for (const claim of asserted) {
+    assert.ok(!verified.has(claim), `${claim} appears on both sides of the assurance split`);
   }
 });
 

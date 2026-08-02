@@ -17,7 +17,12 @@
 import { startMigratedDatabase, truncateAll } from "@reviewplane/server/testing";
 
 import { ADMIN, connectAgent, envelopeOf, startMcpHarness } from "./helpers/harness.ts";
-import { assignReviewToAgent, issueAgentCredential, seedProject } from "./helpers/seed.ts";
+import {
+  assignReviewToAgent,
+  issueAgentCredential,
+  seedProject,
+  startBrowserSessionForAgent,
+} from "./helpers/seed.ts";
 
 function heading(text: string): void {
   process.stdout.write(`\n=== ${text} ===\n`);
@@ -114,6 +119,119 @@ try {
     idempotency_key: "transcript-accept-2",
   });
 
+  // ------------------------------------------------------ the completion gate
+
+  const findingId = finding?.id ?? seeded.findingId;
+
+  heading("task_validation_status BEFORE any evidence");
+  await call("task_validation_status", { review: "bugs-on-homepage", finding_id: findingId });
+
+  heading("task_complete with nothing submitted");
+  await call("task_complete", {
+    review: "bugs-on-homepage",
+    summary: "I believe the breakpoint change is finished.",
+    idempotency_key: "transcript-complete-1",
+  });
+
+  heading("the agent captures an after screenshot");
+  const browser = await startBrowserSessionForAgent(harness, seeded, agentSessionId);
+  const shot = await call("browser_take_screenshot", {
+    browser_session_id: browser.browserSessionId,
+    control_epoch: browser.controlEpoch,
+    purpose: "verification",
+    idempotency_key: "transcript-shot-1",
+  });
+  const afterArtefactId = (shot["data"] as { artefact: { artefact_id: string } }).artefact
+    .artefact_id;
+
+  heading("finding_submit_verification with one viewport only");
+  await call("finding_submit_verification", {
+    finding_id: findingId,
+    summary: "Raised the collapse breakpoint to 900px; checked on mobile so far.",
+    branch: "redesign",
+    commit: "b4c5d6e7f809192a3b4c5d6e7f809192a3b4c5d6",
+    tested_viewports: [{ width: 390, height: 844, device_scale_factor: 2 }],
+    checks: {
+      reproduced_before: true,
+      console_errors_reviewed: true,
+      network_failures_reviewed: true,
+    },
+    artefact_ids: [afterArtefactId],
+    idempotency_key: "transcript-verify-1",
+  });
+
+  heading("the hand-over is refused: the evidence gate");
+  await call("finding_update_status", {
+    finding_id: findingId,
+    expected_version: claimedVersion + 2,
+    status: "AWAITING_HUMAN_REVIEW",
+    idempotency_key: "transcript-awaiting-1",
+  });
+
+  heading("finding_submit_verification with the full payload (supersedes the first)");
+  await call("finding_submit_verification", {
+    finding_id: findingId,
+    summary: "Changed the navigation collapse breakpoint to 900px.",
+    branch: "redesign",
+    commit: "b4c5d6e7f809192a3b4c5d6e7f809192a3b4c5d6",
+    tested_viewports: [
+      { width: 390, height: 844, device_scale_factor: 2 },
+      { width: 1440, height: 900, device_scale_factor: 1 },
+    ],
+    checks: {
+      reproduced_before: true,
+      console_errors_reviewed: true,
+      network_failures_reviewed: true,
+      accessibility_checked: false,
+    },
+    artefact_ids: [afterArtefactId],
+    idempotency_key: "transcript-verify-2",
+  });
+
+  heading("task_validation_status AFTER: the missing list has emptied");
+  await call("task_validation_status", { review: "bugs-on-homepage", finding_id: findingId });
+
+  heading("the agent asks a human to look");
+  await call("finding_update_status", {
+    finding_id: findingId,
+    expected_version: claimedVersion + 3,
+    status: "AWAITING_HUMAN_REVIEW",
+    idempotency_key: "transcript-awaiting-2",
+  });
+
+  heading("task_complete now answers blocked_pending_review");
+  await call("task_complete", {
+    review: "bugs-on-homepage",
+    summary: "Everything available to an agent on this review is done.",
+    idempotency_key: "transcript-complete-2",
+  });
+
+  heading("the before-and-after pair, with hashes, from the artefact store");
+  const pair = await postgres.pool.query(
+    `SELECT va.role, a.id, a.kind, a.state, a.sha256, a.size_bytes, a.storage_key,
+            a.content_width_px, a.content_height_px
+       FROM verifications v
+       JOIN verification_artefacts va ON va.verification_id = v.id
+       JOIN artefacts a ON a.id = va.artefact_id
+      WHERE v.finding_id = $1 AND v.status = 'submitted'
+      UNION ALL
+     SELECT 'before (finding original)', a.id, a.kind, a.state, a.sha256, a.size_bytes,
+            a.storage_key, a.content_width_px, a.content_height_px
+       FROM findings f JOIN artefacts a ON a.id = f.screenshot_artefact_id
+      WHERE f.id = $1`,
+    [findingId],
+  );
+  show("before/after artefacts", pair.rows);
+
+  heading("the verification history: the first claim was superseded, not deleted");
+  const history = await postgres.pool.query(
+    `SELECT id, status, summary, submitted_at, superseded_at,
+            superseded_by_verification_id, supersedes_verification_id
+       FROM verifications WHERE finding_id = $1 ORDER BY submitted_at`,
+    [findingId],
+  );
+  show("verifications", history.rows);
+
   heading("the audit record for a denied transition");
   const denied = await postgres.pool.query(
     `SELECT type, actor_type, actor_id, payload FROM events
@@ -122,6 +240,14 @@ try {
     [seeded.projectId],
   );
   show("status_change_denied", denied.rows);
+
+  heading("the recorded completion evaluations");
+  const evaluations = await postgres.pool.query(
+    `SELECT actor_type, actor_id, payload FROM events
+      WHERE project_id = $1 AND type = 'review.completion_evaluated' ORDER BY sequence`,
+    [seeded.projectId],
+  );
+  show("review.completion_evaluated", evaluations.rows);
 
   heading("the whole event sequence");
   const events = await postgres.pool.query<{ type: string; actor_type: string }>(

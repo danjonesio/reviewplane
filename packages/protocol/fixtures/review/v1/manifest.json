@@ -130,11 +130,18 @@
       "note": "An agent's note on a finding, clearly attributed. The reproduction detail is recorded as a comment rather than as a status change, because it is information and not a decision."
     },
     {
+      "name": "review-completion-evaluated",
+      "kind": "review_event",
+      "file": "valid/review-completion-evaluated.json",
+      "message_type": "review.completion_evaluated",
+      "note": "The completion gate of docs/MCP_SPEC.md section 7.8, recorded. An agent asked whether it had finished and was told blocked_missing_evidence with the one viewport it had not covered. Nothing moved: the event records what an agent was told, and the summary beside it is the agent's own claim rather than evidence."
+    },
+    {
       "name": "finding-verification-submitted",
       "kind": "review_event",
       "file": "valid/finding-verification-submitted.json",
       "message_type": "finding.verification_submitted",
-      "note": "The Stage 0 evidence event: summary, branch, commit, both artefacts and the viewports of AGENTS.md, with status submitted. Nothing here accepts the finding, and the commit differs from the one the finding was captured at because a fix cannot exist at the revision the defect was recorded from."
+      "note": "The evidence event: summary, branch, commit, both artefacts and the viewports of AGENTS.md, with status submitted. Nothing here accepts the finding, and the commit differs from the one the finding was captured at because a fix cannot exist at the revision the defect was recorded from. This is a second submission on the same finding, so it names the one it replaced in supersedes_verification_id: the earlier record is marked superseded and kept, and version 5 is what the finding holds after the claim."
     },
     {
       "name": "review-assigned",

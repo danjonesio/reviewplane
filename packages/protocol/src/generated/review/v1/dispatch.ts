@@ -35,6 +35,7 @@ import type {
   ReviewAssigned,
   ReviewClaimed,
   ReviewCommentAdded,
+  ReviewCompletionEvaluated,
   ReviewCreated,
   ReviewFrame,
   ReviewNamed,
@@ -69,6 +70,7 @@ import {
   decodeReviewAssigned,
   decodeReviewClaimed,
   decodeReviewCommentAdded,
+  decodeReviewCompletionEvaluated,
   decodeReviewCreated,
   decodeReviewNamed,
   decodeReviewReopened,
@@ -102,6 +104,7 @@ import {
   encodeReviewAssigned,
   encodeReviewClaimed,
   encodeReviewCommentAdded,
+  encodeReviewCompletionEvaluated,
   encodeReviewCreated,
   encodeReviewNamed,
   encodeReviewReopened,
@@ -135,6 +138,7 @@ import {
   validateReviewAssigned,
   validateReviewClaimed,
   validateReviewCommentAdded,
+  validateReviewCompletionEvaluated,
   validateReviewCreated,
   validateReviewNamed,
   validateReviewReopened,
@@ -157,6 +161,7 @@ export type ReviewPayload =
   | FindingClaimed
   | FindingCommentAdded
   | FindingVerificationSubmitted
+  | ReviewCompletionEvaluated
   | ReviewAssigned
   | ReviewAccepted
   | ReviewReopened
@@ -213,6 +218,9 @@ export function validatePayload(type: MessageType, value: unknown, path: string,
       return;
     case "finding.verification_submitted":
       validateFindingVerificationSubmitted(value, path, out);
+      return;
+    case "review.completion_evaluated":
+      validateReviewCompletionEvaluated(value, path, out);
       return;
     case "review.assigned":
       validateReviewAssigned(value, path, out);
@@ -305,6 +313,8 @@ export function decodeFrame(envelope: Envelope, value: unknown): ReviewFrame {
       return { envelope, type: "finding.comment_added", payload: decodeFindingCommentAdded(value) };
     case "finding.verification_submitted":
       return { envelope, type: "finding.verification_submitted", payload: decodeFindingVerificationSubmitted(value) };
+    case "review.completion_evaluated":
+      return { envelope, type: "review.completion_evaluated", payload: decodeReviewCompletionEvaluated(value) };
     case "review.assigned":
       return { envelope, type: "review.assigned", payload: decodeReviewAssigned(value) };
     case "review.accepted":
@@ -375,6 +385,8 @@ export function encodeFramePayload(frame: ReviewFrame): string {
       return encodeFindingCommentAdded(frame.payload);
     case "finding.verification_submitted":
       return encodeFindingVerificationSubmitted(frame.payload);
+    case "review.completion_evaluated":
+      return encodeReviewCompletionEvaluated(frame.payload);
     case "review.assigned":
       return encodeReviewAssigned(frame.payload);
     case "review.accepted":

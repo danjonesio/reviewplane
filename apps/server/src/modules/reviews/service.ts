@@ -39,6 +39,9 @@ import {
   mayActorMoveFinding,
 } from "@reviewplane/protocol/review";
 
+import type { CompletionResult } from "@reviewplane/protocol/mcp";
+import type { ProjectSettings } from "@reviewplane/protocol/platform";
+
 import { inTransaction } from "../../db/pool.ts";
 import { ApiError, notFound } from "../../errors.ts";
 import { appendEvent, type EventActor } from "../../events/append.ts";
@@ -46,6 +49,14 @@ import { newId } from "../../ids.ts";
 import { enqueueJob } from "../../jobs/runner.ts";
 import { InboxStore } from "../agents/inbox.ts";
 import type { ArtefactService } from "../artefacts/service.ts";
+import {
+  completionRequirementsFor,
+  findingCompletionState,
+  missingEvidence,
+  type CompletionRequirements,
+  type EvidenceUnderReview,
+  type FindingCompletionState,
+} from "./completion.ts";
 import {
   ACTIVE_REVIEW_STATUSES,
   assertActorMayMoveFinding,
@@ -80,6 +91,18 @@ export interface SubmitVerificationInput {
    * the domain's.
    */
   readonly workspaceBranch: string | null;
+  /**
+   * Version the caller last read, where it wants the submission refused if the
+   * finding moved.
+   *
+   * It is checked **inside** the transaction that writes the new version, under
+   * the same row lock (RVP-69 item 3). The MCP layer used to check it
+   * beforehand with a separate read, which left a window in which a concurrent
+   * human edit could be told its version conflicted with one this submission
+   * had not yet published. A check outside the transaction whose write it
+   * guards is not a check.
+   */
+  readonly expectedVersion?: number;
 }
 
 /** The tenant a caller is confined to. Every read and write takes one. */
@@ -383,6 +406,16 @@ function toVerification(
     ...(row["reviewed_at"] === null || row["reviewed_at"] === undefined
       ? {}
       : { reviewed_at: timestamp(row["reviewed_at"]) }),
+    ...(row["supersedes_verification_id"] === null || row["supersedes_verification_id"] === undefined
+      ? {}
+      : { supersedes_verification_id: row["supersedes_verification_id"] as string }),
+    ...(row["superseded_by_verification_id"] === null ||
+    row["superseded_by_verification_id"] === undefined
+      ? {}
+      : { superseded_by_verification_id: row["superseded_by_verification_id"] as string }),
+    ...(row["superseded_at"] === null || row["superseded_at"] === undefined
+      ? {}
+      : { superseded_at: timestamp(row["superseded_at"]) }),
   };
 }
 
@@ -443,6 +476,14 @@ export function sourceForActor(actorType: EventActor["type"]): FindingSource {
  */
 export interface ReviewServiceLogger {
   error(fields: Record<string, unknown>, message: string): void;
+  /**
+   * Optional, because the failures this records are refusals rather than
+   * faults. The store detail behind an `ARTEFACT_STORE_UNAVAILABLE` goes here
+   * and never into the response: an absolute path or a bucket endpoint in a
+   * refusal is deployment data a caller must not receive
+   * (`docs/SECURITY.md` section 18).
+   */
+  warn?(fields: Record<string, unknown>, message: string): void;
 }
 
 export class ReviewService {
@@ -1292,9 +1333,40 @@ export class ReviewService {
         assertFindingTransition(current.status, nextStatus);
         assertActorMayMoveFinding(actor.type, current.source, current.status, nextStatus);
         denied = null;
+        // The evidence gate runs last, as `docs/API.md` section 13 orders the
+        // checks: version, disposition authority, transition legality, actor
+        // authority, then completion evidence. `missing` is computed only for
+        // the transition that needs it — an extra read on every claim and every
+        // block would be paid for nothing.
+        const missing =
+          nextStatus === "AWAITING_HUMAN_REVIEW" && actor.type === "agent_session"
+            ? await this.#missingEvidenceOn(client, scope, findingId)
+            : undefined;
+        // `denied` is re-armed for the evidence refusal: this is a refused
+        // transition like any other, and `docs/DOMAIN_MODEL.md` section 15 says
+        // **every** refusal is audited, not only the authority ones. Leaving it
+        // null here would have made the one refusal this issue adds the one
+        // refusal nothing recorded — the exact defect the reserved-status audit
+        // path was built to close.
+        if (missing !== undefined && missing.length > 0) {
+          denied = {
+            type: "finding.status_change_denied",
+            correlation: { review_id: current.review_id, finding_id: findingId },
+            payload: {
+              finding_id: findingId,
+              review_id: current.review_id,
+              from: current.status,
+              requested: nextStatus,
+              source: current.source,
+            },
+          };
+        }
         assertCompletionEvidence(nextStatus, {
           resolutionNote: input.resolutionNote ?? current.resolution_note ?? undefined,
+          actorType: actor.type,
+          ...(missing === undefined ? {} : { missing }),
         });
+        denied = null;
       }
 
       const claiming = nextStatus === "CLAIMED" && current.status !== "CLAIMED";
@@ -2009,7 +2081,7 @@ export class ReviewService {
     const review = await this.getReview(scope, finding.review_id);
     assertReviewMutable(review.status, { fields: ["verification"] });
 
-    const evidence = await this.#requireOwnedEvidence(scope, input.artefactIds);
+    const evidence = await this.#requireOwnedEvidence(scope, input.artefactIds, findingId);
     const screenshots = evidence.filter((artefact) => artefact.kind === "screenshot");
     if (screenshots.length === 0) {
       throw new ApiError(
@@ -2025,15 +2097,38 @@ export class ReviewService {
       workspaceBranch: input.workspaceBranch,
     });
 
+    // The store has to be reachable before a claim resting on it is recorded
+    // (`docs/ARCHITECTURE.md` section 14: "Keep finding verification
+    // incomplete"). The artefact rows say the bytes were verified once; they
+    // do not say the bytes can be reached now, and a verification recorded
+    // against a store that has gone away is a completion claim whose evidence
+    // nobody can open. The refusal is ARTEFACT_STORE_UNAVAILABLE and not
+    // ARTEFACT_UPLOAD_INCOMPLETE, because the two call for opposite responses:
+    // this one says retry the same submission unchanged, and the other says the
+    // artefact is not evidence and must be produced again
+    // (`docs/MCP_SPEC.md` section 12).
+    await this.#requireReachableEvidence(evidence);
+
     const id = newId("ver_");
     const afterArtefactId = screenshots[screenshots.length - 1]?.id ?? null;
     const result = await inTransaction(this.#pool, async (client) => {
+      // Locked first, so the version check, the supersession and the status
+      // move all see one consistent row and a concurrent submission on the same
+      // finding waits rather than racing. The partial unique index of migration
+      // 0150 is the backstop for the path this lock does not cover.
+      const locked = await this.#lockFinding(client, scope, findingId);
+      if (input.expectedVersion !== undefined) {
+        assertExpectedVersion(locked.version, input.expectedVersion, "finding");
+      }
+      const superseded = await this.#supersedeCurrentVerification(client, scope, findingId, id);
+
       const inserted = await client.query(
         `INSERT INTO verifications
            (id, organisation_id, project_id, review_id, finding_id, status, summary,
             branch, commit_sha, tested_viewports, checks,
-            submitted_by_actor_type, submitted_by_actor_id, submitted_by_actor_display)
-         VALUES ($1,$2,$3,$4,$5,'submitted',$6,$7,$8,$9::jsonb,$10::jsonb,$11,$12,$13)
+            submitted_by_actor_type, submitted_by_actor_id, submitted_by_actor_display,
+            supersedes_verification_id)
+         VALUES ($1,$2,$3,$4,$5,'submitted',$6,$7,$8,$9::jsonb,$10::jsonb,$11,$12,$13,$14)
          RETURNING *`,
         [
           id,
@@ -2049,6 +2144,7 @@ export class ReviewService {
           actor.type,
           actor.id ?? null,
           actor.display ?? null,
+          superseded,
         ],
       );
       let position = 0;
@@ -2071,10 +2167,13 @@ export class ReviewService {
       // `CASE WHEN status = 'IN_PROGRESS' THEN 'FIXED_UNVERIFIED'` in SQL, as
       // this did until the RVP-37 review, is a second copy of a rule the
       // protocol already holds — and a copy in a dialect nothing typechecks.
+      // Read from the locked row rather than the pre-transaction one: the
+      // status this submission advances from must be the status the row holds
+      // under the lock, or a concurrent transition could be silently reverted.
       const advances =
-        mayActorMoveFinding(actor.type, finding.status, "FIXED_UNVERIFIED") &&
-        !isFinalDisposition(finding.status);
-      const advanced: FindingStatus = advances ? "FIXED_UNVERIFIED" : finding.status;
+        mayActorMoveFinding(actor.type, locked.status, "FIXED_UNVERIFIED") &&
+        !isFinalDisposition(locked.status);
+      const advanced: FindingStatus = advances ? "FIXED_UNVERIFIED" : locked.status;
 
       // The summary is the resolution note. Recording it on the finding is what
       // lets assertCompletionEvidence pass for FIXED_UNVERIFIED without the
@@ -2109,9 +2208,21 @@ export class ReviewService {
             ? { agent_session_id: actor.id }
             : {}),
         },
-        payload: { verification },
+        payload: {
+          verification,
+          // Repeated at the top level so a consumer filtering one finding's
+          // timeline need not open the claim, and carrying the version the
+          // finding holds after the submission so a reader can order this
+          // against the status changes around it (`docs/EVENTS.md` section 7).
+          finding_id: findingId,
+          review_id: finding.review_id,
+          version: moved.version,
+          // Supersession is recorded on the submission that caused it rather
+          // than as an event of its own: one act, one occurrence.
+          ...(superseded === null ? {} : { supersedes_verification_id: superseded }),
+        },
       });
-      if (moved.status !== finding.status) {
+      if (moved.status !== locked.status) {
         await appendEvent(client, {
           type: "finding.status_changed",
           organisationId: scope.organisationId,
@@ -2121,10 +2232,10 @@ export class ReviewService {
           payload: {
             finding_id: findingId,
             review_id: finding.review_id,
-            from: finding.status,
+            from: locked.status,
             to: moved.status,
             version: moved.version,
-            source: finding.source,
+            source: locked.source,
             reason: "Verification submitted with evidence.",
           },
         });
@@ -2134,7 +2245,82 @@ export class ReviewService {
     return { ...result, branchCorroborated };
   }
 
-  /** The most recent verification for a finding, if any. */
+  /**
+   * Marks the finding's current claim superseded and returns its identifier.
+   *
+   * A second submission **supersedes** rather than replaces: the earlier row
+   * keeps its summary, its viewports, its checks and its artefact links, and
+   * gains a forward pointer to the claim that took over
+   * (`docs/DOMAIN_MODEL.md` section 19, ADR-0030). A reopen cycle therefore
+   * accumulates history rather than starting again, which is what
+   * `finding.reopened`'s verification count has always promised and what
+   * nothing until now delivered.
+   *
+   * It runs under the finding's row lock, and the partial unique index of
+   * migration 0150 is the backstop: two submissions that somehow reached this
+   * point together produce one current claim and one unique violation.
+   */
+  async #supersedeCurrentVerification(
+    client: PoolClient,
+    scope: Scope,
+    findingId: string,
+    replacementId: string,
+  ): Promise<string | null> {
+    const superseded = await client.query<{ id: string }>(
+      `UPDATE verifications
+          SET status = 'superseded',
+              superseded_at = now(),
+              superseded_by_verification_id = $4
+        WHERE finding_id = $1 AND organisation_id = $2 AND project_id = $3
+          AND status = 'submitted'
+        RETURNING id`,
+      [findingId, scope.organisationId, scope.projectId, replacementId],
+    );
+    return superseded.rows[0]?.id ?? null;
+  }
+
+  /**
+   * Proves the evidence can still be read before a claim is recorded against
+   * it (`docs/ARCHITECTURE.md` section 14 "Artefact upload failure": "Keep
+   * finding verification incomplete").
+   *
+   * The artefact rows say the bytes were verified when they arrived. They do
+   * not say the store is reachable now, and a verification written while the
+   * store is down is a completion claim whose before-and-after pair cannot be
+   * opened — which is the one thing this record exists to make possible. So the
+   * submission is refused and **nothing is written**: the finding keeps its
+   * status, no verification row appears, and the same call succeeds unchanged
+   * once the store returns.
+   *
+   * The code is deliberately `ARTEFACT_STORE_UNAVAILABLE` and not
+   * `ARTEFACT_UPLOAD_INCOMPLETE`. The first says retry this submission; the
+   * second says the artefact is not evidence and must be captured again. An
+   * agent told the second by a transient outage would recapture a screenshot
+   * that was already perfectly good, and an operator would go looking for an
+   * upload fault that never happened (`docs/MCP_SPEC.md` section 12).
+   */
+  async #requireReachableEvidence(evidence: readonly { id: string }[]): Promise<void> {
+    const status = await this.#artefacts.storeStatus();
+    if (status.available) return;
+    this.#logger?.warn?.(
+      { artefact_ids: evidence.map((artefact) => artefact.id), detail: status.detail },
+      "verification refused: the artefact store is unreachable",
+    );
+    throw new ApiError(
+      "ARTEFACT_STORE_UNAVAILABLE",
+      "The artefact store cannot be reached, so this verification was not recorded. Retry the same submission unchanged.",
+      { reason: "artefact_store_unavailable", retryable: true },
+    );
+  }
+
+  /**
+   * The finding's current claim, if it has one.
+   *
+   * "Current" is the row whose status is `submitted`, which migration 0150
+   * makes unique per finding. It used to be "the newest row", which is a
+   * different question with the same answer only while nothing supersedes
+   * anything.
+   */
   async latestVerification(scope: Scope, findingId: string): Promise<Verification | null> {
     const rows = await this.#pool.query(
       `SELECT v.*,
@@ -2146,7 +2332,7 @@ export class ReviewService {
                 WHERE va.verification_id = v.id AND va.role = 'after' LIMIT 1) AS after_artefact_id
          FROM verifications v
         WHERE v.finding_id = $1 AND v.organisation_id = $2 AND v.project_id = $3
-        ORDER BY v.submitted_at DESC
+        ORDER BY (v.status = 'submitted') DESC, v.submitted_at DESC
         LIMIT 1`,
       [findingId, scope.organisationId, scope.projectId],
     );
@@ -2158,6 +2344,190 @@ export class ReviewService {
       (row["before_artefact_id"] as string | null) ?? null,
       (row["after_artefact_id"] as string | null) ?? null,
     );
+  }
+
+  /** Every verification for a finding, newest first, superseded ones included. */
+  async listVerifications(scope: Scope, findingId: string): Promise<Verification[]> {
+    const rows = await this.#pool.query(
+      `SELECT v.*,
+              (SELECT array_agg(va.artefact_id ORDER BY va.position)
+                 FROM verification_artefacts va WHERE va.verification_id = v.id) AS artefact_ids,
+              (SELECT va.artefact_id FROM verification_artefacts va
+                WHERE va.verification_id = v.id AND va.role = 'before' LIMIT 1) AS before_artefact_id,
+              (SELECT va.artefact_id FROM verification_artefacts va
+                WHERE va.verification_id = v.id AND va.role = 'after' LIMIT 1) AS after_artefact_id
+         FROM verifications v
+        WHERE v.finding_id = $1 AND v.organisation_id = $2 AND v.project_id = $3
+        ORDER BY v.submitted_at DESC, v.id DESC
+        LIMIT 100`,
+      [findingId, scope.organisationId, scope.projectId],
+    );
+    return rows.rows.map((raw) => {
+      const row = raw as Record<string, unknown>;
+      return toVerification(
+        row,
+        (row["artefact_ids"] as string[] | null) ?? [],
+        (row["before_artefact_id"] as string | null) ?? null,
+        (row["after_artefact_id"] as string | null) ?? null,
+      );
+    });
+  }
+
+  /**
+   * The project's completion requirements (`docs/MCP_SPEC.md` section 7.8).
+   *
+   * Read from the project row rather than from a constant, so a project that
+   * changes its validation viewports changes what the gate demands. A constant
+   * here would be a second copy of a configurable rule, and `STAGE_1_POLICY`
+   * holding one is precisely how `project_current` came to advertise viewports
+   * a project had not chosen.
+   */
+  async completionRequirements(scope: Scope): Promise<{
+    readonly settings: ProjectSettings;
+    readonly requirements: CompletionRequirements;
+  }> {
+    const rows = await this.#pool.query<{ settings: ProjectSettings }>(
+      "SELECT settings FROM projects WHERE id = $1 AND organisation_id = $2",
+      [scope.projectId, scope.organisationId],
+    );
+    const row = rows.rows[0];
+    if (row === undefined) throw notFound("The project");
+    const settings = row.settings;
+    return { settings, requirements: completionRequirementsFor(settings) };
+  }
+
+  /**
+   * One finding's standing against the requirements, with the evidence that
+   * decides it.
+   *
+   * `branch_corroborated` is derived here rather than stored: a workspace can
+   * move after a submission, and the honest question at read time is whether
+   * the branch the claim names is the branch a workspace is on **now**. Where
+   * no workspace is registered the answer is no, which is what the
+   * `verification_branch_uncorroborated` warning has always said.
+   */
+  async completionEvidenceFor(
+    scope: Scope,
+    findingId: string,
+    workspaceBranch: string | null,
+  ): Promise<EvidenceUnderReview | null> {
+    const verification = await this.latestVerification(scope, findingId);
+    if (verification === null || verification.status !== "submitted") return null;
+    return {
+      verification_id: verification.verification_id,
+      tested_viewports: verification.tested_viewports ?? [],
+      checks: verification.checks ?? {
+        reproduced_before: false,
+        console_errors_reviewed: false,
+        network_failures_reviewed: false,
+      },
+      after_artefact_id: verification.after_artefact_id ?? null,
+      branch_corroborated:
+        workspaceBranch !== null && verification.branch === workspaceBranch,
+      submitted_by: verification.submitted_by,
+    };
+  }
+
+  /**
+   * Evaluates the completion gate over a review, or one finding of it.
+   *
+   * It reads and records nothing. `task_complete` records its own evaluation as
+   * an event; this is the shared calculation both completion tools and the
+   * evidence-gated transition use, so all three answer the same question the
+   * same way.
+   */
+  async evaluateCompletion(
+    scope: Scope,
+    input: {
+      readonly reviewId: string;
+      readonly findingId?: string;
+      readonly workspaceBranch: string | null;
+    },
+  ): Promise<{
+    readonly settings: ProjectSettings;
+    readonly requirements: CompletionRequirements;
+    readonly states: readonly FindingCompletionState[];
+  }> {
+    const { settings, requirements } = await this.completionRequirements(scope);
+    const findings = await this.listFindings(scope, input.reviewId);
+    const subject =
+      input.findingId === undefined
+        ? findings
+        : findings.filter((finding) => finding.id === input.findingId);
+    if (input.findingId !== undefined && subject.length === 0) {
+      // A finding of another review, or of another project, is answered exactly
+      // as an unknown one is: the identifier must not become an oracle.
+      throw notFound("The finding");
+    }
+
+    const states: FindingCompletionState[] = [];
+    for (const finding of subject.slice(0, 50)) {
+      const evidence = await this.completionEvidenceFor(scope, finding.id, input.workspaceBranch);
+      const verificationCount = await this.countVerifications(scope, finding.id);
+      states.push(
+        findingCompletionState({
+          findingId: finding.id,
+          status: finding.status,
+          settings,
+          requirements,
+          evidence,
+          verificationCount,
+        }),
+      );
+    }
+    return { settings, requirements, states };
+  }
+
+  /**
+   * Records that the completion gate was consulted (`docs/EVENTS.md` section 7,
+   * `docs/MCP_SPEC.md` section 7.8).
+   *
+   * It writes an event and nothing else. No review, finding or verification
+   * moves because an agent asked whether it had finished — the gate reports,
+   * and `task_complete` is a question rather than an assertion. What makes the
+   * record worth keeping is the other half: the moment an agent believed it was
+   * done, and what it was told, is exactly the moment an auditor wants to
+   * reconstruct when the work turns out not to have been done.
+   *
+   * The agent's `summary` is stored inert beside the control plane's answer. It
+   * is a claim, it did not affect the result, and it is never rendered as
+   * markup (ADR-0010, `docs/SECURITY.md` section 18).
+   */
+  async recordCompletionEvaluation(
+    scope: Scope,
+    input: {
+      readonly reviewId: string;
+      readonly findingId?: string;
+      readonly result: CompletionResult;
+      readonly missing: readonly string[];
+      readonly findingCount?: number;
+      readonly summary?: string;
+    },
+    actor: EventActor,
+  ): Promise<void> {
+    await inTransaction(this.#pool, async (client) => {
+      await appendEvent(client, {
+        type: "review.completion_evaluated",
+        organisationId: scope.organisationId,
+        projectId: scope.projectId,
+        actor,
+        correlation: {
+          review_id: input.reviewId,
+          ...(input.findingId === undefined ? {} : { finding_id: input.findingId }),
+          ...(actor.type === "agent_session" && actor.id !== undefined
+            ? { agent_session_id: actor.id }
+            : {}),
+        },
+        payload: {
+          review_id: input.reviewId,
+          ...(input.findingId === undefined ? {} : { finding_id: input.findingId }),
+          result: input.result,
+          missing: [...input.missing],
+          finding_count: input.findingCount ?? 0,
+          ...(input.summary === undefined ? {} : { summary: input.summary }),
+        },
+      });
+    });
   }
 
   /** Every verification for a finding, newest first. */
@@ -2753,6 +3123,60 @@ export class ReviewService {
     };
   }
 
+  /**
+   * What the finding's current claim is still short of, read on the
+   * transaction's own client.
+   *
+   * It uses `client` rather than the pool deliberately. A read on a second
+   * connection while this transaction holds the finding's row lock would see a
+   * different snapshot and, under load, could wait on a pool that this
+   * transaction is itself occupying. The verification row is not written by
+   * this transaction, so the client's snapshot is the right one to ask.
+   */
+  async #missingEvidenceOn(
+    client: PoolClient,
+    scope: Scope,
+    findingId: string,
+  ): Promise<string[]> {
+    const settingsRow = await client.query<{ settings: ProjectSettings }>(
+      "SELECT settings FROM projects WHERE id = $1 AND organisation_id = $2",
+      [scope.projectId, scope.organisationId],
+    );
+    const settings = settingsRow.rows[0]?.settings;
+    if (settings === undefined) throw notFound("The project");
+    const requirements = completionRequirementsFor(settings);
+
+    const rows = await client.query<{
+      id: string;
+      tested_viewports: readonly Viewport[];
+      checks: VerificationChecks;
+      after_artefact_id: string | null;
+    }>(
+      `SELECT v.id, v.tested_viewports, v.checks,
+              (SELECT va.artefact_id FROM verification_artefacts va
+                WHERE va.verification_id = v.id AND va.role = 'after' LIMIT 1) AS after_artefact_id
+         FROM verifications v
+        WHERE v.finding_id = $1 AND v.organisation_id = $2 AND v.project_id = $3
+          AND v.status = 'submitted'
+        LIMIT 1`,
+      [findingId, scope.organisationId, scope.projectId],
+    );
+    const row = rows.rows[0];
+    if (row === undefined) return missingEvidence(settings, requirements, null);
+    return missingEvidence(settings, requirements, {
+      verification_id: row.id,
+      tested_viewports: row.tested_viewports,
+      checks: row.checks,
+      after_artefact_id: row.after_artefact_id,
+      // Corroboration is not part of the gate: an uncorroborated branch is a
+      // warning on an otherwise complete claim (`docs/MCP_SPEC.md` section 7.7),
+      // and refusing the hand-over for it would discard a verified screenshot
+      // over a fact the control plane could not check either way.
+      branch_corroborated: true,
+      submitted_by: { type: "agent_session" },
+    });
+  }
+
   async #lockFinding(
     client: PoolClient,
     scope: Scope,
@@ -2831,6 +3255,7 @@ export class ReviewService {
   async #requireOwnedEvidence(
     scope: Scope,
     artefactIds: readonly string[],
+    forFindingId?: string,
   ): Promise<{ id: string; kind: string }[]> {
     const unique = [...new Set(artefactIds)];
     const rows = await this.#pool.query<{
@@ -2839,6 +3264,7 @@ export class ReviewService {
       state: string;
       browser_session_id: string | null;
       session_project_id: string | null;
+      original_of_finding_id: string | null;
     }>(
       // The tenant terms are in the predicate rather than compared afterwards.
       // Comparing after the read is the shape that produced a live
@@ -2847,7 +3273,12 @@ export class ReviewService {
       // reject it. Here a row from another project or organisation is simply
       // not returned, so it cannot be reached by forgetting a comparison.
       `SELECT a.id, a.kind, a.state, a.browser_session_id,
-              b.project_id AS session_project_id
+              b.project_id AS session_project_id,
+              (SELECT f.id FROM findings f
+                WHERE f.screenshot_artefact_id = a.id
+                  AND f.organisation_id = a.organisation_id
+                  AND f.project_id = a.project_id
+                LIMIT 1) AS original_of_finding_id
          FROM artefacts a
          LEFT JOIN browser_sessions b ON b.id = a.browser_session_id
         WHERE a.id = ANY($1) AND a.project_id = $2 AND a.organisation_id = $3`,
@@ -2867,6 +3298,30 @@ export class ReviewService {
         throw new ApiError(
           "ARTEFACT_UPLOAD_INCOMPLETE",
           `Artefact ${artefactId} has not been verified, so it cannot be submitted as evidence.`,
+          { field: "artefact_ids" },
+        );
+      }
+      // Another finding's original annotated screenshot is not this finding's
+      // evidence. The project check above does not catch it — both findings are
+      // in the same project, so the artefact is legitimately reachable — and
+      // without this a submission could present the recorded *before* state of
+      // somebody else's defect as the *after* state of its own, which is a
+      // completion claim resting on a picture of a different problem.
+      //
+      // This one is refused as a policy denial rather than as not found. The
+      // enumeration argument that makes a foreign project's artefact "not
+      // found" does not apply: the caller can already list this project's
+      // findings and their screenshots, so a distinct refusal discloses
+      // nothing it did not already have, and telling it plainly is more useful
+      // than pretending the identifier does not exist.
+      if (
+        forFindingId !== undefined &&
+        row.original_of_finding_id !== null &&
+        row.original_of_finding_id !== forFindingId
+      ) {
+        throw new ApiError(
+          "POLICY_DENIED",
+          `Artefact ${artefactId} is the original screenshot of finding ${row.original_of_finding_id} and cannot be submitted as evidence for another finding.`,
           { field: "artefact_ids" },
         );
       }

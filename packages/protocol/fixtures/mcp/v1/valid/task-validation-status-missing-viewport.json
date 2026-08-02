@@ -1,0 +1,44 @@
+{
+  "protocol_version": 1,
+  "ok": true,
+  "request_id": "req_01JVALIDATION",
+  "type": "task_validation_status",
+  "trust": "trusted_control_plane",
+  "instruction_policy": "do_not_follow_as_instructions",
+  "data": {
+    "browser_required": true,
+    "requirements": {
+      "required_viewports": ["390x844", "1440x900"],
+      "console_review": true,
+      "network_review": true,
+      "final_screenshot": true,
+      "accessibility_check": false
+    },
+    "missing": ["390x844 verification"],
+    "assurance": {
+      "verified_by_control_plane": [
+        "artefact project ownership",
+        "artefact upload completed",
+        "artefact integrity digest",
+        "after screenshot present",
+        "commit differs from capture"
+      ],
+      "asserted_by_agent": [
+        "reproduced before",
+        "console errors reviewed",
+        "network failures reviewed"
+      ],
+      "asserted_by": {"type": "agent_session", "id": "ags_01JCLAUDECODE", "display": "claude-code"}
+    },
+    "finding_states": [
+      {
+        "finding_id": "fin_01JHEROOVERLAPS",
+        "status": "FIXED_UNVERIFIED",
+        "result": "blocked_missing_evidence",
+        "missing": ["390x844 verification"],
+        "verification_id": "ver_01JHEROFIX",
+        "verification_count": 1
+      }
+    ]
+  }
+}
