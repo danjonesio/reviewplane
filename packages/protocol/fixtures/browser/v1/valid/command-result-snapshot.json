@@ -27,6 +27,10 @@
         "height": 900,
         "device_scale_factor": 1
       },
+      "scroll_position": {
+        "x": 0,
+        "y": 1180
+      },
       "node_count": 4,
       "truncated": false,
       "text": "- banner\n  - link \"Refresh Surplus\" [ref=e2]\n  - navigation \"Main\" [ref=e4]\n- main\n  - heading \"Give technology another life\" [ref=e9]\n  - link \"Browse products\" [ref=e12]",

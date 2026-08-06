@@ -257,12 +257,13 @@ export function CaptureFinding({
         artefactId: shot.screenshot.artefact_id,
         contentRectangle: artefact.content_rectangle,
         viewport: shot.screenshot.viewport,
-        // Stage 1 takes viewport captures of a page the human is watching and
-        // does not drive, so the scroll offset the control plane can state
-        // honestly is the origin. It is recorded because a finding without it
-        // is not reproducible, and it is recorded as what was captured rather
-        // than as a guess.
-        scroll: { x: 0, y: 0 },
+        // Measured by the worker at the moment of capture, never assumed. A
+        // viewport capture is a picture of one screenful, and this is the only
+        // value that says which screenful: element boxes arrive in document
+        // coordinates, and a mark on a page scrolled 800 pixels resolves
+        // against the top of the document without it — a well-formed answer
+        // about the wrong element (ADR-0033).
+        scroll: shot.screenshot.scroll_position,
         url: currentUrl ?? session.service_origin ?? "about:blank",
         capturedAt: shot.screenshot.captured_at,
         elements,

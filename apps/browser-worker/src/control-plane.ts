@@ -277,6 +277,7 @@ export class ControlPlaneClient {
       size_bytes: record.size_bytes,
       content_type: "image/png",
       viewport: request.viewport,
+      scroll_position: request.scrollPosition,
       full_page: request.fullPage,
       captured_at: request.capturedAt.toISOString(),
     };

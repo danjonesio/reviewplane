@@ -22,8 +22,34 @@ import type { ElementDescriptor, Viewport } from "@reviewplane/protocol/browser"
 
 import { sanitisePageText, sanitiseSelector } from "./untrusted.ts";
 
-/** The bound `element_box` places on a CSS-pixel measurement. */
+/** The bound `element_box` and `scroll_offset` place on a CSS-pixel measurement. */
 const MAX_ELEMENT_OFFSET = 100_000;
+
+/**
+ * How far the page is scrolled, in CSS pixels.
+ *
+ * It is **measured at the moment of capture and never assumed**. A capture of a
+ * scrolled page whose offset was recorded as the origin resolves annotations
+ * against whatever sits at the top of the document instead — a well-formed
+ * answer about the wrong element, which is the failure ADR-0033 exists to
+ * prevent. `{0, 0}` is a real value here because it was read, not because
+ * nothing was known.
+ *
+ * A page that refuses to answer, or answers with something unusable, yields the
+ * origin and the reason is the same either way: `scrollX` on a document is not
+ * something a page can meaningfully make hostile, and a capture is not worth
+ * failing over a number the browser itself computes.
+ */
+export async function readScrollOffset(page: Page): Promise<{ x: number; y: number }> {
+  const raw = await page
+    .evaluate(() => ({ x: globalThis.scrollX, y: globalThis.scrollY }))
+    .catch(() => ({ x: 0, y: 0 }));
+  const bounded = (value: unknown): number => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+    return Math.round(Math.min(MAX_ELEMENT_OFFSET, Math.max(-MAX_ELEMENT_OFFSET, value)) * 10) / 10;
+  };
+  return { x: bounded(raw.x), y: bounded(raw.y) };
+}
 
 /**
  * An element box the protocol will accept, or `null`.
@@ -86,6 +112,8 @@ interface RawSnapshot {
 export interface Snapshot {
   readonly id: string;
   readonly viewport: Viewport;
+  /** Where the page was scrolled to, which element boxes are relative to. */
+  readonly scrollPosition: { readonly x: number; readonly y: number };
   readonly text: string;
   readonly elements: readonly ElementDescriptor[];
   readonly truncated: boolean;
@@ -450,6 +478,10 @@ export async function captureSnapshot(
   viewport: Viewport,
   bounds: SnapshotBounds,
 ): Promise<Snapshot> {
+  // Read before the walk, so the offset and the element boxes describe the
+  // same moment: a page that scrolls between the two would report boxes
+  // against one origin and an offset against another.
+  const scrollPosition = await readScrollOffset(page);
   const collected = await page.evaluateHandle(collectElements, bounds.maxNodes);
   let raw: RawSnapshot;
   let handle: JSHandle<Element[]>;
@@ -492,6 +524,7 @@ export async function captureSnapshot(
   return {
     id,
     viewport,
+    scrollPosition,
     text: bounded.text,
     elements: kept.kept,
     truncated: raw.truncated || bounded.truncated || kept.truncated,

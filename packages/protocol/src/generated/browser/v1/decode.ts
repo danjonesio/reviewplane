@@ -35,6 +35,7 @@ import type {
   ScreenshotPurpose,
   ScreenshotResult,
   ScrollDirection,
+  ScrollOffset,
   ScrollParams,
   SelectOptionParams,
   SessionAllocate,
@@ -435,6 +436,17 @@ export function decodeNavigationResult(value: unknown): NavigationResult {
 }
 
 /**
+ * Decodes a validated ScrollOffset.
+ */
+export function decodeScrollOffset(value: unknown): ScrollOffset {
+  const source = value as Record<string, unknown>;
+  return {
+    x: source["x"] as number,
+    y: source["y"] as number,
+  };
+}
+
+/**
  * Decodes a validated ElementBox.
  */
 export function decodeElementBox(value: unknown): ElementBox {
@@ -472,6 +484,7 @@ export function decodeSnapshotResult(value: unknown): SnapshotResult {
   return {
     snapshot_id: source["snapshot_id"] as string,
     viewport: decodeViewport(source["viewport"]),
+    scroll_position: decodeScrollOffset(source["scroll_position"]),
     node_count: source["node_count"] as number,
     truncated: source["truncated"] as boolean,
     text: source["text"] as string,
@@ -490,6 +503,7 @@ export function decodeScreenshotResult(value: unknown): ScreenshotResult {
     size_bytes: source["size_bytes"] as number,
     content_type: source["content_type"] as ImageContentType,
     viewport: decodeViewport(source["viewport"]),
+    scroll_position: decodeScrollOffset(source["scroll_position"]),
     full_page: source["full_page"] as boolean,
     captured_at: source["captured_at"] as string,
   };

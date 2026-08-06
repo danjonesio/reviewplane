@@ -510,20 +510,36 @@ export const REFUSAL_STATUS: Readonly<Record<string, number>> = {
 export const INTERNAL_SUFFIX = "internal.invalid";
 
 /**
- * The elements a snapshot reports, in the layout of the fixture screenshot.
+ * How far the fixture page is scrolled when it is captured.
+ *
+ * It is deliberately **not** the origin. Element boxes arrive in document
+ * coordinates and an annotation's geometry is normalised to the capture, so
+ * the offset is the only value relating the two — and a capture flow that
+ * discarded it would still resolve marks correctly on an unscrolled page and
+ * silently wrongly on every other one. A scrolled fixture is what makes the
+ * suite able to tell the difference.
+ */
+export const CAPTURE_SCROLL = { x: 0, y: 1180 } as const;
+
+/**
+ * The elements a snapshot reports, in **document** coordinates, for a page
+ * scrolled by `CAPTURE_SCROLL`.
  *
  * `MARKED_REGION` is the coloured band, and `e3` is the element laid out
- * exactly over it in CSS pixels: 390x844 at a device pixel ratio of 2 means the
- * band at 25% across and 30% down starts at 97.5, 253.2 CSS pixels. `e1` is the
- * whole document and contains everything, which is what makes "the smallest
- * containing element wins" a real assertion rather than a tautology.
+ * exactly over it: 390x844 at a device pixel ratio of 2 means the band at 25%
+ * across and 30% down sits at viewport 97.5, 253.2 CSS pixels — which is
+ * document y 1433.2 once the page is scrolled 1180. `e1` is the whole document
+ * and contains everything, which is what makes "the smallest containing
+ * element wins" a real assertion rather than a tautology; `e2` is a header
+ * sitting at the top of the *document*, which is exactly what a flow that
+ * ignored the scroll offset would wrongly resolve a mark to.
  */
 export const SNAPSHOT_ELEMENTS = [
   {
     ref: "e1",
     role: "main",
     name: "Homepage",
-    box: { x: 0, y: 0, width: 390, height: 844 },
+    box: { x: 0, y: 0, width: 390, height: 2400 },
     selector: "body main",
     selector_strategy: "css" as const,
   },
@@ -531,7 +547,7 @@ export const SNAPSHOT_ELEMENTS = [
     ref: "e2",
     role: "banner",
     name: "Header",
-    box: { x: 0, y: 0, width: 390, height: 120 },
+    box: { x: 0, y: 0, width: 390, height: 400 },
     selector: "#header",
     selector_strategy: "css" as const,
   },
@@ -539,7 +555,12 @@ export const SNAPSHOT_ELEMENTS = [
     ref: "e3",
     role: "navigation",
     name: "Main navigation",
-    box: { x: 97.5, y: 253.2, width: 117, height: 101.3 },
+    box: {
+      x: 97.5,
+      y: 253.2 + CAPTURE_SCROLL.y,
+      width: 117,
+      height: 101.3,
+    },
     selector: "[data-testid=main-navigation]",
     selector_strategy: "testid" as const,
     text_excerpt: "Shop Sell About",
@@ -1745,6 +1766,7 @@ export async function startStubControlPlane(options: StubOptions): Promise<StubC
               size_bytes: 7275,
               content_type: "image/png",
               viewport: CAPTURE_VIEWPORT,
+              scroll_position: CAPTURE_SCROLL,
               full_page: false,
               captured_at: "2026-07-30T10:12:20.000Z",
             },
@@ -1764,6 +1786,7 @@ export async function startStubControlPlane(options: StubOptions): Promise<StubC
           snapshot: {
             snapshot_id: "snp_ui_suite",
             viewport: CAPTURE_VIEWPORT,
+            scroll_position: CAPTURE_SCROLL,
             node_count: SNAPSHOT_ELEMENTS.length,
             truncated: false,
             text: SNAPSHOT_ELEMENTS.map(

@@ -28,6 +28,7 @@ import { after, before, test } from "node:test";
 import { chromium, type Browser, type ConsoleMessage, type Page } from "playwright";
 
 import {
+  CAPTURE_SCROLL,
   CAPTURE_VIEWPORT,
   MARKED_COLOUR,
   MARKED_REGION,
@@ -518,7 +519,15 @@ test("the request the control plane receives carries normalised geometry and the
     // Every field of the `docs/UX_FLOWS.md` §9 captured-context list.
     assert.equal(body["screenshot_artefact_id"], "art_ui_suite_measured");
     assert.deepEqual(body["viewport"], CAPTURE_VIEWPORT);
-    assert.deepEqual(body["scroll_position"], { x: 0, y: 0 });
+    // The offset the worker measured, not a hard-coded origin. The fixture
+    // page is scrolled, so a flow that discarded this would send {0, 0} here
+    // and would resolve the element below to the header at the top of the
+    // document instead of to the navigation the mark actually covers.
+    assert.deepEqual(
+      body["scroll_position"],
+      CAPTURE_SCROLL,
+      "the finding recorded a scroll offset the capture did not have",
+    );
     assert.equal(typeof body["url"], "string");
     assert.match(String(body["captured_commit"]), /^[0-9a-f]{7,64}$/u);
 
@@ -543,12 +552,17 @@ test("the request the control plane receives carries normalised geometry and the
     // No `source`: it is derived from the authenticated actor.
     assert.equal(body["source"], undefined, "the page sent a source claim");
 
-    // The element context the snapshot resolved, and the smallest containing
-    // element rather than the document.
+    // The element context the snapshot resolved: the smallest containing
+    // element rather than the document, and resolved in the frame the capture
+    // was actually taken in. The header sits at the top of the *document*, so
+    // it is what a flow that dropped the scroll offset would name here.
+    const context = body["element_context"] as Record<string, unknown> | undefined;
     assert.deepEqual(
-      (body["element_context"] as Record<string, unknown> | undefined)?.["selector"],
+      context?.["selector"],
       "[data-testid=main-navigation]",
+      `element context resolved to ${JSON.stringify(context)}`,
     );
+    assert.deepEqual(context?.["text_excerpt"], "Shop Sell About");
 
     const reviewRequest = session.stub.requests.find((entry) => /\/reviews$/u.test(entry.path));
     assert.ok(reviewRequest !== undefined, "no review was created");

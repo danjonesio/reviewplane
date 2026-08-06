@@ -80,6 +80,27 @@ Resolving nothing is a normal outcome. §9 calls element context best effort, a
 mark over whitespace has no element under it, and the finding is recorded
 without one rather than with an invented one.
 
+### The scroll offset is measured with the capture, never assumed
+
+`snapshot_result` and `screenshot_result` both carry `scroll_position`, read
+from the page at the moment each capture is taken.
+
+It is required rather than optional, and measured rather than defaulted,
+because the failure it prevents is silent. Element boxes are in document
+coordinates and an annotation's geometry is normalised to the capture, so the
+offset is the only value relating the two. A capture of a page scrolled 800
+pixels whose offset was recorded as the origin resolves every mark against
+whatever sits at the top of the document — and it does so without erroring,
+without an empty result, and often with a real element's selector attached. On
+an unscrolled page such an implementation is indistinguishable from a correct
+one, which is why the fixture the user-interface suite captures from is
+deliberately scrolled.
+
+`{0, 0}` is a legitimate value when it was read. It is not a legitimate value
+when nothing was known: the honest response to an unknown offset is to have the
+producer measure it, which the worker can always do, rather than to assert an
+origin the capture may not have had.
+
 ### The conversion never touches the device pixel ratio
 
 Geometry is normalised to the artefact content rectangle. A viewport capture's

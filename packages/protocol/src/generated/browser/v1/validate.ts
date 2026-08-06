@@ -1410,6 +1410,26 @@ export function validateNavigationResult(value: unknown, path: string, out: Sche
 }
 
 /**
+ * How far the page was scrolled, in CSS pixels, at the moment a capture was taken. It is
+ * what turns a viewport-sized picture back into a position on the page it came from: an
+ * annotation's geometry is normalised to the capture, element boxes are in document
+ * coordinates, and this is the only value that relates the two. It is measured rather than
+ * assumed — a capture of a scrolled page whose offset was recorded as the origin resolves
+ * marks against whatever sits at the top of the document instead, which is a well-formed
+ * and wrong answer (ADR-0033).
+ */
+export function validateScrollOffset(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["x", "y"], ["x", "y"]);
+  if (source === null) return;
+  if (source["x"] !== undefined) {
+    validateElementCssPixelOffset(source["x"], `${path}.x`, out);
+  }
+  if (source["y"] !== undefined) {
+    validateElementCssPixelOffset(source["y"], `${path}.y`, out);
+  }
+}
+
+/**
  * Box of a snapshot element in CSS pixels, relative to the top-left of the document rather
  * than of the viewport, so that it can be compared with an annotation's geometry without
  * also knowing where the page happened to be scrolled to. Page-derived: it is a
@@ -1507,13 +1527,16 @@ export function validateSnapshotResultElements(value: unknown, path: string, out
  * throughout.
  */
 export function validateSnapshotResult(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["snapshot_id", "viewport", "node_count", "truncated", "text", "elements"], ["snapshot_id", "viewport", "node_count", "truncated", "text", "elements"]);
+  const source = checkObject(value, path, out, ["snapshot_id", "viewport", "scroll_position", "node_count", "truncated", "text", "elements"], ["snapshot_id", "viewport", "scroll_position", "node_count", "truncated", "text", "elements"]);
   if (source === null) return;
   if (source["snapshot_id"] !== undefined) {
     validateIdentifier(source["snapshot_id"], `${path}.snapshot_id`, out);
   }
   if (source["viewport"] !== undefined) {
     validateViewport(source["viewport"], `${path}.viewport`, out);
+  }
+  if (source["scroll_position"] !== undefined) {
+    validateScrollOffset(source["scroll_position"], `${path}.scroll_position`, out);
   }
   if (source["node_count"] !== undefined) {
     validateSnapshotResultNodeCount(source["node_count"], `${path}.node_count`, out);
@@ -1548,7 +1571,7 @@ export function validateScreenshotResultFullPage(value: unknown, path: string, o
  * 15, ADR-0012).
  */
 export function validateScreenshotResult(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["artefact_id", "sha256", "size_bytes", "content_type", "viewport", "full_page", "captured_at"], ["artefact_id", "sha256", "size_bytes", "content_type", "viewport", "full_page", "captured_at"]);
+  const source = checkObject(value, path, out, ["artefact_id", "sha256", "size_bytes", "content_type", "viewport", "scroll_position", "full_page", "captured_at"], ["artefact_id", "sha256", "size_bytes", "content_type", "viewport", "scroll_position", "full_page", "captured_at"]);
   if (source === null) return;
   if (source["artefact_id"] !== undefined) {
     validateIdentifier(source["artefact_id"], `${path}.artefact_id`, out);
@@ -1564,6 +1587,9 @@ export function validateScreenshotResult(value: unknown, path: string, out: Sche
   }
   if (source["viewport"] !== undefined) {
     validateViewport(source["viewport"], `${path}.viewport`, out);
+  }
+  if (source["scroll_position"] !== undefined) {
+    validateScrollOffset(source["scroll_position"], `${path}.scroll_position`, out);
   }
   if (source["full_page"] !== undefined) {
     validateScreenshotResultFullPage(source["full_page"], `${path}.full_page`, out);

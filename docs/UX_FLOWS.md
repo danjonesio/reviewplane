@@ -472,6 +472,15 @@ a live application possible in a stage with no human takeover. The capture is a
 the artefact's content rectangle, and a viewport capture's content rectangle is
 the frame the human was looking at, scaled by the device pixel ratio.
 
+**Both captures report the page's scroll offset, and the flow records what they
+reported.** A viewport capture is a picture of one screenful, and the offset is
+what says which screenful; the surface MUST NOT substitute the origin for it. A
+finding captured from a scrolled page with the offset recorded as `{0, 0}`
+resolves its element context against the top of the document rather than
+against what the human was looking at (ADR-0033), and the value is the one thing
+`docs/DOMAIN_MODEL.md` §15 says a viewport-sized screenshot cannot be placed
+back on its page without.
+
 **A capture whose upload did not complete is not annotated.** The flow reads the
 artefact back and requires `available` before it offers a canvas, so the
 "Evidence upload incomplete" state of §18 is reached instead of a draft finding

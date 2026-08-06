@@ -899,7 +899,17 @@ Selectors are hints, not permanent identity. Reproduction must tolerate changed 
 
 Element context is resolved by **arithmetic over a snapshot captured with the
 screenshot**, never by asking the page at the moment a mark is drawn or read
-(ADR-0033). Two reasons, and the second is the stronger one: a page that has
+(ADR-0033).
+
+The frame that arithmetic runs in is the finding's own captured context. An
+element's `bounding_box_css_pixels` is in **document** coordinates and an
+annotation's geometry is normalised to the capture, so `scroll_position` is the
+only value relating the two. It MUST be measured at the moment of capture and
+MUST NOT be assumed: a capture of a page scrolled 800 pixels whose offset was
+recorded as the origin resolves every mark against whatever sits at the top of
+the document instead — a well-formed answer about the wrong element, which is
+the failure this whole section exists to prevent. The worker reports the offset
+on both `snapshot_result` and `screenshot_result` for exactly this reason. Two reasons, and the second is the stronger one: a page that has
 repainted since the capture would answer about a layout the human never saw,
 and asking untrusted content to identify itself while it is being reported
 gives it the last word on what the report says (ADR-0010).

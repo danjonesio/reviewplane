@@ -1377,6 +1377,26 @@ export interface NavigationResult {
 }
 
 /**
+ * How far the page was scrolled, in CSS pixels, at the moment a capture was taken. It is
+ * what turns a viewport-sized picture back into a position on the page it came from: an
+ * annotation's geometry is normalised to the capture, element boxes are in document
+ * coordinates, and this is the only value that relates the two. It is measured rather than
+ * assumed — a capture of a scrolled page whose offset was recorded as the origin resolves
+ * marks against whatever sits at the top of the document instead, which is a well-formed
+ * and wrong answer (ADR-0033).
+ */
+export interface ScrollOffset {
+  /**
+   * Horizontal scroll offset.
+   */
+  readonly x: ElementCssPixelOffset;
+  /**
+   * Vertical scroll offset.
+   */
+  readonly y: ElementCssPixelOffset;
+}
+
+/**
  * Box of a snapshot element in CSS pixels, relative to the top-left of the document rather
  * than of the viewport, so that it can be compared with an annotation's geometry without
  * also knowing where the page happened to be scrolled to. Page-derived: it is a
@@ -1470,6 +1490,12 @@ export interface SnapshotResult {
    */
   readonly viewport: Viewport;
   /**
+   * How far the page was scrolled when the snapshot was taken. Element boxes are in
+   * document coordinates, so this is what relates them to anything expressed against the
+   * viewport — an annotation's geometry above all (ADR-0033).
+   */
+  readonly scroll_position: ScrollOffset;
+  /**
    * Number of elements described.
    */
   readonly node_count: number;
@@ -1514,6 +1540,14 @@ export interface ScreenshotResult {
    * Viewport the capture was taken at.
    */
   readonly viewport: Viewport;
+  /**
+   * How far the page was scrolled when the capture was taken. A viewport capture is a
+   * picture of one screenful, and without this it cannot be placed back on the page it
+   * came from (docs/DOMAIN_MODEL.md section 15). It is recorded for a full-page capture
+   * too, where it is the offset the page happened to hold rather than a property of the
+   * picture.
+   */
+  readonly scroll_position: ScrollOffset;
   /**
    * Whether the capture extends beyond the viewport.
    */

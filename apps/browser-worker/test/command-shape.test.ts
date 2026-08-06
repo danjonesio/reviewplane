@@ -129,6 +129,7 @@ test("a screenshot result is page-derived and therefore untrusted", () => {
       size_bytes: 100,
       content_type: "image/png",
       viewport: VIEWPORT_PRESETS.mobile,
+      scroll_position: { x: 0, y: 0 },
       full_page: false,
       captured_at: "2026-07-29T09:00:00.000Z",
     },

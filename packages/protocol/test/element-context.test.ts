@@ -194,6 +194,54 @@ test("an element context carrying page-derived text says so", () => {
   assert.equal(carriesPageDerivedText({ selector_strategy: "css" }), false);
 });
 
+test("a scrolled page resolves to what the human marked, and to nothing without the offset", () => {
+  // The regression this pins is not a metadata nit: a capture whose scroll
+  // offset was recorded as the origin resolves marks against whatever sits at
+  // the top of the document. The answer is well formed and about the wrong
+  // element, which is the worst kind.
+  //
+  // The page is scrolled 800 pixels. The human sees the promotion in the
+  // middle of their viewport and marks it.
+  const scrolledBy = 800;
+  const page: readonly ElementCandidate[] = [
+    {
+      ref: "e1",
+      role: "banner",
+      name: "Header",
+      selector: "[data-testid=header]",
+      selector_strategy: "testid",
+      // Document y 0 to 200: off-screen once the page is scrolled.
+      box: { x: 0, y: 0, width: 390, height: 200 },
+    },
+    {
+      ref: "e2",
+      role: "region",
+      name: "Promotion",
+      selector: "[data-testid=promo]",
+      selector_strategy: "testid",
+      // Document y 900 to 1100, which is viewport y 100 to 300 when scrolled.
+      box: { x: 0, y: 900, width: 390, height: 200 },
+    },
+  ];
+  // The middle of what the human saw: viewport y about 200 of 844.
+  const mark = { x: 0.3, y: 0.237 };
+
+  assert.equal(
+    resolveElementContext("point", mark, MOBILE, { x: 0, y: scrolledBy }, page)?.selector,
+    "[data-testid=promo]",
+    "the mark is over the promotion the human could see",
+  );
+
+  // With the offset thrown away, the same mark resolves to nothing at all —
+  // and on a page whose header happened to be taller it would resolve to the
+  // header, which is worse.
+  assert.equal(
+    resolveElementContext("point", mark, MOBILE, UNSCROLLED, page),
+    null,
+    "discarding the scroll offset must not still find the right element by luck",
+  );
+});
+
 test("a candidate with no measured box is never resolved to", () => {
   const unmeasured: readonly ElementCandidate[] = [
     { ref: "e1", role: "button", name: "Somewhere" },

@@ -1623,6 +1623,22 @@
       "minimum": -100000,
       "maximum": 100000
     },
+    "scroll_offset": {
+      "type": "object",
+      "description": "How far the page was scrolled, in CSS pixels, at the moment a capture was taken. It is what turns a viewport-sized picture back into a position on the page it came from: an annotation's geometry is normalised to the capture, element boxes are in document coordinates, and this is the only value that relates the two. It is measured rather than assumed — a capture of a scrolled page whose offset was recorded as the origin resolves marks against whatever sits at the top of the document instead, which is a well-formed and wrong answer (ADR-0033).",
+      "additionalProperties": false,
+      "required": ["x", "y"],
+      "properties": {
+        "x": {
+          "$ref": "#/$defs/element_css_pixel_offset",
+          "description": "Horizontal scroll offset."
+        },
+        "y": {
+          "$ref": "#/$defs/element_css_pixel_offset",
+          "description": "Vertical scroll offset."
+        }
+      }
+    },
     "element_box": {
       "type": "object",
       "description": "Box of a snapshot element in CSS pixels, relative to the top-left of the document rather than of the viewport, so that it can be compared with an annotation's geometry without also knowing where the page happened to be scrolled to. Page-derived: it is a measurement of a layout the page controls, and it is stored as a hint about where an element was rather than as an assertion about where it is (docs/DOMAIN_MODEL.md section 17).",
@@ -1692,7 +1708,15 @@
       "type": "object",
       "description": "A bounded accessibility snapshot (docs/MCP_SPEC.md sections 7.4 and 13). Page-derived throughout.",
       "additionalProperties": false,
-      "required": ["snapshot_id", "viewport", "node_count", "truncated", "text", "elements"],
+      "required": [
+        "snapshot_id",
+        "viewport",
+        "scroll_position",
+        "node_count",
+        "truncated",
+        "text",
+        "elements"
+      ],
       "properties": {
         "snapshot_id": {
           "$ref": "#/$defs/identifier",
@@ -1701,6 +1725,10 @@
         "viewport": {
           "$ref": "#/$defs/viewport",
           "description": "Viewport the snapshot was taken at. A resize supersedes it."
+        },
+        "scroll_position": {
+          "$ref": "#/$defs/scroll_offset",
+          "description": "How far the page was scrolled when the snapshot was taken. Element boxes are in document coordinates, so this is what relates them to anything expressed against the viewport — an annotation's geometry above all (ADR-0033)."
         },
         "node_count": {
           "type": "integer",
@@ -1737,6 +1765,7 @@
         "size_bytes",
         "content_type",
         "viewport",
+        "scroll_position",
         "full_page",
         "captured_at"
       ],
@@ -1762,6 +1791,10 @@
         "viewport": {
           "$ref": "#/$defs/viewport",
           "description": "Viewport the capture was taken at."
+        },
+        "scroll_position": {
+          "$ref": "#/$defs/scroll_offset",
+          "description": "How far the page was scrolled when the capture was taken. A viewport capture is a picture of one screenful, and without this it cannot be placed back on the page it came from (docs/DOMAIN_MODEL.md section 15). It is recorded for a full-page capture too, where it is the offset the page happened to hold rather than a property of the picture."
         },
         "full_page": {
           "type": "boolean",

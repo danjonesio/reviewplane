@@ -28,6 +28,7 @@ import type {
   ResizeParams,
   ScreenshotParams,
   ScreenshotResult,
+  ScrollOffset,
   ScrollParams,
   SelectOptionParams,
   SessionAllocate,
@@ -476,6 +477,16 @@ export function encodeNavigationResult(value: NavigationResult): string {
 }
 
 /**
+ * Canonically encodes a ScrollOffset.
+ */
+export function encodeScrollOffset(value: ScrollOffset): string {
+  const fields: string[] = [];
+  fields.push(`"x":${jsonNumber(value.x)}`);
+  fields.push(`"y":${jsonNumber(value.y)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
  * Canonically encodes a ElementBox.
  */
 export function encodeElementBox(value: ElementBox): string {
@@ -522,6 +533,7 @@ export function encodeSnapshotResult(value: SnapshotResult): string {
   const fields: string[] = [];
   fields.push(`"snapshot_id":${jsonString(value.snapshot_id)}`);
   fields.push(`"viewport":${encodeViewport(value.viewport)}`);
+  fields.push(`"scroll_position":${encodeScrollOffset(value.scroll_position)}`);
   fields.push(`"node_count":${jsonInteger(value.node_count)}`);
   fields.push(`"truncated":${jsonBoolean(value.truncated)}`);
   fields.push(`"text":${jsonString(value.text)}`);
@@ -539,6 +551,7 @@ export function encodeScreenshotResult(value: ScreenshotResult): string {
   fields.push(`"size_bytes":${jsonInteger(value.size_bytes)}`);
   fields.push(`"content_type":${jsonString(value.content_type)}`);
   fields.push(`"viewport":${encodeViewport(value.viewport)}`);
+  fields.push(`"scroll_position":${encodeScrollOffset(value.scroll_position)}`);
   fields.push(`"full_page":${jsonBoolean(value.full_page)}`);
   fields.push(`"captured_at":${jsonString(value.captured_at)}`);
   return `{${fields.join(",")}}`;

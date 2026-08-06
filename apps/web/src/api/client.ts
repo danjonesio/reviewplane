@@ -312,11 +312,18 @@ export interface BrowserCommandOutcome {
   readonly screenshot?: {
     readonly artefact_id: string;
     readonly viewport: Viewport;
+    /**
+     * Where the page was scrolled when the pixels were taken, measured by the
+     * worker. It is what relates a viewport-sized picture to the document the
+     * snapshot's element boxes are expressed against (ADR-0033).
+     */
+    readonly scroll_position: ScrollPosition;
     readonly captured_at: string;
   };
   readonly snapshot?: {
     readonly snapshot_id: string;
     readonly viewport: Viewport;
+    readonly scroll_position: ScrollPosition;
     readonly truncated: boolean;
     readonly elements: readonly SnapshotElement[];
   };
