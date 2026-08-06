@@ -14,11 +14,42 @@
  * fail rather than click whatever now occupies that index".
  */
 
+import { createHash } from "node:crypto";
+
 import type { ElementHandle, JSHandle, Page } from "playwright-core";
 
 import type { ElementDescriptor, Viewport } from "@reviewplane/protocol/browser";
 
-import { sanitisePageText } from "./untrusted.ts";
+import { sanitisePageText, sanitiseSelector } from "./untrusted.ts";
+
+/** The bound `element_box` places on a CSS-pixel measurement. */
+const MAX_ELEMENT_OFFSET = 100_000;
+
+/**
+ * An element box the protocol will accept, or `null`.
+ *
+ * A page controls its own layout, so it controls these numbers. One outside
+ * the schema's range is dropped rather than clamped, for the same reason an
+ * out-of-range annotation coordinate is refused rather than clamped: a clamped
+ * box would place an element somewhere plausible and wrong, and a resolver
+ * would then confidently name it as the element under a mark.
+ */
+export function boundedBox(
+  box: { x: number; y: number; width: number; height: number } | null,
+): { x: number; y: number; width: number; height: number } | null {
+  if (box === null) return null;
+  const rounded = {
+    x: Math.round(box.x * 10) / 10,
+    y: Math.round(box.y * 10) / 10,
+    width: Math.round(box.width * 10) / 10,
+    height: Math.round(box.height * 10) / 10,
+  };
+  for (const value of Object.values(rounded)) {
+    if (!Number.isFinite(value) || Math.abs(value) > MAX_ELEMENT_OFFSET) return null;
+  }
+  if (rounded.width < 0 || rounded.height < 0) return null;
+  return rounded;
+}
 
 /** One element as the browser reported it, before sanitisation. */
 interface RawElement {
@@ -26,6 +57,22 @@ interface RawElement {
   readonly depth: number;
   readonly role: string;
   readonly name: string;
+  /**
+   * Where the element was laid out, in the document's own CSS pixels rather
+   * than the viewport's, so that an annotation drawn over a scrolled page
+   * resolves against a frame that does not move when the page does.
+   */
+  readonly box: { x: number; y: number; width: number; height: number } | null;
+  readonly selector: string;
+  readonly selectorStrategy: "testid" | "role" | "text" | "css" | "xpath" | null;
+  readonly textExcerpt: string;
+  /**
+   * The element's structural position — tags and ordinals, never its text — as
+   * a string the worker digests. It is computed here because only the page has
+   * the ancestry, and digested outside because `crypto.subtle` is asynchronous
+   * and this function must stay a single synchronous walk.
+   */
+  readonly structure: string;
 }
 
 interface RawSnapshot {
@@ -162,6 +209,90 @@ function collectElements(maxNodes: number): { elements: Element[]; raw: RawSnaps
     return rectangle.width > 0 || rectangle.height > 0;
   };
 
+  // Only a value that can be written unquoted is offered as a selector. A
+  // page that names a test identifier with a bracket or a quotation mark is
+  // not given a selector at all rather than one that would need escaping
+  // rules a reader has to know before pasting it.
+  const PLAIN_TOKEN = /^[A-Za-z][A-Za-z0-9_.:-]*$/;
+  const TESTID_ATTRIBUTES = ["data-testid", "data-test-id", "data-test", "data-qa"];
+
+  /**
+   * A selector for the element, strongest strategy first.
+   *
+   * The order is the order in which a selector survives a redesign. A test
+   * identifier is put there for this purpose and outlives layout changes; an
+   * element identifier usually does; a role and an accessible name survive a
+   * restructure that keeps the semantics; a positional CSS path survives
+   * almost nothing, which is exactly why the strategy travels beside the
+   * selector rather than being left for a reader to infer.
+   */
+  const selectorOf = (
+    element: Element,
+    role: string,
+    name: string,
+  ): { selector: string; strategy: "testid" | "role" | "text" | "css" | null } => {
+    for (const attribute of TESTID_ATTRIBUTES) {
+      const value = element.getAttribute(attribute);
+      if (value !== null && PLAIN_TOKEN.test(value)) {
+        return { selector: `[${attribute}=${value}]`, strategy: "testid" };
+      }
+    }
+    const id = element.getAttribute("id");
+    if (id !== null && PLAIN_TOKEN.test(id)) return { selector: `#${id}`, strategy: "css" };
+    if (name !== "" && name.length <= 128 && !/[<>"[\]]/.test(name)) {
+      return { selector: `role=${role}[name=${name}]`, strategy: "role" };
+    }
+    // A positional path. `>` is deliberately not used: the protocol's selector
+    // bound excludes angle brackets, and a descendant combinator names the
+    // same element for a reader pasting it into a console.
+    const parts: string[] = [];
+    let cursor: Element | null = element;
+    while (cursor !== null && cursor !== document.body && parts.length < 8) {
+      const parent: Element | null = cursor.parentElement;
+      if (parent === null) break;
+      const tag = cursor.tagName.toLowerCase();
+      const siblings = Array.from(parent.children).filter((child) => child.tagName === cursor?.tagName);
+      const ordinal = siblings.indexOf(cursor) + 1;
+      parts.unshift(siblings.length > 1 ? `${tag}:nth-of-type(${String(ordinal)})` : tag);
+      cursor = parent;
+    }
+    if (parts.length === 0) return { selector: "", strategy: null };
+    return { selector: `body ${parts.join(" ")}`, strategy: "css" };
+  };
+
+  /**
+   * The element's structural position, excluding every value the page can
+   * change without restructuring itself.
+   *
+   * Text is deliberately absent: editing a label is not a structural change,
+   * and a fingerprint that moved when a heading was reworded would report a
+   * changed DOM on every copy edit, which is the fastest way to make the
+   * signal ignored.
+   */
+  const structureOf = (element: Element): string => {
+    const parts: string[] = [];
+    let cursor: Element | null = element;
+    while (cursor !== null && parts.length < 16) {
+      const parent: Element | null = cursor.parentElement;
+      const ordinal =
+        parent === null ? 0 : Array.from(parent.children).indexOf(cursor) + 1;
+      const id = cursor.getAttribute("id") ?? "";
+      parts.unshift(`${cursor.tagName}[${String(ordinal)}]${id === "" ? "" : `#${id}`}`);
+      cursor = parent;
+    }
+    return parts.join("/");
+  };
+
+  /** The element's own text, excluding the text of nested elements. */
+  const ownTextOf = (element: Element): string => {
+    let text = "";
+    for (const node of Array.from(element.childNodes)) {
+      if (node.nodeType === 3) text += node.nodeValue ?? "";
+      if (text.length > 1024) break;
+    }
+    return text;
+  };
+
   // Depth is memoised per element, so an ancestor chain is walked once for a
   // subtree rather than once for every element in it.
   const depths = new Map<Element, number>();
@@ -198,11 +329,27 @@ function collectElements(maxNodes: number): { elements: Element[]; raw: RawSnaps
       truncated = true;
       continue;
     }
+    const name = nameOf(candidate);
+    const rectangle = candidate.getBoundingClientRect();
+    const chosen = selectorOf(candidate, role, name);
     raw.push({
       index: elements.length,
       depth: depthOf(candidate),
       role,
-      name: nameOf(candidate),
+      name,
+      // Viewport coordinates plus the scroll offset are document coordinates.
+      // The conversion happens here because only the page knows how far it is
+      // scrolled at the moment the snapshot is taken.
+      box: {
+        x: rectangle.left + globalThis.scrollX,
+        y: rectangle.top + globalThis.scrollY,
+        width: rectangle.width,
+        height: rectangle.height,
+      },
+      selector: chosen.selector,
+      selectorStrategy: chosen.strategy,
+      textExcerpt: ownTextOf(candidate),
+      structure: structureOf(candidate),
     });
     elements.push(candidate);
   }
@@ -242,6 +389,40 @@ export function boundLines(
     kept.push(line);
   }
   return { text: kept.join("\n"), kept: kept.length, truncated: false };
+}
+
+/**
+ * Byte budget for the machine-readable element array.
+ *
+ * The rendered text has its own bound and the node count has another, but
+ * neither bounds this array: a page chooses its own selectors, accessible
+ * names and text, so four hundred elements each carrying the maximum of every
+ * page-derived member would be about half a megabyte — twice the protocol's
+ * whole control frame. The budget sits well inside `max_control_frame_bytes`
+ * (262144) with the rendered snapshot's 32768 and the rest of the result
+ * beside it.
+ */
+export const MAX_ELEMENT_ARRAY_BYTES = 131072;
+
+/**
+ * Applies that budget, dropping whole descriptors from the end.
+ *
+ * Truncating from the end keeps the array a prefix of the handle array, which
+ * is what makes a reference still resolve to the element it named: dropping
+ * from the middle would renumber every reference after the gap and silently
+ * repoint them at other elements.
+ */
+export function boundDescriptors(
+  descriptors: readonly ElementDescriptor[],
+  maxBytes: number = MAX_ELEMENT_ARRAY_BYTES,
+): { kept: readonly ElementDescriptor[]; truncated: boolean } {
+  const encoder = new TextEncoder();
+  let total = 2;
+  for (const [index, descriptor] of descriptors.entries()) {
+    total += encoder.encode(JSON.stringify(descriptor)).length + 1;
+    if (total > maxBytes) return { kept: descriptors.slice(0, index), truncated: true };
+  }
+  return { kept: descriptors, truncated: false };
 }
 
 /** Reference issued for the element at `index` of a snapshot. */
@@ -284,24 +465,36 @@ export async function captureSnapshot(
 
   const descriptors: ElementDescriptor[] = raw.elements.map((element) => {
     const name = sanitisePageText(element.name, 256);
+    const selector = sanitiseSelector(element.selector);
+    const excerpt = sanitisePageText(element.textExcerpt, 256);
+    const box = boundedBox(element.box);
     return {
       ref: referenceFor(element.index),
       role: sanitisePageText(element.role, 64) || "generic",
       ...(name === "" ? {} : { name }),
-    };
+      ...(box === null ? {} : { box }),
+      ...(selector === "" || element.selectorStrategy === null
+        ? {}
+        : { selector, selector_strategy: element.selectorStrategy }),
+      ...(excerpt === "" ? {} : { text_excerpt: excerpt }),
+      ...(element.structure === ""
+        ? {}
+        : { dom_fingerprint: createHash("sha256").update(element.structure).digest("hex") }),
+    } as ElementDescriptor;
   });
 
   const lines = descriptors.map((descriptor, index) =>
     renderLine(descriptor, raw.elements[index]?.depth ?? 0),
   );
   const bounded = boundLines(lines, bounds.maxBytes);
+  const kept = boundDescriptors(descriptors.slice(0, bounded.kept));
 
   return {
     id,
     viewport,
     text: bounded.text,
-    elements: descriptors.slice(0, bounded.kept),
-    truncated: raw.truncated || bounded.truncated,
+    elements: kept.kept,
+    truncated: raw.truncated || bounded.truncated || kept.truncated,
     handle,
   };
 }

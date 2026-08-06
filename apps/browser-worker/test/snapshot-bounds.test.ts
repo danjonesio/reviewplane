@@ -9,12 +9,20 @@ import test from "node:test";
 import type { ElementDescriptor } from "@reviewplane/protocol/browser";
 
 import {
+  MAX_ELEMENT_ARRAY_BYTES,
+  boundDescriptors,
   boundLines,
+  boundedBox,
   indexOfReference,
   referenceFor,
   renderLine,
 } from "../src/session/snapshot.ts";
-import { sanitiseMultilineText, sanitisePageText, sanitiseUrl } from "../src/session/untrusted.ts";
+import {
+  sanitiseMultilineText,
+  sanitisePageText,
+  sanitiseSelector,
+  sanitiseUrl,
+} from "../src/session/untrusted.ts";
 
 test("a line is rendered in the docs/MCP_SPEC.md section 7.4 shape", () => {
   const descriptor: ElementDescriptor = { ref: "e2", role: "link", name: "Refresh Surplus" };
@@ -100,4 +108,62 @@ test('a non-string page value sanitises to an empty label rather than to "undefi
   assert.equal(sanitisePageText(undefined), "");
   assert.equal(sanitisePageText(null), "");
   assert.equal(sanitisePageText(42), "");
+});
+
+// ---------------------------------------------------------------------------
+// The element context an annotation resolves against (ADR-0033)
+// ---------------------------------------------------------------------------
+
+test("a page-derived selector loses the characters that would smuggle markup", () => {
+  assert.equal(
+    sanitiseSelector('[data-testid=<img src=x onerror="alert(1)">]'),
+    "[data-testid=img src=x onerror=alert(1)]",
+  );
+  assert.equal(sanitiseSelector("#main"), "#main");
+  assert.equal(sanitiseSelector(undefined), "");
+  assert.equal(sanitiseSelector(`#${"a".repeat(4000)}`).length, 512);
+});
+
+test("an element box outside the schema's range is dropped rather than clamped", () => {
+  assert.deepEqual(boundedBox({ x: 8.04, y: 16.36, width: 300, height: 60 }), {
+    x: 8,
+    y: 16.4,
+    width: 300,
+    height: 60,
+  });
+  // A clamped box would place an element somewhere plausible and wrong, and a
+  // resolver would then confidently name it as the element under a mark.
+  assert.equal(boundedBox({ x: 1e9, y: 0, width: 10, height: 10 }), null);
+  assert.equal(boundedBox({ x: 0, y: 0, width: Number.NaN, height: 10 }), null);
+  assert.equal(boundedBox({ x: 0, y: 0, width: -4, height: 10 }), null);
+  assert.equal(boundedBox(null), null);
+});
+
+test("the element array is bounded in bytes, and stays a prefix when it truncates", () => {
+  // A page controls its own selectors, names and text. Four hundred elements
+  // each carrying the maximum of every page-derived member is about half a
+  // megabyte, twice the protocol's whole control frame.
+  const hostile: ElementDescriptor[] = Array.from({ length: 400 }, (_unused, index) => ({
+    ref: referenceFor(index),
+    role: "button",
+    name: "n".repeat(256),
+    selector: `[data-testid=${"s".repeat(400)}]`,
+    selector_strategy: "testid",
+    text_excerpt: "t".repeat(256),
+    dom_fingerprint: "f".repeat(64),
+    box: { x: 1, y: 2, width: 3, height: 4 },
+  }));
+  const bounded = boundDescriptors(hostile);
+  assert.equal(bounded.truncated, true, "an unbounded element array was accepted");
+  assert.ok(
+    new TextEncoder().encode(JSON.stringify(bounded.kept)).length <= MAX_ELEMENT_ARRAY_BYTES,
+    "the bounded array is still over the budget",
+  );
+  // A prefix, so every surviving reference still resolves to the element it
+  // named. Dropping from the middle would renumber the tail.
+  assert.deepEqual(bounded.kept, hostile.slice(0, bounded.kept.length));
+  assert.equal(bounded.kept[0]?.ref, "e1");
+
+  const small: ElementDescriptor[] = [{ ref: "e1", role: "banner" }];
+  assert.deepEqual(boundDescriptors(small), { kept: small, truncated: false });
 });
