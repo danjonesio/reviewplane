@@ -63,6 +63,19 @@ export type {
 /** The verification shape the review workspace reads. */
 export type Verification = VerificationReference;
 
+/** One review export, as `docs/API.md` section 12 answers it. */
+export interface ReviewExport {
+  readonly id: string;
+  readonly review_id: string;
+  readonly status: "pending" | "ready" | "failed";
+  readonly artefact_id: string | null;
+  readonly sha256: string | null;
+  readonly size_bytes: number | null;
+  readonly failure_reason: string | null;
+  readonly created_at: string;
+  readonly completed_at: string | null;
+}
+
 /** The review-search dimensions of `docs/UX_FLOWS.md` section 16. */
 export interface ReviewFilters {
   readonly q?: string;
@@ -1129,6 +1142,22 @@ export const api = {
           ? {}
           : { duplicate_of_finding_id: decision.duplicateOfFindingId }),
       }),
+    });
+  },
+
+  /**
+   * Requests a review export and reports the current one (`docs/API.md` §12,
+   * `docs/REVIEW_FORMAT.md`).
+   *
+   * It is a `GET` that changes state the first time it is called, so it carries
+   * the CSRF token like any other write — which is why it is declared here as a
+   * write rather than as a read. Asking again while a run is in flight joins
+   * that run rather than queueing a second one.
+   */
+  async requestReviewExport(reviewId: string): Promise<ReviewExport> {
+    return request<ReviewExport>(`/api/v1/reviews/${encodeURIComponent(reviewId)}/export`, {
+      method: "GET",
+      headers: { "x-csrf-token": csrfToken() ?? "" },
     });
   },
 

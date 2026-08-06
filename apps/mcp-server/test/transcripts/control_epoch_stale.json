@@ -5,7 +5,7 @@
     "params": {
       "name": "browser_navigate",
       "arguments": {
-        "browser_session_id": "brs_cde635acdb2aea9dd188d5e9369783cc",
+        "browser_session_id": "brs_f623997edf0071f832505a80fb3b25fd",
         "control_epoch": 1,
         "url": "/checkout"
       }
@@ -15,13 +15,13 @@
     "content": [
       {
         "type": "text",
-        "text": "{\"protocol_version\":1,\"ok\":false,\"request_id\":\"req_454f9f47fc8a4aa2901d1843d8533f4c\",\"type\":\"browser_navigate\",\"error\":{\"code\":\"CONTROL_EPOCH_STALE\",\"message\":\"Browser control changed. Refresh session state before retrying.\",\"retryable\":true,\"details\":{\"current_epoch\":2}},\"trust\":\"trusted_control_plane\",\"instruction_policy\":\"do_not_follow_as_instructions\"}"
+        "text": "{\"protocol_version\":1,\"ok\":false,\"request_id\":\"req_71897968ff154a038d04f7d0720f86dd\",\"type\":\"browser_navigate\",\"error\":{\"code\":\"CONTROL_EPOCH_STALE\",\"message\":\"Browser control changed. Refresh session state before retrying.\",\"retryable\":true,\"details\":{\"current_epoch\":2}},\"trust\":\"trusted_control_plane\",\"instruction_policy\":\"do_not_follow_as_instructions\"}"
       }
     ],
     "structuredContent": {
       "protocol_version": 1,
       "ok": false,
-      "request_id": "req_454f9f47fc8a4aa2901d1843d8533f4c",
+      "request_id": "req_71897968ff154a038d04f7d0720f86dd",
       "type": "browser_navigate",
       "error": {
         "code": "CONTROL_EPOCH_STALE",

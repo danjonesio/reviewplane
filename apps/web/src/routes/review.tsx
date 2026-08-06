@@ -19,7 +19,7 @@ import { Link, createRoute, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type ReactElement } from "react";
 
-import { ApiFailure, api, type Finding } from "../api/client.ts";
+import { ApiFailure, api, type Finding, type ReviewExport } from "../api/client.ts";
 import { AgentDeliveryPanel } from "../components/AgentDelivery.tsx";
 import { CommentThread } from "../components/CommentThread.tsx";
 import {
@@ -185,6 +185,17 @@ function ReviewDetail(): ReactElement {
     },
   });
 
+  // The portable document of `docs/REVIEW_FORMAT.md`. It is a durable job, so
+  // the request answers with the export's state rather than with bytes, and
+  // asking again while a run is in flight joins that run.
+  const [exported, setExported] = useState<ReviewExport | null>(null);
+  const exportReview = useMutation({
+    mutationFn: () => api.requestReviewExport(reviewId),
+    onSuccess: (result: ReviewExport) => {
+      setExported(result);
+    },
+  });
+
   if (review.isPending) return <p role="status">Loading the review.</p>;
   if (review.isError) {
     const failure = review.error;
@@ -286,6 +297,50 @@ function ReviewDetail(): ReactElement {
             void queryClient.invalidateQueries({ queryKey: ["review", reviewId] });
           }}
         />
+
+        <section aria-labelledby="review-export-heading" className="mt-5">
+          <h2 id="review-export-heading" className="text-sm font-semibold">
+            Export this review
+          </h2>
+          <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">
+            Produces the portable document of the review format: the review, its findings, their
+            annotations and every verification, with the artefacts they name. It runs as a job, so
+            the answer below is the export&rsquo;s state rather than the file.
+          </p>
+          <p className="mt-2">
+            <button
+              type="button"
+              data-review-export={record.id}
+              disabled={exportReview.isPending}
+              onClick={() => {
+                exportReview.mutate();
+              }}
+              className="rounded border border-slate-400 px-3 py-2 text-sm font-medium disabled:opacity-60 dark:border-slate-600"
+            >
+              {exportReview.isPending ? "Requesting the export" : "Request an export"}
+            </button>
+          </p>
+          {exported === null ? null : (
+            <p className="mt-2 text-sm" role="status" data-review-export-state={exported.status}>
+              {exported.status === "ready"
+                ? `Ready: artefact ${String(exported.artefact_id)}, ${String(
+                    exported.size_bytes,
+                  )} bytes, SHA-256 ${String(exported.sha256)}.`
+                : exported.status === "failed"
+                  ? `The export did not complete: ${exported.failure_reason ?? "no reason recorded"}. Nothing was produced.`
+                  : "Queued. Ask again to see whether it has finished."}
+            </p>
+          )}
+          {exportReview.error instanceof ApiFailure ? (
+            <RefusalPanel
+              code={exportReview.error.code}
+              message={exportReview.error.message}
+              attribute="data-refusal"
+              table={DECISION_REFUSALS}
+              surface="review-export"
+            />
+          ) : null}
+        </section>
 
         <CommentThread
           surface={`review-${record.id}`}
