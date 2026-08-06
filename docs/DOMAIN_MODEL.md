@@ -765,10 +765,16 @@ Structured geometry and display metadata.
 - `artefact_id`
 - `type`
 - `geometry`
+- `geometry_version`
 - `label`
 - `style_hint`
 - `created_by`
 - `created_at`
+
+`geometry_version` is the version of its own type's member list (ADR-0032). It
+is derived by the control plane from the type and is never a field a caller may
+supply: a client able to name it could claim a member list its geometry does not
+satisfy.
 
 ### Supported initial types
 
@@ -778,13 +784,6 @@ Structured geometry and display metadata.
 - `point`
 - `numbered_marker`
 - `freehand`
-
-### Common fields, continued
-
-Every annotation also records the **geometry version** of its own type
-(ADR-0032). It is derived by the control plane from the type and is never a
-field a caller may supply: a client able to name it could claim a member list
-its geometry does not satisfy.
 
 ### Geometry
 
