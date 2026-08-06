@@ -21,6 +21,7 @@ import type {
   AgentSessionStatusInput,
   AgentSessionStatusResult,
   AnnotationGeometry,
+  AnnotationPathPoint,
   AnnotationType,
   AnnotationView,
   ArtefactKind,
@@ -63,6 +64,8 @@ import type {
   DevelopmentServiceView,
   DevelopmentServicesListInput,
   DevelopmentServicesListResult,
+  ElementContextView,
+  ElementContextViewSelectorStrategy,
   Envelope,
   ErrorClass,
   ErrorDetails,
@@ -196,6 +199,34 @@ export function decodeAnnotationGeometry(value: unknown): AnnotationGeometry {
     ...(source["height"] === undefined ? {} : { height: source["height"] as number }),
     ...(source["x2"] === undefined ? {} : { x2: source["x2"] as number }),
     ...(source["y2"] === undefined ? {} : { y2: source["y2"] as number }),
+    ...(source["rotation"] === undefined ? {} : { rotation: source["rotation"] as number }),
+    ...(source["path"] === undefined ? {} : { path: (source["path"] as unknown[]).map((item) => decodeAnnotationPathPoint(item)) }),
+  };
+}
+
+/**
+ * Decodes a validated ElementContextView.
+ */
+export function decodeElementContextView(value: unknown): ElementContextView {
+  const source = value as Record<string, unknown>;
+  return {
+    ...(source["selector"] === undefined ? {} : { selector: source["selector"] as string }),
+    ...(source["selector_strategy"] === undefined ? {} : { selector_strategy: source["selector_strategy"] as ElementContextViewSelectorStrategy }),
+    ...(source["role"] === undefined ? {} : { role: source["role"] as string }),
+    ...(source["accessible_name"] === undefined ? {} : { accessible_name: source["accessible_name"] as string }),
+    ...(source["text_excerpt"] === undefined ? {} : { text_excerpt: source["text_excerpt"] as string }),
+    ...(source["dom_fingerprint"] === undefined ? {} : { dom_fingerprint: source["dom_fingerprint"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated AnnotationPathPoint.
+ */
+export function decodeAnnotationPathPoint(value: unknown): AnnotationPathPoint {
+  const source = value as Record<string, unknown>;
+  return {
+    x: source["x"] as number,
+    y: source["y"] as number,
   };
 }
 
@@ -494,6 +525,7 @@ export function decodeFindingView(value: unknown): FindingView {
     ...(source["acceptance_criteria"] === undefined ? {} : { acceptance_criteria: source["acceptance_criteria"] as string }),
     ...(source["claimed_by"] === undefined ? {} : { claimed_by: decodeActorReference(source["claimed_by"]) }),
     ...(source["annotation_count"] === undefined ? {} : { annotation_count: source["annotation_count"] as number }),
+    ...(source["element_context"] === undefined ? {} : { element_context: decodeElementContextView(source["element_context"]) }),
     resource_uri: source["resource_uri"] as string,
     untrusted_fields: (source["untrusted_fields"] as unknown[]).map((item) => item as string),
   };

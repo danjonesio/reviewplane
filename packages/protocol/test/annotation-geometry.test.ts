@@ -28,9 +28,11 @@ import {
   toRenderedPath,
   toRenderedPoint,
 } from "../src/annotation-geometry.ts";
-import { ANNOTATION_TYPE_VALUES } from "../src/generated/review/v1/types.ts";
+import {
+  ANNOTATION_TYPE_VALUES,
+  type SchemaViolation,
+} from "../src/generated/review/v1/types.ts";
 import { validateAnnotationGeometry } from "../src/generated/review/v1/validate.ts";
-import type { SchemaViolation } from "../src/validate-runtime.ts";
 
 /** The 390x844 preset at a device pixel ratio of 2 (`AGENTS.md`). */
 const MOBILE_CONTENT = { width_px: 780, height_px: 1688 };

@@ -560,10 +560,12 @@ export function validateFindingSource(value: unknown, path: string, out: SchemaV
 }
 
 /**
- * Annotation shape (docs/DOMAIN_MODEL.md section 16).
+ * Annotation shape (docs/DOMAIN_MODEL.md section 16). It carries the same six values the
+ * review protocol does: an agent that could not name the shape a human drew would be
+ * reading a censored version of the review it was assigned.
  */
 export function validateAnnotationType(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["rectangle","ellipse","arrow","point","numbered_marker"] });
+  checkString(value, path, out, { values: ["rectangle","ellipse","arrow","point","numbered_marker","freehand"] });
 }
 
 /**
@@ -797,12 +799,24 @@ export function validateContentRectangle(value: unknown, path: string, out: Sche
 }
 
 /**
+ * Sampled points of a freehand stroke, in drawing order. An agent that never renders the
+ * image still reads the label and the bounding box; the path is here so that one which
+ * does render can draw the mark the human actually made rather than the box around it.
+ */
+export function validateAnnotationGeometryPath(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 2, maxItems: 128, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateAnnotationPathPoint(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
  * Normalised geometry against the artefact content rectangle. Which members a type uses is
  * fixed by the review protocol's own vocabulary; every member here lies between 0 and 1
  * inclusive.
  */
 export function validateAnnotationGeometry(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["x", "y", "width", "height", "x2", "y2"], ["x", "y"]);
+  const source = checkObject(value, path, out, ["x", "y", "width", "height", "x2", "y2", "rotation", "path"], ["x", "y"]);
   if (source === null) return;
   if (source["x"] !== undefined) {
     validateNormalisedCoordinate(source["x"], `${path}.x`, out);
@@ -821,6 +835,70 @@ export function validateAnnotationGeometry(value: unknown, path: string, out: Sc
   }
   if (source["y2"] !== undefined) {
     validateNormalisedCoordinate(source["y2"], `${path}.y2`, out);
+  }
+  if (source["rotation"] !== undefined) {
+    validateNormalisedCoordinate(source["rotation"], `${path}.rotation`, out);
+  }
+  if (source["path"] !== undefined) {
+    validateAnnotationGeometryPath(source["path"], `${path}.path`, out);
+  }
+}
+
+/**
+ * How the selector was chosen, strongest first. It is the control plane's own
+ * classification rather than something the page said, which is why it is the one member
+ * here that is not page-derived.
+ */
+export function validateElementContextViewSelectorStrategy(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["testid","role","text","css","xpath"] });
+}
+
+/**
+ * The element under a human's annotation, as an agent sees it (docs/DOMAIN_MODEL.md
+ * section 17). Every member but selector_strategy is page-derived, and the enclosing
+ * finding names element_context in untrusted_fields so an agent reading a selector or an
+ * excerpt knows it is reading what a page said about itself rather than an instruction
+ * (ADR-0010). Selectors are hints, not identity: reproduction must tolerate a DOM in which
+ * one no longer resolves. The stored bounding_box_css_pixels is deliberately not carried
+ * here: it describes a layout that has since changed, and an agent reproducing the finding
+ * has the URL, the viewport, the scroll position and the annotation's own normalised
+ * geometry, all of which survive a relayout that the box does not.
+ */
+export function validateElementContextView(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["selector", "selector_strategy", "role", "accessible_name", "text_excerpt", "dom_fingerprint"], []);
+  if (source === null) return;
+  if (source["selector"] !== undefined) {
+    validateReasonText(source["selector"], `${path}.selector`, out);
+  }
+  if (source["selector_strategy"] !== undefined) {
+    validateElementContextViewSelectorStrategy(source["selector_strategy"], `${path}.selector_strategy`, out);
+  }
+  if (source["role"] !== undefined) {
+    validateReasonText(source["role"], `${path}.role`, out);
+  }
+  if (source["accessible_name"] !== undefined) {
+    validateReasonText(source["accessible_name"], `${path}.accessible_name`, out);
+  }
+  if (source["text_excerpt"] !== undefined) {
+    validateReasonText(source["text_excerpt"], `${path}.text_excerpt`, out);
+  }
+  if (source["dom_fingerprint"] !== undefined) {
+    validateSha256Hex(source["dom_fingerprint"], `${path}.dom_fingerprint`, out);
+  }
+}
+
+/**
+ * One sampled point of a freehand path, normalised to the artefact content rectangle like
+ * every other geometry member.
+ */
+export function validateAnnotationPathPoint(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["x", "y"], ["x", "y"]);
+  if (source === null) return;
+  if (source["x"] !== undefined) {
+    validateNormalisedCoordinate(source["x"], `${path}.x`, out);
+  }
+  if (source["y"] !== undefined) {
+    validateNormalisedCoordinate(source["y"], `${path}.y`, out);
   }
 }
 
@@ -1593,7 +1671,7 @@ export function validateFindingViewUntrustedFields(value: unknown, path: string,
  * page, which is what makes the mixed trust label of the enclosing response actionable.
  */
 export function validateFindingView(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["id", "review_id", "title", "description", "severity", "status", "source", "version", "url", "viewport", "scroll_position", "captured_commit", "screenshot_artefact_id", "acceptance_criteria", "claimed_by", "annotation_count", "resource_uri", "untrusted_fields"], ["id", "review_id", "title", "severity", "status", "source", "version", "url", "viewport", "scroll_position", "captured_commit", "screenshot_artefact_id", "resource_uri", "untrusted_fields"]);
+  const source = checkObject(value, path, out, ["id", "review_id", "title", "description", "severity", "status", "source", "version", "url", "viewport", "scroll_position", "captured_commit", "screenshot_artefact_id", "acceptance_criteria", "claimed_by", "annotation_count", "element_context", "resource_uri", "untrusted_fields"], ["id", "review_id", "title", "severity", "status", "source", "version", "url", "viewport", "scroll_position", "captured_commit", "screenshot_artefact_id", "resource_uri", "untrusted_fields"]);
   if (source === null) return;
   if (source["id"] !== undefined) {
     validateIdentifier(source["id"], `${path}.id`, out);
@@ -1642,6 +1720,9 @@ export function validateFindingView(value: unknown, path: string, out: SchemaVio
   }
   if (source["annotation_count"] !== undefined) {
     validateRecordCount(source["annotation_count"], `${path}.annotation_count`, out);
+  }
+  if (source["element_context"] !== undefined) {
+    validateElementContextView(source["element_context"], `${path}.element_context`, out);
   }
   if (source["resource_uri"] !== undefined) {
     validateResourceUri(source["resource_uri"], `${path}.resource_uri`, out);
