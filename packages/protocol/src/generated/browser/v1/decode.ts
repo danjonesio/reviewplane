@@ -17,7 +17,9 @@ import type {
   CommandName,
   ControllerIdentity,
   ControllerType,
+  ElementBox,
   ElementDescriptor,
+  ElementDescriptorSelectorStrategy,
   Envelope,
   ErrorClass,
   ImageContentType,
@@ -433,6 +435,19 @@ export function decodeNavigationResult(value: unknown): NavigationResult {
 }
 
 /**
+ * Decodes a validated ElementBox.
+ */
+export function decodeElementBox(value: unknown): ElementBox {
+  const source = value as Record<string, unknown>;
+  return {
+    x: source["x"] as number,
+    y: source["y"] as number,
+    width: source["width"] as number,
+    height: source["height"] as number,
+  };
+}
+
+/**
  * Decodes a validated ElementDescriptor.
  */
 export function decodeElementDescriptor(value: unknown): ElementDescriptor {
@@ -441,6 +456,11 @@ export function decodeElementDescriptor(value: unknown): ElementDescriptor {
     ref: source["ref"] as string,
     role: source["role"] as string,
     ...(source["name"] === undefined ? {} : { name: source["name"] as string }),
+    ...(source["box"] === undefined ? {} : { box: decodeElementBox(source["box"]) }),
+    ...(source["selector"] === undefined ? {} : { selector: source["selector"] as string }),
+    ...(source["selector_strategy"] === undefined ? {} : { selector_strategy: source["selector_strategy"] as ElementDescriptorSelectorStrategy }),
+    ...(source["text_excerpt"] === undefined ? {} : { text_excerpt: source["text_excerpt"] as string }),
+    ...(source["dom_fingerprint"] === undefined ? {} : { dom_fingerprint: source["dom_fingerprint"] as string }),
   };
 }
 

@@ -14,8 +14,11 @@ import type {
   AnnotationCreateRequest,
   AnnotationCreateRequestStyleHint,
   AnnotationGeometry,
+  AnnotationPathPoint,
   AnnotationStyleHint,
   AnnotationType,
+  AnnotationUpdateRequest,
+  AnnotationUpdateRequestStyleHint,
   Artefact,
   ArtefactAccessGranted,
   ArtefactDeleted,
@@ -167,6 +170,17 @@ export function decodeCssPixelBox(value: unknown): CssPixelBox {
 }
 
 /**
+ * Decodes a validated AnnotationPathPoint.
+ */
+export function decodeAnnotationPathPoint(value: unknown): AnnotationPathPoint {
+  const source = value as Record<string, unknown>;
+  return {
+    x: source["x"] as number,
+    y: source["y"] as number,
+  };
+}
+
+/**
  * Decodes a validated AnnotationGeometry.
  */
 export function decodeAnnotationGeometry(value: unknown): AnnotationGeometry {
@@ -178,6 +192,8 @@ export function decodeAnnotationGeometry(value: unknown): AnnotationGeometry {
     ...(source["height"] === undefined ? {} : { height: source["height"] as number }),
     ...(source["x2"] === undefined ? {} : { x2: source["x2"] as number }),
     ...(source["y2"] === undefined ? {} : { y2: source["y2"] as number }),
+    ...(source["rotation"] === undefined ? {} : { rotation: source["rotation"] as number }),
+    ...(source["path"] === undefined ? {} : { path: (source["path"] as unknown[]).map((item) => decodeAnnotationPathPoint(item)) }),
   };
 }
 
@@ -271,6 +287,7 @@ export function decodeAnnotation(value: unknown): Annotation {
     artefact_id: source["artefact_id"] as string,
     type: source["type"] as AnnotationType,
     geometry: decodeAnnotationGeometry(source["geometry"]),
+    geometry_version: source["geometry_version"] as number,
     ...(source["label"] === undefined ? {} : { label: source["label"] as string }),
     ...(source["marker_number"] === undefined ? {} : { marker_number: source["marker_number"] as number }),
     ...(source["style_hint"] === undefined ? {} : { style_hint: source["style_hint"] as AnnotationStyleHint }),
@@ -652,6 +669,20 @@ export function decodeAnnotationCreateRequest(value: unknown): AnnotationCreateR
     label: source["label"] as string,
     ...(source["marker_number"] === undefined ? {} : { marker_number: source["marker_number"] as number }),
     ...(source["style_hint"] === undefined ? {} : { style_hint: source["style_hint"] as AnnotationCreateRequestStyleHint }),
+  };
+}
+
+/**
+ * Decodes a validated AnnotationUpdateRequest.
+ */
+export function decodeAnnotationUpdateRequest(value: unknown): AnnotationUpdateRequest {
+  const source = value as Record<string, unknown>;
+  return {
+    expected_revision: source["expected_revision"] as number,
+    ...(source["geometry"] === undefined ? {} : { geometry: decodeAnnotationGeometry(source["geometry"]) }),
+    ...(source["label"] === undefined ? {} : { label: source["label"] as string }),
+    ...(source["marker_number"] === undefined ? {} : { marker_number: source["marker_number"] as number }),
+    ...(source["style_hint"] === undefined ? {} : { style_hint: source["style_hint"] as AnnotationUpdateRequestStyleHint }),
   };
 }
 

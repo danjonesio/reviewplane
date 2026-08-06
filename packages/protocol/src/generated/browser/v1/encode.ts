@@ -19,6 +19,7 @@ import type {
   ClickParams,
   CommandError,
   ControllerIdentity,
+  ElementBox,
   ElementDescriptor,
   Envelope,
   NavigateParams,
@@ -475,6 +476,18 @@ export function encodeNavigationResult(value: NavigationResult): string {
 }
 
 /**
+ * Canonically encodes a ElementBox.
+ */
+export function encodeElementBox(value: ElementBox): string {
+  const fields: string[] = [];
+  fields.push(`"x":${jsonNumber(value.x)}`);
+  fields.push(`"y":${jsonNumber(value.y)}`);
+  fields.push(`"width":${jsonNumber(value.width)}`);
+  fields.push(`"height":${jsonNumber(value.height)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
  * Canonically encodes a ElementDescriptor.
  */
 export function encodeElementDescriptor(value: ElementDescriptor): string {
@@ -483,6 +496,21 @@ export function encodeElementDescriptor(value: ElementDescriptor): string {
   fields.push(`"role":${jsonString(value.role)}`);
   if (value.name !== undefined) {
     fields.push(`"name":${jsonString(value.name)}`);
+  }
+  if (value.box !== undefined) {
+    fields.push(`"box":${encodeElementBox(value.box)}`);
+  }
+  if (value.selector !== undefined) {
+    fields.push(`"selector":${jsonString(value.selector)}`);
+  }
+  if (value.selector_strategy !== undefined) {
+    fields.push(`"selector_strategy":${jsonString(value.selector_strategy)}`);
+  }
+  if (value.text_excerpt !== undefined) {
+    fields.push(`"text_excerpt":${jsonString(value.text_excerpt)}`);
+  }
+  if (value.dom_fingerprint !== undefined) {
+    fields.push(`"dom_fingerprint":${jsonString(value.dom_fingerprint)}`);
   }
   return `{${fields.join(",")}}`;
 }

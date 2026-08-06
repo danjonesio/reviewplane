@@ -18,6 +18,8 @@ import type {
   Annotation,
   AnnotationCreateRequest,
   AnnotationGeometry,
+  AnnotationPathPoint,
+  AnnotationUpdateRequest,
   Artefact,
   ArtefactAccessGranted,
   ArtefactDeleted,
@@ -144,6 +146,16 @@ export function encodeCssPixelBox(value: CssPixelBox): string {
 }
 
 /**
+ * Canonically encodes a AnnotationPathPoint.
+ */
+export function encodeAnnotationPathPoint(value: AnnotationPathPoint): string {
+  const fields: string[] = [];
+  fields.push(`"x":${jsonNumber(value.x)}`);
+  fields.push(`"y":${jsonNumber(value.y)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
  * Canonically encodes a AnnotationGeometry.
  */
 export function encodeAnnotationGeometry(value: AnnotationGeometry): string {
@@ -161,6 +173,12 @@ export function encodeAnnotationGeometry(value: AnnotationGeometry): string {
   }
   if (value.y2 !== undefined) {
     fields.push(`"y2":${jsonNumber(value.y2)}`);
+  }
+  if (value.rotation !== undefined) {
+    fields.push(`"rotation":${jsonNumber(value.rotation)}`);
+  }
+  if (value.path !== undefined) {
+    fields.push(`"path":${`[${value.path.map((item) => encodeAnnotationPathPoint(item)).join(",")}]`}`);
   }
   return `{${fields.join(",")}}`;
 }
@@ -289,6 +307,7 @@ export function encodeAnnotation(value: Annotation): string {
   fields.push(`"artefact_id":${jsonString(value.artefact_id)}`);
   fields.push(`"type":${jsonString(value.type)}`);
   fields.push(`"geometry":${encodeAnnotationGeometry(value.geometry)}`);
+  fields.push(`"geometry_version":${jsonInteger(value.geometry_version)}`);
   if (value.label !== undefined) {
     fields.push(`"label":${jsonString(value.label)}`);
   }
@@ -820,6 +839,27 @@ export function encodeAnnotationCreateRequest(value: AnnotationCreateRequest): s
   fields.push(`"type":${jsonString(value.type)}`);
   fields.push(`"geometry":${encodeAnnotationGeometry(value.geometry)}`);
   fields.push(`"label":${jsonString(value.label)}`);
+  if (value.marker_number !== undefined) {
+    fields.push(`"marker_number":${jsonInteger(value.marker_number)}`);
+  }
+  if (value.style_hint !== undefined) {
+    fields.push(`"style_hint":${jsonString(value.style_hint)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a AnnotationUpdateRequest.
+ */
+export function encodeAnnotationUpdateRequest(value: AnnotationUpdateRequest): string {
+  const fields: string[] = [];
+  fields.push(`"expected_revision":${jsonInteger(value.expected_revision)}`);
+  if (value.geometry !== undefined) {
+    fields.push(`"geometry":${encodeAnnotationGeometry(value.geometry)}`);
+  }
+  if (value.label !== undefined) {
+    fields.push(`"label":${jsonString(value.label)}`);
+  }
   if (value.marker_number !== undefined) {
     fields.push(`"marker_number":${jsonInteger(value.marker_number)}`);
   }

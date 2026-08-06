@@ -32,6 +32,7 @@
         "x2": 0.6,
         "y2": 0.14
       },
+      "geometry_version": 1,
       "label": "Pointing at the hidden basket button",
       "style_hint": "default",
       "revision": 1,

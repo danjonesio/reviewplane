@@ -53,6 +53,20 @@
       "note": "A numbered marker at exactly 0 and exactly 1. The range is inclusive, so the corners of an artefact are addressable; revision 3 shows that an edited annotation keeps its history."
     },
     {
+      "name": "finding-annotated-freehand",
+      "kind": "review_event",
+      "file": "valid/finding-annotated-freehand.json",
+      "message_type": "finding.annotated",
+      "note": "A freehand stroke. It carries its own bounding box as well as the sampled path, so a reader that cannot draw the stroke still knows which region the mark covers, and every path point obeys the same 0 to 1 bound as every other member (ADR-0032)."
+    },
+    {
+      "name": "finding-annotated-rotated-ellipse",
+      "kind": "review_event",
+      "file": "valid/finding-annotated-rotated-ellipse.json",
+      "message_type": "finding.annotated",
+      "note": "An ellipse turned an eighth of a turn clockwise. Rotation is expressed in turns rather than degrees so that it obeys the same 0 to 1 bound as every other geometry member; revision 2 is an edit that kept its history."
+    },
+    {
       "name": "finding-status-changed-by-agent",
       "kind": "review_event",
       "file": "valid/finding-status-changed-by-agent.json",
@@ -207,6 +221,20 @@
       "file": "invalid/annotation-geometry-out-of-range.json",
       "expect_reason": "schema_violation",
       "note": "width 1.38 is outside the artefact content rectangle. Refused, not clamped: clamping would store a mark that renders somewhere plausible and wrong."
+    },
+    {
+      "name": "annotation-freehand-path-too-long",
+      "kind": "review_event",
+      "file": "invalid/annotation-freehand-path-too-long.json",
+      "expect_reason": "schema_violation",
+      "note": "129 path points, one more than the 128 a freehand stroke may hold. The bound is on the mark rather than only on the bytes, so an oversized stroke is refused as a stroke the client should have decimated rather than as a request that was too large."
+    },
+    {
+      "name": "annotation-freehand-path-in-css-pixels",
+      "kind": "review_event",
+      "file": "invalid/annotation-freehand-path-in-css-pixels.json",
+      "expect_reason": "schema_violation",
+      "note": "A path whose second point is in CSS pixels. Path points obey the same normalised bound as every other geometry member, so a producer that used the rendered frame instead of the artefact content rectangle is refused at the boundary rather than at the renderer."
     },
     {
       "name": "annotation-geometry-negative",
