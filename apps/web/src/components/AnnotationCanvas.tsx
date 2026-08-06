@@ -31,10 +31,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 
 import {
-  FREEHAND_PATH_POINT_BOUNDS,
   checkGeometryForType,
+  decimateStroke,
   containedContentRectangle,
   describeGeometry,
+  geometryForDrag,
   pathBounds,
   toNormalisedPoint,
   type AnnotationGeometry,
@@ -91,77 +92,18 @@ const TOOL_BUTTON =
 const COARSE_STEP = 0.02;
 const FINE_STEP = 0.002;
 
+/**
+ * Keeps a pointer that left the picture on its edge.
+ *
+ * This is the one place a coordinate is clamped rather than refused, and it is
+ * not the clamp ADR-0006 forbids: that one is about a *stored* coordinate whose
+ * producer used another reference frame, where clamping hides a mistake. Here
+ * the frame is known to be right and the reader has simply dragged past the
+ * edge of the picture, which means "to the edge" and nothing else. Rounding to
+ * the stored precision happens in `geometryForDrag`, beside the validator.
+ */
 function clamp(value: number): number {
   return Math.min(1, Math.max(0, value));
-}
-
-/** Rounds to the precision a content rectangle can actually resolve. */
-function round(value: number): number {
-  return Number(clamp(value).toFixed(4));
-}
-
-/**
- * Reduces a raw stroke to the points that carry its shape.
- *
- * The protocol bounds a path at 128 points and refuses a longer one rather
- * than truncating it, so the decimation has to happen before the request is
- * built. Dropping samples closer together than a threshold keeps the corners —
- * which is what a stroke is recognisable by — and discards the dozens of
- * near-identical samples a slow hand produces on a fast pointer.
- */
-export function decimateStroke(
-  points: readonly { readonly x: number; readonly y: number }[],
-  maximum: number = FREEHAND_PATH_POINT_BOUNDS.maximum,
-): { readonly x: number; readonly y: number }[] {
-  if (points.length <= 2) return points.map((point) => ({ x: round(point.x), y: round(point.y) }));
-  let threshold = 0.004;
-  for (let attempt = 0; attempt < 12; attempt += 1) {
-    const kept: { x: number; y: number }[] = [{ x: round(points[0]?.x ?? 0), y: round(points[0]?.y ?? 0) }];
-    for (const point of points.slice(1, -1)) {
-      const last = kept[kept.length - 1];
-      if (last === undefined) continue;
-      if (Math.hypot(point.x - last.x, point.y - last.y) >= threshold) {
-        kept.push({ x: round(point.x), y: round(point.y) });
-      }
-    }
-    const final = points[points.length - 1];
-    if (final !== undefined) kept.push({ x: round(final.x), y: round(final.y) });
-    if (kept.length <= maximum) return kept;
-    threshold *= 1.8;
-  }
-  // A stroke that resists thinning is sampled evenly instead, so the result is
-  // always within the bound rather than refused at the boundary.
-  const stride = Math.ceil(points.length / maximum);
-  return points
-    .filter((_unused, index) => index % stride === 0 || index === points.length - 1)
-    .slice(0, maximum)
-    .map((point) => ({ x: round(point.x), y: round(point.y) }));
-}
-
-/** The geometry a pair of normalised positions makes, for the given shape. */
-export function geometryFor(
-  type: AnnotationType,
-  from: { readonly x: number; readonly y: number },
-  to: { readonly x: number; readonly y: number },
-): AnnotationGeometry {
-  if (type === "arrow") {
-    return { x: round(from.x), y: round(from.y), x2: round(to.x), y2: round(to.y) };
-  }
-  if (type === "point" || type === "numbered_marker") {
-    return { x: round(to.x), y: round(to.y) };
-  }
-  const x = round(Math.min(from.x, to.x));
-  const y = round(Math.min(from.y, to.y));
-  return {
-    x,
-    y,
-    // Clamped against the far edge rather than against 1, because
-    // `x + width` must not leave the content rectangle: the shared validator
-    // refuses that, and it is the one place where rounding could otherwise
-    // push a mark drawn exactly on the edge outside it.
-    width: round(Math.min(Math.abs(to.x - from.x), 1 - x)),
-    height: round(Math.min(Math.abs(to.y - from.y), 1 - y)),
-  };
 }
 
 export function AnnotationCanvas({
@@ -238,7 +180,7 @@ export function AnnotationCanvas({
 
   const commit = useCallback(
     (from: { x: number; y: number }, to: { x: number; y: number }) => {
-      place(tool, geometryFor(tool, from, to));
+      place(tool, geometryForDrag(tool, from, to));
       setAnchor(null);
     },
     [place, tool],
@@ -258,7 +200,7 @@ export function AnnotationCanvas({
       setDrawing(true);
       return;
     }
-    place(tool, geometryFor(tool, point, point));
+    place(tool, geometryForDrag(tool, point, point));
   };
 
   const onPointerMove = (event: React.PointerEvent<HTMLDivElement>): void => {
@@ -310,7 +252,7 @@ export function AnnotationCanvas({
     if (event.key !== "Enter" && event.key !== " ") return;
     event.preventDefault();
     if (!TWO_STEP.has(tool) && tool !== "freehand") {
-      place(tool, geometryFor(tool, cursor, cursor));
+      place(tool, geometryForDrag(tool, cursor, cursor));
       return;
     }
     if (tool === "freehand") {

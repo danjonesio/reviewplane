@@ -18,7 +18,9 @@ import {
   REQUIRED_GEOMETRY_MEMBERS,
   checkGeometryForType,
   containedContentRectangle,
+  decimateStroke,
   describeGeometry,
+  geometryForDrag,
   geometryVersionForType,
   isNormalisedCoordinate,
   pathBounds,
@@ -381,6 +383,109 @@ test("every annotation type declares a geometry version, held per type", () => {
     assert.ok(Number.isInteger(version) && version >= 1, `${type} has no geometry version`);
     assert.equal(version, GEOMETRY_VERSION_BY_ANNOTATION_TYPE[type]);
   }
+});
+
+// ---------------------------------------------------------------------------
+// The producers, which must not be able to build a geometry the validator
+// beside them refuses
+// ---------------------------------------------------------------------------
+
+test("a drag produces the geometry its shape requires, in either direction", () => {
+  const from = { x: 0.6, y: 0.7 };
+  const to = { x: 0.2, y: 0.3 };
+  for (const type of ANNOTATION_TYPE_VALUES) {
+    if (type === "freehand") continue;
+    const geometry = geometryForDrag(type, from, to);
+    assert.deepEqual(
+      checkGeometryForType(type, geometry as unknown as Record<string, unknown>),
+      [],
+      `${type} produced geometry its own validator refuses: ${JSON.stringify(geometry)}`,
+    );
+  }
+  // A box normalises the corners, so dragging up and left is the same box as
+  // dragging down and right.
+  assert.deepEqual(geometryForDrag("rectangle", from, to), geometryForDrag("rectangle", to, from));
+  // An arrow does not: its two points are a direction.
+  assert.notDeepEqual(geometryForDrag("arrow", from, to), geometryForDrag("arrow", to, from));
+  assert.deepEqual(geometryForDrag("arrow", from, to), { x: 0.6, y: 0.7, x2: 0.2, y2: 0.3 });
+  // A point takes where the pointer ended, which is where the reader let go.
+  assert.deepEqual(geometryForDrag("point", from, to), { x: 0.2, y: 0.3 });
+});
+
+test("a box drawn to the far edge does not leave the content rectangle", () => {
+  // Rounding at the fourth decimal could otherwise push `x + width` past 1 and
+  // earn a refusal the person drawing could do nothing about.
+  for (const start of [0.00005, 0.12345678, 0.9999, 0]) {
+    const geometry = geometryForDrag("rectangle", { x: start, y: start }, { x: 1, y: 1 });
+    assert.deepEqual(
+      checkGeometryForType("rectangle", geometry as unknown as Record<string, unknown>),
+      [],
+      `a box from ${String(start)} to the edge was refused: ${JSON.stringify(geometry)}`,
+    );
+  }
+});
+
+test("a stroke is thinned to within the bound, whatever was drawn", () => {
+  const bound = FREEHAND_PATH_POINT_BOUNDS.maximum;
+
+  // A long, ordinary stroke: many samples spread across the picture.
+  const long = Array.from({ length: 4000 }, (_unused, index) => ({
+    x: index / 4000,
+    y: 0.5 + Math.sin(index / 40) / 8,
+  }));
+  const thinned = decimateStroke(long);
+  assert.ok(thinned.length <= bound, `${String(thinned.length)} points, over the bound`);
+  assert.ok(thinned.length >= 2, "the stroke was thinned away entirely");
+
+  // A dense scribble in a tiny area: five thousand samples inside a
+  // hundred-thousandth of the picture. It collapses to its two ends, which is
+  // the honest reduction — there is no shape in it to keep.
+  const scribble = Array.from({ length: 5000 }, (_unused, index) => ({
+    x: 0.5 + (index % 3) * 0.00001,
+    y: 0.5 + (index % 2) * 0.00001,
+  }));
+  const reduced = decimateStroke(scribble);
+  assert.ok(reduced.length <= bound, `${String(reduced.length)} points, over the bound`);
+  assert.ok(reduced.length >= 2, "the scribble was thinned below a path's minimum");
+
+  // A stroke that zigzags the full diagonal on every sample is the worst case
+  // for distance thinning, because no threshold below the diagonal drops
+  // anything. It must still come out within the bound.
+  const zigzag = Array.from({ length: 5000 }, (_unused, index) => ({
+    x: index % 2,
+    y: index % 2,
+  }));
+  const flattened = decimateStroke(zigzag);
+  assert.ok(
+    flattened.length <= bound,
+    `the worst case for thinning produced ${String(flattened.length)} points`,
+  );
+
+  // Both ends survive, because a stroke is recognised by where it started and
+  // where it finished.
+  assert.deepEqual(thinned[0], { x: 0, y: 0.5 });
+  const finalPoint = long[long.length - 1];
+  assert.equal(thinned[thinned.length - 1]?.x, Number(finalPoint?.x.toFixed(4)));
+
+  // And whatever comes out is geometry the validator accepts.
+  for (const path of [thinned, reduced]) {
+    assert.deepEqual(
+      checkGeometryForType("freehand", { ...pathBounds(path), path }),
+      [],
+      "a thinned stroke produced geometry the validator refuses",
+    );
+  }
+});
+
+test("a stroke already within the bound is left alone but for rounding", () => {
+  const short = [
+    { x: 0.2, y: 0.44 },
+    { x: 0.28, y: 0.4 },
+    { x: 0.45, y: 0.5 },
+  ];
+  assert.deepEqual(decimateStroke(short), short);
+  // Two points are the minimum a path may hold, and are returned unchanged.
+  assert.deepEqual(decimateStroke(short.slice(0, 2)), short.slice(0, 2));
 });
 
 test("the freehand path bound in code equals the one the generated validator enforces", () => {

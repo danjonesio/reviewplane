@@ -459,6 +459,106 @@ export function toRenderedArrow(
   };
 }
 
+/** Clamps to the 0-to-1 range and rounds to the precision a capture resolves. */
+function roundNormalised(value: number): number {
+  return Number(Math.min(1, Math.max(0, value)).toFixed(4));
+}
+
+/**
+ * The geometry a pair of normalised positions makes, for a given shape.
+ *
+ * It lives beside the validator rather than in the drawing surface, for the
+ * same reason `checkGeometryForType` does: a producer and its validator that
+ * disagree is exactly the failure the shared package exists to prevent, and a
+ * second client drawing marks must build them the same way.
+ *
+ * The box is clamped against the far edge rather than against 1, because
+ * `x + width` must not leave the content rectangle — the one place where
+ * rounding could otherwise push a mark drawn exactly on the edge outside it and
+ * earn a refusal the person drawing could do nothing about.
+ */
+export function geometryForDrag(
+  type: AnnotationType,
+  from: { readonly x: number; readonly y: number },
+  to: { readonly x: number; readonly y: number },
+): AnnotationGeometry {
+  if (type === "arrow") {
+    return {
+      x: roundNormalised(from.x),
+      y: roundNormalised(from.y),
+      x2: roundNormalised(to.x),
+      y2: roundNormalised(to.y),
+    };
+  }
+  if (type === "point" || type === "numbered_marker") {
+    return { x: roundNormalised(to.x), y: roundNormalised(to.y) };
+  }
+  const x = roundNormalised(Math.min(from.x, to.x));
+  const y = roundNormalised(Math.min(from.y, to.y));
+  return {
+    x,
+    y,
+    width: roundNormalised(Math.min(Math.abs(to.x - from.x), 1 - x)),
+    height: roundNormalised(Math.min(Math.abs(to.y - from.y), 1 - y)),
+  };
+}
+
+/**
+ * Reduces a raw stroke to the points that carry its shape, within the bound.
+ *
+ * The protocol refuses a path longer than
+ * `FREEHAND_PATH_POINT_BOUNDS.maximum` rather than truncating it (ADR-0032),
+ * so the thinning has to happen before the request is built — and it has to
+ * *succeed*, because a producer that returned 129 points would earn a refusal
+ * the person who drew the stroke could do nothing about.
+ *
+ * Dropping samples closer together than a threshold keeps the corners, which is
+ * what a stroke is recognisable by, and discards the dozens of near-identical
+ * samples a slow hand produces on a fast pointer.
+ *
+ * The even-sampling tail is a **guard rather than an expected path**: the
+ * threshold grows past the diagonal of the whole content rectangle within the
+ * attempt limit, so no stroke inside 0 to 1 can survive every round. It is kept
+ * because the alternative if that reasoning is ever wrong — a producer
+ * returning more points than the protocol accepts — is a refusal the person who
+ * drew the stroke can do nothing about.
+ */
+export function decimateStroke(
+  points: readonly { readonly x: number; readonly y: number }[],
+  maximum: number = FREEHAND_PATH_POINT_BOUNDS.maximum,
+): { readonly x: number; readonly y: number }[] {
+  const rounded = (point: { readonly x: number; readonly y: number }): { x: number; y: number } => ({
+    x: roundNormalised(point.x),
+    y: roundNormalised(point.y),
+  });
+  if (points.length <= 2) return points.map(rounded);
+  const first = points[0];
+  const last = points[points.length - 1];
+  if (first === undefined || last === undefined) return [];
+
+  let threshold = 0.004;
+  for (let attempt = 0; attempt < 16; attempt += 1) {
+    const kept: { x: number; y: number }[] = [rounded(first)];
+    for (const point of points.slice(1, -1)) {
+      const previous = kept[kept.length - 1];
+      if (previous === undefined) continue;
+      if (Math.hypot(point.x - previous.x, point.y - previous.y) >= threshold) {
+        kept.push(rounded(point));
+      }
+    }
+    kept.push(rounded(last));
+    if (kept.length <= maximum) return kept;
+    threshold *= 1.8;
+  }
+
+  const stride = Math.ceil(points.length / (maximum - 1));
+  const sampled = points.filter((_unused, index) => index % stride === 0).map(rounded);
+  const tail = rounded(last);
+  const end = sampled[sampled.length - 1];
+  if (end === undefined || end.x !== tail.x || end.y !== tail.y) sampled.push(tail);
+  return sampled.slice(0, maximum);
+}
+
 /**
  * A one-line text alternative for a mark, so the annotation list conveys the
  * same information as the canvas (`docs/UX_FLOWS.md` section 19). Percentages
