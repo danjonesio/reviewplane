@@ -176,13 +176,21 @@ export function requireHuman(request: FastifyRequest): ViewerPrincipal {
 }
 
 /**
- * The human who may administer the organisation.
+ * The human who may administer **their own organisation**.
  *
  * Stage 1 has no roles (`docs/DOMAIN_MODEL.md` section 5 defers them to Stage
  * 3), so the rule is scope rather than role: an organisation-wide session
  * administers, and a project-scoped session — a delegation minted for one
  * project — does not. Adding roles later replaces this predicate and nothing
  * else, because no handler decides for itself what an administrator is.
+ *
+ * **This guard is only sound over a resource the caller's organisation owns.**
+ * It says who may administer, not *what* they may administer, and every route
+ * that applies it goes on to constrain the record by
+ * `principal.organisationId` — projects, connectors and published services all
+ * do. A resource that belongs to the **deployment** rather than to an
+ * organisation has no such term to add, and for one of those this guard admits
+ * every tenant. Use {@link requireDeploymentAdministrator} there (ADR-0034).
  */
 export function requireOrganisationAdministrator(request: FastifyRequest): ViewerPrincipal {
   const principal = requireHuman(request);
@@ -190,6 +198,44 @@ export function requireOrganisationAdministrator(request: FastifyRequest): Viewe
     throw new ApiError(
       "AUTHORISATION_DENIED",
       "This session is scoped to a project and cannot administer the organisation.",
+    );
+  }
+  return principal;
+}
+
+/**
+ * The human who may administer the **deployment**: every organisation in it,
+ * and the infrastructure none of them owns.
+ *
+ * The test is `organisationId === null`. Stage 1 has no roles, so the only
+ * principal that is deployment-wide by construction is the ADR-0016 bootstrap
+ * administrator — the install token, or the cookie session
+ * `POST /api/v1/auth/viewer-sessions` exchanges it for. {@link
+ * bootstrapPrincipal} is the one place that value is minted, and every account
+ * sign-in issues a real `organisationId` (`modules/identity/routes.ts`), so
+ * "belongs to no organisation" and "administers the deployment" are the same
+ * statement.
+ *
+ * **`projectIds === null` is not this test, and reads exactly as though it
+ * were.** It means "not narrowed to specific projects" — the shape *every*
+ * real sign-in issues — so an ordinary organisation-wide user of any tenant
+ * satisfies it. Reading it as authority is what let one tenant list and
+ * reassign the deployment's browser workers (RVP-91) and read another tenant's
+ * workspaces (RVP-92). The project-scope term is kept below as a second
+ * condition rather than as the decision: it is redundant while the bootstrap
+ * principal is the only null-organisation principal, and it is the term that
+ * stops a future null-organisation session narrowed to a project from
+ * inheriting deployment authority.
+ *
+ * When roles arrive this predicate becomes "holds the deployment-administrator
+ * role", and nothing else changes.
+ */
+export function requireDeploymentAdministrator(request: FastifyRequest): ViewerPrincipal {
+  const principal = requireHuman(request);
+  if (principal.organisationId !== null || principal.projectIds !== null) {
+    throw new ApiError(
+      "AUTHORISATION_DENIED",
+      "This session belongs to an organisation and cannot administer the deployment. Present the bootstrap administrator token (docs/SECURITY.md section 7).",
     );
   }
   return principal;

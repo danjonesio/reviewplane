@@ -22,6 +22,7 @@ import { requireAdministrator } from "../../auth.ts";
 import { inTransaction } from "../../db/pool.ts";
 import { ApiError, notFound } from "../../errors.ts";
 import { appendEvent } from "../../events/append.ts";
+import { bootstrapPrincipal, resolveProject } from "../identity/authorisation.ts";
 import {
   AGENT_CAPABILITIES,
   AGENT_CREDENTIAL_TTL_SECONDS,
@@ -171,20 +172,41 @@ export async function registerAgentRoutes(
     return reply.send({ data: workspace, meta: { request_id: request.id } });
   });
 
+  /**
+   * The project's workspaces (RVP-92).
+   *
+   * The project is **resolved inside the caller's scope** rather than taken
+   * from the URL. The guard this replaces was
+   * `principal.projectIds !== null && !principal.projectIds.has(id)`, and the
+   * `&&` short-circuits to false for `projectIds === null` — the shape every
+   * real sign-in issues, meaning "not narrowed to specific projects" rather
+   * than "administrator". So no refusal was raised for an ordinary
+   * organisation-wide user and the URL's identifier reached the query
+   * unchecked.
+   *
+   * `resolveProject` carries the identifier, the session's project scope and
+   * the session's **organisation** in one predicate, and answers
+   * `RESOURCE_NOT_FOUND` — "The project was not found." — for a project in
+   * another organisation exactly as it does for one that does not exist. The
+   * old refusal was `PROJECT_CONTEXT_MISMATCH`, which is a distinguishable
+   * answer and therefore an existence oracle (`docs/TESTING.md` section 10,
+   * `docs/API.md` section 5).
+   */
   app.get("/api/v1/projects/:projectId/workspaces", async (request, reply) => {
+    // `viewerAuth` is supplied by `app.ts` and is optional only so a caller can
+    // build this module without the live-session store. Without it the route is
+    // the bootstrap administrator's, which is exactly the principal
+    // `resolveProject` treats as deployment-wide.
+    let principal: ViewerPrincipal;
     if (options.viewerAuth === undefined) {
       admin(request);
+      principal = bootstrapPrincipal();
     } else {
-      const principal = await options.viewerAuth(request);
-      if (principal.projectIds !== null && !principal.projectIds.has(projectIdOf(request))) {
-        throw new ApiError(
-          "PROJECT_CONTEXT_MISMATCH",
-          "This viewer session is not authorised for that project.",
-        );
-      }
+      principal = await options.viewerAuth(request);
     }
+    const project = await resolveProject(options.pool, principal, projectIdOf(request));
     return reply.send({
-      data: await options.workspaces.listForProject(projectIdOf(request)),
+      data: await options.workspaces.listForProject(project.id, project.organisationId),
       meta: { request_id: request.id },
     });
   });
