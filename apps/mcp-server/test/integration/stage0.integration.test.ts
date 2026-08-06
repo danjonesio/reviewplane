@@ -553,9 +553,13 @@ test("steps 9 to 12: an MCP client retrieves bugs-on-homepage and submits after 
   const status = await callTool("agent_session_status", {});
   const agentSessionId = (status["data"] as { agent_session_id: string }).agent_session_id;
 
+  // `controller` is not sent: the control plane derives it from the
+  // authenticated caller (ADR-0028), and `agent_session_id` is what associates
+  // the session with the agent. Sending it is refused VALIDATION_FAILED rather
+  // than ignored, so this call is how the integration scenario proves the
+  // derivation rather than merely not exercising it.
   const agentBrowser = await openSession(projectId, organisationId, {
     agent_session_id: agentSessionId,
-    controller: { type: "agent", id: agentSessionId },
   });
   await app.inject({
     method: "POST",
