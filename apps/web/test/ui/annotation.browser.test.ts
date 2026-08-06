@@ -155,6 +155,13 @@ async function openReview(
   await page.getByRole("heading", { name: "Reviews", exact: true }).waitFor();
   await page.getByRole("link", { name: "Open review" }).first().click();
   await page.getByRole("heading", { name: "Bugs on homepage" }).waitFor();
+  // The evidence lives on the finding page: a review with several findings,
+  // each carrying a before-and-after pair, is not a page anybody can read at
+  // 390 pixels (RVP-55).
+  await page.getByRole("link", { name: "Open finding" }).first().click();
+  await page
+    .getByRole("heading", { name: "Hero heading overlaps the basket button" })
+    .waitFor();
   // The overlay cannot be measured before the screenshot has decoded.
   await page.waitForFunction(() => {
     const image = document.querySelector<HTMLImageElement>("[data-testid=artefact-image]");

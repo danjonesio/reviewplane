@@ -26,7 +26,7 @@
 
 import { Link, createRoute, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState, type ReactElement } from "react";
+import { useState, type ReactElement } from "react";
 
 import { ApiFailure, api, type Finding } from "../api/client.ts";
 import { CommentThread } from "../components/CommentThread.tsx";
@@ -131,37 +131,58 @@ function FindingDetail(): ReactElement {
   const { reviewId, findingId } = useParams({ from: "/reviews/$reviewId/findings/$findingId" });
   const queryClient = useQueryClient();
 
+  /**
+   * The page is a **snapshot**, and refreshing it is a decision the reader
+   * takes.
+   *
+   * The application's default is to refetch on focus and after two seconds of
+   * staleness, which is right for a dashboard and wrong here. A comparison that
+   * quietly replaced itself when an agent submitted again would move the
+   * evidence under a reader between reading the summary and pressing Accept —
+   * the same harm as a refetch at press time (RVP-89), arriving by a different
+   * route. So these three queries hold what they loaded until the reader asks
+   * for more, and a decision taken against evidence that has since moved is
+   * refused by the control plane and offered a reload.
+   */
+  const snapshot = {
+    staleTime: Number.POSITIVE_INFINITY,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  } as const;
+
   const finding = useQuery({
     queryKey: ["finding", findingId],
     queryFn: () => api.finding(findingId),
+    ...snapshot,
   });
   const annotations = useQuery({
     queryKey: ["annotations", findingId],
     queryFn: () => api.annotations(findingId),
+    ...snapshot,
   });
   const claims = useQuery({
     queryKey: ["finding-verifications", findingId],
     queryFn: () => api.findingVerifications(findingId),
+    ...snapshot,
   });
   const comments = useQuery({
     queryKey: ["finding-comments", findingId],
     queryFn: () => api.findingComments(findingId),
   });
 
-  // Which claim the comparison is showing. It defaults to the newest, and once
-  // a reader has chosen one it stays chosen: a selection that snapped back to
-  // "latest" when a background refetch landed would be the refetch defect
-  // wearing a different hat.
-  const [selected, setSelected] = useState<string | null>(null);
+  // Which claim the comparison shows. `chosen` is set only by a reader picking
+  // one from the history; otherwise the newest claim of the snapshot is shown.
+  // Deriving rather than storing means a reload lands on the claim that is now
+  // current instead of on the one an effect happened to write first.
+  const [chosen, setChosen] = useState<string | null>(null);
   const newest = claims.data?.[0]?.verification_id ?? null;
-  useEffect(() => {
-    if (selected === null && newest !== null) setSelected(newest);
-  }, [selected, newest]);
+  const selected = chosen ?? newest;
 
   const verification = useQuery({
     queryKey: ["verification-review", findingId, selected],
     queryFn: () => api.verificationReview(findingId, selected as string),
     enabled: selected !== null,
+    ...snapshot,
   });
 
   const [decisionFailure, setDecisionFailure] = useState<unknown>(null);
@@ -308,7 +329,7 @@ function FindingDetail(): ReactElement {
           claims={claims.data ?? []}
           review={verification.data ?? null}
           selectedVerificationId={selected}
-          onSelectVerification={setSelected}
+          onSelectVerification={setChosen}
         />
 
         <div className={`mt-4 ${CARD}`}>
@@ -329,12 +350,16 @@ function FindingDetail(): ReactElement {
               });
             }}
             onReload={() => {
+              // A reload drops any hand-picked claim, so the comparison lands
+              // on what is now current rather than on what the reader was
+              // looking at when the refusal arrived.
               setDecisionFailure(null);
-              setSelected(null);
+              setChosen(null);
               void queryClient.invalidateQueries({ queryKey: ["finding", findingId] });
               void queryClient.invalidateQueries({
                 queryKey: ["finding-verifications", findingId],
               });
+              void queryClient.invalidateQueries({ queryKey: ["verification-review", findingId] });
             }}
           />
 
