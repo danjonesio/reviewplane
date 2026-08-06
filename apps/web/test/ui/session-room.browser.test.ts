@@ -65,11 +65,44 @@ const DESKTOP = { width: 1440, height: 900 };
 const MOBILE = { width: 390, height: 844 };
 
 let browser: Browser;
+let frames: Uint8Array[];
 
 before(async () => {
   browser = await chromium.launch();
+  frames = await renderFrames();
   await mkdir(evidenceDirectory, { recursive: true });
 });
+
+/**
+ * Real JPEG frames, produced by screenshotting a fixture page.
+ *
+ * A synthetic one-pixel image would prove the transport works and nothing about
+ * whether the surface renders, and the screenshots this suite produces as
+ * evidence would show an empty canvas.
+ */
+async function renderFrames(): Promise<Uint8Array[]> {
+  const context = await browser.newContext({ viewport: DESKTOP });
+  const page = await context.newPage();
+  const captured: Uint8Array[] = [];
+  for (const [index, heading] of ["Basket", "Checkout", "Order placed"].entries()) {
+    await page.setContent(
+      `<!doctype html><html lang="en"><head><meta charset="utf-8"><style>
+         body { margin:0; font-family: system-ui, sans-serif; background:#0f172a; color:#f8fafc; }
+         header { padding:16px 24px; background:#1e293b; }
+         main { padding:40px 24px; }
+         h1 { font-size:44px; margin:0 0 16px; }
+         .card { background:#1e293b; border-radius:12px; padding:24px; max-width:640px; }
+       </style></head><body>
+         <header>Refresh Surplus</header>
+         <main><h1>${heading}</h1>
+           <div class="card"><p>Fixture application frame ${String(index + 1)}.</p></div>
+         </main></body></html>`,
+    );
+    captured.push(await page.screenshot({ type: "jpeg", quality: 70 }));
+  }
+  await context.close();
+  return captured;
+}
 
 after(async () => {
   await browser?.close();
@@ -96,7 +129,7 @@ async function open(
 ): Promise<Session> {
   const stub = await startStubControlPlane({
     distDirectory,
-    frames: [],
+    frames,
     connectorConnected: true,
     routePublished: options.routePublished ?? true,
     ...(options.refuseEvents === undefined ? {} : { refuseEvents: options.refuseEvents }),
@@ -257,6 +290,19 @@ for (const [name, viewport] of [
       assert.ok(body.includes("private connector route"));
 
       await assertNoHorizontalScroll(page, viewport);
+      // The thumbnail is the card fact a screenshot can actually show, so the
+      // evidence is captured after it has painted rather than while it connects.
+      await card.locator(`[data-thumbnail="${SESSION.id}"]`).scrollIntoViewIfNeeded();
+      await page.waitForFunction(
+        (id) =>
+          Number(
+            document
+              .querySelector(`[data-thumbnail="${id}"]`)
+              ?.getAttribute("data-thumbnail-painted") ?? "0",
+          ) > 0,
+        SESSION.id,
+        { timeout: 15000 },
+      );
       await evidence(page, `fleet-dashboard-${name}`);
       assert.deepEqual(errors, []);
     });
@@ -326,6 +372,11 @@ for (const [name, viewport] of [
       );
 
       await assertNoHorizontalScroll(page, viewport);
+      await page.waitForFunction(
+        () => Number(document.getElementById("live-frames-painted")?.textContent ?? "0") > 0,
+        undefined,
+        { timeout: 15000 },
+      );
       await evidence(page, `session-room-${name}`);
       assert.deepEqual(errors, []);
     });
@@ -610,6 +661,75 @@ test("the overlay list is the non-canvas alternative and names each mark", async
     );
 
     await evidence(page, "session-room-overlays");
+    assert.deepEqual(errors, []);
+  });
+});
+
+/**
+ * The two rates of `docs/ARCHITECTURE.md` section 6.3, measured rather than
+ * asserted from a constant.
+ *
+ * The bands are the worker's — 2 to 5 frames per second for a thumbnail, 10 to
+ * 20 for an open room — and a viewer cannot raise them. What this case can prove
+ * from the browser is the observable consequence: over the same wall-clock
+ * window the room paints several times as many frames as a card does, and the
+ * drop counter is a real figure rather than a decoration. The measurement is
+ * written to the run log, which is the frame-timing evidence RVP-41 asks for.
+ */
+test("the room paints at the open-session rate and a card at the thumbnail rate", async () => {
+  await withSession(DESKTOP, {}, async ({ page, errors }) => {
+    const thumbnail = page.locator(`[data-thumbnail="${SESSION.id}"]`);
+    await thumbnail.waitFor();
+    await thumbnail.scrollIntoViewIfNeeded();
+    await page.waitForFunction(
+      (id) =>
+        Number(
+          document
+            .querySelector(`[data-thumbnail="${id}"]`)
+            ?.getAttribute("data-thumbnail-painted") ?? "0",
+        ) > 0,
+      SESSION.id,
+      { timeout: 15000 },
+    );
+
+    const readThumbnail = async (): Promise<number> =>
+      Number(await thumbnail.getAttribute("data-thumbnail-painted"));
+    const cardBefore = await readThumbnail();
+    await page.waitForTimeout(3000);
+    const cardAfter = await readThumbnail();
+    const cardRate = (cardAfter - cardBefore) / 3;
+
+    await openRoom(page);
+    await page.waitForFunction(
+      () => Number(document.getElementById("live-frames-painted")?.textContent ?? "0") > 0,
+      undefined,
+      { timeout: 15000 },
+    );
+    const readRoom = async (): Promise<number> =>
+      Number((await page.locator("#live-frames-painted").textContent()) ?? "0");
+    const roomBefore = await readRoom();
+    await page.waitForTimeout(3000);
+    const roomAfter = await readRoom();
+    const roomRate = (roomAfter - roomBefore) / 3;
+    const dropped = Number((await page.locator("#live-frames-dropped").textContent()) ?? "0");
+
+    process.stdout.write(
+      `EVIDENCE frame timing: thumbnail ${cardRate.toFixed(2)} fps over 3s, ` +
+        `session room ${roomRate.toFixed(2)} fps over 3s, dropped ${String(dropped)}\n`,
+    );
+
+    assert.ok(cardRate > 0, "the thumbnail painted nothing");
+    assert.ok(roomRate > 0, "the room painted nothing");
+    assert.ok(
+      roomRate > cardRate * 1.5,
+      `the room (${roomRate.toFixed(2)} fps) did not outpace the thumbnail (${cardRate.toFixed(2)} fps)`,
+    );
+    assert.ok(
+      cardRate < 10,
+      `the thumbnail ran at ${cardRate.toFixed(2)} fps, above the low band a card must stay in`,
+    );
+    assert.ok(Number.isFinite(dropped) && dropped >= 0, "the drop counter is a real figure");
+
     assert.deepEqual(errors, []);
   });
 });
