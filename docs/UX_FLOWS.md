@@ -94,6 +94,54 @@ Actions:
 
 Do not autoplay high-frame-rate streams for every card. Thumbnails use a low frame rate and stop when off screen.
 
+### 3.1 What the shipped dashboard does
+
+Every fact above is on the card. Two of them are stated as absences rather than
+omitted, because a card that quietly drops a row a reader was told to expect
+looks complete and is not:
+
+- **Agent type and session** is read from the browser session's current
+  controller. When an agent session holds the browser the card names it; when
+  nothing does, the card says "no controller holds this browser". Stage 1 humans
+  act through the `system` controller, so that is what a human-started session
+  shows.
+- **Current task summary** has no domain object behind it at this stage. The
+  card shows the newest **agent action** from the event record instead, labelled
+  as that, and says so when there is none.
+
+**Status** is the five words of this section — active, waiting, blocked, paused,
+disconnected — derived from the nine browser-session statuses of
+`DOMAIN_MODEL.md` §12. The mapping is: `REQUESTED` and `ALLOCATING` are
+*waiting*; `READY` and `ACTIVE` are *active*; `PAUSED` is *paused*; `FAILED` is
+*blocked*, because it can go no further without a person; `DEGRADED`,
+`TERMINATING` and `TERMINATED` are *disconnected*. A status the web application
+does not recognise is reported as *disconnected* and never as a healthy one. The
+card also states the domain status beside the summary word, so the difference
+between a session that ended and a worker that stopped reporting is not lost in
+the summary. Each of the five carries its own word **and** its own shape, so the
+statuses remain distinguishable in greyscale.
+
+**Environment, branch and dirty state** come from the route the session reaches
+its application through: the published route names a workspace, and the
+environment that reported that workspace is the one the card names. Deriving it
+from the project instead would name the wrong machine whenever a project has two.
+
+Actions on the shipped card are **Open session**, **Pause agent browser input**,
+**Create review from latest frame** and **End browser session**.
+
+**Take control is not offered.** It belongs to human takeover of §8, which is a
+later stage: there is no control channel, no pointer or keyboard input and no
+"you are controlling this browser" state. An affordance that could not take
+control would leave a reader believing they hold input authority they do not
+have, so the dashboard states in words that watching is read-only rather than
+leaving the absence of a button to imply it.
+
+**Create review from latest frame** is the entry point and not yet the act.
+Naming a review captures the branch, commit and checkout it is interpreted
+against (`API.md` §13), which the annotation-capture flow supplies; the card
+therefore opens the session room at its capture section, which says what is
+available and what is still to arrive.
+
 ## 4. Project creation
 
 ### Flow
@@ -281,12 +329,51 @@ Recommended layout:
 └──────────────────────────────────────────────────────────────┘
 ```
 
-Stage 0 implements the browser surface and the session facts beside it — status,
-current URL, viewport, browser build, control epoch and the live stream's own
-delivered and dropped counts. The activity, findings, approvals, comments,
-console, network, Git, screenshot and trace panels are not built yet, and
-neither is takeover; the layout above is the shape they grow into rather than a
-description of what exists.
+### What the shipped room does
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│ Project / Agent / Branch / Status                    Pause   │
+├───────────────────────────────────┬──────────────────────────┤
+│           Live browser            │ Activity                 │
+├───────────────────────────────────┴──────────────────────────┤
+│            Git | Screenshots | Session data                  │
+└──────────────────────────────────────────────────────────────┘
+```
+
+The header states project, agent, environment, branch, dirty state, current
+route, viewport, status, current controller and control epoch. The browser
+surface is beside the **Activity** panel at desktop widths and above it at 390px,
+because at one column the picture is what the reader opened the page for.
+
+**Activity** renders the project event stream (`API.md` §18.1) narrowed to this
+session by the `browser_session_id` correlation, grouped as agent actions,
+findings and comments, newest first. It seeds from
+`GET /api/v1/projects/:projectId/activity`, resumes the socket from the last
+sequence it applied, and refetches when the control plane answers
+`stream.refresh_required` — the refresh is stated to the reader rather than
+applied silently, because a history with an invisible gap is worse than one that
+says it was re-read. The panel is bounded; the durable record holds the rest.
+
+Only members the web application names are rendered from an event payload, and a
+member that came from the rendered page is marked as page-derived beside its
+value. Redaction is already applied when an event is written (`EVENTS.md` §6);
+the allow-list is the second lock, so a payload member added later cannot reach
+this surface by default.
+
+**Take control is absent**, for the reason given in §3.1: takeover is a later
+stage, and the controller is therefore displayed read-only and labelled as such.
+The room states in words that watching this browser does not drive it, and that
+Pause, Resume and End act on the session rather than on the page.
+
+**Console, Network, Trace and Approvals are absent rather than empty.** §18
+forbids showing a panel as empty without explanation, so the tab strip carries
+only the three that have something in them and a sentence beside it names the
+others and when they arrive.
+
+The **Screenshots** tab lists what was explicitly captured. A live frame is not
+a screenshot and never becomes one (ADR-0009), which the empty state says, so a
+reader does not conclude that a recording failed.
 
 ### Browser surface overlays
 
@@ -297,7 +384,24 @@ description of what exists.
 - Policy-blocked action: red
 - Selected annotation: accessible high-contrast outline
 
-Colours must not be the only means of identification.
+Colours must not be the only means of identification. Every overlay therefore
+carries a **shape**, a **short label rendered as text** and an **accessible
+name**, and the colour is the fourth thing rather than the first. The marks are
+drawn in a layer above the canvas and never painted into it: a frame is a live
+rendering of another application, and nothing may modify or retain it (ADR-0009,
+ADR-0010). Geometry is normalised — a fraction of the frame — so a mark lands in
+the same place after a resize, a scroll or a device-pixel-ratio change.
+
+A list of the same overlays as text sits beside the surface and is the
+authoritative rendering: it is the non-canvas alternative §19 requires, and it
+is the only place an overlay with no position can appear at all.
+
+Agent pointer and intended target are **reserved in the live protocol and not
+sent** (`API.md` §18.2), so nothing populates them at this stage and the list
+says so rather than showing an empty region. Human pointer and selected
+annotation belong to takeover and to the annotation canvas respectively. What can
+appear today is an action policy refused, which is recorded as
+`browser.command_rejected`.
 
 ## 8. Human takeover
 

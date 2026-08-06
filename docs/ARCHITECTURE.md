@@ -124,13 +124,24 @@ Preferred initial stack (ADR-0011):
 
 The build output is static assets served by the gateway; the web application has no server-side rendering process. All surfaces, including the live session room and annotation canvas, are client-rendered React using the HTTP API and WebSocket channels.
 
-`apps/web` exists today with two surfaces: a list of active browser sessions
-and a session's live view. Routing is code-declared TanStack Router, server
-state is TanStack Query, and the live channel is a framework-free client in
-`src/live/client.ts` so that reconnect, stall detection and the
-metadata-to-payload pairing can be tested without a browser — and so that the
+`apps/web` exists today with the fleet dashboard of `UX_FLOWS.md` §3, the
+session room of §7, the project surfaces of §2 and the review surfaces.
+Routing is code-declared TanStack Router, server state is TanStack Query, and
+**both** realtime channels are framework-free clients — `src/live/client.ts`
+for frames and `src/live/events.ts` for project events — so that reconnect,
+stall detection, the metadata-to-payload pairing, the sequence bookkeeping and
+the replay-window refresh can be tested without a browser, and so that the
 annotation overlay of a later issue has the frame's declared dimensions and
 sequence to work from.
+
+The event stream seeds from `GET /api/v1/projects/:projectId/activity` before it
+opens a socket, and resumes from the highest sequence it has delivered to its
+consumer rather than from the highest it has seen. Acknowledging a position the
+consumer never received would turn a dropped render into a permanent gap on the
+next reconnect. `src/live/timeline.ts` maps an event to a row, and is the only
+place that decides what a payload may show: rendering is allow-listed by member
+name, so a payload that later carries a header or a token cannot reach a screen
+by default.
 
 Live frames are painted into a canvas. Page-derived content is decoded as an
 image and drawn; no page-derived markup is ever inserted into the document

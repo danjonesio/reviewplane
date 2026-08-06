@@ -184,6 +184,16 @@ export interface ActivityEvent {
   readonly type: string;
   readonly occurred_at: string;
   readonly actor: { readonly type: string; readonly display?: string };
+  /**
+   * What this event is about, by identifier (`docs/EVENTS.md` section 5).
+   *
+   * It is not decoration. The session room shows one browser session's rows and
+   * decides which those are from `browser_session_id` here; an event read over
+   * HTTP that arrived without its correlation would be filtered out of the very
+   * panel it belongs in, and the room would look empty until something new
+   * happened to arrive over the socket instead.
+   */
+  readonly correlation?: Record<string, string>;
   readonly payload: Record<string, unknown>;
 }
 
@@ -812,4 +822,17 @@ export function isActive(session: BrowserSession): boolean {
 export function liveUrl(sessionId: string, mode: string): string {
   const scheme = globalThis.location.protocol === "https:" ? "wss:" : "ws:";
   return `${scheme}//${globalThis.location.host}/ws/v1/browser-sessions/${encodeURIComponent(sessionId)}/live?mode=${encodeURIComponent(mode)}`;
+}
+
+/**
+ * The project event-stream WebSocket URL, on this same origin
+ * (`docs/API.md` section 18.1).
+ *
+ * The resume position is not a query parameter: it travels in the
+ * `stream.subscribe` message after the upgrade, so it never reaches an access
+ * log or a proxy's URL history.
+ */
+export function eventsUrl(projectId: string): string {
+  const scheme = globalThis.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${scheme}//${globalThis.location.host}/ws/v1/projects/${encodeURIComponent(projectId)}/events`;
 }

@@ -403,6 +403,68 @@ describe("event-stream authorisation", () => {
     await allowed.close();
   });
 
+  /**
+   * The organisation term, on its own.
+   *
+   * The case above scopes a viewer to a list of projects, which makes
+   * `principal.organisationId` null and the organisation comparison in
+   * `authoriseUpgrade` vacuous: it proves the project term and nothing else. An
+   * organisation-wide viewer is the shape this product actually issues most
+   * often — `projectIds: null`, one organisation — and it inverts the pair, so
+   * the project term is the vacuous one and only the organisation comparison
+   * can refuse. Without this case a change that dropped the organisation check
+   * would leave every test in this file green while letting one organisation's
+   * viewer subscribe to another's project.
+   */
+  test("an organisation-wide viewer may not subscribe to another organisation's project", async () => {
+    const mine = await seedProject();
+    const theirs = await seedProject();
+    assert.notEqual(
+      mine.organisationId,
+      theirs.organisationId,
+      "the fixtures must be in different organisations for this case to mean anything",
+    );
+    const viewer = await built.viewers.issue({
+      organisationId: mine.organisationId,
+      projectIds: null,
+      display: "organisation-wide viewer",
+      ttlSeconds: 300,
+    });
+
+    await assert.rejects(
+      connect(theirs.projectId, { cookie: `reviewplane_viewer=${viewer.token}` }),
+      (error: unknown) => error instanceof UpgradeRefused && error.status === 404,
+      "an organisation-wide viewer reached another organisation's project stream",
+    );
+
+    // The same viewer reaches a project of its own organisation, so the refusal
+    // above is the organisation boundary rather than the cookie being rejected
+    // or the viewer being scoped to nothing.
+    const allowed = await connect(mine.projectId, { cookie: `reviewplane_viewer=${viewer.token}` });
+    await allowed.close();
+  });
+
+  test("an organisation-wide viewer reaches every project of its own organisation", async () => {
+    // The complement of the case above: a check that refused everything would
+    // pass that one, and this is what stops it.
+    const first = await seedProject();
+    const second = await built.app.inject({
+      method: "POST",
+      url: `/api/v1/organisations/${first.organisationId}/projects`,
+      headers: ADMIN,
+      payload: { name: "Second", slug: `prj-${newId("").slice(0, 12)}`.toLowerCase() },
+    });
+    const secondId = (second.json() as { data: { id: string } }).data.id;
+    const viewer = await built.viewers.issue({
+      organisationId: first.organisationId,
+      projectIds: null,
+      display: "organisation-wide viewer",
+      ttlSeconds: 300,
+    });
+    const client = await connect(secondId, { cookie: `reviewplane_viewer=${viewer.token}` });
+    await client.close();
+  });
+
   test("an unknown project is refused with the same status as a forbidden one", async () => {
     await assert.rejects(
       connect(`prj_${"f".repeat(32)}`),

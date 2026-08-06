@@ -25,9 +25,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent, type ReactElement } from "react";
 
 import { ApiFailure, api, isActive, type Project } from "../api/client.ts";
+import { ActivityPanel, ActivityProvenanceNote } from "../components/ActivityPanel.tsx";
 import { PublishedServices } from "../components/PublishedServices.tsx";
 import { StartBrowserSession } from "../components/StartBrowserSession.tsx";
 import { StatusBadge } from "../components/StatusBadge.tsx";
+import { useProjectEvents } from "../live/use-project-events.ts";
 import { formatViewport } from "./projects.tsx";
 import { rootRoute } from "./root.tsx";
 
@@ -132,10 +134,14 @@ function ProjectShell(): ReactElement {
 
 function Overview(): ReactElement {
   const { projectId, project } = useProject();
-  const activity = useQuery({
-    queryKey: ["activity", projectId],
-    queryFn: () => api.activity(projectId, 10),
-  });
+  /*
+    The project's own event timeline (`docs/EVENTS.md` section 10). It is the
+    same record the session room reads, unfiltered: the exit criterion is that a
+    user can read what happened without database access, and a page showing only
+    the ten newest rows with no live delivery would send them back to `psql` the
+    moment anything moved.
+  */
+  const stream = useProjectEvents(projectId);
 
   return (
     <section aria-labelledby="overview-heading">
@@ -167,26 +173,18 @@ function Overview(): ReactElement {
         </div>
       </dl>
 
-      <h3 className="mt-8 text-base font-semibold">Recent activity</h3>
-      {activity.data !== undefined && activity.data.length === 0 ? (
-        <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">
-          Nothing has happened in this project yet.
-        </p>
-      ) : (
-        <ul className="mt-2 flex flex-col gap-2 text-sm">
-          {(activity.data ?? []).map((event) => (
-            <li key={event.id} className="flex flex-wrap gap-x-3">
-              <span className="font-mono">{event.type}</span>
-              <span className="text-slate-600 dark:text-slate-400">
-                {new Date(event.occurred_at).toLocaleString()}
-              </span>
-              <span className="text-slate-600 dark:text-slate-400">
-                {event.actor.display ?? event.actor.type}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
+      <div className="mt-8">
+        <ActivityPanel
+          stream={stream}
+          heading="Activity"
+          headingId="project-activity-heading"
+          surface="project-activity"
+          emptyMessage="Nothing has happened in this project yet. Every meaningful change is recorded here as it occurs."
+        />
+        <div className="mt-3">
+          <ActivityProvenanceNote />
+        </div>
+      </div>
     </section>
   );
 }
