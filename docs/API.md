@@ -1577,6 +1577,15 @@ project, and a viewer whose browser session has ended are all refused with an
 HTTP status on the handshake, so no WebSocket exists for them and no frame is
 transmitted. The `Origin` header is checked against a configured allow list.
 
+Authorisation applies **both** the organisation and the project term of the
+viewer's scope, against the browser session's own organisation and project, and
+not one of them. A viewer session that names an organisation but no project list
+is not narrowed by the project term at all — a null project list means "not
+narrowed to a list", never "narrowed to nothing" — so the organisation
+comparison is the only boundary left for it, exactly as it is on the event
+channel of section 18.1. A viewer whose organisation differs from the session's
+is refused with `PROJECT_CONTEXT_MISMATCH`.
+
 Internally the control plane obtains frames from the worker over a separate
 leg, described in `docs/ARCHITECTURE.md` section 6.3. One worker stream serves
 however many viewers are attached, and closing it is what stops capture.
