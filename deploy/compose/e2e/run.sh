@@ -385,29 +385,57 @@ info "assigned browser worker ${WORKER_ID} to ${PROJECT_ID}"
 # restart, and that is an authorisation gap rather than an inconvenience
 # (RVP-60).
 #
-# The wait is on the assignment actually being served, not on a fixed delay: it
-# reserves a session, which the control plane refuses with
-# PROJECT_CONTEXT_MISMATCH until the assignment exists. Waiting out the
-# heartbeat interval instead would be waiting on a proxy for the thing being
-# asserted.
+# It is picked up on the *next* heartbeat, though, not on the assignment, and
+# that distinction is the whole of this wait. Two copies of the assignment
+# exist: `browser_worker_projects`, written by the PUT above, and the worker's
+# in-memory set, which converges up to one heartbeat interval later — 15
+# seconds by default. In between, the control plane's own check passes and the
+# worker refuses the allocation with PROJECT_CONTEXT_MISMATCH, which reads as a
+# flat contradiction unless you know there are two copies.
+#
+# So the wait has to observe the worker's copy, and the only thing that
+# observes it is an allocation: the worker's check is reachable by no other
+# path. Nothing the control plane exposes — the worker list, the assignment
+# response, a reservation — reports anything but the row that was just written.
+#
+# This used to reserve a session with `allocate:false`, which by design does
+# not contact the worker at all. It re-read the row the PUT had just written,
+# passed on its first attempt about a second after the assignment, and reported
+# that the worker had "picked up its assignment from a heartbeat" without
+# having asked the worker anything. Step 5 then lost the race the wait was
+# supposed to have removed, on every run where the next heartbeat had not
+# happened to land in that second.
+#
+# Allocating is cheap while the answer is still no: the worker checks its
+# assignment before it launches a context, so only the attempt that succeeds
+# costs a Chromium start, and that session is ended immediately.
+ASSIGNMENT_WAIT_SECONDS=0
 await_worker_assignment() {
-  local deadline=$((SECONDS + 90)) probe probe_id
+  local deadline=$((SECONDS + 90)) started="${SECONDS}" probe probe_status probe_id
   while (( SECONDS < deadline )); do
     probe="$(api POST "/api/v1/projects/${PROJECT_ID}/browser-sessions" \
-      '{"viewport":{"width":1440,"height":900,"device_scale_factor":1},"allocate":false}' 2>/dev/null || true)"
-    if printf '%s' "${probe}" | grep -q 'REQUESTED'; then
-      # The probe reserved a real session. End it so it does not sit in the
-      # capacity pool for the rest of the run.
-      probe_id="$(field "${probe}" 'data["id"]')" || return 0
-      api POST "/api/v1/browser-sessions/${probe_id}/terminate" '{}' >/dev/null 2>&1 || true
+      '{"viewport":{"width":1440,"height":900,"device_scale_factor":1}}' 2>/dev/null || true)"
+    probe_status="$(field "${probe}" 'data["status"]' 2>/dev/null || true)"
+    if [[ "${probe_status}" == "READY" ]]; then
+      # The probe allocated a real context on the worker, which is the
+      # assertion. End it so it does not hold capacity for the rest of the run.
+      # `control_epoch` is mandatory on a lifecycle change and a new session is
+      # at epoch 1; the old probe sent `{}`, which was refused with
+      # VALIDATION_FAILED and swallowed, so its sessions were never ended.
+      probe_id="$(field "${probe}" 'data["id"]' 2>/dev/null || true)"
+      if [[ -n "${probe_id}" ]]; then
+        api POST "/api/v1/browser-sessions/${probe_id}/terminate" '{"control_epoch":1}' >/dev/null 2>&1 || true
+      fi
+      ASSIGNMENT_WAIT_SECONDS=$((SECONDS - started))
       return 0
     fi
     sleep 2
   done
   return 1
 }
-await_worker_assignment || fail "the browser worker did not pick up its assignment from a heartbeat"
-info "browser worker picked up its assignment from a heartbeat, with no restart"
+await_worker_assignment \
+  || fail "the browser worker did not accept an allocation for ${PROJECT_ID} within 90s; ADR-0026 bounds that by one heartbeat interval"
+info "browser worker accepted an allocation ${ASSIGNMENT_WAIT_SECONDS}s after the assignment, with no restart"
 
 # ---------------------------------------------------------------------------
 step "4. Reserve a browser session, then publish the service (step 4)"

@@ -1008,6 +1008,8 @@ Allocation contacts the worker, binds the origin and the freshly minted capabili
 
 The one-request form remains available for a session that needs no route, or whose route already names it: omit `allocate` and the control plane reserves and allocates in one call.
 
+A browser worker checks the session's project against its own copy of its assignment as well, and that copy is restated on its heartbeat rather than pushed (ADR-0026). So an allocation made within one heartbeat interval of an administrator assigning the project MAY be refused with `PROJECT_CONTEXT_MISMATCH` even though the assignment exists here and the control plane's own check has passed. The refusal stands — the worker's check is the one protecting the browser — but the control plane compares the two copies before answering, and where its own record does hold the assignment the answer says that the worker's copy is stale, carries `details.browser_worker_assignment: "stale"` and `details.heartbeat_interval_seconds`, and states that no restart is needed. A caller that allocates immediately after assigning MUST be prepared to retry for that interval; a client that waits for a browser worker to serve a newly assigned project MUST wait on an allocation succeeding, because no other endpoint observes the worker's copy.
+
 ## 12. Review endpoints
 
 ```text
