@@ -624,15 +624,23 @@ function CapturedContext({
         <dd data-testid="captured-commit" className="font-mono text-xs">
           {workspace?.head_commit?.slice(0, 12) ?? "unknown"}
         </dd>
-        <dt className="text-slate-600 dark:text-slate-400">Source session</dt>
+        <dt className="text-slate-600 dark:text-slate-400">Screenshot</dt>
         <dd data-testid="captured-session" className="font-mono text-xs break-all">
           {capture.artefactId}
         </dd>
+        <dt className="text-slate-600 dark:text-slate-400">Captured at</dt>
+        <dd data-testid="captured-at">{new Date(capture.capturedAt).toLocaleString()}</dd>
       </dl>
       {elementContext === null ? (
         <p data-testid="element-context-absent" className={`mt-2 ${HINT}`}>
-          No element was resolved under the first mark. The finding still records its geometry, URL,
-          viewport and screenshot, which is what makes it reproducible.
+          No element was resolved under the first mark.{" "}
+          {capture.snapshotTruncated
+            ? "The page held more elements than one snapshot carries, so the element under the mark may simply not be among the ones described — this is not evidence that the mark covers nothing."
+            : capture.elements.length === 0
+              ? "No accessibility snapshot was taken with this capture, so there was nothing to resolve against."
+              : "Nothing the snapshot described contains the centre of the mark."}{" "}
+          The finding still records its geometry, URL, viewport and screenshot, which is what makes
+          it reproducible.
         </p>
       ) : (
         <div data-testid="element-context" className="mt-2 text-sm">
