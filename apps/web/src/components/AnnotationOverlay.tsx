@@ -36,13 +36,35 @@ import {
   describeGeometry,
   toRenderedArrow,
   toRenderedBox,
+  toRenderedPath,
+  type AnnotationGeometry,
+  type AnnotationType,
   type RenderedRectangle,
 } from "@reviewplane/protocol/review";
 
-import type { Annotation, ArtefactContentRectangle } from "../api/client.ts";
+import type { ArtefactContentRectangle } from "../api/client.ts";
+
+/**
+ * The least an overlay needs in order to draw a mark.
+ *
+ * A stored `Annotation` satisfies it, and so does a mark a human has just
+ * drawn and not yet saved. Drawing them with one renderer is not a
+ * convenience: a draft that were drawn by a second, simpler renderer would be
+ * a second place for the coordinate conversion to be wrong, and the mistake
+ * would only show up after the finding was saved — which is exactly when it
+ * stops being correctable.
+ */
+export interface DisplayAnnotation {
+  readonly id: string;
+  readonly type: AnnotationType;
+  readonly geometry: AnnotationGeometry;
+  readonly label?: string;
+  readonly marker_number?: number;
+  readonly style_hint?: "default" | "critical" | "informational";
+}
 
 export interface AnnotationOverlayProps {
-  readonly annotations: readonly Annotation[];
+  readonly annotations: readonly DisplayAnnotation[];
   readonly content: ArtefactContentRectangle;
   /** The element the image fills. Measured, never assumed. */
   readonly stage: HTMLElement | null;
@@ -91,13 +113,16 @@ function Mark({
   selected,
   onSelect,
 }: {
-  readonly annotation: Annotation;
+  readonly annotation: DisplayAnnotation;
   readonly rectangle: RenderedRectangle;
   readonly selected: boolean;
   readonly onSelect: (annotationId: string) => void;
 }): ReactElement | null {
   const colour = TONE[annotation.style_hint ?? "default"] ?? TONE["default"];
-  const label = `${annotation.label}. ${describeGeometry(annotation.type, annotation.geometry)}.`;
+  const label = `${annotation.label ?? "Unlabelled mark"}. ${describeGeometry(
+    annotation.type,
+    annotation.geometry,
+  )}.`;
   const common = {
     "data-annotation": annotation.id,
     "data-annotation-type": annotation.type,
@@ -138,6 +163,42 @@ function Mark({
   }
 
   const box = toRenderedBox(annotation.geometry, rectangle);
+
+  if (annotation.type === "freehand") {
+    // The stroke is drawn inside its own bounding box, which the geometry
+    // carries beside the path. Both go through the same conversion: a path
+    // placed by different arithmetic from the box around it would drift apart
+    // from its own hit target at some sizes and not others.
+    const points = toRenderedPath(annotation.geometry, rectangle);
+    const width = Math.max(box.width, 1);
+    const height = Math.max(box.height, 1);
+    return (
+      <button
+        {...common}
+        className="absolute cursor-pointer border-0 bg-transparent p-0"
+        style={{ left: box.x, top: box.y, width, height }}
+        aria-label={label}
+      >
+        <svg
+          width={width}
+          height={height}
+          viewBox={`0 0 ${String(width)} ${String(height)}`}
+          aria-hidden="true"
+          style={{ overflow: "visible" }}
+        >
+          <polyline
+            points={points.map((point) => `${String(point.x - box.x)},${String(point.y - box.y)}`).join(" ")}
+            fill="none"
+            stroke={colour}
+            strokeWidth={selected ? 5 : 3}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </button>
+    );
+  }
+
   if (annotation.type === "point" || annotation.type === "numbered_marker") {
     const size = 28;
     return (
@@ -171,6 +232,12 @@ function Mark({
         height: box.height,
         border: `${selected ? 4 : 3}px solid ${colour}`,
         borderRadius: annotation.type === "ellipse" ? "50%" : 4,
+        // Turns rather than degrees, because the stored member is bounded to 0
+        // to 1 like every other one. The box rotates about its own centre, so
+        // the mark stays over the same part of the picture at any size.
+        ...(annotation.geometry.rotation === undefined || annotation.geometry.rotation === 0
+          ? {}
+          : { transform: `rotate(${String(annotation.geometry.rotation)}turn)` }),
       }}
       aria-label={label}
     />

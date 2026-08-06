@@ -20,18 +20,32 @@ import type {
 } from "@reviewplane/protocol/platform";
 import type {
   Annotation,
+  AnnotationCreateRequest,
+  AnnotationGeometry,
+  AnnotationType,
+  ElementContext,
   Finding,
+  FindingSeverity,
   Review,
+  ReviewPriority,
+  ScrollPosition,
   VerificationReference,
 } from "@reviewplane/protocol/review";
 
 export type {
   Annotation,
+  AnnotationCreateRequest,
+  AnnotationGeometry,
+  AnnotationType,
   Connector,
   ConnectorStatus,
+  ElementContext,
   Environment,
   Finding,
+  FindingSeverity,
   Review,
+  ReviewPriority,
+  ScrollPosition,
   VerificationReference,
   Workspace,
 };
@@ -283,6 +297,77 @@ export interface ViewerSession {
 export interface ArtefactContentRectangle {
   readonly width_px: number;
   readonly height_px: number;
+}
+
+/**
+ * What a browser command answered with (`docs/API.md` §11).
+ *
+ * Only the two members the capture flow reads are declared. The result is
+ * page-derived throughout and carries its own trust label; nothing here is
+ * ever treated as an instruction (ADR-0010).
+ */
+export interface BrowserCommandOutcome {
+  readonly ok: boolean;
+  readonly error?: { readonly code?: string; readonly message?: string };
+  readonly screenshot?: {
+    readonly artefact_id: string;
+    readonly viewport: Viewport;
+    readonly captured_at: string;
+  };
+  readonly snapshot?: {
+    readonly snapshot_id: string;
+    readonly viewport: Viewport;
+    readonly truncated: boolean;
+    readonly elements: readonly SnapshotElement[];
+  };
+}
+
+/**
+ * One element of a snapshot. Everything but `ref` and `selector_strategy` is
+ * page-derived and is displayed as text, never followed.
+ */
+export interface SnapshotElement {
+  readonly ref: string;
+  readonly role: string;
+  readonly name?: string;
+  readonly box?: {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  };
+  readonly selector?: string;
+  readonly selector_strategy?: ElementContext["selector_strategy"];
+  readonly text_excerpt?: string;
+  readonly dom_fingerprint?: string;
+}
+
+/** The named review a human creates from a session (`docs/UX_FLOWS.md` §10). */
+export interface ReviewDraft {
+  readonly slug: string;
+  readonly title: string;
+  readonly description?: string;
+  readonly status?: "DRAFT" | "READY";
+  readonly priority?: ReviewPriority;
+  readonly captured_branch: string;
+  readonly captured_commit: string;
+  readonly captured_workspace_id: string;
+  readonly source_browser_session_id: string;
+}
+
+/** A finding and the marks that explain it (`docs/UX_FLOWS.md` §9). */
+export interface FindingDraft {
+  readonly title: string;
+  readonly description?: string;
+  readonly severity: FindingSeverity;
+  readonly url: string;
+  readonly viewport: Viewport;
+  readonly scroll_position: ScrollPosition;
+  readonly captured_commit: string;
+  readonly screenshot_artefact_id: string;
+  readonly element_context?: ElementContext;
+  readonly acceptance_criteria?: string;
+  readonly annotations?: readonly AnnotationCreateRequest[];
 }
 
 export interface Artefact {
@@ -772,6 +857,175 @@ export const api = {
   async annotations(findingId: string): Promise<Annotation[]> {
     return request<Annotation[]>(
       `/api/v1/findings/${encodeURIComponent(findingId)}/annotations`,
+    );
+  },
+
+  /**
+   * Captures a screenshot to annotate (`docs/API.md` §11).
+   *
+   * `take_screenshot` is a **non-interactive system capture**, so a person
+   * watching a session may take one without holding the interactive control
+   * lease (`docs/SECURITY.md` §7). Stage 1 offers no human takeover, and this
+   * is what makes annotating a live application possible without one.
+   *
+   * `full_page` is false deliberately. The annotation's geometry is normalised
+   * to the artefact's content rectangle, and a viewport capture's content
+   * rectangle is the viewport scaled by the device pixel ratio — the same
+   * frame the human was looking at. A full-page capture is a different picture
+   * of a different height, and a mark drawn on the frame would land somewhere
+   * else on it.
+   */
+  async captureScreenshot(
+    sessionId: string,
+    controlEpoch: number,
+  ): Promise<BrowserCommandOutcome> {
+    return request<BrowserCommandOutcome>(
+      `/api/v1/browser-sessions/${encodeURIComponent(sessionId)}/commands`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          control_epoch: controlEpoch,
+          command: {
+            command: "take_screenshot",
+            take_screenshot: { full_page: false, purpose: "annotation" },
+          },
+        }),
+      },
+    );
+  },
+
+  /**
+   * Takes the bounded accessibility snapshot an annotation is resolved
+   * against (`docs/API.md` §11, ADR-0033).
+   *
+   * It is a system capture like the screenshot, and it is taken beside one so
+   * that the elements it describes are the elements in the picture. Resolving
+   * later, against a fresh snapshot, would answer about a page that has moved.
+   */
+  async captureSnapshot(
+    sessionId: string,
+    controlEpoch: number,
+  ): Promise<BrowserCommandOutcome> {
+    return request<BrowserCommandOutcome>(
+      `/api/v1/browser-sessions/${encodeURIComponent(sessionId)}/commands`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          control_epoch: controlEpoch,
+          command: { command: "snapshot", snapshot: {} },
+        }),
+      },
+    );
+  },
+
+  /**
+   * Creates a named review (`docs/API.md` §12).
+   *
+   * The slug is the durable handle an agent retrieves the review by, and it
+   * must be unique among the project's active reviews. Nothing here decides
+   * whether a value is acceptable: a second implementation of the rules would
+   * eventually disagree with the one that enforces them, so the server refuses
+   * and this surface reports what it said.
+   *
+   * The idempotency key is the form's own, minted once when the form is
+   * opened. A double submit therefore returns the review the first submit
+   * created rather than colliding with its own slug.
+   */
+  async createReview(
+    projectId: string,
+    draft: ReviewDraft,
+    idempotencyKey?: string,
+  ): Promise<Review> {
+    return request<Review>(`/api/v1/projects/${encodeURIComponent(projectId)}/reviews`, {
+      method: "POST",
+      body: JSON.stringify(draft),
+      ...(idempotencyKey === undefined
+        ? {}
+        : { headers: { "idempotency-key": idempotencyKey } }),
+    });
+  },
+
+  /**
+   * Creates a finding and its annotations in one request (`docs/API.md` §13).
+   *
+   * They travel together because a finding and the geometry that explains it
+   * must never exist apart: a finding whose annotations failed to save would
+   * be a report of a problem with no indication of where it is.
+   */
+  async createFinding(
+    reviewId: string,
+    draft: FindingDraft,
+    idempotencyKey?: string,
+  ): Promise<{ finding: Finding; annotations: Annotation[] }> {
+    return request<{ finding: Finding; annotations: Annotation[] }>(
+      `/api/v1/reviews/${encodeURIComponent(reviewId)}/findings`,
+      {
+        method: "POST",
+        body: JSON.stringify(draft),
+        ...(idempotencyKey === undefined
+          ? {}
+          : { headers: { "idempotency-key": idempotencyKey } }),
+      },
+    );
+  },
+
+  /** Assigns a review to an agent session, or clears the assignment (§12). */
+  async assignReview(
+    reviewId: string,
+    expectedVersion: number,
+    agentSessionId: string | null,
+  ): Promise<Review> {
+    return request<Review>(`/api/v1/reviews/${encodeURIComponent(reviewId)}/assign`, {
+      method: "POST",
+      body: JSON.stringify({
+        expected_version: expectedVersion,
+        ...(agentSessionId === null ? {} : { assigned_agent_session_id: agentSessionId }),
+      }),
+    });
+  },
+
+  /** Moves a review to another status by the route that fixes that status. */
+  async transitionReview(
+    reviewId: string,
+    action: "request-review" | "accept" | "reopen" | "archive",
+    expectedVersion: number,
+  ): Promise<Review> {
+    return request<Review>(
+      `/api/v1/reviews/${encodeURIComponent(reviewId)}/${action}`,
+      { method: "POST", body: JSON.stringify({ expected_version: expectedVersion }) },
+    );
+  },
+
+  /**
+   * Edits one annotation (`docs/API.md` §14). The edit appends a revision and
+   * retains the one it supersedes; the screenshot underneath is untouched.
+   */
+  async updateAnnotation(
+    annotationId: string,
+    expectedRevision: number,
+    change: {
+      geometry?: AnnotationGeometry;
+      label?: string;
+      marker_number?: number;
+      style_hint?: "default" | "critical" | "informational";
+    },
+  ): Promise<Annotation> {
+    return request<Annotation>(`/api/v1/annotations/${encodeURIComponent(annotationId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ expected_revision: expectedRevision, ...change }),
+    });
+  },
+
+  /**
+   * Withdraws one annotation (`docs/API.md` §14). It records a revision
+   * carrying `deleted_at` rather than deleting anything.
+   */
+  async withdrawAnnotation(annotationId: string, expectedRevision: number): Promise<Annotation> {
+    return request<Annotation>(
+      `/api/v1/annotations/${encodeURIComponent(annotationId)}?expected_revision=${String(
+        expectedRevision,
+      )}`,
+      { method: "DELETE" },
     );
   },
 
