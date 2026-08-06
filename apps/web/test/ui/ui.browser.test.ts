@@ -129,12 +129,24 @@ async function openSignedIn(
   };
 }
 
+/**
+ * The live browser surface, as its own region.
+ *
+ * The room has two streams and both report their state with the same word, so
+ * an unscoped search for "Live" can answer about the event stream while the
+ * picture is still black. Every wait on the surface's state is therefore scoped
+ * to the surface's own landmark.
+ */
+function liveSurface(session: Session) {
+  return session.page.locator('section[aria-labelledby="live-surface-heading"]');
+}
+
 async function openLiveView(session: Session): Promise<void> {
-  await session.page.getByRole("link", { name: "Open live view" }).first().click();
+  await session.page.getByRole("link", { name: "Open session" }).first().click();
   await session.page.getByRole("heading", { name: "Live browser" }).waitFor();
   // The status text is the contract, so the wait is on the words a human
   // reads rather than on an internal state.
-  await session.page.getByText("Live", { exact: true }).first().waitFor({ timeout: 15000 });
+  await liveSurface(session).getByText("Live", { exact: true }).first().waitFor({ timeout: 15000 });
 }
 
 /** Whether the canvas has actually painted something other than one colour. */
@@ -222,14 +234,14 @@ test("the session list is reachable and operable by keyboard alone", async () =>
       return `${active.tagName.toLowerCase()}:${(active.textContent ?? "").trim().slice(0, 40)}`;
     });
     reached.push(description);
-    if (description.startsWith("a:Open live view")) break;
+    if (description.startsWith("a:Open session")) break;
   }
   assert.ok(
     reached.some((entry) => entry.startsWith("a:Skip to main content")),
     `the skip link was not reachable: ${reached.join(" | ")}`,
   );
   assert.ok(
-    reached.some((entry) => entry.startsWith("a:Open live view")),
+    reached.some((entry) => entry.startsWith("a:Open session")),
     `the live-view link was not reachable: ${reached.join(" | ")}`,
   );
 
@@ -304,7 +316,10 @@ test("the viewer reconnects and refreshes state after the API restarts", async (
 
   // Induced failure: the control plane goes away mid-stream.
   await stub.stop();
-  await session.page.getByText("Reconnecting", { exact: false }).first().waitFor({ timeout: 15000 });
+  await liveSurface(session)
+    .getByText("Reconnecting", { exact: false })
+    .first()
+    .waitFor({ timeout: 15000 });
   process.stdout.write("EVIDENCE reconnect: status became Reconnecting after the API stopped\n");
 
   const restartShot = join(evidenceDirectory, "live-view-reconnecting.png");
@@ -313,7 +328,7 @@ test("the viewer reconnects and refreshes state after the API restarts", async (
 
   // The same port, so the page's own origin still resolves.
   stub = await startStubControlPlane({ distDirectory, frames, port });
-  await session.page.getByText("Live", { exact: true }).first().waitFor({ timeout: 30000 });
+  await liveSurface(session).getByText("Live", { exact: true }).first().waitFor({ timeout: 30000 });
   process.stdout.write("EVIDENCE reconnect: status returned to Live after the API restarted\n");
 
   await session.page.waitForFunction(
@@ -334,12 +349,12 @@ test("a refused live stream shows a specific, actionable failure state", async (
   stub = await startStubControlPlane({ distDirectory, frames, port, refuseLive: true });
 
   const session = await openSignedIn(DESKTOP);
-  await session.page.getByRole("link", { name: "Open live view" }).first().click();
+  await session.page.getByRole("link", { name: "Open session" }).first().click();
   await session.page.getByRole("heading", { name: "Live browser" }).waitFor();
 
   // Not a blank canvas and not "something went wrong": the page names a cause
   // and what remains possible (docs/UX_FLOWS.md section 18).
-  await session.page
+  await liveSurface(session)
     .getByText("Reconnecting", { exact: false })
     .first()
     .waitFor({ timeout: 20000 });
