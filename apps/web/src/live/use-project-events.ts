@@ -96,6 +96,15 @@ export function useProjectEvents(
   const [lastSequence, setLastSequence] = useState(0);
   /** Bumped to force the seed to run again after a refresh instruction. */
   const [generation, setGeneration] = useState(0);
+  /**
+   * The position a socket is opened at, held in a ref as well as in state.
+   *
+   * The state is what the surface displays and changes on every event; the ref
+   * is what the effect reads. Reading the state there would make the position a
+   * dependency of the socket's lifetime, and a socket that reopened on every
+   * event would replay its way into a loop.
+   */
+  const startAtRef = useRef(0);
 
   const seed = useQuery({
     queryKey: ["activity", projectId, generation],
@@ -125,6 +134,7 @@ export function useProjectEvents(
     // The resume point is the stream's highest sequence, not the highest that
     // survived the filter.
     const highest = seed.data.reduce((max, event) => Math.max(max, event.sequence), 0);
+    startAtRef.current = highest;
     setLastSequence(highest);
   }, [seed.data]);
 
@@ -134,17 +144,19 @@ export function useProjectEvents(
     if (!enabled || projectId === undefined || !seeded) return;
     const client = new ProjectEventClient({
       url: eventsUrl(projectId),
-      lastSequence,
+      lastSequence: startAtRef.current,
       events: {
         onStatus: (next, nextFailure) => {
           setStatus(next);
           setFailure(nextFailure);
         },
         onEvent: (event) => {
+          startAtRef.current = Math.max(startAtRef.current, event.sequence);
           setLastSequence((current) => Math.max(current, event.sequence));
           apply(event);
         },
         onRefreshRequired: (reason, currentSequence) => {
+          startAtRef.current = currentSequence;
           setLastSequence(currentSequence);
           setRefresh({ reason, at: Date.now() });
           // Refetch state from the record, which is what the instruction asks
@@ -157,11 +169,6 @@ export function useProjectEvents(
     return () => {
       client.close();
     };
-    // `lastSequence` is deliberately absent: it changes on every event, and
-    // reopening the socket per event is exactly the loop this must not be. The
-    // client owns its own position once opened; the value here is only the
-    // starting point, read when the socket is created.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, projectId, seeded, generation, apply]);
 
   return {

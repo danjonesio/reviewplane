@@ -175,9 +175,8 @@ function Sessions(): ReactElement {
     });
     return map;
     // The query arrays are rebuilt on every render by `useQueries`, so their
-    // identities are not usable as dependencies; their data is what matters and
-    // is compared through the values read above.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // identities are not usable as dependencies. `dataUpdatedAt` is: it changes
+    // exactly when an answer changes, which is when this map needs rebuilding.
   }, [
     projectIds,
     activityQueries.map((query) => query.dataUpdatedAt).join(),

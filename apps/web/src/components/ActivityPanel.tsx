@@ -25,7 +25,6 @@ import { useMemo, type ReactElement } from "react";
 import {
   EVENT_STREAM_STATUS_COPY,
   REFRESH_REASON_COPY,
-  type EventStreamFailure,
   type EventStreamStatus,
 } from "../live/events.ts";
 import {
