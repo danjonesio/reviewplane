@@ -288,6 +288,18 @@ authority — allocation is refused against its record before the worker is
 contacted, and refused again by the worker on arrival — and the worker's copy is
 a cache.
 
+**The pool itself is deployment-wide** (ADR-0034). A browser worker belongs to
+no organisation; the assignment is the only tenancy it has. It follows that
+reading the fleet and changing an assignment MUST require the **deployment**
+administrator of §7, not an organisation-wide session — an organisation-wide
+session of any tenant would otherwise be administering infrastructure shared
+with every other tenant. Because an assignment is **replaced** rather than
+merged, an unauthorised assignment is not only a seizure: it detaches the worker
+from whoever held it, and the victim reads the result as
+`BROWSER_CAPACITY_EXHAUSTED`, which is also what a genuinely full worker
+produces. Every project identifier in a requested assignment MUST be resolved
+inside the caller's scope **before** any assignment row is written.
+
 **That cache is refreshed on every heartbeat** (ADR-0026), so the staleness of an
 assignment is bounded by one heartbeat interval, 15 seconds by default. Before
 RVP-30 it was delivered once at registration and never again, which meant a
@@ -345,9 +357,31 @@ calls do, and each names the rule it enforces.
   the database is unavailable, and section 6.3 is not a rule that may hold only
   while PostgreSQL is up.
 - Stage 1 has no roles (`docs/DOMAIN_MODEL.md` section 5 defers them to Stage
-  3), so administration is decided by scope: an organisation-wide session
-  administers; a session scoped to a project does not. Adding roles replaces
-  that one predicate and nothing else.
+  3), so administration is decided by scope. There are **two** administrator
+  rules, and a route MUST apply the one that matches what it administers.
+  Adding roles replaces these two predicates and nothing else.
+
+  - **Organisation administration** — an organisation-wide session administers;
+    a session scoped to a project does not. This rule is only sound over a
+    resource the caller's organisation owns, and every route that applies it
+    MUST go on to constrain the record by the caller's `organisationId`.
+  - **Deployment administration** — required for a resource that belongs to the
+    deployment rather than to any organisation, where there is no organisation
+    term to add. The test is that the principal belongs to **no organisation**,
+    which in Stage 1 is the ADR-0016 bootstrap administrator and nothing else:
+    every account sign-in carries a real organisation. Browser-worker
+    administration is the only such surface today (ADR-0034).
+
+- **A null project scope is not an authority test, and MUST NOT be used as
+  one.** "Not narrowed to specific projects" is the shape *every* real sign-in
+  issues, so a guard that reads it as "is an administrator" admits every
+  tenant's ordinary user, and a guard that short-circuits an `&&` on it raises
+  no refusal at all. Both forms shipped: the browser-worker routes read it as
+  authority over a deployment-wide registry, which let one tenant list the
+  fleet and reassign a worker away from another tenant (RVP-91); the workspace
+  listing short-circuited on it and served another organisation's
+  developer-machine filesystem paths (RVP-92). The project scope is a term of a
+  scoped read, alongside the organisation — never the decision on its own.
 - Project-scoped reads carry the identifier, the session's project scope and the
   session's organisation in the same `WHERE` clause, so a row that satisfies one
   and not the others is never returned and then rejected by a later branch.

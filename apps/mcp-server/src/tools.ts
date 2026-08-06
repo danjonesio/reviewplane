@@ -697,7 +697,10 @@ const TOOLS: readonly ToolDefinition[] = [
       const workspace =
         connection.workspace === null
           ? null
-          : await context.services.workspaces.get(connection.workspace.id);
+          : await context.services.workspaces.get(
+              connection.workspace.id,
+              connection.scope.organisationId,
+            );
       if (workspace === null) {
         context.warnings.add(
           "workspace_unresolved",
@@ -1975,7 +1978,13 @@ const TOOLS: readonly ToolDefinition[] = [
       // The workspace must belong to this session's project. A workspace in
       // another project is reported absent rather than forbidden, so a foreign
       // identifier and an unknown one are indistinguishable (`docs/API.md` §5).
-      const workspace = await services.workspaces.get(workspaceId);
+      // The organisation is a term of the query rather than a check after it
+      // (RVP-92): a row outside the tenant is not returned at all, so the
+      // project comparison below is the second line and not the only one.
+      const workspace = await services.workspaces.get(
+        workspaceId,
+        connection.scope.organisationId,
+      );
       if (workspace === null || workspace.project_id !== connection.project.id) {
         throw new ApiError("WORKSPACE_NOT_FOUND", "No such workspace in this project.");
       }

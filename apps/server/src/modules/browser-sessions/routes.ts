@@ -27,6 +27,13 @@
  * scope in one predicate, and every session lookup is filtered by that project.
  * A session in another project answers `RESOURCE_NOT_FOUND` byte for byte as an
  * unknown identifier does (`docs/API.md` section 5).
+ *
+ * **The two worker-administration routes are not on that surface.** A browser
+ * worker belongs to the deployment and not to an organisation (ADR-0034), so
+ * there is no organisation term to scope them by and they require the
+ * deployment administrator instead — `requireDeploymentAdministrator`, which
+ * tests `organisationId === null`. They previously tested `projectIds !== null`,
+ * which admits every tenant's ordinary user (RVP-91).
  */
 
 import type { FastifyInstance, FastifyRequest } from "fastify";
@@ -46,6 +53,7 @@ import type { EventActor } from "../../events/append.ts";
 import { newId } from "../../ids.ts";
 import {
   requireCsrfToken,
+  requireDeploymentAdministrator,
   requireHuman,
   resolveProject,
   type AuthorisedProject,
@@ -188,18 +196,43 @@ export async function registerBrowserSessionRoutes(
   // Worker administration
   // ---------------------------------------------------------------------
 
+  /**
+   * Worker administration is **deployment administration** (ADR-0034).
+   *
+   * A browser worker is a deployment-wide shared pool: `browser_workers` has no
+   * organisation column, and it is not getting one, because a self-hosted
+   * deployment's workers are infrastructure the operator runs rather than data
+   * a tenant owns. What follows from that is the authority model here, and it
+   * is the whole of RVP-91: these routes tested `projectIds !== null`, which is
+   * "narrowed to specific projects" and not "is an administrator", so every
+   * tenant's ordinary organisation-wide user passed it. Listing disclosed the
+   * fleet; assigning **replaced** an assignment, detaching a worker from
+   * another tenant and leaving its sessions unschedulable.
+   */
   app.put("/api/v1/browser-workers/:workerId/assignments", async (request, reply) => {
-    const principal = requireHuman(request);
+    // Authority first, then the CSRF rule. Both refuse before anything is read
+    // or written, and neither touches the database, so the order costs nothing
+    // — but it means a session that may not administer the deployment is told
+    // so, rather than being told its CSRF token is missing, which is true of
+    // every token-less session and says nothing about why it was refused.
+    const principal = requireDeploymentAdministrator(request);
     requireCsrfToken(request, principal);
-    if (principal.projectIds !== null) {
-      throw new ApiError(
-        "AUTHORISATION_DENIED",
-        "This session is scoped to a project and cannot assign a browser worker.",
-      );
-    }
     const { workerId } = request.params as { workerId: string };
     const body = request.body as { project_ids?: string[] };
-    const assigned = await options.workers.assign(workerId, body.project_ids ?? []);
+    const projectIds = body.project_ids ?? [];
+    // Every named project is resolved inside the caller's scope before any row
+    // is written. `assign()` deletes the whole existing assignment before it
+    // inserts, so an identifier that reached it unchecked both seized the
+    // worker and detached it from whoever held it; a project the caller may not
+    // reach must not be nameable in that set. The deployment administrator's
+    // scope is the deployment, so this admits every real project and refuses an
+    // unknown one with `RESOURCE_NOT_FOUND` rather than leaving the foreign key
+    // to report it — and when roles arrive it is already the term that confines
+    // a narrower administrator.
+    for (const projectId of projectIds) {
+      await resolveProject(options.pool, principal, projectId);
+    }
+    const assigned = await options.workers.assign(workerId, projectIds);
     return reply.send({
       data: { worker_id: workerId, project_ids: assigned },
       meta: { request_id: request.id },
@@ -207,13 +240,7 @@ export async function registerBrowserSessionRoutes(
   });
 
   app.get("/api/v1/browser-workers", async (request, reply) => {
-    const principal = requireHuman(request);
-    if (principal.projectIds !== null) {
-      throw new ApiError(
-        "AUTHORISATION_DENIED",
-        "This session is scoped to a project and cannot read the browser-worker fleet.",
-      );
-    }
+    requireDeploymentAdministrator(request);
     return reply.send({
       data: await options.workers.schedulableRows(),
       meta: { request_id: request.id },
@@ -637,14 +664,15 @@ export async function registerBrowserSessionRoutes(
 
   // Exposed so an operator can confirm the frame encoding the worker channel
   // speaks without attaching a debugger to either process.
+  //
+  // The body is a constant: one example frame, with no tenant data in it and
+  // none reachable from it. So this route carried the same wrong predicate as
+  // the two above and disclosed nothing by it — it is corrected because an
+  // operator route on the internal prefix should not be the one place the
+  // deployment-administrator rule is stated differently, not because a caller
+  // gained anything by reaching it.
   app.get("/internal/v1/protocol", async (request, reply) => {
-    const principal = requireHuman(request);
-    if (principal.projectIds !== null) {
-      throw new ApiError(
-        "AUTHORISATION_DENIED",
-        "This session is scoped to a project and cannot read the worker protocol example.",
-      );
-    }
+    requireDeploymentAdministrator(request);
     return reply.send({
       data: {
         example: encodeBrowserFrame({
