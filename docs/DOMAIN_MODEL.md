@@ -622,6 +622,14 @@ One actionable unit inside a review.
 - `created_at`
 - `updated_at`
 
+`scroll_position` is the document offset the capture was taken at, and it MUST
+be measured by the producer rather than defaulted. A viewport-sized screenshot
+is a picture of one screenful; without the offset it cannot be placed back on
+the page it came from, and the element context of §17 — which is resolved
+against document coordinates — resolves against the top of the document
+instead. `{0, 0}` is a valid value when it was read and never a stand-in for an
+unknown one.
+
 ### Severities
 
 - `critical`
@@ -765,10 +773,16 @@ Structured geometry and display metadata.
 - `artefact_id`
 - `type`
 - `geometry`
+- `geometry_version`
 - `label`
 - `style_hint`
 - `created_by`
 - `created_at`
+
+`geometry_version` is the version of its own type's member list (ADR-0032). It
+is derived by the control plane from the type and is never a field a caller may
+supply: a client able to name it could claim a member list its geometry does not
+satisfy.
 
 ### Supported initial types
 
@@ -792,7 +806,12 @@ Coordinates are normalised to the artefact content rectangle:
 }
 ```
 
-All values must be between 0 and 1. Rotation and path data are versioned by annotation type.
+All values must be between 0 and 1, **without exception** — including every
+point of a freehand path and including a rotation. Rotation and path data are
+versioned by annotation type: the version of each type's member list is held in
+`x-protocol.vocabularies.geometry_by_annotation_type` and stored on every
+annotation, so that adding a member to one shape does not renumber the geometry
+of every other one (ADR-0032).
 
 #### The content rectangle
 
@@ -818,16 +837,43 @@ device pixel ratio or read an intrinsic pixel size.
 Every member is bounded to 0 to 1 inclusive. Which members a type carries is
 fixed:
 
-| Type | Members |
-|---|---|
-| `rectangle` | `x`, `y`, `width`, `height` |
-| `ellipse` | `x`, `y`, `width`, `height` (bounding box) |
-| `arrow` | `x`, `y` (tail), `x2`, `y2` (head) |
-| `point` | `x`, `y` |
-| `numbered_marker` | `x`, `y` |
+| Type | Required members | Optional members |
+|---|---|---|
+| `rectangle` | `x`, `y`, `width`, `height` | `rotation` |
+| `ellipse` | `x`, `y`, `width`, `height` (bounding box) | `rotation` |
+| `arrow` | `x`, `y` (tail), `x2`, `y2` (head) | — |
+| `point` | `x`, `y` | — |
+| `numbered_marker` | `x`, `y` | — |
+| `freehand` | `x`, `y`, `width`, `height` (bounding box), `path` | — |
 
 An arrow carries a second point rather than a signed delta so that no member
 ever has to leave the range. A member a type does not use MUST be absent.
+
+`rotation` is a clockwise rotation of a box about its own centre, expressed in
+**turns** rather than degrees — 0.25 is a quarter turn — so that it obeys the
+same 0-to-1 bound as every other member and the range rule above needs no
+exception (ADR-0032). A caller that sends degrees is refused by that bound,
+which is the outcome that tells them they used another unit. It is meaningful
+only for a box: a point has no orientation, and an arrow's direction is already
+its two points.
+
+`path` is an ordered list of `{x, y}` samples, each normalised like every other
+member, with **at least 2 and at most 128** points. It is a list of points
+rather than a string of drawing commands, because a command string is a second
+grammar to validate and a place to hide markup in a value that surfaces render.
+A path of one point is refused: that mark is a `point` annotation, and two ways
+to record one mark would make the annotation list say two different things
+about identical geometry. A path longer than the bound MUST be refused and MUST
+NOT be truncated, for the same reason an out-of-range coordinate is refused
+rather than clamped — a silently shortened stroke renders as a plausible mark
+in the wrong shape. A client that drew a long stroke decimates it before
+recording.
+
+A `freehand` mark carries its own bounding box as well as its path. The box is
+derived from the path by whatever drew it, so the two cannot disagree, and it is
+what the annotation list reads to state the region the mark covers and what a
+renderer that cannot draw a stroke falls back to. Reading a hundred coordinates
+aloud is not a text alternative anybody can use (§19 of `docs/UX_FLOWS.md`).
 
 A value outside the range, or a member that does not belong to the type, MUST
 be **refused** at the API boundary and MUST NOT be clamped: an out-of-range
@@ -856,6 +902,54 @@ Optional semantic link to an element:
 ```
 
 Selectors are hints, not permanent identity. Reproduction must tolerate changed DOM.
+
+### Where it comes from
+
+Element context is resolved by **arithmetic over a snapshot captured with the
+screenshot**, never by asking the page at the moment a mark is drawn or read
+(ADR-0033).
+
+The frame that arithmetic runs in is the finding's own captured context. An
+element's `bounding_box_css_pixels` is in **document** coordinates and an
+annotation's geometry is normalised to the capture, so `scroll_position` is the
+only value relating the two. It MUST be measured at the moment of capture and
+MUST NOT be assumed: a capture of a page scrolled 800 pixels whose offset was
+recorded as the origin resolves every mark against whatever sits at the top of
+the document instead — a well-formed answer about the wrong element, which is
+the failure this whole section exists to prevent. The worker reports the offset
+on both `snapshot_result` and `screenshot_result` for exactly this reason. Two reasons, and the second is the stronger one: a page that has
+repainted since the capture would answer about a layout the human never saw,
+and asking untrusted content to identify itself while it is being reported
+gives it the last word on what the report says (ADR-0010).
+
+The rule is the **smallest** element whose box contains the centre of the mark,
+with ties broken by snapshot order. A page is a stack of nested boxes, so the
+largest containing element is nearly always `main` — true, useless, and
+confidently wrong as a description of what the human circled. An arrow resolves
+to what its head points at, never its tail.
+
+Resolving nothing is a normal outcome and MUST NOT be filled in with a guess: a
+mark over whitespace has no element under it, and the finding stays reproducible
+from its geometry, URL, viewport, scroll position and screenshot.
+
+`dom_fingerprint` digests the element's structural position — its tag, its
+identifier, its ancestry and its ordinal — and deliberately **excludes its
+text**. A fingerprint that moved when a heading was reworded would report a
+changed DOM on every copy edit, which is the fastest way to make the signal
+ignored.
+
+### Trust
+
+Every member but `selector_strategy` is page-derived: a selector, a role, an
+accessible name, a text excerpt and a box are all things a page said about
+itself. `selector_strategy` is the control plane's own classification of how the
+selector was picked.
+
+Page-derived members MUST be labelled wherever they reach an agent: a finding
+that carries element context names `element_context` in `untrusted_fields`
+beside `url` (`docs/MCP_SPEC.md`). They are displayed as text and never followed
+as instructions, and a surface presenting them states that they came from the
+page.
 
 ## 18. Comment
 

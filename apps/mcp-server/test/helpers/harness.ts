@@ -179,6 +179,7 @@ export async function startMcpHarness(pool: Pool): Promise<McpHarness> {
     return {
       snapshot_id: `snp_stub${String(state.snapshots).padStart(4, "0")}`,
       viewport: { ...state.viewport },
+      scroll_position: { x: 0, y: 0 },
       node_count: 6,
       truncated: false,
       text: state.snapshotText,
@@ -430,6 +431,7 @@ export async function startMcpHarness(pool: Pool): Promise<McpHarness> {
       size_bytes: bytes.byteLength,
       content_type: "image/png" as const,
       viewport: session.viewport,
+      scroll_position: { x: 0, y: 0 },
       full_page: false,
       captured_at: new Date().toISOString(),
     };

@@ -309,6 +309,151 @@ test("a snapshot of the fixture home page has the docs/MCP_SPEC.md section 7.4 s
   assert.match(text, /- heading "Give technology another life" \[ref=e[0-9]+\]/u);
 });
 
+test("a capture of a scrolled page reports the offset it was taken at", async () => {
+  const id = newId("brs_");
+  await manager.allocate(id, allocationFor());
+  // `/form` is four thousand pixels tall, which is the fixture that can
+  // actually be scrolled; the home page fits on one screen and would make this
+  // case pass for the wrong reason.
+  await run(id, navigate("/form"));
+
+  // Unscrolled, the offset is the origin — and it is the origin because it was
+  // read, not because nothing was known.
+  const atTop = await run(id, snapshot());
+  assert.deepEqual(atTop.snapshot?.scroll_position, { x: 0, y: 0 });
+
+  const scrolled = await run(id, {
+    command: "scroll",
+    timeout_ms: 10000,
+    scroll: { direction: "down", amount_px: 400 },
+  });
+  assert.equal(scrolled.ok, true, JSON.stringify(scrolled.error));
+  // A wheel event is delivered asynchronously and the compositor applies it on
+  // its own schedule, so this waits for the scroll rather than for a delay.
+  const session = manager.get(id);
+  assert.ok(session !== undefined);
+  await session.requirePage().waitForFunction(() => window.scrollY > 0, undefined, {
+    timeout: 5000,
+  });
+
+  // Both captures report the page's real offset. A hard-coded origin here is
+  // what makes an annotation resolve against the top of the document instead
+  // of against what the human was looking at (ADR-0033).
+  const moved = await run(id, snapshot());
+  assert.ok(
+    (moved.snapshot?.scroll_position.y ?? 0) > 0,
+    `the snapshot reported ${JSON.stringify(moved.snapshot?.scroll_position)} on a scrolled page`,
+  );
+  const shot = await run(id, {
+    command: "take_screenshot",
+    timeout_ms: 15000,
+    take_screenshot: { full_page: false, persist: true, purpose: "annotation" },
+  });
+  assert.equal(shot.ok, true, JSON.stringify(shot.error));
+  assert.deepEqual(
+    shot.screenshot?.scroll_position,
+    moved.snapshot?.scroll_position,
+    "the screenshot and the snapshot must agree about where the page was",
+  );
+
+  // And the element boxes are in document coordinates, so they moved with the
+  // document rather than with the viewport: the offset is the thing that
+  // relates them to a mark drawn on the picture.
+  const before = atTop.snapshot?.elements.find((element) => element.box !== undefined);
+  const after = moved.snapshot?.elements.find((element) => element.ref === before?.ref);
+  if (before?.box !== undefined && after?.box !== undefined) {
+    assert.equal(
+      before.box.y,
+      after.box.y,
+      "an element box moved when the page scrolled, so it is not in document coordinates",
+    );
+  }
+
+  process.stdout.write(
+    `EVIDENCE scroll offsets ${JSON.stringify({
+      at_top: atTop.snapshot?.scroll_position,
+      scrolled: moved.snapshot?.scroll_position,
+      screenshot: shot.screenshot?.scroll_position,
+    })}\n`,
+  );
+});
+
+test("a snapshot carries the geometry and selectors element context resolves against", async () => {
+  const id = newId("brs_");
+  await manager.allocate(id, allocationFor());
+  await run(id, navigate("/"));
+  const result = await run(id, snapshot());
+  const elements = result.snapshot?.elements ?? [];
+  assert.ok(elements.length > 0, "the snapshot described no elements");
+
+  // Every element the resolver may pick has to be placeable, or the resolver
+  // silently never picks it (ADR-0033).
+  const measured = elements.filter((element) => element.box !== undefined);
+  assert.ok(
+    measured.length > 0,
+    "no element carried a box, so element context could never be resolved",
+  );
+  for (const element of measured) {
+    const box = element.box as { x: number; y: number; width: number; height: number };
+    for (const [member, value] of Object.entries(box)) {
+      assert.ok(Number.isFinite(value), `${element.ref}.box.${member} is not finite`);
+      assert.ok(Math.abs(value) <= 100_000, `${element.ref}.box.${member} is out of range`);
+    }
+    assert.ok(box.width >= 0 && box.height >= 0, `${element.ref} has a negative extent`);
+  }
+
+  // The navigation is inside the banner, and both are inside the document, so
+  // the smallest containing element is a real distinction on this page rather
+  // than a tautology.
+  const navigation = elements.find((element) => element.name === "Main");
+  assert.ok(navigation !== undefined, "the fixture must expose the main navigation");
+  assert.ok(navigation.box !== undefined, "the navigation carries no box");
+
+  // A selector, its strategy, and a structural digest that is not of the text.
+  const withSelector = elements.filter((element) => element.selector !== undefined);
+  assert.ok(withSelector.length > 0, "no element offered a selector");
+  for (const element of withSelector) {
+    assert.ok(
+      ["testid", "role", "text", "css", "xpath"].includes(element.selector_strategy ?? ""),
+      `${element.ref} has a selector with no strategy`,
+    );
+    assert.doesNotMatch(
+      element.selector ?? "",
+      /[<>"]/u,
+      `${element.ref} has a selector carrying markup characters`,
+    );
+  }
+  const fingerprinted = elements.filter((element) => element.dom_fingerprint !== undefined);
+  assert.ok(fingerprinted.length > 0, "no element carried a structural fingerprint");
+  for (const element of fingerprinted) {
+    assert.match(element.dom_fingerprint ?? "", /^[0-9a-f]{64}$/u, `${element.ref} fingerprint`);
+  }
+
+  // Two elements at different structural positions must not share a
+  // fingerprint, or the digest answers nothing.
+  const digests = new Set(fingerprinted.map((element) => element.dom_fingerprint));
+  assert.equal(
+    digests.size,
+    fingerprinted.length,
+    "two elements at different positions share a structural fingerprint",
+  );
+
+  process.stdout.write(
+    `EVIDENCE element context ${JSON.stringify(
+      elements
+        .filter((element) => element.selector !== undefined)
+        .slice(0, 4)
+        .map((element) => ({
+          ref: element.ref,
+          role: element.role,
+          selector: element.selector,
+          strategy: element.selector_strategy,
+          box: element.box,
+        })),
+    )}\n`,
+  );
+});
+
 test("a reference works within its snapshot and fails once superseded", async () => {
   const id = newId("brs_");
   await manager.allocate(id, allocationFor());

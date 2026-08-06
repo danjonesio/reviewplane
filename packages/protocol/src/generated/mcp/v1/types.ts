@@ -526,7 +526,9 @@ export type FindingSource =
   | "agent";
 
 /**
- * Annotation shape (docs/DOMAIN_MODEL.md section 16).
+ * Annotation shape (docs/DOMAIN_MODEL.md section 16). It carries the same six values the
+ * review protocol does: an agent that could not name the shape a human drew would be
+ * reading a censored version of the review it was assigned.
  */
 export const ANNOTATION_TYPE_VALUES = [
   "rectangle",
@@ -534,6 +536,7 @@ export const ANNOTATION_TYPE_VALUES = [
   "arrow",
   "point",
   "numbered_marker",
+  "freehand",
 ] as const;
 
 export type AnnotationType =
@@ -541,7 +544,8 @@ export type AnnotationType =
   | "ellipse"
   | "arrow"
   | "point"
-  | "numbered_marker";
+  | "numbered_marker"
+  | "freehand";
 
 /**
  * Artefact kind (docs/DOMAIN_MODEL.md section 20). Stage 0 evidence is a screenshot.
@@ -797,6 +801,26 @@ export const SESSION_INCLUDE_VALUES = [
 export type SessionInclude =
   | "browser_sessions"
   | "capabilities";
+
+/**
+ * How the selector was chosen, strongest first. It is the control plane's own
+ * classification rather than something the page said, which is why it is the one member
+ * here that is not page-derived.
+ */
+export const ELEMENT_CONTEXT_VIEW_SELECTOR_STRATEGY_VALUES = [
+  "testid",
+  "role",
+  "text",
+  "css",
+  "xpath",
+] as const;
+
+export type ElementContextViewSelectorStrategy =
+  | "testid"
+  | "role"
+  | "text"
+  | "css"
+  | "xpath";
 
 /**
  * Controller kind. Stage 1 issues interactive leases to agent and system controllers;
@@ -1594,6 +1618,74 @@ export interface AnnotationGeometry {
    * Arrow head, vertical.
    */
   readonly y2?: NormalisedCoordinate;
+  /**
+   * Clockwise rotation of a box about its own centre, in turns rather than degrees, so
+   * that it obeys the same 0 to 1 bound as every other member.
+   */
+  readonly rotation?: NormalisedCoordinate;
+  /**
+   * Sampled points of a freehand stroke, in drawing order. An agent that never renders the
+   * image still reads the label and the bounding box; the path is here so that one which
+   * does render can draw the mark the human actually made rather than the box around it.
+   */
+  readonly path?: readonly AnnotationPathPoint[];
+}
+
+/**
+ * The element under a human's annotation, as an agent sees it (docs/DOMAIN_MODEL.md
+ * section 17). Every member but selector_strategy is page-derived, and the enclosing
+ * finding names element_context in untrusted_fields so an agent reading a selector or an
+ * excerpt knows it is reading what a page said about itself rather than an instruction
+ * (ADR-0010). Selectors are hints, not identity: reproduction must tolerate a DOM in which
+ * one no longer resolves. The stored bounding_box_css_pixels is deliberately not carried
+ * here: it describes a layout that has since changed, and an agent reproducing the finding
+ * has the URL, the viewport, the scroll position and the annotation's own normalised
+ * geometry, all of which survive a relayout that the box does not.
+ */
+export interface ElementContextView {
+  /**
+   * Selector that located the element when the finding was captured.
+   */
+  readonly selector?: ReasonText;
+  /**
+   * How the selector was chosen, strongest first. It is the control plane's own
+   * classification rather than something the page said, which is why it is the one member
+   * here that is not page-derived.
+   */
+  readonly selector_strategy?: ElementContextViewSelectorStrategy;
+  /**
+   * Accessibility role the page reported.
+   */
+  readonly role?: ReasonText;
+  /**
+   * Accessible name the page reported.
+   */
+  readonly accessible_name?: ReasonText;
+  /**
+   * Bounded excerpt of the element's own text.
+   */
+  readonly text_excerpt?: ReasonText;
+  /**
+   * Digest of the element's structural position when the finding was captured, so a
+   * reproduction can tell that the DOM changed rather than assuming a selector that still
+   * resolves found the same element.
+   */
+  readonly dom_fingerprint?: Sha256Hex;
+}
+
+/**
+ * One sampled point of a freehand path, normalised to the artefact content rectangle like
+ * every other geometry member.
+ */
+export interface AnnotationPathPoint {
+  /**
+   * Horizontal position of this sample.
+   */
+  readonly x: NormalisedCoordinate;
+  /**
+   * Vertical position of this sample.
+   */
+  readonly y: NormalisedCoordinate;
 }
 
 /**
@@ -2315,6 +2407,15 @@ export interface FindingView {
    * Live annotations on the finding.
    */
   readonly annotation_count?: RecordCount;
+  /**
+   * The element under the human's mark, where one was resolved (docs/DOMAIN_MODEL.md
+   * section 17). It is what turns a rectangle into a place in the code, and it is a hint
+   * rather than an identity: the finding stays reproducible from its geometry, URL,
+   * viewport and screenshot when the selector no longer resolves. Present only when a
+   * snapshot named an element; absent means none was resolved, never that the mark was
+   * nowhere.
+   */
+  readonly element_context?: ElementContextView;
   /**
    * Resource URI for the finding.
    */

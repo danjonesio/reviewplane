@@ -1179,8 +1179,8 @@
     },
     "annotation_type": {
       "type": "string",
-      "description": "Annotation shape (docs/DOMAIN_MODEL.md section 16).",
-      "enum": ["rectangle", "ellipse", "arrow", "point", "numbered_marker"]
+      "description": "Annotation shape (docs/DOMAIN_MODEL.md section 16). It carries the same six values the review protocol does: an agent that could not name the shape a human drew would be reading a censored version of the review it was assigned.",
+      "enum": ["rectangle", "ellipse", "arrow", "point", "numbered_marker", "freehand"]
     },
     "artefact_kind": {
       "type": "string",
@@ -1392,6 +1392,68 @@
         "y2": {
           "$ref": "#/$defs/normalised_coordinate",
           "description": "Arrow head, vertical."
+        },
+        "rotation": {
+          "$ref": "#/$defs/normalised_coordinate",
+          "description": "Clockwise rotation of a box about its own centre, in turns rather than degrees, so that it obeys the same 0 to 1 bound as every other member."
+        },
+        "path": {
+          "type": "array",
+          "description": "Sampled points of a freehand stroke, in drawing order. An agent that never renders the image still reads the label and the bounding box; the path is here so that one which does render can draw the mark the human actually made rather than the box around it.",
+          "minItems": 2,
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/$defs/annotation_path_point"
+          }
+        }
+      }
+    },
+    "element_context_view": {
+      "type": "object",
+      "description": "The element under a human's annotation, as an agent sees it (docs/DOMAIN_MODEL.md section 17). Every member but selector_strategy is page-derived, and the enclosing finding names element_context in untrusted_fields so an agent reading a selector or an excerpt knows it is reading what a page said about itself rather than an instruction (ADR-0010). Selectors are hints, not identity: reproduction must tolerate a DOM in which one no longer resolves. The stored bounding_box_css_pixels is deliberately not carried here: it describes a layout that has since changed, and an agent reproducing the finding has the URL, the viewport, the scroll position and the annotation's own normalised geometry, all of which survive a relayout that the box does not.",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "selector": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Selector that located the element when the finding was captured."
+        },
+        "selector_strategy": {
+          "type": "string",
+          "description": "How the selector was chosen, strongest first. It is the control plane's own classification rather than something the page said, which is why it is the one member here that is not page-derived.",
+          "enum": ["testid", "role", "text", "css", "xpath"]
+        },
+        "role": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Accessibility role the page reported."
+        },
+        "accessible_name": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Accessible name the page reported."
+        },
+        "text_excerpt": {
+          "$ref": "#/$defs/reason_text",
+          "description": "Bounded excerpt of the element's own text."
+        },
+        "dom_fingerprint": {
+          "$ref": "#/$defs/sha256_hex",
+          "description": "Digest of the element's structural position when the finding was captured, so a reproduction can tell that the DOM changed rather than assuming a selector that still resolves found the same element."
+        }
+      }
+    },
+    "annotation_path_point": {
+      "type": "object",
+      "description": "One sampled point of a freehand path, normalised to the artefact content rectangle like every other geometry member.",
+      "additionalProperties": false,
+      "required": ["x", "y"],
+      "properties": {
+        "x": {
+          "$ref": "#/$defs/normalised_coordinate",
+          "description": "Horizontal position of this sample."
+        },
+        "y": {
+          "$ref": "#/$defs/normalised_coordinate",
+          "description": "Vertical position of this sample."
         }
       }
     },
@@ -2188,6 +2250,10 @@
         "annotation_count": {
           "$ref": "#/$defs/record_count",
           "description": "Live annotations on the finding."
+        },
+        "element_context": {
+          "$ref": "#/$defs/element_context_view",
+          "description": "The element under the human's mark, where one was resolved (docs/DOMAIN_MODEL.md section 17). It is what turns a rectangle into a place in the code, and it is a hint rather than an identity: the finding stays reproducible from its geometry, URL, viewport and screenshot when the selector no longer resolves. Present only when a snapshot named an element; absent means none was resolved, never that the mark was nowhere."
         },
         "resource_uri": {
           "$ref": "#/$defs/resource_uri",

@@ -13,17 +13,28 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  FREEHAND_PATH_POINT_BOUNDS,
+  GEOMETRY_VERSION_BY_ANNOTATION_TYPE,
   REQUIRED_GEOMETRY_MEMBERS,
   checkGeometryForType,
   containedContentRectangle,
+  decimateStroke,
   describeGeometry,
+  geometryForDrag,
+  geometryVersionForType,
   isNormalisedCoordinate,
+  pathBounds,
   toNormalisedPoint,
   toRenderedArrow,
   toRenderedBox,
+  toRenderedPath,
   toRenderedPoint,
 } from "../src/annotation-geometry.ts";
-import { ANNOTATION_TYPE_VALUES } from "../src/generated/review/v1/types.ts";
+import {
+  ANNOTATION_TYPE_VALUES,
+  type SchemaViolation,
+} from "../src/generated/review/v1/types.ts";
+import { validateAnnotationGeometry } from "../src/generated/review/v1/validate.ts";
 
 /** The 390x844 preset at a device pixel ratio of 2 (`AGENTS.md`). */
 const MOBILE_CONTENT = { width_px: 780, height_px: 1688 };
@@ -195,4 +206,318 @@ test("every annotation type has a text alternative naming where it is", () => {
     assert.ok(description.length > 0);
     assert.match(description, /%/u, `${type} description states no position`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Freehand paths, rotation and per-type geometry versions (ADR-0032)
+// ---------------------------------------------------------------------------
+
+test("a freehand annotation carries its path and the box that path covers", () => {
+  const path = [
+    { x: 0.2, y: 0.44 },
+    { x: 0.28, y: 0.4 },
+    { x: 0.45, y: 0.5 },
+  ];
+  const bounds = pathBounds(path);
+  assert.deepEqual(checkGeometryForType("freehand", { ...bounds, path }), []);
+
+  // The box is derived from the path rather than declared beside it, so the
+  // two cannot disagree.
+  assert.equal(bounds.x, 0.2);
+  assert.equal(bounds.y, 0.4);
+  assert.ok(Math.abs(bounds.width - 0.25) < 1e-12);
+  assert.ok(Math.abs(bounds.height - 0.1) < 1e-12);
+});
+
+test("a freehand path outside 0 to 1 is refused rather than clamped", () => {
+  const violations = checkGeometryForType("freehand", {
+    x: 0.2,
+    y: 0.4,
+    width: 0.3,
+    height: 0.3,
+    path: [
+      { x: 0.2, y: 0.44 },
+      // The rendered frame rather than the artefact content rectangle.
+      { x: 296, y: 93 },
+    ],
+  });
+  assert.ok(violations.length > 0, "a path point in CSS pixels was accepted");
+  assert.equal(violations[0]?.member, "path");
+  assert.equal(violations[0]?.code, "out_of_range");
+});
+
+test("a freehand path is bounded at both ends", () => {
+  const box = { x: 0, y: 0, width: 1, height: 1 };
+  const point = { x: 0.5, y: 0.5 };
+
+  const single = checkGeometryForType("freehand", { ...box, path: [point] });
+  assert.equal(single[0]?.code, "required", "a one-point stroke is a point annotation");
+
+  const overlong = checkGeometryForType("freehand", {
+    ...box,
+    path: Array.from({ length: FREEHAND_PATH_POINT_BOUNDS.maximum + 1 }, () => point),
+  });
+  assert.equal(overlong.length, 1);
+  assert.equal(overlong[0]?.code, "out_of_range");
+  assert.match(
+    overlong[0]?.message ?? "",
+    new RegExp(String(FREEHAND_PATH_POINT_BOUNDS.maximum), "u"),
+    "the refusal does not name the bound the caller exceeded",
+  );
+
+  // Exactly the bound is accepted: the limit is inclusive, like the coordinate
+  // range it sits beside.
+  assert.deepEqual(
+    checkGeometryForType("freehand", {
+      ...box,
+      path: Array.from({ length: FREEHAND_PATH_POINT_BOUNDS.maximum }, () => point),
+    }),
+    [],
+  );
+});
+
+test("a path point may not smuggle a third member past the bound check", () => {
+  const violations = checkGeometryForType("freehand", {
+    x: 0,
+    y: 0,
+    width: 1,
+    height: 1,
+    path: [
+      { x: 0.1, y: 0.1 },
+      { x: 0.2, y: 0.2, radius: 0.4 },
+    ],
+  });
+  assert.equal(violations[0]?.code, "forbidden");
+});
+
+test("only a box may be rotated, and rotation obeys the same 0 to 1 bound", () => {
+  const box = { x: 0.1, y: 0.2, width: 0.3, height: 0.4 };
+  for (const type of ["rectangle", "ellipse"] as const) {
+    assert.deepEqual(checkGeometryForType(type, box), [], `${type} without rotation`);
+    assert.deepEqual(checkGeometryForType(type, { ...box, rotation: 0.125 }), []);
+    // A caller that sent degrees rather than turns is refused, which is the
+    // point of keeping every member in one range.
+    const degrees = checkGeometryForType(type, { ...box, rotation: 45 });
+    assert.equal(degrees[0]?.member, "rotation");
+    assert.equal(degrees[0]?.code, "out_of_range");
+  }
+  assert.equal(
+    checkGeometryForType("point", { x: 0.1, y: 0.2, rotation: 0.5 })[0]?.code,
+    "forbidden",
+    "a point has no orientation to rotate",
+  );
+  assert.equal(
+    checkGeometryForType("arrow", { x: 0.1, y: 0.2, x2: 0.3, y2: 0.4, rotation: 0.5 })[0]?.code,
+    "forbidden",
+    "an arrow's direction is its two points, not a rotation",
+  );
+});
+
+test("a rotated box states its rotation in the text alternative, in degrees", () => {
+  const description = describeGeometry("ellipse", {
+    x: 0.1,
+    y: 0.2,
+    width: 0.3,
+    height: 0.4,
+    rotation: 0.125,
+  });
+  assert.match(description, /45 degrees clockwise/u);
+  // An unrotated box says nothing about rotation rather than saying "0
+  // degrees", which would read as a fact the annotator chose.
+  assert.doesNotMatch(
+    describeGeometry("ellipse", { x: 0.1, y: 0.2, width: 0.3, height: 0.4 }),
+    /degrees/u,
+  );
+});
+
+test("a freehand text alternative names the region rather than reading out the path", () => {
+  const description = describeGeometry("freehand", {
+    x: 0.2,
+    y: 0.4,
+    width: 0.25,
+    height: 0.1,
+    path: [
+      { x: 0.2, y: 0.44 },
+      { x: 0.28, y: 0.4 },
+      { x: 0.45, y: 0.5 },
+    ],
+  });
+  assert.match(description, /3 points/u);
+  assert.match(description, /20% across, 40% down/u);
+  // Reading a hundred coordinates aloud is not an alternative anybody can use.
+  assert.doesNotMatch(description, /0\.28/u);
+});
+
+test("a freehand path renders through the same conversion every other mark uses", () => {
+  const geometry = {
+    x: 0,
+    y: 0,
+    width: 1,
+    height: 1,
+    path: [
+      { x: 0, y: 0 },
+      { x: 0.5, y: 0.5 },
+      { x: 1, y: 1 },
+    ],
+  };
+  const rectangle = containedContentRectangle({ width: 720, height: 1600 }, MOBILE_CONTENT);
+  const rendered = toRenderedPath(geometry, rectangle);
+  assert.equal(rendered.length, 3);
+  assert.deepEqual(rendered[0], { x: rectangle.x, y: rectangle.y });
+  assert.deepEqual(rendered[2], {
+    x: rectangle.x + rectangle.width,
+    y: rectangle.y + rectangle.height,
+  });
+  // The stroke scales with the rectangle and with nothing else, which is the
+  // property the normalised frame exists to give.
+  const half = toRenderedPath(
+    geometry,
+    containedContentRectangle({ width: 360, height: 800 }, MOBILE_CONTENT),
+  );
+  assert.ok(Math.abs((rendered[1]?.x ?? 0) / (half[1]?.x ?? 1) - 2) < 1e-9);
+});
+
+test("every annotation type declares a geometry version, held per type", () => {
+  for (const type of ANNOTATION_TYPE_VALUES) {
+    const version = geometryVersionForType(type);
+    assert.ok(Number.isInteger(version) && version >= 1, `${type} has no geometry version`);
+    assert.equal(version, GEOMETRY_VERSION_BY_ANNOTATION_TYPE[type]);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The producers, which must not be able to build a geometry the validator
+// beside them refuses
+// ---------------------------------------------------------------------------
+
+test("a drag produces the geometry its shape requires, in either direction", () => {
+  const from = { x: 0.6, y: 0.7 };
+  const to = { x: 0.2, y: 0.3 };
+  for (const type of ANNOTATION_TYPE_VALUES) {
+    if (type === "freehand") continue;
+    const geometry = geometryForDrag(type, from, to);
+    assert.deepEqual(
+      checkGeometryForType(type, geometry as unknown as Record<string, unknown>),
+      [],
+      `${type} produced geometry its own validator refuses: ${JSON.stringify(geometry)}`,
+    );
+  }
+  // A box normalises the corners, so dragging up and left is the same box as
+  // dragging down and right.
+  assert.deepEqual(geometryForDrag("rectangle", from, to), geometryForDrag("rectangle", to, from));
+  // An arrow does not: its two points are a direction.
+  assert.notDeepEqual(geometryForDrag("arrow", from, to), geometryForDrag("arrow", to, from));
+  assert.deepEqual(geometryForDrag("arrow", from, to), { x: 0.6, y: 0.7, x2: 0.2, y2: 0.3 });
+  // A point takes where the pointer ended, which is where the reader let go.
+  assert.deepEqual(geometryForDrag("point", from, to), { x: 0.2, y: 0.3 });
+});
+
+test("a box drawn to the far edge does not leave the content rectangle", () => {
+  // Rounding at the fourth decimal could otherwise push `x + width` past 1 and
+  // earn a refusal the person drawing could do nothing about.
+  for (const start of [0.00005, 0.12345678, 0.9999, 0]) {
+    const geometry = geometryForDrag("rectangle", { x: start, y: start }, { x: 1, y: 1 });
+    assert.deepEqual(
+      checkGeometryForType("rectangle", geometry as unknown as Record<string, unknown>),
+      [],
+      `a box from ${String(start)} to the edge was refused: ${JSON.stringify(geometry)}`,
+    );
+  }
+});
+
+test("a stroke is thinned to within the bound, whatever was drawn", () => {
+  const bound = FREEHAND_PATH_POINT_BOUNDS.maximum;
+
+  // A long, ordinary stroke: many samples spread across the picture.
+  const long = Array.from({ length: 4000 }, (_unused, index) => ({
+    x: index / 4000,
+    y: 0.5 + Math.sin(index / 40) / 8,
+  }));
+  const thinned = decimateStroke(long);
+  assert.ok(thinned.length <= bound, `${String(thinned.length)} points, over the bound`);
+  assert.ok(thinned.length >= 2, "the stroke was thinned away entirely");
+
+  // A dense scribble in a tiny area: five thousand samples inside a
+  // hundred-thousandth of the picture. It collapses to its two ends, which is
+  // the honest reduction — there is no shape in it to keep.
+  const scribble = Array.from({ length: 5000 }, (_unused, index) => ({
+    x: 0.5 + (index % 3) * 0.00001,
+    y: 0.5 + (index % 2) * 0.00001,
+  }));
+  const reduced = decimateStroke(scribble);
+  assert.ok(reduced.length <= bound, `${String(reduced.length)} points, over the bound`);
+  assert.ok(reduced.length >= 2, "the scribble was thinned below a path's minimum");
+
+  // A stroke that zigzags the full diagonal on every sample is the worst case
+  // for distance thinning, because no threshold below the diagonal drops
+  // anything. It must still come out within the bound.
+  const zigzag = Array.from({ length: 5000 }, (_unused, index) => ({
+    x: index % 2,
+    y: index % 2,
+  }));
+  const flattened = decimateStroke(zigzag);
+  assert.ok(
+    flattened.length <= bound,
+    `the worst case for thinning produced ${String(flattened.length)} points`,
+  );
+
+  // Both ends survive, because a stroke is recognised by where it started and
+  // where it finished.
+  assert.deepEqual(thinned[0], { x: 0, y: 0.5 });
+  const finalPoint = long[long.length - 1];
+  assert.equal(thinned[thinned.length - 1]?.x, Number(finalPoint?.x.toFixed(4)));
+
+  // And whatever comes out is geometry the validator accepts.
+  for (const path of [thinned, reduced]) {
+    assert.deepEqual(
+      checkGeometryForType("freehand", { ...pathBounds(path), path }),
+      [],
+      "a thinned stroke produced geometry the validator refuses",
+    );
+  }
+});
+
+test("a stroke already within the bound is left alone but for rounding", () => {
+  const short = [
+    { x: 0.2, y: 0.44 },
+    { x: 0.28, y: 0.4 },
+    { x: 0.45, y: 0.5 },
+  ];
+  assert.deepEqual(decimateStroke(short), short);
+  // Two points are the minimum a path may hold, and are returned unchanged.
+  assert.deepEqual(decimateStroke(short.slice(0, 2)), short.slice(0, 2));
+});
+
+test("the freehand path bound in code equals the one the generated validator enforces", () => {
+  // The bound is stated twice — once in the schema, once in this module,
+  // because `checkGeometryForType` also runs against rows already stored,
+  // which never passed through the validator. The two must not drift.
+  const point = { x: 0.5, y: 0.5 };
+  const overlong: SchemaViolation[] = [];
+  validateAnnotationGeometry(
+    {
+      x: 0,
+      y: 0,
+      width: 1,
+      height: 1,
+      path: Array.from({ length: FREEHAND_PATH_POINT_BOUNDS.maximum + 1 }, () => point),
+    },
+    "geometry",
+    overlong,
+  );
+  assert.equal(overlong.length, 1, "the schema accepted a path this module refuses");
+
+  const atBound: SchemaViolation[] = [];
+  validateAnnotationGeometry(
+    {
+      x: 0,
+      y: 0,
+      width: 1,
+      height: 1,
+      path: Array.from({ length: FREEHAND_PATH_POINT_BOUNDS.maximum }, () => point),
+    },
+    "geometry",
+    atBound,
+  );
+  assert.deepEqual(atBound, [], "the schema refuses a path this module accepts");
 });

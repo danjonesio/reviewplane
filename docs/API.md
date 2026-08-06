@@ -1286,6 +1286,48 @@ Annotation changes preserve revision history even if the current projection hide
 each annotation, with withdrawn ones hidden. `?revisions=all` returns every
 revision, because the history is retained rather than overwritten.
 
+`PATCH` appends a revision and retains the one it supersedes; nothing is updated
+in place. It carries `expected_revision`, and an edit against a revision another
+writer has already superseded is refused with `VERSION_CONFLICT` rather than
+applied over it, so two simultaneous edits produce one new revision and one
+refusal instead of a forked history. The body has **no `type` and no
+`artefact_id`**: changing either would make the retained revisions a history of
+two different marks, and the honest way to move a mark to another shape or
+another screenshot is to withdraw it and record a new one. Geometry is validated
+against the annotation's own stored type rather than against one the request
+named.
+
+`DELETE` withdraws an annotation by recording a revision carrying `deleted_at`.
+It is not a deletion: the current projection hides the mark and `?revisions=all`
+still returns every revision it had, because a reader asking why a finding was
+raised has to be able to see the mark that was on the screen when somebody
+raised it — including one its author later thought better of. The expected
+revision travels in the query string (`?expected_revision=`) rather than in a
+body, because a `DELETE` with a body is not reliably carried by intermediaries.
+Withdrawing an already-withdrawn annotation answers with the withdrawal rather
+than refusing, and a withdrawn annotation cannot be edited back into existence.
+
+Both routes emit `finding.annotated` with the new revision, so an edit and a
+withdrawal leave the same kind of trail a creation does.
+
+An annotation reached by its own identifier resolves through the same
+three-term predicate every other record here does — the identifier, the
+session's project scope and the session's organisation in one query — extended
+with a join to the finding that owns it, because an annotation carries no review
+column of its own. A foreign identifier and an unknown one produce the same
+refusal byte for byte.
+
+Neither `POST /api/v1/projects/:projectId/reviews` nor
+`POST /api/v1/reviews/:reviewId/findings` requires an `Idempotency-Key`, and both
+honour one. The capture flow of `docs/UX_FLOWS.md` §9 is why: a human presses
+Save once, and a flaky connection or a double tap can make the control plane see
+that press twice. There is no natural key to deduplicate a finding on — two
+people may legitimately report the same problem — so the client names the
+attempt. A replay answers `200` with the first response rather than `201`, so the
+caller can tell it created nothing this time; the same key with a different body
+is refused with `IDEMPOTENCY_CONFLICT`; and a refused attempt releases the key,
+so a caller that fixed a slug collision may retry with it.
+
 Geometry is normalised to the artefact content rectangle
 (`docs/DOMAIN_MODEL.md` section 16). Every member must lie between 0 and 1
 inclusive, and which members a type carries is fixed by that section. A value

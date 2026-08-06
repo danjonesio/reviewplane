@@ -99,6 +99,10 @@ test("a payload larger than its declared bound is refused", () => {
       snapshot: {
         snapshot_id: "bsn_a",
         viewport: { width: 1440, height: 900, device_scale_factor: 1 },
+        // Present because the payload bound is what this case must trip: a
+        // frame missing a required member is refused as a schema violation
+        // first, and the byte bound would then never be reached.
+        scroll_position: { x: 0, y: 0 },
         node_count: 500,
         truncated: true,
         text: "x".repeat(65536),

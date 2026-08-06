@@ -275,12 +275,13 @@ export function validateFindingSource(value: unknown, path: string, out: SchemaV
 }
 
 /**
- * Annotation shape (docs/DOMAIN_MODEL.md section 16). freehand is listed in the domain
- * model and is deliberately not implemented in Stage 0; its path versioning is a separate
- * decision.
+ * Annotation shape (docs/DOMAIN_MODEL.md section 16). All six types of that section are
+ * carried. freehand carries a sampled path beside the bounding box every other box type
+ * carries, so a reader that cannot draw the path still knows the region the mark covers
+ * (ADR-0032).
  */
 export function validateAnnotationType(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["rectangle","ellipse","arrow","point","numbered_marker"] });
+  checkString(value, path, out, { values: ["rectangle","ellipse","arrow","point","numbered_marker","freehand"] });
 }
 
 /**
@@ -509,15 +510,46 @@ export function validateCssPixelBox(value: unknown, path: string, out: SchemaVio
 }
 
 /**
+ * One sampled point of a freehand path, normalised to the artefact content rectangle
+ * exactly as every other geometry member is. A path is a list of these rather than a
+ * string of drawing commands, because a command string is a second grammar to validate and
+ * an SVG path is a place to hide markup (ADR-0032).
+ */
+export function validateAnnotationPathPoint(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["x", "y"], ["x", "y"]);
+  if (source === null) return;
+  if (source["x"] !== undefined) {
+    validateNormalisedCoordinate(source["x"], `${path}.x`, out);
+  }
+  if (source["y"] !== undefined) {
+    validateNormalisedCoordinate(source["y"], `${path}.y`, out);
+  }
+}
+
+/**
+ * Sampled points of a freehand stroke, in drawing order, each normalised to the artefact
+ * content rectangle. Required for freehand, forbidden for the other types. The bound is
+ * 128 points: a stroke is decimated by the client that drew it, and an unbounded path
+ * would be a way to make one annotation cost more than the finding it belongs to.
+ */
+export function validateAnnotationGeometryPath(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 2, maxItems: 128, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateAnnotationPathPoint(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
  * Normalised geometry in the exact shape of docs/DOMAIN_MODEL.md section 16, extended with
- * the head of an arrow. Every member lies between 0 and 1 inclusive against the artefact
- * content rectangle. Which members a type requires is fixed by
+ * the head of an arrow, an optional rotation and the sampled path of a freehand mark.
+ * Every member lies between 0 and 1 inclusive against the artefact content rectangle.
+ * Which members a type requires is fixed by
  * x-protocol.vocabularies.geometry_by_annotation_type and enforced by
- * requireGeometryForType, because JSON Schema cannot condition a nested object on the
+ * checkGeometryForType, because JSON Schema cannot condition a nested object on the
  * sibling type property.
  */
 export function validateAnnotationGeometry(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["x", "y", "width", "height", "x2", "y2"], ["x", "y"]);
+  const source = checkObject(value, path, out, ["x", "y", "width", "height", "x2", "y2", "rotation", "path"], ["x", "y"]);
   if (source === null) return;
   if (source["x"] !== undefined) {
     validateNormalisedCoordinate(source["x"], `${path}.x`, out);
@@ -536,6 +568,12 @@ export function validateAnnotationGeometry(value: unknown, path: string, out: Sc
   }
   if (source["y2"] !== undefined) {
     validateNormalisedCoordinate(source["y2"], `${path}.y2`, out);
+  }
+  if (source["rotation"] !== undefined) {
+    validateNormalisedCoordinate(source["rotation"], `${path}.rotation`, out);
+  }
+  if (source["path"] !== undefined) {
+    validateAnnotationGeometryPath(source["path"], `${path}.path`, out);
   }
 }
 
@@ -764,7 +802,7 @@ export function validateAnnotationStyleHint(value: unknown, path: string, out: S
  * editable, queryable and renderable at any size (ADR-0006).
  */
 export function validateAnnotation(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["id", "organisation_id", "project_id", "finding_id", "artefact_id", "type", "geometry", "label", "marker_number", "style_hint", "revision", "created_by", "created_at", "deleted_at"], ["id", "organisation_id", "project_id", "finding_id", "artefact_id", "type", "geometry", "revision", "created_by", "created_at"]);
+  const source = checkObject(value, path, out, ["id", "organisation_id", "project_id", "finding_id", "artefact_id", "type", "geometry", "geometry_version", "label", "marker_number", "style_hint", "revision", "created_by", "created_at", "deleted_at"], ["id", "organisation_id", "project_id", "finding_id", "artefact_id", "type", "geometry", "geometry_version", "revision", "created_by", "created_at"]);
   if (source === null) return;
   if (source["id"] !== undefined) {
     validateIdentifier(source["id"], `${path}.id`, out);
@@ -786,6 +824,9 @@ export function validateAnnotation(value: unknown, path: string, out: SchemaViol
   }
   if (source["geometry"] !== undefined) {
     validateAnnotationGeometry(source["geometry"], `${path}.geometry`, out);
+  }
+  if (source["geometry_version"] !== undefined) {
+    validateVersionNumber(source["geometry_version"], `${path}.geometry_version`, out);
   }
   if (source["label"] !== undefined) {
     validateTitleText(source["label"], `${path}.label`, out);
@@ -1724,6 +1765,41 @@ export function validateAnnotationCreateRequest(value: unknown, path: string, ou
 }
 
 /**
+ * Replacement advisory emphasis. Absent leaves it as it was.
+ */
+export function validateAnnotationUpdateRequestStyleHint(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["default","critical","informational"] });
+}
+
+/**
+ * Body of PATCH /api/v1/annotations/:annotationId (docs/API.md section 14). An edit
+ * records a new revision and retains the one it supersedes, so this request never
+ * overwrites anything. The annotation's type and artefact are not editable: changing
+ * either would make the retained revisions a history of two different marks, and the
+ * honest way to move a mark to another shape or another screenshot is to withdraw it and
+ * record a new one.
+ */
+export function validateAnnotationUpdateRequest(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["expected_revision", "geometry", "label", "marker_number", "style_hint"], ["expected_revision"]);
+  if (source === null) return;
+  if (source["expected_revision"] !== undefined) {
+    validateVersionNumber(source["expected_revision"], `${path}.expected_revision`, out);
+  }
+  if (source["geometry"] !== undefined) {
+    validateAnnotationGeometry(source["geometry"], `${path}.geometry`, out);
+  }
+  if (source["label"] !== undefined) {
+    validateTitleText(source["label"], `${path}.label`, out);
+  }
+  if (source["marker_number"] !== undefined) {
+    validateMarkerNumber(source["marker_number"], `${path}.marker_number`, out);
+  }
+  if (source["style_hint"] !== undefined) {
+    validateAnnotationUpdateRequestStyleHint(source["style_hint"], `${path}.style_hint`, out);
+  }
+}
+
+/**
  * Payload of review.created.
  */
 export function validateReviewCreated(value: unknown, path: string, out: SchemaViolation[]): void {
@@ -1789,7 +1865,10 @@ export function validateFindingCreated(value: unknown, path: string, out: Schema
 }
 
 /**
- * Payload of finding.annotated.
+ * Payload of finding.annotated. It is recorded for the first revision of an annotation and
+ * for every later one, so an edit and a withdrawal leave the same kind of trail a creation
+ * does; the revision on the annotation says which of the three it was, and a withdrawn
+ * revision carries deleted_at.
  */
 export function validateFindingAnnotated(value: unknown, path: string, out: SchemaViolation[]): void {
   const source = checkObject(value, path, out, ["annotation"], ["annotation"]);

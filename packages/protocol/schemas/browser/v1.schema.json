@@ -268,6 +268,13 @@
       "maxLength": 64,
       "pattern": "^[A-Za-z][A-Za-z0-9 _-]*$"
     },
+    "element_selector": {
+      "type": "string",
+      "description": "Selector a snapshot offers for an element. Page-derived, bounded, and free of control characters and of the angle brackets and quotation marks that would let a page smuggle markup through a value a reader displays. It is a hint about where an element was, not a promise that it is still there (docs/DOMAIN_MODEL.md section 17).",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[^\\u0000-\\u001f\\u007f<>\"]*$"
+    },
     "input_text": {
       "type": "string",
       "description": "Text typed into a page input. Secret values MUST NOT travel through this field; docs/MCP_SPEC.md section 7.9 secret injection is the supported path.",
@@ -1610,9 +1617,55 @@
         }
       }
     },
+    "element_css_pixel_offset": {
+      "type": "number",
+      "description": "A CSS-pixel measurement of an element box, relative to the top-left of the document. It is bounded because a page chooses its own layout and an unbounded number here would be a page-controlled value in a stored record.",
+      "minimum": -100000,
+      "maximum": 100000
+    },
+    "scroll_offset": {
+      "type": "object",
+      "description": "How far the page was scrolled, in CSS pixels, at the moment a capture was taken. It is what turns a viewport-sized picture back into a position on the page it came from: an annotation's geometry is normalised to the capture, element boxes are in document coordinates, and this is the only value that relates the two. It is measured rather than assumed — a capture of a scrolled page whose offset was recorded as the origin resolves marks against whatever sits at the top of the document instead, which is a well-formed and wrong answer (ADR-0033).",
+      "additionalProperties": false,
+      "required": ["x", "y"],
+      "properties": {
+        "x": {
+          "$ref": "#/$defs/element_css_pixel_offset",
+          "description": "Horizontal scroll offset."
+        },
+        "y": {
+          "$ref": "#/$defs/element_css_pixel_offset",
+          "description": "Vertical scroll offset."
+        }
+      }
+    },
+    "element_box": {
+      "type": "object",
+      "description": "Box of a snapshot element in CSS pixels, relative to the top-left of the document rather than of the viewport, so that it can be compared with an annotation's geometry without also knowing where the page happened to be scrolled to. Page-derived: it is a measurement of a layout the page controls, and it is stored as a hint about where an element was rather than as an assertion about where it is (docs/DOMAIN_MODEL.md section 17).",
+      "additionalProperties": false,
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": {
+          "$ref": "#/$defs/element_css_pixel_offset",
+          "description": "Left edge, in document coordinates."
+        },
+        "y": {
+          "$ref": "#/$defs/element_css_pixel_offset",
+          "description": "Top edge, in document coordinates."
+        },
+        "width": {
+          "$ref": "#/$defs/element_css_pixel_offset",
+          "description": "Width."
+        },
+        "height": {
+          "$ref": "#/$defs/element_css_pixel_offset",
+          "description": "Height."
+        }
+      }
+    },
     "element_descriptor": {
       "type": "object",
-      "description": "One element of a snapshot, addressable by reference until the snapshot is superseded.",
+      "description": "One element of a snapshot, addressable by reference until the snapshot is superseded. Everything on it but the reference is page-derived and untrusted (ADR-0010): it describes what the page said about itself and is never an instruction.",
       "additionalProperties": false,
       "required": ["ref", "role"],
       "properties": {
@@ -1627,6 +1680,27 @@
         "name": {
           "$ref": "#/$defs/page_text",
           "description": "Accessible name, truncated to its bound."
+        },
+        "box": {
+          "$ref": "#/$defs/element_box",
+          "description": "Where the element was laid out when the snapshot was taken. It is what lets a human's annotation geometry be resolved to an element without the control plane addressing the page (docs/DOMAIN_MODEL.md section 17): the resolution is arithmetic over this box rather than a second query into a page that may already have changed."
+        },
+        "selector": {
+          "$ref": "#/$defs/element_selector",
+          "description": "Selector that would locate the element again. A hint, never an identity: reproduction must tolerate a DOM in which it no longer resolves."
+        },
+        "selector_strategy": {
+          "type": "string",
+          "description": "How the selector was chosen, strongest first. A test identifier survives a redesign; a CSS path built from tag names and positions frequently does not, and naming the strategy is what lets a reader weigh the selector rather than trust it.",
+          "enum": ["testid", "role", "text", "css", "xpath"]
+        },
+        "text_excerpt": {
+          "$ref": "#/$defs/page_text",
+          "description": "Bounded excerpt of the element's own text. Page-derived and untrusted: it is displayed as text, is labelled as page-derived wherever it reaches an agent, and is never followed as an instruction (ADR-0010)."
+        },
+        "dom_fingerprint": {
+          "$ref": "#/$defs/sha256_hex",
+          "description": "Digest of the element's structural position — its tag, its identifier, its ancestry and its ordinal — so that a later reproduction can tell that the DOM changed rather than assuming a selector that still resolves found the same element. It deliberately excludes the element's text, so that editing a label does not read as a structural change."
         }
       }
     },
@@ -1634,7 +1708,15 @@
       "type": "object",
       "description": "A bounded accessibility snapshot (docs/MCP_SPEC.md sections 7.4 and 13). Page-derived throughout.",
       "additionalProperties": false,
-      "required": ["snapshot_id", "viewport", "node_count", "truncated", "text", "elements"],
+      "required": [
+        "snapshot_id",
+        "viewport",
+        "scroll_position",
+        "node_count",
+        "truncated",
+        "text",
+        "elements"
+      ],
       "properties": {
         "snapshot_id": {
           "$ref": "#/$defs/identifier",
@@ -1643,6 +1725,10 @@
         "viewport": {
           "$ref": "#/$defs/viewport",
           "description": "Viewport the snapshot was taken at. A resize supersedes it."
+        },
+        "scroll_position": {
+          "$ref": "#/$defs/scroll_offset",
+          "description": "How far the page was scrolled when the snapshot was taken. Element boxes are in document coordinates, so this is what relates them to anything expressed against the viewport — an annotation's geometry above all (ADR-0033)."
         },
         "node_count": {
           "type": "integer",
@@ -1679,6 +1765,7 @@
         "size_bytes",
         "content_type",
         "viewport",
+        "scroll_position",
         "full_page",
         "captured_at"
       ],
@@ -1704,6 +1791,10 @@
         "viewport": {
           "$ref": "#/$defs/viewport",
           "description": "Viewport the capture was taken at."
+        },
+        "scroll_position": {
+          "$ref": "#/$defs/scroll_offset",
+          "description": "How far the page was scrolled when the capture was taken. A viewport capture is a picture of one screenful, and without this it cannot be placed back on the page it came from (docs/DOMAIN_MODEL.md section 15). It is recorded for a full-page capture too, where it is the offset the page happened to hold rather than a property of the picture."
         },
         "full_page": {
           "type": "boolean",

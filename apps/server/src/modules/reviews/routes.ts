@@ -29,6 +29,7 @@ import type { Pool } from "pg";
 
 import {
   validateAnnotationCreateRequest,
+  validateAnnotationUpdateRequest,
   validateCommentCreateRequest,
   validateCommentUpdateRequest,
   validateFindingClaimRequest,
@@ -41,6 +42,7 @@ import {
   validateReviewUpdateRequest,
   validateVerificationCreateRequest,
   type AnnotationCreateRequest,
+  type AnnotationUpdateRequest,
   type CommentCreateRequest,
   type CommentUpdateRequest,
   type FindingClaimRequest,
@@ -57,6 +59,7 @@ import {
 
 import { ApiError, notFound } from "../../errors.ts";
 import type { EventActor } from "../../events/append.ts";
+import { IdempotencyStore, requestDigest } from "../agents/idempotency.ts";
 import { buildPage, pageMeta, readPageRequest } from "../../http/pagination.ts";
 import {
   actorOf,
@@ -92,11 +95,28 @@ interface ScopedRow {
   readonly review_id: string;
 }
 
-/** Which column names the owning review, per table. */
-const SCOPED_REVIEW_COLUMN = {
-  reviews: "id",
-  findings: "review_id",
-  comments: "review_id",
+/**
+ * Where each scoped record is read from, and which column names its review.
+ *
+ * The `FROM` clause varies and the `WHERE` clause does not, which is the point:
+ * every record type is reached by the same three-term predicate, so there is
+ * one place a tenancy term could be forgotten rather than one per table.
+ *
+ * An annotation is read through `annotations_current` rather than through
+ * `annotations`, because the base table holds one row per revision and a
+ * lookup by identifier there would answer with as many rows as the annotation
+ * has ever had. Its review comes from the finding that owns it, which is the
+ * only join here and exists because an annotation carries no review column of
+ * its own.
+ */
+const SCOPED_SOURCE = {
+  reviews: { from: "reviews AS record", reviewId: "record.id" },
+  findings: { from: "findings AS record", reviewId: "record.review_id" },
+  comments: { from: "comments AS record", reviewId: "record.review_id" },
+  annotations: {
+    from: "annotations_current AS record JOIN findings AS owner ON owner.id = record.finding_id",
+    reviewId: "owner.review_id",
+  },
 } as const;
 
 /** What a refusal calls each record. The wording never varies by cause. */
@@ -104,6 +124,7 @@ const RECORD_NAMES = {
   reviews: "The review",
   findings: "The finding",
   comments: "The comment",
+  annotations: "The annotation",
 } as const;
 
 /**
@@ -220,19 +241,20 @@ export async function registerReviewRoutes(
    */
   const scopedRecord = async (
     request: FastifyRequest,
-    table: "reviews" | "findings" | "comments",
+    table: keyof typeof SCOPED_SOURCE,
     id: string,
     intent: Intent,
   ): Promise<{ scope: Scope; actor: EventActor; row: ScopedRow }> => {
     refuseMachineCredentials(request);
     const principal = await options.viewerAuth(request);
     if (intent === "write") requireCsrfToken(request, principal);
+    const source = SCOPED_SOURCE[table];
     const rows = await pool.query<ScopedRow>(
-      `SELECT organisation_id, project_id, ${SCOPED_REVIEW_COLUMN[table]} AS review_id
-         FROM ${table}
-        WHERE id = $1
-          AND ($2::text[] IS NULL OR project_id = ANY($2))
-          AND ($3::text IS NULL OR organisation_id = $3)`,
+      `SELECT record.organisation_id, record.project_id, ${source.reviewId} AS review_id
+         FROM ${source.from}
+        WHERE record.id = $1
+          AND ($2::text[] IS NULL OR record.project_id = ANY($2))
+          AND ($3::text IS NULL OR record.organisation_id = $3)`,
       [id, scopeParameter(principal), principal.organisationId],
     );
     const row = rows.rows[0];
@@ -249,6 +271,67 @@ export async function registerReviewRoutes(
   const send = (reply: FastifyReply, request: FastifyRequest, data: unknown, status = 200) =>
     reply.status(status).send({ data, meta: { request_id: request.id } });
 
+  const idempotency = new IdempotencyStore(pool);
+
+  /**
+   * Runs a creation under an optional `Idempotency-Key`.
+   *
+   * The capture flow of `docs/UX_FLOWS.md` §9 is the reason this exists. A
+   * human presses Save once; a flaky connection, a double tap or a retry can
+   * make the control plane see that press twice, and two identical findings
+   * with two identical screenshots is a review nobody can read. Without a key
+   * there is no natural one to deduplicate on — two people may legitimately
+   * report the same problem — so the client names the attempt and the server
+   * honours the name.
+   *
+   * A replay answers `200` with the first response rather than `201`, so the
+   * caller can tell that it did not create anything this time. A key reused
+   * with a *different* body is refused with `IDEMPOTENCY_CONFLICT`: reusing a
+   * key for another request is a client defect, and answering with the first
+   * result would silently discard the second.
+   *
+   * The key is scoped by project, actor and tool, so one caller's key cannot
+   * collide with another's, and a key learned from a log cannot be replayed by
+   * a different actor.
+   */
+  const underIdempotencyKey = async <T>(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    scope: Scope,
+    actor: EventActor,
+    tool: string,
+    work: () => Promise<T>,
+  ): Promise<{ replayed: true } | { replayed: false; data: T }> => {
+    const header = request.headers["idempotency-key"];
+    const key = typeof header === "string" && header !== "" ? header : null;
+    if (key === null) return { replayed: false, data: await work() };
+    const keyScope = {
+      projectId: scope.projectId,
+      actorType: actor.type,
+      // The bootstrap administrator has no viewer-session identifier
+      // (ADR-0016), and a constant is the honest stand-in: it is one actor.
+      actorId: actor.id ?? "bootstrap",
+      tool,
+      key,
+    };
+    const claimed = await idempotency.claim(keyScope, requestDigest(request.body ?? null));
+    if (claimed.replayed) {
+      await reply.status(200).send({ data: claimed.response, meta: { request_id: request.id } });
+      return { replayed: true };
+    }
+    try {
+      const data = await work();
+      await idempotency.complete(keyScope, data);
+      return { replayed: false, data };
+    } catch (error) {
+      // A refused attempt releases the key. Holding it would make the first
+      // failure permanent for a day: a caller that fixed a slug collision and
+      // retried with the same key would be replayed its own refusal.
+      await idempotency.release(keyScope).catch(() => undefined);
+      throw error;
+    }
+  };
+
   // ---------------------------------------------------------------- reviews
 
   app.post("/api/v1/projects/:projectId/reviews", async (request, reply) => {
@@ -259,22 +342,31 @@ export async function registerReviewRoutes(
       request.body,
       "the review could not be created",
     );
-    const review = await reviews.createReview(
+    const outcome = await underIdempotencyKey(
+      request,
+      reply,
       scope,
-      {
-        slug: body.slug,
-        title: body.title,
-        ...(body.description === undefined ? {} : { description: body.description }),
-        ...(body.status === undefined ? {} : { status: body.status }),
-        ...(body.priority === undefined ? {} : { priority: body.priority }),
-        capturedBranch: body.captured_branch,
-        capturedCommit: body.captured_commit,
-        capturedWorkspaceId: body.captured_workspace_id,
-        sourceBrowserSessionId: body.source_browser_session_id,
-      },
       actor,
+      "review_create",
+      async () =>
+        reviews.createReview(
+          scope,
+          {
+            slug: body.slug,
+            title: body.title,
+            ...(body.description === undefined ? {} : { description: body.description }),
+            ...(body.status === undefined ? {} : { status: body.status }),
+            ...(body.priority === undefined ? {} : { priority: body.priority }),
+            capturedBranch: body.captured_branch,
+            capturedCommit: body.captured_commit,
+            capturedWorkspaceId: body.captured_workspace_id,
+            sourceBrowserSessionId: body.source_browser_session_id,
+          },
+          actor,
+        ),
     );
-    return send(reply, request, review, 201);
+    if (outcome.replayed) return reply;
+    return send(reply, request, outcome.data, 201);
   });
 
   app.get("/api/v1/projects/:projectId/reviews", async (request, reply) => {
@@ -489,36 +581,45 @@ export async function registerReviewRoutes(
       request.body,
       "the finding could not be created",
     );
-    const created = await reviews.createFinding(
+    const outcome = await underIdempotencyKey(
+      request,
+      reply,
       scope,
-      reviewId,
-      {
-        title: body.title,
-        ...(body.description === undefined ? {} : { description: body.description }),
-        severity: body.severity,
-        // No `source`: the schema has no such field and the service derives it
-        // from the authenticated actor, so a client cannot forge a
-        // human-authored finding or relabel its own (`docs/DOMAIN_MODEL.md`
-        // section 15). A body that supplies one is refused by the validator as
-        // an unknown property before this handler runs.
-        url: body.url,
-        viewport: body.viewport as unknown as Record<string, unknown>,
-        scrollPosition: body.scroll_position as unknown as Record<string, unknown>,
-        capturedCommit: body.captured_commit,
-        screenshotArtefactId: body.screenshot_artefact_id,
-        ...(body.element_context === undefined
-          ? {}
-          : { elementContext: body.element_context as unknown as Record<string, unknown> }),
-        ...(body.acceptance_criteria === undefined
-          ? {}
-          : { acceptanceCriteria: body.acceptance_criteria }),
-        ...(body.annotations === undefined
-          ? {}
-          : { annotations: body.annotations.map(toAnnotationInput) }),
-      },
       actor,
+      "finding_create",
+      async () =>
+        reviews.createFinding(
+          scope,
+          reviewId,
+          {
+            title: body.title,
+            ...(body.description === undefined ? {} : { description: body.description }),
+            severity: body.severity,
+            // No `source`: the schema has no such field and the service derives
+            // it from the authenticated actor, so a client cannot forge a
+            // human-authored finding or relabel its own (`docs/DOMAIN_MODEL.md`
+            // section 15). A body that supplies one is refused by the validator
+            // as an unknown property before this handler runs.
+            url: body.url,
+            viewport: body.viewport as unknown as Record<string, unknown>,
+            scrollPosition: body.scroll_position as unknown as Record<string, unknown>,
+            capturedCommit: body.captured_commit,
+            screenshotArtefactId: body.screenshot_artefact_id,
+            ...(body.element_context === undefined
+              ? {}
+              : { elementContext: body.element_context as unknown as Record<string, unknown> }),
+            ...(body.acceptance_criteria === undefined
+              ? {}
+              : { acceptanceCriteria: body.acceptance_criteria }),
+            ...(body.annotations === undefined
+              ? {}
+              : { annotations: body.annotations.map(toAnnotationInput) }),
+          },
+          actor,
+        ),
     );
-    return send(reply, request, created, 201);
+    if (outcome.replayed) return reply;
+    return send(reply, request, outcome.data, 201);
   });
 
   app.get("/api/v1/reviews/:reviewId/findings", async (request, reply) => {
@@ -798,6 +899,79 @@ export async function registerReviewRoutes(
         ? await reviews.listAnnotationRevisions(scope, findingId)
         : await reviews.listAnnotations(scope, findingId);
     return send(reply, request, list);
+  });
+
+  /**
+   * Edits one annotation (`docs/API.md` §14).
+   *
+   * The edit appends a revision and retains the one it supersedes. Nothing
+   * here touches the screenshot: the original artefact bytes are immutable
+   * evidence and the overlay is a separate record (ADR-0006), so an annotation
+   * can be redrawn a dozen times without the picture underneath changing at
+   * all.
+   *
+   * The body carries no `type` and no `artefact_id`, so there is no field a
+   * caller could use to point an annotation's history at a different mark or a
+   * different screenshot. Geometry is validated against the annotation's own
+   * stored type rather than against one the request named, which is the same
+   * rule as everywhere else here: an authority input is never read out of the
+   * record being authorised, and a shape input is never read out of the
+   * request being validated.
+   */
+  app.patch("/api/v1/annotations/:annotationId", async (request, reply) => {
+    const { annotationId } = request.params as { annotationId: string };
+    const { scope, actor } = await scopedRecord(request, "annotations", annotationId, "write");
+    const body = decode<AnnotationUpdateRequest>(
+      validateAnnotationUpdateRequest,
+      request.body,
+      "the annotation could not be edited",
+    );
+    const annotation = await reviews.updateAnnotation(
+      scope,
+      annotationId,
+      {
+        expectedRevision: body.expected_revision,
+        ...(body.geometry === undefined
+          ? {}
+          : { geometry: body.geometry as unknown as Record<string, unknown> }),
+        ...(body.label === undefined ? {} : { label: body.label }),
+        ...(body.marker_number === undefined ? {} : { markerNumber: body.marker_number }),
+        ...(body.style_hint === undefined ? {} : { styleHint: body.style_hint }),
+      },
+      actor,
+    );
+    return send(reply, request, annotation);
+  });
+
+  /**
+   * Withdraws one annotation (`docs/API.md` §14).
+   *
+   * It records a revision carrying `deleted_at` rather than issuing a `DELETE`.
+   * The current projection hides the mark and `?revisions=all` still shows
+   * every revision it had, because a reader asking why a finding was raised
+   * has to be able to see the mark that was on the screen when somebody raised
+   * it — including one its author later thought better of.
+   *
+   * The expected revision travels in the query string rather than in a body,
+   * because a `DELETE` with a body is not reliably carried by intermediaries.
+   * Withdrawing an already-withdrawn annotation answers with the withdrawal
+   * rather than refusing: the caller asked for a state the record is already
+   * in.
+   */
+  app.delete("/api/v1/annotations/:annotationId", async (request, reply) => {
+    const { annotationId } = request.params as { annotationId: string };
+    const { scope, actor } = await scopedRecord(request, "annotations", annotationId, "write");
+    const query = request.query as { expected_revision?: string };
+    const expected = Number(query.expected_revision);
+    if (!Number.isInteger(expected) || expected < 1) {
+      throw new ApiError(
+        "VALIDATION_FAILED",
+        "expected_revision is required on a withdrawal and must be the revision the caller read, so a concurrent edit is refused rather than silently withdrawn.",
+        { field: "expected_revision" },
+      );
+    }
+    const annotation = await reviews.withdrawAnnotation(scope, annotationId, expected, actor);
+    return send(reply, request, annotation);
   });
 }
 

@@ -48,6 +48,21 @@ export function sanitiseMultilineText(value: string): string {
 }
 
 /**
+ * Renders a page-derived selector (`element_selector`).
+ *
+ * A selector is displayed to a human and copied into an agent's working notes,
+ * so beyond the control characters every page-derived value loses it also
+ * loses the angle brackets and quotation marks that would let a page smuggle
+ * markup through a value a surface renders. An empty result means the page
+ * offered nothing usable, and the caller omits the member rather than emitting
+ * a blank selector that reads as one that failed to match.
+ */
+export function sanitiseSelector(value: unknown, maximum = 512): string {
+  if (typeof value !== "string") return "";
+  return sanitisePageText(value.replace(/[<>"]/gu, ""), maximum);
+}
+
+/**
  * Renders a page-derived URL. A URL is bounded and printable-ASCII on the
  * wire, so a non-ASCII or oversized location is percent-encoded and truncated
  * rather than rejected, which would lose the navigation result entirely.

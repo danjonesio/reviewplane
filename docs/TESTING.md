@@ -775,9 +775,40 @@ Fastify's own route table rather than guessing paths.
 - Browser live surface reconnect
 - Before-and-after comparison
 
-Annotation alignment is proved in `apps/web/test/ui/annotation.browser.test.ts`,
-which owns the Stage 0 exit criterion "a screenshot annotation aligns after UI
-resize". Every case measures two things and requires them to agree: where the
+Annotation **capture** is proved in `apps/web/test/ui/capture.browser.test.ts`,
+which owns the flow of `UX_FLOWS.md` §9 and §10 end to end: capture, draw,
+describe, group, name. It is a separate suite from the one below because the two
+prove different things — that suite proves a **stored** overlay aligns, this one
+proves a mark a human **draws** is recorded where they drew it.
+
+Its shape is the same, and for the same reason: every alignment case measures
+the mark against the picture and samples the screenshot's own colour underneath
+it, so a mark that drifts by a few per cent lands on the background and fails.
+The conditions are 390x844 and 1440x900 at device pixel ratios 1 and 2, plus a
+window resize, an in-page container resize, a scroll and a ratio of 3. Crossing
+both ratios is what makes the suite catch a stray `devicePixelRatio`
+multiplication: at a ratio of 1 such a bug is invisible, and removing the
+ratio-2 cases would leave a suite that passes with one in place.
+
+Three further properties are asserted because each fails on its own. The
+**request the bundle actually sent** is read out of the stub and checked for
+normalised geometry, the whole §9 captured-context list and the absence of a
+`source` claim — a test that asserted on a component's arguments would pass with
+the request never leaving the page. The **keyboard case** places a mark with no
+pointer at all and asserts the geometry it produced, reaching the toolbar by
+`Tab` rather than by `focus()` because `:focus-visible` is what draws the ring.
+The **annotation list** is asserted to state each mark's position and shape as
+text, for all six types including freehand, so the non-canvas alternative is
+proved to convey the same information rather than merely to exist.
+
+Two fault injections of section 11 run here: a capture whose upload never
+completed reaches the "Evidence upload incomplete" state and creates no draft,
+and a slug already in use is refused with an action the reader can take while
+the drafts survive the refusal.
+
+Annotation alignment of a stored overlay is proved in
+`apps/web/test/ui/annotation.browser.test.ts`, which owns the Stage 0 exit
+criterion "a screenshot annotation aligns after UI resize". Every case measures two things and requires them to agree: where the
 mark sits as a fraction of the rendered content rectangle, and what the
 screenshot itself shows at that same fraction. The fixture page paints a
 distinctly coloured region, the annotation claims exactly that region, and a

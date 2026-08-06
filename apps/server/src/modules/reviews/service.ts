@@ -35,6 +35,7 @@ import {
   type VerificationChecks,
   type VerificationReference,
   type Viewport,
+  geometryVersionForType,
   isFinalDisposition,
   mayActorMoveFinding,
 } from "@reviewplane/protocol/review";
@@ -198,6 +199,19 @@ export interface ReviewExport {
   readonly completed_at: string | null;
 }
 
+/**
+ * An edit to one annotation. The type and the artefact are deliberately
+ * absent: they are not editable, so there is no field a caller could use to
+ * try.
+ */
+export interface UpdateAnnotationInput {
+  readonly expectedRevision: number;
+  readonly geometry?: Record<string, unknown>;
+  readonly label?: string;
+  readonly markerNumber?: number;
+  readonly styleHint?: "default" | "critical" | "informational";
+}
+
 export interface CreateAnnotationInput {
   readonly artefactId: string;
   readonly type: AnnotationType;
@@ -332,6 +346,7 @@ function toAnnotation(row: Record<string, unknown>): Annotation {
     artefact_id: row["artefact_id"] as string,
     type: row["type"] as AnnotationType,
     geometry: row["geometry"] as Annotation["geometry"],
+    geometry_version: Number(row["geometry_version"]),
     label: row["label"] as string,
     ...(row["marker_number"] === null ? {} : { marker_number: Number(row["marker_number"]) }),
     style_hint: row["style_hint"] as NonNullable<Annotation["style_hint"]>,
@@ -3061,9 +3076,9 @@ export class ReviewService {
     const inserted = await client.query(
       `INSERT INTO annotations (
           id, revision, organisation_id, project_id, finding_id, artefact_id, type,
-          geometry, label, marker_number, style_hint,
+          geometry, geometry_version, label, marker_number, style_hint,
           created_by_actor_type, created_by_actor_id, created_by_actor_display
-       ) VALUES ($1,1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+       ) VALUES ($1,1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
        RETURNING *`,
       [
         id,
@@ -3073,6 +3088,10 @@ export class ReviewService {
         input.artefactId,
         input.type,
         JSON.stringify(input.geometry),
+        // Derived from the type, never taken from the caller: a client able to
+        // name the version could claim a member list its geometry does not
+        // satisfy (ADR-0032).
+        geometryVersionForType(input.type),
         input.label,
         input.markerNumber ?? null,
         input.styleHint ?? "default",
@@ -3082,6 +3101,185 @@ export class ReviewService {
       ],
     );
     return toAnnotation(inserted.rows[0] as Record<string, unknown>);
+  }
+
+  /**
+   * Reads the current revision of one annotation, locking its history.
+   *
+   * The lock is on the whole identifier rather than on one row, because the
+   * thing being protected is the *newest* revision: two concurrent edits that
+   * each locked the row they read would both see revision 3, both write
+   * revision 4, and the primary key would refuse the second with a constraint
+   * violation rather than with the `VERSION_CONFLICT` the caller can act on.
+   */
+  async #lockAnnotation(
+    client: PoolClient,
+    scope: Scope,
+    annotationId: string,
+  ): Promise<Annotation> {
+    const rows = await client.query(
+      `SELECT * FROM annotations
+        WHERE id = $1 AND organisation_id = $2 AND project_id = $3
+        ORDER BY revision DESC
+        LIMIT 1
+        FOR UPDATE`,
+      [annotationId, scope.organisationId, scope.projectId],
+    );
+    const row = rows.rows[0] as Record<string, unknown> | undefined;
+    if (row === undefined) throw notFound("The annotation");
+    return toAnnotation(row);
+  }
+
+  /**
+   * Records a new revision of an annotation, retaining the one it supersedes
+   * (`docs/API.md` section 14).
+   *
+   * Nothing is updated in place, here or in a withdrawal. The original
+   * screenshot is immutable evidence and the overlay is a separate record
+   * (ADR-0006); an edit that overwrote the previous geometry would make the
+   * retained history a history of one row rather than of the marks a reader
+   * actually acted on.
+   *
+   * The type and the artefact are not editable. Changing either would make the
+   * retained revisions a history of two different marks, and the honest way to
+   * move a mark to another shape or another screenshot is to withdraw it and
+   * record a new one.
+   */
+  async updateAnnotation(
+    scope: Scope,
+    annotationId: string,
+    input: UpdateAnnotationInput,
+    actor: EventActor,
+  ): Promise<Annotation> {
+    return inTransaction(this.#pool, async (client) => {
+      const current = await this.#lockAnnotation(client, scope, annotationId);
+      if (current.deleted_at !== undefined) {
+        throw new ApiError(
+          "POLICY_DENIED",
+          "A withdrawn annotation cannot be edited. Its revisions are retained as history; record a new annotation instead.",
+          { reason: "annotation_withdrawn" },
+        );
+      }
+      if (input.expectedRevision !== current.revision) {
+        throw new ApiError(
+          "VERSION_CONFLICT",
+          `The annotation has moved on to revision ${String(current.revision)}. Re-read it and edit that revision.`,
+          { expected_version: input.expectedRevision, actual_version: current.revision },
+        );
+      }
+      const geometry = input.geometry ?? (current.geometry as unknown as Record<string, unknown>);
+      // Validated against the annotation's **own** type, which is not editable,
+      // rather than against a type the request could have named.
+      assertGeometry(current.type, geometry);
+      const markerNumber =
+        input.markerNumber === undefined ? (current.marker_number ?? null) : input.markerNumber;
+      const next = await client.query(
+        `INSERT INTO annotations (
+            id, revision, organisation_id, project_id, finding_id, artefact_id, type,
+            geometry, geometry_version, label, marker_number, style_hint,
+            created_by_actor_type, created_by_actor_id, created_by_actor_display
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+         RETURNING *`,
+        [
+          annotationId,
+          current.revision + 1,
+          scope.organisationId,
+          scope.projectId,
+          current.finding_id,
+          current.artefact_id,
+          current.type,
+          JSON.stringify(geometry),
+          geometryVersionForType(current.type),
+          input.label ?? current.label,
+          markerNumber,
+          input.styleHint ?? current.style_hint ?? "default",
+          actor.type,
+          actor.id ?? null,
+          actor.display ?? null,
+        ],
+      );
+      const annotation = toAnnotation(next.rows[0] as Record<string, unknown>);
+      await appendEvent(client, {
+        type: "finding.annotated",
+        organisationId: scope.organisationId,
+        projectId: scope.projectId,
+        actor,
+        correlation: {
+          finding_id: annotation.finding_id,
+          annotation_id: annotation.id,
+          artefact_id: annotation.artefact_id,
+        },
+        payload: { annotation },
+      });
+      return annotation;
+    });
+  }
+
+  /**
+   * Withdraws an annotation by recording a revision that carries `deleted_at`
+   * (`docs/API.md` section 14).
+   *
+   * It is not a `DELETE`. The current projection hides the mark, and every
+   * revision it ever had stays readable: a reader asking why a finding was
+   * raised must be able to see the mark that was on the screen when somebody
+   * raised it, including one the author later thought better of.
+   */
+  async withdrawAnnotation(
+    scope: Scope,
+    annotationId: string,
+    expectedRevision: number,
+    actor: EventActor,
+  ): Promise<Annotation> {
+    return inTransaction(this.#pool, async (client) => {
+      const current = await this.#lockAnnotation(client, scope, annotationId);
+      if (current.deleted_at !== undefined) return current;
+      if (expectedRevision !== current.revision) {
+        throw new ApiError(
+          "VERSION_CONFLICT",
+          `The annotation has moved on to revision ${String(current.revision)}. Re-read it and withdraw that revision.`,
+          { expected_version: expectedRevision, actual_version: current.revision },
+        );
+      }
+      const next = await client.query(
+        `INSERT INTO annotations (
+            id, revision, organisation_id, project_id, finding_id, artefact_id, type,
+            geometry, geometry_version, label, marker_number, style_hint,
+            created_by_actor_type, created_by_actor_id, created_by_actor_display, deleted_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, now())
+         RETURNING *`,
+        [
+          annotationId,
+          current.revision + 1,
+          scope.organisationId,
+          scope.projectId,
+          current.finding_id,
+          current.artefact_id,
+          current.type,
+          JSON.stringify(current.geometry),
+          current.geometry_version,
+          current.label,
+          current.marker_number ?? null,
+          current.style_hint ?? "default",
+          actor.type,
+          actor.id ?? null,
+          actor.display ?? null,
+        ],
+      );
+      const annotation = toAnnotation(next.rows[0] as Record<string, unknown>);
+      await appendEvent(client, {
+        type: "finding.annotated",
+        organisationId: scope.organisationId,
+        projectId: scope.projectId,
+        actor,
+        correlation: {
+          finding_id: annotation.finding_id,
+          annotation_id: annotation.id,
+          artefact_id: annotation.artefact_id,
+        },
+        payload: { annotation },
+      });
+      return annotation;
+    });
   }
 
   /**

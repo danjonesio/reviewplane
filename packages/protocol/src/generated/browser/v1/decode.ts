@@ -17,7 +17,9 @@ import type {
   CommandName,
   ControllerIdentity,
   ControllerType,
+  ElementBox,
   ElementDescriptor,
+  ElementDescriptorSelectorStrategy,
   Envelope,
   ErrorClass,
   ImageContentType,
@@ -33,6 +35,7 @@ import type {
   ScreenshotPurpose,
   ScreenshotResult,
   ScrollDirection,
+  ScrollOffset,
   ScrollParams,
   SelectOptionParams,
   SessionAllocate,
@@ -433,6 +436,30 @@ export function decodeNavigationResult(value: unknown): NavigationResult {
 }
 
 /**
+ * Decodes a validated ScrollOffset.
+ */
+export function decodeScrollOffset(value: unknown): ScrollOffset {
+  const source = value as Record<string, unknown>;
+  return {
+    x: source["x"] as number,
+    y: source["y"] as number,
+  };
+}
+
+/**
+ * Decodes a validated ElementBox.
+ */
+export function decodeElementBox(value: unknown): ElementBox {
+  const source = value as Record<string, unknown>;
+  return {
+    x: source["x"] as number,
+    y: source["y"] as number,
+    width: source["width"] as number,
+    height: source["height"] as number,
+  };
+}
+
+/**
  * Decodes a validated ElementDescriptor.
  */
 export function decodeElementDescriptor(value: unknown): ElementDescriptor {
@@ -441,6 +468,11 @@ export function decodeElementDescriptor(value: unknown): ElementDescriptor {
     ref: source["ref"] as string,
     role: source["role"] as string,
     ...(source["name"] === undefined ? {} : { name: source["name"] as string }),
+    ...(source["box"] === undefined ? {} : { box: decodeElementBox(source["box"]) }),
+    ...(source["selector"] === undefined ? {} : { selector: source["selector"] as string }),
+    ...(source["selector_strategy"] === undefined ? {} : { selector_strategy: source["selector_strategy"] as ElementDescriptorSelectorStrategy }),
+    ...(source["text_excerpt"] === undefined ? {} : { text_excerpt: source["text_excerpt"] as string }),
+    ...(source["dom_fingerprint"] === undefined ? {} : { dom_fingerprint: source["dom_fingerprint"] as string }),
   };
 }
 
@@ -452,6 +484,7 @@ export function decodeSnapshotResult(value: unknown): SnapshotResult {
   return {
     snapshot_id: source["snapshot_id"] as string,
     viewport: decodeViewport(source["viewport"]),
+    scroll_position: decodeScrollOffset(source["scroll_position"]),
     node_count: source["node_count"] as number,
     truncated: source["truncated"] as boolean,
     text: source["text"] as string,
@@ -470,6 +503,7 @@ export function decodeScreenshotResult(value: unknown): ScreenshotResult {
     size_bytes: source["size_bytes"] as number,
     content_type: source["content_type"] as ImageContentType,
     viewport: decodeViewport(source["viewport"]),
+    scroll_position: decodeScrollOffset(source["scroll_position"]),
     full_page: source["full_page"] as boolean,
     captured_at: source["captured_at"] as string,
   };

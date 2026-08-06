@@ -22,6 +22,7 @@ import type {
   AgentSessionStatusInput,
   AgentSessionStatusResult,
   AnnotationGeometry,
+  AnnotationPathPoint,
   AnnotationView,
   ArtefactLink,
   BrowserController,
@@ -56,6 +57,7 @@ import type {
   DevelopmentServiceView,
   DevelopmentServicesListInput,
   DevelopmentServicesListResult,
+  ElementContextView,
   Envelope,
   ErrorDetails,
   EvidenceAssurance,
@@ -172,6 +174,48 @@ export function encodeAnnotationGeometry(value: AnnotationGeometry): string {
   if (value.y2 !== undefined) {
     fields.push(`"y2":${jsonNumber(value.y2)}`);
   }
+  if (value.rotation !== undefined) {
+    fields.push(`"rotation":${jsonNumber(value.rotation)}`);
+  }
+  if (value.path !== undefined) {
+    fields.push(`"path":${`[${value.path.map((item) => encodeAnnotationPathPoint(item)).join(",")}]`}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ElementContextView.
+ */
+export function encodeElementContextView(value: ElementContextView): string {
+  const fields: string[] = [];
+  if (value.selector !== undefined) {
+    fields.push(`"selector":${jsonString(value.selector)}`);
+  }
+  if (value.selector_strategy !== undefined) {
+    fields.push(`"selector_strategy":${jsonString(value.selector_strategy)}`);
+  }
+  if (value.role !== undefined) {
+    fields.push(`"role":${jsonString(value.role)}`);
+  }
+  if (value.accessible_name !== undefined) {
+    fields.push(`"accessible_name":${jsonString(value.accessible_name)}`);
+  }
+  if (value.text_excerpt !== undefined) {
+    fields.push(`"text_excerpt":${jsonString(value.text_excerpt)}`);
+  }
+  if (value.dom_fingerprint !== undefined) {
+    fields.push(`"dom_fingerprint":${jsonString(value.dom_fingerprint)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a AnnotationPathPoint.
+ */
+export function encodeAnnotationPathPoint(value: AnnotationPathPoint): string {
+  const fields: string[] = [];
+  fields.push(`"x":${jsonNumber(value.x)}`);
+  fields.push(`"y":${jsonNumber(value.y)}`);
   return `{${fields.join(",")}}`;
 }
 
@@ -553,6 +597,9 @@ export function encodeFindingView(value: FindingView): string {
   }
   if (value.annotation_count !== undefined) {
     fields.push(`"annotation_count":${jsonInteger(value.annotation_count)}`);
+  }
+  if (value.element_context !== undefined) {
+    fields.push(`"element_context":${encodeElementContextView(value.element_context)}`);
   }
   fields.push(`"resource_uri":${jsonString(value.resource_uri)}`);
   fields.push(`"untrusted_fields":${`[${value.untrusted_fields.map((item) => jsonString(item)).join(",")}]`}`);

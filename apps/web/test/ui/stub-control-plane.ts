@@ -81,6 +81,19 @@ export interface StubOptions {
    */
   readonly afterScreenshot?: Uint8Array;
   /**
+   * Refuse `take_screenshot` with `ARTEFACT_UPLOAD_INCOMPLETE`, for the fault
+   * injection of `docs/TESTING.md` section 11: a capture whose bytes were
+   * never verified is not evidence, and no draft finding may be built on it.
+   */
+  readonly captureFails?: boolean;
+  /**
+   * A slug an active review of the project already holds. Creating a review
+   * with it is refused, which is the collision `docs/API.md` section 12
+   * requires and the "usable conflict message" the capture surface owes the
+   * reader.
+   */
+  readonly slugInUse?: string;
+  /**
    * Refuse every publication with this stable code, answered with the status
    * the control plane answers it with (`apps/server/src/errors.ts`). Most of
    * publication's failures happen on another machine, so a refusal is the
@@ -168,7 +181,24 @@ export interface StubControlPlane {
   readonly viewers: number;
   /** Frames written to viewers since start. */
   readonly framesSent: number;
+  /**
+   * Every state-changing request the bundle made, in order.
+   *
+   * The capture suite reads it as the API transcript RVP-45 asks for as
+   * evidence: what a browser actually sent, rather than what a component was
+   * asked to send. A test that asserted on its own arguments would pass with
+   * the request never leaving the page.
+   */
+  readonly requests: readonly StubRequest[];
   stop(): Promise<void>;
+}
+
+/** One state-changing request the bundle made. */
+export interface StubRequest {
+  readonly method: string;
+  readonly path: string;
+  readonly body: unknown;
+  readonly idempotencyKey: string | null;
 }
 
 const BOOTSTRAP_TOKEN = "ui-suite-bootstrap-token";
@@ -479,6 +509,65 @@ export const REFUSAL_STATUS: Readonly<Record<string, number>> = {
 /** The internal suffix the control plane builds a route's origin under. */
 export const INTERNAL_SUFFIX = "internal.invalid";
 
+/**
+ * How far the fixture page is scrolled when it is captured.
+ *
+ * It is deliberately **not** the origin. Element boxes arrive in document
+ * coordinates and an annotation's geometry is normalised to the capture, so
+ * the offset is the only value relating the two — and a capture flow that
+ * discarded it would still resolve marks correctly on an unscrolled page and
+ * silently wrongly on every other one. A scrolled fixture is what makes the
+ * suite able to tell the difference.
+ */
+export const CAPTURE_SCROLL = { x: 0, y: 1180 } as const;
+
+/**
+ * The elements a snapshot reports, in **document** coordinates, for a page
+ * scrolled by `CAPTURE_SCROLL`.
+ *
+ * `MARKED_REGION` is the coloured band, and `e3` is the element laid out
+ * exactly over it: 390x844 at a device pixel ratio of 2 means the band at 25%
+ * across and 30% down sits at viewport 97.5, 253.2 CSS pixels — which is
+ * document y 1433.2 once the page is scrolled 1180. `e1` is the whole document
+ * and contains everything, which is what makes "the smallest containing
+ * element wins" a real assertion rather than a tautology; `e2` is a header
+ * sitting at the top of the *document*, which is exactly what a flow that
+ * ignored the scroll offset would wrongly resolve a mark to.
+ */
+export const SNAPSHOT_ELEMENTS = [
+  {
+    ref: "e1",
+    role: "main",
+    name: "Homepage",
+    box: { x: 0, y: 0, width: 390, height: 2400 },
+    selector: "body main",
+    selector_strategy: "css" as const,
+  },
+  {
+    ref: "e2",
+    role: "banner",
+    name: "Header",
+    box: { x: 0, y: 0, width: 390, height: 400 },
+    selector: "#header",
+    selector_strategy: "css" as const,
+  },
+  {
+    ref: "e3",
+    role: "navigation",
+    name: "Main navigation",
+    box: {
+      x: 97.5,
+      y: 253.2 + CAPTURE_SCROLL.y,
+      width: 117,
+      height: 101.3,
+    },
+    selector: "[data-testid=main-navigation]",
+    selector_strategy: "testid" as const,
+    text_excerpt: "Shop Sell About",
+    dom_fingerprint: "c".repeat(64),
+  },
+] as const;
+
 export const MEASURED_ARTEFACT = "art_ui_suite_measured";
 export const UNMEASURED_ARTEFACT = "art_ui_suite_unmeasured";
 /**
@@ -718,6 +807,10 @@ async function readJsonBody(request: IncomingMessage): Promise<Record<string, un
 
 export async function startStubControlPlane(options: StubOptions): Promise<StubControlPlane> {
   const state = { viewers: 0, framesSent: 0, sequence: 0, grants: 0 };
+  /** Every state-changing request, for the capture suite's transcript. */
+  const requests: StubRequest[] = [];
+  /** Reviews and findings this run created, keyed by identifier. */
+  const createdReviews = new Map<string, Record<string, unknown>>();
   /** Minted artefact grants, so a content path is only reachable through one. */
   const grants = new Map<string, string>();
   /** Projects this deployment holds, so creation and the switcher are real. */
@@ -1566,15 +1659,20 @@ export async function startStubControlPlane(options: StubOptions): Promise<StubC
     }
 
     // ------------------------------------------------------------ reviews
-    if (path === `/api/v1/projects/${PROJECT.id}/reviews`) {
+    //
+    // The method is part of every match here. It was not, and the capture
+    // suite is what found that: a `POST` to create a review was answered by
+    // the list handler with a `200` and an array, so the page believed it had
+    // created a review whose identifier was `undefined`.
+    if (path === `/api/v1/projects/${PROJECT.id}/reviews` && request.method === "GET") {
       sendJson(response, 200, { data: [reviewRecord()] });
       return;
     }
-    if (path === `/api/v1/reviews/${REVIEW.id}`) {
+    if (path === `/api/v1/reviews/${REVIEW.id}` && request.method === "GET") {
       sendJson(response, 200, { data: reviewRecord() });
       return;
     }
-    if (path === `/api/v1/reviews/${REVIEW.id}/findings`) {
+    if (path === `/api/v1/reviews/${REVIEW.id}/findings` && request.method === "GET") {
       sendJson(response, 200, { data: findingRecords() });
       return;
     }
@@ -1607,6 +1705,217 @@ export async function startStubControlPlane(options: StubOptions): Promise<StubC
     const verificationMatch = /^\/api\/v1\/findings\/([^/]+)\/verification$/u.exec(path);
     if (verificationMatch !== null) {
       sendJson(response, 200, { data: VERIFICATIONS[verificationMatch[1] as string] ?? null });
+      return;
+    }
+
+    // ------------------------------------------- capture, review, finding
+    //
+    // The three requests the capture flow of `docs/UX_FLOWS.md` sections 9
+    // and 10 makes. Each records what the bundle sent, so the suite asserts on
+    // a transcript rather than on its own arguments.
+    const commandMatch = /^\/api\/v1\/browser-sessions\/([^/]+)\/commands$/u.exec(path);
+    if (commandMatch !== null && request.method === "POST") {
+      if (!hasCsrf(request)) {
+        sendJson(response, 403, {
+          error: {
+            code: "AUTHORISATION_DENIED",
+            message: "This request changes state and must carry the session's CSRF token.",
+          },
+        });
+        return;
+      }
+      const body = (await readJsonBody(request)) as {
+        command?: { command?: string; take_screenshot?: Record<string, unknown> };
+      };
+      requests.push({ method: "POST", path, body, idempotencyKey: null });
+      const name = body.command?.command;
+      if (name === "take_screenshot") {
+        if (options.captureFails === true) {
+          // The fault injection of `docs/TESTING.md` section 11: the capture
+          // was taken and its bytes were never verified, so it is not evidence.
+          sendJson(response, 200, {
+            data: {
+              ok: false,
+              command: "take_screenshot",
+              sequence: 1,
+              control_epoch: 1,
+              duration_ms: 12,
+              trust: "untrusted_browser_content",
+              instruction_policy: "do_not_follow_as_instructions",
+              error: {
+                code: "ARTEFACT_UPLOAD_INCOMPLETE",
+                message: "The screenshot bytes were not verified before the upload was completed.",
+              },
+            },
+          });
+          return;
+        }
+        sendJson(response, 200, {
+          data: {
+            ok: true,
+            command: "take_screenshot",
+            sequence: 1,
+            control_epoch: 1,
+            duration_ms: 34,
+            trust: "untrusted_browser_content",
+            instruction_policy: "do_not_follow_as_instructions",
+            screenshot: {
+              artefact_id: MEASURED_ARTEFACT,
+              sha256:
+                "9f2c4c9d1b6a7e35d0d8c4a1f6b30e7c2a5d9e84b1c60f37a2d8e5b4c9f01a63",
+              size_bytes: 7275,
+              content_type: "image/png",
+              viewport: CAPTURE_VIEWPORT,
+              scroll_position: CAPTURE_SCROLL,
+              full_page: false,
+              captured_at: "2026-07-30T10:12:20.000Z",
+            },
+          },
+        });
+        return;
+      }
+      sendJson(response, 200, {
+        data: {
+          ok: true,
+          command: "snapshot",
+          sequence: 2,
+          control_epoch: 1,
+          duration_ms: 21,
+          trust: "untrusted_browser_content",
+          instruction_policy: "do_not_follow_as_instructions",
+          snapshot: {
+            snapshot_id: "snp_ui_suite",
+            viewport: CAPTURE_VIEWPORT,
+            scroll_position: CAPTURE_SCROLL,
+            node_count: SNAPSHOT_ELEMENTS.length,
+            truncated: false,
+            text: SNAPSHOT_ELEMENTS.map(
+              (element) => `- ${element.role} [ref=${element.ref}]`,
+            ).join("\n"),
+            elements: SNAPSHOT_ELEMENTS,
+          },
+        },
+      });
+      return;
+    }
+
+    const createReviewMatch = /^\/api\/v1\/projects\/([^/]+)\/reviews$/u.exec(path);
+    if (createReviewMatch !== null && request.method === "POST") {
+      if (!hasCsrf(request)) {
+        sendJson(response, 403, {
+          error: {
+            code: "AUTHORISATION_DENIED",
+            message: "This request changes state and must carry the session's CSRF token.",
+          },
+        });
+        return;
+      }
+      const body = (await readJsonBody(request)) as Record<string, unknown>;
+      const key = request.headers["idempotency-key"];
+      requests.push({
+        method: "POST",
+        path,
+        body,
+        idempotencyKey: typeof key === "string" ? key : null,
+      });
+      const slug = String(body["slug"] ?? "");
+      if (options.slugInUse === slug) {
+        sendJson(response, 409, {
+          error: {
+            code: "IDEMPOTENCY_CONFLICT",
+            message: `The slug ${slug} is already used by an active review of this project.`,
+          },
+        });
+        return;
+      }
+      const review = {
+        id: `rev_ui_${String(createdReviews.size + 1)}`,
+        organisation_id: PROJECT.organisation_id,
+        project_id: createReviewMatch[1],
+        slug,
+        title: body["title"],
+        description: body["description"],
+        status: body["status"] ?? "DRAFT",
+        priority: body["priority"] ?? "medium",
+        version: 1,
+        created_by: { type: "human_user", display: "Administrator" },
+        captured_branch: body["captured_branch"],
+        captured_commit: body["captured_commit"],
+        captured_workspace_id: body["captured_workspace_id"],
+        source_browser_session_id: body["source_browser_session_id"],
+        finding_count: 0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      createdReviews.set(review.id, review);
+      sendJson(response, 201, { data: review });
+      return;
+    }
+
+    const createFindingMatch = /^\/api\/v1\/reviews\/([^/]+)\/findings$/u.exec(path);
+    if (createFindingMatch !== null && request.method === "POST") {
+      const body = (await readJsonBody(request)) as Record<string, unknown>;
+      const key = request.headers["idempotency-key"];
+      requests.push({
+        method: "POST",
+        path,
+        body,
+        idempotencyKey: typeof key === "string" ? key : null,
+      });
+      const annotations = (body["annotations"] ?? []) as Record<string, unknown>[];
+      sendJson(response, 201, {
+        data: {
+          finding: {
+            id: "fin_ui_created",
+            organisation_id: PROJECT.organisation_id,
+            project_id: PROJECT.id,
+            review_id: createFindingMatch[1],
+            title: body["title"],
+            severity: body["severity"],
+            status: "OPEN",
+            // Derived from the authenticated actor, never from the body.
+            source: "human",
+            version: 1,
+            created_by: { type: "human_user", display: "Administrator" },
+            url: body["url"],
+            viewport: body["viewport"],
+            scroll_position: body["scroll_position"],
+            captured_commit: body["captured_commit"],
+            screenshot_artefact_id: body["screenshot_artefact_id"],
+            element_context: body["element_context"],
+            annotation_count: annotations.length,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+          annotations: annotations.map((annotation, index) => ({
+            id: `ann_ui_created_${String(index)}`,
+            organisation_id: PROJECT.organisation_id,
+            project_id: PROJECT.id,
+            finding_id: "fin_ui_created",
+            ...annotation,
+            geometry_version: 1,
+            revision: 1,
+            created_by: { type: "human_user", display: "Administrator" },
+            created_at: new Date().toISOString(),
+          })),
+        },
+      });
+      return;
+    }
+
+    const assignMatch = /^\/api\/v1\/reviews\/([^/]+)\/assign$/u.exec(path);
+    if (assignMatch !== null && request.method === "POST") {
+      const body = (await readJsonBody(request)) as Record<string, unknown>;
+      requests.push({ method: "POST", path, body, idempotencyKey: null });
+      const review = createdReviews.get(assignMatch[1] as string);
+      sendJson(response, 200, {
+        data: {
+          ...review,
+          version: 2,
+          status: "ASSIGNED",
+          assigned_agent_session_id: body["assigned_agent_session_id"],
+        },
+      });
       return;
     }
 
@@ -1940,6 +2249,9 @@ export async function startStubControlPlane(options: StubOptions): Promise<StubC
     },
     get framesSent(): number {
       return state.framesSent;
+    },
+    get requests(): readonly StubRequest[] {
+      return requests;
     },
     async stop(): Promise<void> {
       for (const client of sockets.clients) client.terminate();

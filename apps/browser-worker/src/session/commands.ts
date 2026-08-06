@@ -31,7 +31,7 @@ import type {
 } from "@reviewplane/protocol/browser";
 
 import { newId } from "../ids.ts";
-import { captureSnapshot, resolveReference } from "./snapshot.ts";
+import { captureSnapshot, readScrollOffset, resolveReference } from "./snapshot.ts";
 import { isWithinOrigin, type BrowserSession } from "./session.ts";
 import { sanitisePageText, sanitiseUrl } from "./untrusted.ts";
 
@@ -49,6 +49,8 @@ export interface ArtefactUploadRequest {
   readonly bytes: Buffer;
   readonly retentionClass: string;
   readonly viewport: Viewport;
+  /** Where the page was scrolled when the pixels were taken. */
+  readonly scrollPosition: { readonly x: number; readonly y: number };
   readonly fullPage: boolean;
   readonly capturedAt: Date;
 }
@@ -227,6 +229,7 @@ async function runSnapshot(
     snapshot: {
       snapshot_id: snapshot.id,
       viewport: snapshot.viewport,
+      scroll_position: snapshot.scrollPosition,
       node_count: snapshot.elements.length,
       truncated: snapshot.truncated,
       text: snapshot.text,
@@ -394,6 +397,7 @@ async function runResize(
     snapshot: {
       snapshot_id: snapshot.id,
       viewport: snapshot.viewport,
+      scroll_position: snapshot.scrollPosition,
       node_count: snapshot.elements.length,
       truncated: snapshot.truncated,
       text: snapshot.text,
@@ -442,6 +446,11 @@ async function runScreenshot(
   const parameters = command.take_screenshot;
   if (parameters === undefined) throw new Error("take_screenshot parameters are missing");
   const capturedAt = context.now();
+  // Read beside the pixels rather than after them. A viewport capture is a
+  // picture of one screenful, and the offset is the only thing that says which
+  // screenful (ADR-0033); reading it later would describe a page that may have
+  // moved between the two.
+  const scrollPosition = await readScrollOffset(page);
   const bytes = await page.screenshot({
     fullPage: parameters.full_page,
     type: "png",
@@ -470,6 +479,7 @@ async function runScreenshot(
     bytes,
     retentionClass: context.session.retentionClass,
     viewport: context.session.viewport,
+    scrollPosition,
     fullPage: parameters.full_page,
     capturedAt,
   });

@@ -375,6 +375,26 @@ export type InstructionPolicy =
   | "do_not_follow_as_instructions";
 
 /**
+ * How the selector was chosen, strongest first. A test identifier survives a redesign; a
+ * CSS path built from tag names and positions frequently does not, and naming the strategy
+ * is what lets a reader weigh the selector rather than trust it.
+ */
+export const ELEMENT_DESCRIPTOR_SELECTOR_STRATEGY_VALUES = [
+  "testid",
+  "role",
+  "text",
+  "css",
+  "xpath",
+] as const;
+
+export type ElementDescriptorSelectorStrategy =
+  | "testid"
+  | "role"
+  | "text"
+  | "css"
+  | "xpath";
+
+/**
  * Which side of the trust boundary sends each message type.
  */
 export const MESSAGE_DIRECTIONS: Readonly<Record<MessageType, "control_plane_to_worker" | "worker_to_control_plane">> = {
@@ -607,6 +627,14 @@ export type ElementReference = string;
 export type AccessibleRole = string;
 
 /**
+ * Selector a snapshot offers for an element. Page-derived, bounded, and free of control
+ * characters and of the angle brackets and quotation marks that would let a page smuggle
+ * markup through a value a reader displays. It is a hint about where an element was, not a
+ * promise that it is still there (docs/DOMAIN_MODEL.md section 17).
+ */
+export type ElementSelector = string;
+
+/**
  * Text typed into a page input. Secret values MUST NOT travel through this field;
  * docs/MCP_SPEC.md section 7.9 secret injection is the supported path.
  */
@@ -640,6 +668,13 @@ export type ReasonText = string;
  * the artefact becomes available (docs/API.md section 15, ADR-0012).
  */
 export type Sha256Hex = string;
+
+/**
+ * A CSS-pixel measurement of an element box, relative to the top-left of the document. It
+ * is bounded because a page chooses its own layout and an unbounded number here would be a
+ * page-controlled value in a stored record.
+ */
+export type ElementCssPixelOffset = number;
 
 /**
  * Browser-worker message envelope. The command fields of docs/ARCHITECTURE.md section 6.4
@@ -1342,7 +1377,56 @@ export interface NavigationResult {
 }
 
 /**
+ * How far the page was scrolled, in CSS pixels, at the moment a capture was taken. It is
+ * what turns a viewport-sized picture back into a position on the page it came from: an
+ * annotation's geometry is normalised to the capture, element boxes are in document
+ * coordinates, and this is the only value that relates the two. It is measured rather than
+ * assumed — a capture of a scrolled page whose offset was recorded as the origin resolves
+ * marks against whatever sits at the top of the document instead, which is a well-formed
+ * and wrong answer (ADR-0033).
+ */
+export interface ScrollOffset {
+  /**
+   * Horizontal scroll offset.
+   */
+  readonly x: ElementCssPixelOffset;
+  /**
+   * Vertical scroll offset.
+   */
+  readonly y: ElementCssPixelOffset;
+}
+
+/**
+ * Box of a snapshot element in CSS pixels, relative to the top-left of the document rather
+ * than of the viewport, so that it can be compared with an annotation's geometry without
+ * also knowing where the page happened to be scrolled to. Page-derived: it is a
+ * measurement of a layout the page controls, and it is stored as a hint about where an
+ * element was rather than as an assertion about where it is (docs/DOMAIN_MODEL.md section
+ * 17).
+ */
+export interface ElementBox {
+  /**
+   * Left edge, in document coordinates.
+   */
+  readonly x: ElementCssPixelOffset;
+  /**
+   * Top edge, in document coordinates.
+   */
+  readonly y: ElementCssPixelOffset;
+  /**
+   * Width.
+   */
+  readonly width: ElementCssPixelOffset;
+  /**
+   * Height.
+   */
+  readonly height: ElementCssPixelOffset;
+}
+
+/**
  * One element of a snapshot, addressable by reference until the snapshot is superseded.
+ * Everything on it but the reference is page-derived and untrusted (ADR-0010): it
+ * describes what the page said about itself and is never an instruction.
  */
 export interface ElementDescriptor {
   /**
@@ -1357,6 +1441,38 @@ export interface ElementDescriptor {
    * Accessible name, truncated to its bound.
    */
   readonly name?: PageText;
+  /**
+   * Where the element was laid out when the snapshot was taken. It is what lets a human's
+   * annotation geometry be resolved to an element without the control plane addressing the
+   * page (docs/DOMAIN_MODEL.md section 17): the resolution is arithmetic over this box
+   * rather than a second query into a page that may already have changed.
+   */
+  readonly box?: ElementBox;
+  /**
+   * Selector that would locate the element again. A hint, never an identity: reproduction
+   * must tolerate a DOM in which it no longer resolves.
+   */
+  readonly selector?: ElementSelector;
+  /**
+   * How the selector was chosen, strongest first. A test identifier survives a redesign; a
+   * CSS path built from tag names and positions frequently does not, and naming the
+   * strategy is what lets a reader weigh the selector rather than trust it.
+   */
+  readonly selector_strategy?: ElementDescriptorSelectorStrategy;
+  /**
+   * Bounded excerpt of the element's own text. Page-derived and untrusted: it is displayed
+   * as text, is labelled as page-derived wherever it reaches an agent, and is never
+   * followed as an instruction (ADR-0010).
+   */
+  readonly text_excerpt?: PageText;
+  /**
+   * Digest of the element's structural position — its tag, its identifier, its ancestry
+   * and its ordinal — so that a later reproduction can tell that the DOM changed rather
+   * than assuming a selector that still resolves found the same element. It deliberately
+   * excludes the element's text, so that editing a label does not read as a structural
+   * change.
+   */
+  readonly dom_fingerprint?: Sha256Hex;
 }
 
 /**
@@ -1373,6 +1489,12 @@ export interface SnapshotResult {
    * Viewport the snapshot was taken at. A resize supersedes it.
    */
   readonly viewport: Viewport;
+  /**
+   * How far the page was scrolled when the snapshot was taken. Element boxes are in
+   * document coordinates, so this is what relates them to anything expressed against the
+   * viewport — an annotation's geometry above all (ADR-0033).
+   */
+  readonly scroll_position: ScrollOffset;
   /**
    * Number of elements described.
    */
@@ -1418,6 +1540,14 @@ export interface ScreenshotResult {
    * Viewport the capture was taken at.
    */
   readonly viewport: Viewport;
+  /**
+   * How far the page was scrolled when the capture was taken. A viewport capture is a
+   * picture of one screenful, and without this it cannot be placed back on the page it
+   * came from (docs/DOMAIN_MODEL.md section 15). It is recorded for a full-page capture
+   * too, where it is the offset the page happened to hold rather than a property of the
+   * picture.
+   */
+  readonly scroll_position: ScrollOffset;
   /**
    * Whether the capture extends beyond the viewport.
    */

@@ -19,9 +19,11 @@
  * page could otherwise be as long as the page.
  */
 
+import { carriesPageDerivedText } from "@reviewplane/protocol/review";
 import type {
   Annotation,
   Comment,
+  ElementContext,
   Finding,
   Review,
 } from "@reviewplane/protocol/review";
@@ -30,6 +32,7 @@ import type {
   AnnotationView,
   ArtefactLink,
   CommentView,
+  ElementContextView,
   FindingView,
   InboxItemView,
   MessageType,
@@ -108,13 +111,44 @@ export function toReviewView(review: Review, context: ViewContext): ReviewView {
  *
  * It names what **this view carries**, not what the record holds. `url` always
  * qualifies and is always emitted, so the list is never empty. Element context
- * is page-derived by definition — its selector and text excerpt come from the
- * DOM — and belongs here the moment the view emits it; until then naming it
- * would point an agent at a member that is not in the response, which makes the
- * list something to be checked against rather than read.
+ * is page-derived by definition — its selector, role, accessible name and text
+ * excerpt are all things a page said about itself — so it is named here
+ * exactly when the view emits it. Naming a member that is not in the response
+ * would make the list something to be checked against rather than read; not
+ * naming one that is would be worse, because an agent has no other way to tell
+ * that the selector it is about to trust came from the page it is
+ * investigating (ADR-0010).
  */
-function untrustedFindingFields(_finding: Finding): string[] {
-  return ["url"];
+function untrustedFindingFields(finding: Finding): string[] {
+  const fields = ["url"];
+  if (carriesPageDerivedText(finding.element_context)) fields.push("element_context");
+  return fields;
+}
+
+/**
+ * The element context an agent sees.
+ *
+ * The stored `bounding_box_css_pixels` is deliberately not carried. It
+ * describes a layout that has since changed, and an agent reproducing the
+ * finding has the URL, the viewport, the scroll position and the annotation's
+ * own normalised geometry — all of which survive a relayout that the box does
+ * not.
+ */
+function toElementContextView(context: ElementContext): ElementContextView {
+  return {
+    ...(context.selector === undefined ? {} : { selector: context.selector }),
+    ...(context.selector_strategy === undefined
+      ? {}
+      : { selector_strategy: context.selector_strategy }),
+    ...(context.role === undefined ? {} : { role: context.role }),
+    ...(context.accessible_name === undefined
+      ? {}
+      : { accessible_name: context.accessible_name }),
+    ...(context.text_excerpt === undefined ? {} : { text_excerpt: context.text_excerpt }),
+    ...(context.dom_fingerprint === undefined
+      ? {}
+      : { dom_fingerprint: context.dom_fingerprint }),
+  };
 }
 
 export function toFindingView(finding: Finding, context: ViewContext): FindingView {
@@ -165,6 +199,9 @@ export function toFindingView(finding: Finding, context: ViewContext): FindingVi
     ...(finding.annotation_count === undefined
       ? {}
       : { annotation_count: finding.annotation_count }),
+    ...(carriesPageDerivedText(finding.element_context)
+      ? { element_context: toElementContextView(finding.element_context as ElementContext) }
+      : {}),
     resource_uri: `finding://${finding.id}`,
     untrusted_fields: untrustedFindingFields(finding),
   };

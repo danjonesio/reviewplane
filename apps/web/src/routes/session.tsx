@@ -40,6 +40,7 @@ import { useCallback, useMemo, useState, type ReactElement } from "react";
 
 import { api, ApiFailure, type BrowserSession } from "../api/client.ts";
 import { ActivityPanel, ActivityProvenanceNote } from "../components/ActivityPanel.tsx";
+import { CaptureFinding } from "../components/CaptureFinding.tsx";
 import type { BrowserOverlay } from "../components/BrowserOverlays.tsx";
 import { GitContextPanel } from "../components/GitContext.tsx";
 import { LiveSurface } from "../components/LiveSurface.tsx";
@@ -142,6 +143,16 @@ function SessionView(): ReactElement {
 
   const stream = useProjectEvents(projectId, { filter: belongsHere });
 
+  const workspaces = useQuery({
+    queryKey: ["session-workspaces", projectId],
+    queryFn: async () => {
+      const environments = await api.environments(projectId ?? "");
+      return environments.flatMap((environment) => environment.workspaces);
+    },
+    enabled: projectId !== undefined,
+    refetchInterval: 15_000,
+  });
+
   const overlays = useMemo(() => {
     const details = new Map(stream.entries.map((entry) => [entry.id, entry.details]));
     return overlaysFrom(stream.entries, details);
@@ -214,6 +225,11 @@ function SessionView(): ReactElement {
   const record = session.data;
   const status = liveStatus?.status ?? record.status;
   const url = liveStatus?.url ?? record.service_origin;
+  // The checkout a capture is interpreted against. A review names a branch and
+  // a commit, and this project's registered workspace is the only place the
+  // control plane knows them from; where there is none, the capture surface
+  // says so rather than inventing a branch.
+  const workspace = workspaces.data?.[0] ?? null;
   const label = statusLabel(status);
 
   return (
@@ -374,15 +390,7 @@ function SessionView(): ReactElement {
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(20rem,1fr)]">
         <div className="flex min-w-0 flex-col gap-3">
           <LiveSurface session={record} onSessionStatus={onSessionStatus} overlays={overlays} />
-          <div id="capture" className="rounded border border-slate-300 p-3 dark:border-slate-700">
-            <h2 className="text-sm font-semibold">Create a review from this session</h2>
-            <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">
-              Annotating a frame and naming the result is the next surface to arrive; it captures
-              the branch, commit and checkout the review is interpreted against, which is why it
-              cannot be reduced to a single button here. Screenshots captured through an agent are
-              already evidence and appear under Screenshots below.
-            </p>
-          </div>
+          <CaptureFinding session={record} workspace={workspace} currentUrl={url} />
         </div>
 
         <ActivityPanel

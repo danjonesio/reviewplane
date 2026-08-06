@@ -19,6 +19,7 @@ import type {
   ClickParams,
   CommandError,
   ControllerIdentity,
+  ElementBox,
   ElementDescriptor,
   Envelope,
   NavigateParams,
@@ -27,6 +28,7 @@ import type {
   ResizeParams,
   ScreenshotParams,
   ScreenshotResult,
+  ScrollOffset,
   ScrollParams,
   SelectOptionParams,
   SessionAllocate,
@@ -475,6 +477,28 @@ export function encodeNavigationResult(value: NavigationResult): string {
 }
 
 /**
+ * Canonically encodes a ScrollOffset.
+ */
+export function encodeScrollOffset(value: ScrollOffset): string {
+  const fields: string[] = [];
+  fields.push(`"x":${jsonNumber(value.x)}`);
+  fields.push(`"y":${jsonNumber(value.y)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a ElementBox.
+ */
+export function encodeElementBox(value: ElementBox): string {
+  const fields: string[] = [];
+  fields.push(`"x":${jsonNumber(value.x)}`);
+  fields.push(`"y":${jsonNumber(value.y)}`);
+  fields.push(`"width":${jsonNumber(value.width)}`);
+  fields.push(`"height":${jsonNumber(value.height)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
  * Canonically encodes a ElementDescriptor.
  */
 export function encodeElementDescriptor(value: ElementDescriptor): string {
@@ -483,6 +507,21 @@ export function encodeElementDescriptor(value: ElementDescriptor): string {
   fields.push(`"role":${jsonString(value.role)}`);
   if (value.name !== undefined) {
     fields.push(`"name":${jsonString(value.name)}`);
+  }
+  if (value.box !== undefined) {
+    fields.push(`"box":${encodeElementBox(value.box)}`);
+  }
+  if (value.selector !== undefined) {
+    fields.push(`"selector":${jsonString(value.selector)}`);
+  }
+  if (value.selector_strategy !== undefined) {
+    fields.push(`"selector_strategy":${jsonString(value.selector_strategy)}`);
+  }
+  if (value.text_excerpt !== undefined) {
+    fields.push(`"text_excerpt":${jsonString(value.text_excerpt)}`);
+  }
+  if (value.dom_fingerprint !== undefined) {
+    fields.push(`"dom_fingerprint":${jsonString(value.dom_fingerprint)}`);
   }
   return `{${fields.join(",")}}`;
 }
@@ -494,6 +533,7 @@ export function encodeSnapshotResult(value: SnapshotResult): string {
   const fields: string[] = [];
   fields.push(`"snapshot_id":${jsonString(value.snapshot_id)}`);
   fields.push(`"viewport":${encodeViewport(value.viewport)}`);
+  fields.push(`"scroll_position":${encodeScrollOffset(value.scroll_position)}`);
   fields.push(`"node_count":${jsonInteger(value.node_count)}`);
   fields.push(`"truncated":${jsonBoolean(value.truncated)}`);
   fields.push(`"text":${jsonString(value.text)}`);
@@ -511,6 +551,7 @@ export function encodeScreenshotResult(value: ScreenshotResult): string {
   fields.push(`"size_bytes":${jsonInteger(value.size_bytes)}`);
   fields.push(`"content_type":${jsonString(value.content_type)}`);
   fields.push(`"viewport":${encodeViewport(value.viewport)}`);
+  fields.push(`"scroll_position":${encodeScrollOffset(value.scroll_position)}`);
   fields.push(`"full_page":${jsonBoolean(value.full_page)}`);
   fields.push(`"captured_at":${jsonString(value.captured_at)}`);
   return `{${fields.join(",")}}`;

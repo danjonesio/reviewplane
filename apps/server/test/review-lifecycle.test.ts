@@ -1407,11 +1407,39 @@ test("a duplicate review creation with the same slug produces one review", async
       source_browser_session_id: fixture.browserSessionId,
     },
   });
-  // The partial unique index is the enforcement, so a second creation is
-  // refused rather than producing a second review with the same name.
-  assert.equal(second.statusCode, 409, second.body);
+  // The same key with the same body is a **replay**: the caller is asking for
+  // the request it already made, and it gets the review that request created.
+  // It answers 200 rather than 201 so the caller can tell it created nothing
+  // this time. Until RVP-45 the header was decorative and this second call was
+  // refused by the slug index instead; the property the test is named for —
+  // one review — is what both behaviours have in common, and it is asserted
+  // below either way.
+  assert.equal(second.statusCode, 200, second.body);
   assert.equal(
-    (second.json() as { error: { code: string } }).error.code,
+    (second.json() as { data: { id: string } }).data.id,
+    (first.json() as { data: { id: string } }).data.id,
+  );
+
+  // A genuinely separate attempt on the same name is still refused, and the
+  // partial unique index is still the enforcement. This is the case the slug
+  // rule exists for: an agent told to work on `bugs-on-homepage` must never
+  // face two candidates.
+  const separate = await harness.built.app.inject({
+    method: "POST",
+    url: `/api/v1/projects/${fixture.projectId}/reviews`,
+    headers: { ...ADMIN, "idempotency-key": "a-second-attempt-entirely" },
+    payload: {
+      slug: "bugs-on-homepage",
+      title: "Bugs on homepage, again",
+      captured_branch: "feat/homepage-refresh",
+      captured_commit: COMMIT,
+      captured_workspace_id: "wsp_refresh_dev",
+      source_browser_session_id: fixture.browserSessionId,
+    },
+  });
+  assert.equal(separate.statusCode, 409, separate.body);
+  assert.equal(
+    (separate.json() as { error: { code: string } }).error.code,
     "IDEMPOTENCY_CONFLICT",
   );
 

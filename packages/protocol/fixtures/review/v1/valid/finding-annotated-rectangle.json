@@ -32,6 +32,7 @@
         "width": 0.38,
         "height": 0.11
       },
+      "geometry_version": 1,
       "label": "Heading overlapping the basket button",
       "style_hint": "critical",
       "revision": 1,

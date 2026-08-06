@@ -252,9 +252,10 @@ export type FindingSource =
   | "agent";
 
 /**
- * Annotation shape (docs/DOMAIN_MODEL.md section 16). freehand is listed in the domain
- * model and is deliberately not implemented in Stage 0; its path versioning is a separate
- * decision.
+ * Annotation shape (docs/DOMAIN_MODEL.md section 16). All six types of that section are
+ * carried. freehand carries a sampled path beside the bounding box every other box type
+ * carries, so a reader that cannot draw the path still knows the region the mark covers
+ * (ADR-0032).
  */
 export const ANNOTATION_TYPE_VALUES = [
   "rectangle",
@@ -262,6 +263,7 @@ export const ANNOTATION_TYPE_VALUES = [
   "arrow",
   "point",
   "numbered_marker",
+  "freehand",
 ] as const;
 
 export type AnnotationType =
@@ -269,7 +271,8 @@ export type AnnotationType =
   | "ellipse"
   | "arrow"
   | "point"
-  | "numbered_marker";
+  | "numbered_marker"
+  | "freehand";
 
 /**
  * Artefact kind (docs/DOMAIN_MODEL.md section 20).
@@ -563,6 +566,20 @@ export type AnnotationCreateRequestStyleHint =
   | "informational";
 
 /**
+ * Replacement advisory emphasis. Absent leaves it as it was.
+ */
+export const ANNOTATION_UPDATE_REQUEST_STYLE_HINT_VALUES = [
+  "default",
+  "critical",
+  "informational",
+] as const;
+
+export type AnnotationUpdateRequestStyleHint =
+  | "default"
+  | "critical"
+  | "informational";
+
+/**
  * Inbox-item status (docs/DOMAIN_MODEL.md section 21). acknowledged and completed are
  * separate values because receipt and completion are separate facts, and a single value
  * covering both would make the audit question unanswerable.
@@ -711,7 +728,7 @@ export const PAYLOAD_MAX_BYTES: Readonly<Record<MessageType, number>> = {
   "review.named": 2048,
   "review.status_changed": 2048,
   "finding.created": 8192,
-  "finding.annotated": 4096,
+  "finding.annotated": 8192,
   "finding.status_changed": 2048,
   "review.claimed": 2048,
   "finding.claimed": 2048,
@@ -801,18 +818,25 @@ export interface SchemaViolation {
 }
 
 /**
- * Which geometry members each annotation type uses. The schema bounds every member to 0 to
- * 1; this list fixes which of them a type requires and which it forbids, and is enforced
- * by requireGeometryForType in src/annotation-geometry.ts because JSON Schema cannot
- * condition a nested object on a sibling property. rectangle and ellipse are a box; point
- * and numbered_marker are a position; arrow is a tail plus a head.
+ * Which geometry members each annotation type uses, in the form
+ * type:version:required[:optional]. The schema bounds every member to 0 to 1; this list
+ * fixes which of them a type requires, which it may carry and which it forbids, and is
+ * enforced by checkGeometryForType in src/annotation-geometry.ts because JSON Schema
+ * cannot condition a nested object on a sibling property. rectangle and ellipse are a box
+ * that may be rotated; point and numbered_marker are a position; arrow is a tail plus a
+ * head; freehand is a box plus the sampled path inside it. The second field is the
+ * geometry version of docs/DOMAIN_MODEL.md section 16, held per type rather than per
+ * document so that adding a member to one shape does not renumber the others (ADR-0032);
+ * it is stored on every annotation so a reader knows which member list a stored geometry
+ * was written against.
  */
 export const GEOMETRY_BY_ANNOTATION_TYPE = [
-  "rectangle:x,y,width,height",
-  "ellipse:x,y,width,height",
-  "arrow:x,y,x2,y2",
-  "point:x,y",
-  "numbered_marker:x,y",
+  "rectangle:1:x,y,width,height:rotation",
+  "ellipse:1:x,y,width,height:rotation",
+  "arrow:1:x,y,x2,y2",
+  "point:1:x,y",
+  "numbered_marker:1:x,y",
+  "freehand:1:x,y,width,height,path",
 ] as const;
 
 /**
@@ -1195,11 +1219,29 @@ export interface CssPixelBox {
 }
 
 /**
+ * One sampled point of a freehand path, normalised to the artefact content rectangle
+ * exactly as every other geometry member is. A path is a list of these rather than a
+ * string of drawing commands, because a command string is a second grammar to validate and
+ * an SVG path is a place to hide markup (ADR-0032).
+ */
+export interface AnnotationPathPoint {
+  /**
+   * Horizontal position of this sample.
+   */
+  readonly x: NormalisedCoordinate;
+  /**
+   * Vertical position of this sample.
+   */
+  readonly y: NormalisedCoordinate;
+}
+
+/**
  * Normalised geometry in the exact shape of docs/DOMAIN_MODEL.md section 16, extended with
- * the head of an arrow. Every member lies between 0 and 1 inclusive against the artefact
- * content rectangle. Which members a type requires is fixed by
+ * the head of an arrow, an optional rotation and the sampled path of a freehand mark.
+ * Every member lies between 0 and 1 inclusive against the artefact content rectangle.
+ * Which members a type requires is fixed by
  * x-protocol.vocabularies.geometry_by_annotation_type and enforced by
- * requireGeometryForType, because JSON Schema cannot condition a nested object on the
+ * checkGeometryForType, because JSON Schema cannot condition a nested object on the
  * sibling type property.
  */
 export interface AnnotationGeometry {
@@ -1227,6 +1269,21 @@ export interface AnnotationGeometry {
    * Arrow head, vertical. Required for arrow, forbidden for the other types.
    */
   readonly y2?: NormalisedCoordinate;
+  /**
+   * Clockwise rotation of a box about its own centre, in turns rather than degrees, so
+   * that this member obeys the same 0 to 1 bound as every other one and
+   * docs/DOMAIN_MODEL.md section 16 keeps a single range rule. 0.25 is a quarter turn.
+   * Optional for rectangle and ellipse, forbidden for the other types; absent means
+   * unrotated.
+   */
+  readonly rotation?: NormalisedCoordinate;
+  /**
+   * Sampled points of a freehand stroke, in drawing order, each normalised to the artefact
+   * content rectangle. Required for freehand, forbidden for the other types. The bound is
+   * 128 points: a stroke is decimated by the client that drew it, and an unbounded path
+   * would be a way to make one annotation cost more than the finding it belongs to.
+   */
+  readonly path?: readonly AnnotationPathPoint[];
 }
 
 /**
@@ -1495,6 +1552,14 @@ export interface Annotation {
    * Normalised geometry against the artefact content rectangle.
    */
   readonly geometry: AnnotationGeometry;
+  /**
+   * Version of the member list this geometry was written against, taken from
+   * x-protocol.vocabularies.geometry_by_annotation_type for the annotation's own type.
+   * Derived by the control plane from the type and never supplied by a caller: a stored
+   * geometry has to say which rule it obeyed, and a client able to name it could claim a
+   * member list its geometry does not satisfy (ADR-0032).
+   */
+  readonly geometry_version: VersionNumber;
   /**
    * Text alternative for the mark, required by docs/UX_FLOWS.md section 19 so the
    * annotation list conveys the same information as the canvas.
@@ -2418,6 +2483,40 @@ export interface AnnotationCreateRequest {
 }
 
 /**
+ * Body of PATCH /api/v1/annotations/:annotationId (docs/API.md section 14). An edit
+ * records a new revision and retains the one it supersedes, so this request never
+ * overwrites anything. The annotation's type and artefact are not editable: changing
+ * either would make the retained revisions a history of two different marks, and the
+ * honest way to move a mark to another shape or another screenshot is to withdraw it and
+ * record a new one.
+ */
+export interface AnnotationUpdateRequest {
+  /**
+   * Revision the caller read. An edit against a superseded revision is refused with
+   * VERSION_CONFLICT rather than applied, so two simultaneous edits produce one new
+   * revision and one refusal instead of a forked history.
+   */
+  readonly expected_revision: VersionNumber;
+  /**
+   * Replacement geometry, validated against the annotation's existing type. Absent leaves
+   * the geometry as it was.
+   */
+  readonly geometry?: AnnotationGeometry;
+  /**
+   * Replacement text alternative. Absent leaves the label as it was.
+   */
+  readonly label?: TitleText;
+  /**
+   * Replacement ordinal for a numbered marker. Absent leaves it as it was.
+   */
+  readonly marker_number?: MarkerNumber;
+  /**
+   * Replacement advisory emphasis. Absent leaves it as it was.
+   */
+  readonly style_hint?: AnnotationUpdateRequestStyleHint;
+}
+
+/**
  * Payload of review.created.
  */
 export interface ReviewCreated {
@@ -2486,7 +2585,10 @@ export interface FindingCreated {
 }
 
 /**
- * Payload of finding.annotated.
+ * Payload of finding.annotated. It is recorded for the first revision of an annotation and
+ * for every later one, so an edit and a withdrawal leave the same kind of trail a creation
+ * does; the revision on the annotation says which of the three it was, and a withdrawn
+ * revision carries deleted_at.
  */
 export interface FindingAnnotated {
   /**

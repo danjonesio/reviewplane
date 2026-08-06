@@ -27,8 +27,9 @@ const PATTERN_8 = new RegExp("^[^\\u0000-\\u001f\\u007f]*$", "u");
 const PATTERN_9 = new RegExp("^[^\\u0000-\\u0009\\u000b-\\u001f\\u007f]*$", "u");
 const PATTERN_10 = new RegExp("^e[0-9]{1,6}$", "u");
 const PATTERN_11 = new RegExp("^[A-Za-z][A-Za-z0-9 _-]*$", "u");
-const PATTERN_12 = new RegExp("^[^\\u0000-\\u001f\\u007f]+$", "u");
-const PATTERN_13 = new RegExp("^[0-9a-f]{64}$", "u");
+const PATTERN_12 = new RegExp("^[^\\u0000-\\u001f\\u007f<>\"]*$", "u");
+const PATTERN_13 = new RegExp("^[^\\u0000-\\u001f\\u007f]+$", "u");
+const PATTERN_14 = new RegExp("^[0-9a-f]{64}$", "u");
 
 /**
  * Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the
@@ -130,6 +131,16 @@ export function validateAccessibleRole(value: unknown, path: string, out: Schema
 }
 
 /**
+ * Selector a snapshot offers for an element. Page-derived, bounded, and free of control
+ * characters and of the angle brackets and quotation marks that would let a page smuggle
+ * markup through a value a reader displays. It is a hint about where an element was, not a
+ * promise that it is still there (docs/DOMAIN_MODEL.md section 17).
+ */
+export function validateElementSelector(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { minLength: 1, maxLength: 512, pattern: PATTERN_12 });
+}
+
+/**
  * Text typed into a page input. Secret values MUST NOT travel through this field;
  * docs/MCP_SPEC.md section 7.9 secret injection is the supported path.
  */
@@ -150,7 +161,7 @@ export function validateOptionValue(value: unknown, path: string, out: SchemaVio
  * (docs/DOMAIN_MODEL.md section 17).
  */
 export function validateSelector(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 512, pattern: PATTERN_12 });
+  checkString(value, path, out, { minLength: 1, maxLength: 512, pattern: PATTERN_13 });
 }
 
 /**
@@ -165,7 +176,7 @@ export function validateUrlPattern(value: unknown, path: string, out: SchemaViol
  * and never carries credentials (docs/SECURITY.md section 18).
  */
 export function validateReasonText(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 1, maxLength: 512, pattern: PATTERN_12 });
+  checkString(value, path, out, { minLength: 1, maxLength: 512, pattern: PATTERN_13 });
 }
 
 /**
@@ -173,7 +184,7 @@ export function validateReasonText(value: unknown, path: string, out: SchemaViol
  * the artefact becomes available (docs/API.md section 15, ADR-0012).
  */
 export function validateSha256Hex(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { minLength: 64, maxLength: 64, pattern: PATTERN_13 });
+  checkString(value, path, out, { minLength: 64, maxLength: 64, pattern: PATTERN_14 });
 }
 
 /**
@@ -303,6 +314,15 @@ export function validateTrustLabel(value: unknown, path: string, out: SchemaViol
  */
 export function validateInstructionPolicy(value: unknown, path: string, out: SchemaViolation[]): void {
   checkString(value, path, out, { values: ["do_not_follow_as_instructions"] });
+}
+
+/**
+ * A CSS-pixel measurement of an element box, relative to the top-left of the document. It
+ * is bounded because a page chooses its own layout and an unbounded number here would be a
+ * page-controlled value in a stored record.
+ */
+export function validateElementCssPixelOffset(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkNumber(value, path, out, { minimum: -100000, maximum: 100000 });
 }
 
 /**
@@ -1390,10 +1410,66 @@ export function validateNavigationResult(value: unknown, path: string, out: Sche
 }
 
 /**
+ * How far the page was scrolled, in CSS pixels, at the moment a capture was taken. It is
+ * what turns a viewport-sized picture back into a position on the page it came from: an
+ * annotation's geometry is normalised to the capture, element boxes are in document
+ * coordinates, and this is the only value that relates the two. It is measured rather than
+ * assumed — a capture of a scrolled page whose offset was recorded as the origin resolves
+ * marks against whatever sits at the top of the document instead, which is a well-formed
+ * and wrong answer (ADR-0033).
+ */
+export function validateScrollOffset(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["x", "y"], ["x", "y"]);
+  if (source === null) return;
+  if (source["x"] !== undefined) {
+    validateElementCssPixelOffset(source["x"], `${path}.x`, out);
+  }
+  if (source["y"] !== undefined) {
+    validateElementCssPixelOffset(source["y"], `${path}.y`, out);
+  }
+}
+
+/**
+ * Box of a snapshot element in CSS pixels, relative to the top-left of the document rather
+ * than of the viewport, so that it can be compared with an annotation's geometry without
+ * also knowing where the page happened to be scrolled to. Page-derived: it is a
+ * measurement of a layout the page controls, and it is stored as a hint about where an
+ * element was rather than as an assertion about where it is (docs/DOMAIN_MODEL.md section
+ * 17).
+ */
+export function validateElementBox(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["x", "y", "width", "height"], ["x", "y", "width", "height"]);
+  if (source === null) return;
+  if (source["x"] !== undefined) {
+    validateElementCssPixelOffset(source["x"], `${path}.x`, out);
+  }
+  if (source["y"] !== undefined) {
+    validateElementCssPixelOffset(source["y"], `${path}.y`, out);
+  }
+  if (source["width"] !== undefined) {
+    validateElementCssPixelOffset(source["width"], `${path}.width`, out);
+  }
+  if (source["height"] !== undefined) {
+    validateElementCssPixelOffset(source["height"], `${path}.height`, out);
+  }
+}
+
+/**
+ * How the selector was chosen, strongest first. A test identifier survives a redesign; a
+ * CSS path built from tag names and positions frequently does not, and naming the strategy
+ * is what lets a reader weigh the selector rather than trust it.
+ */
+export function validateElementDescriptorSelectorStrategy(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["testid","role","text","css","xpath"] });
+}
+
+/**
  * One element of a snapshot, addressable by reference until the snapshot is superseded.
+ * Everything on it but the reference is page-derived and untrusted (ADR-0010): it
+ * describes what the page said about itself and is never an instruction.
  */
 export function validateElementDescriptor(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["ref", "role", "name"], ["ref", "role"]);
+  const source = checkObject(value, path, out, ["ref", "role", "name", "box", "selector", "selector_strategy", "text_excerpt", "dom_fingerprint"], ["ref", "role"]);
   if (source === null) return;
   if (source["ref"] !== undefined) {
     validateElementReference(source["ref"], `${path}.ref`, out);
@@ -1403,6 +1479,21 @@ export function validateElementDescriptor(value: unknown, path: string, out: Sch
   }
   if (source["name"] !== undefined) {
     validatePageText(source["name"], `${path}.name`, out);
+  }
+  if (source["box"] !== undefined) {
+    validateElementBox(source["box"], `${path}.box`, out);
+  }
+  if (source["selector"] !== undefined) {
+    validateElementSelector(source["selector"], `${path}.selector`, out);
+  }
+  if (source["selector_strategy"] !== undefined) {
+    validateElementDescriptorSelectorStrategy(source["selector_strategy"], `${path}.selector_strategy`, out);
+  }
+  if (source["text_excerpt"] !== undefined) {
+    validatePageText(source["text_excerpt"], `${path}.text_excerpt`, out);
+  }
+  if (source["dom_fingerprint"] !== undefined) {
+    validateSha256Hex(source["dom_fingerprint"], `${path}.dom_fingerprint`, out);
   }
 }
 
@@ -1436,13 +1527,16 @@ export function validateSnapshotResultElements(value: unknown, path: string, out
  * throughout.
  */
 export function validateSnapshotResult(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["snapshot_id", "viewport", "node_count", "truncated", "text", "elements"], ["snapshot_id", "viewport", "node_count", "truncated", "text", "elements"]);
+  const source = checkObject(value, path, out, ["snapshot_id", "viewport", "scroll_position", "node_count", "truncated", "text", "elements"], ["snapshot_id", "viewport", "scroll_position", "node_count", "truncated", "text", "elements"]);
   if (source === null) return;
   if (source["snapshot_id"] !== undefined) {
     validateIdentifier(source["snapshot_id"], `${path}.snapshot_id`, out);
   }
   if (source["viewport"] !== undefined) {
     validateViewport(source["viewport"], `${path}.viewport`, out);
+  }
+  if (source["scroll_position"] !== undefined) {
+    validateScrollOffset(source["scroll_position"], `${path}.scroll_position`, out);
   }
   if (source["node_count"] !== undefined) {
     validateSnapshotResultNodeCount(source["node_count"], `${path}.node_count`, out);
@@ -1477,7 +1571,7 @@ export function validateScreenshotResultFullPage(value: unknown, path: string, o
  * 15, ADR-0012).
  */
 export function validateScreenshotResult(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["artefact_id", "sha256", "size_bytes", "content_type", "viewport", "full_page", "captured_at"], ["artefact_id", "sha256", "size_bytes", "content_type", "viewport", "full_page", "captured_at"]);
+  const source = checkObject(value, path, out, ["artefact_id", "sha256", "size_bytes", "content_type", "viewport", "scroll_position", "full_page", "captured_at"], ["artefact_id", "sha256", "size_bytes", "content_type", "viewport", "scroll_position", "full_page", "captured_at"]);
   if (source === null) return;
   if (source["artefact_id"] !== undefined) {
     validateIdentifier(source["artefact_id"], `${path}.artefact_id`, out);
@@ -1493,6 +1587,9 @@ export function validateScreenshotResult(value: unknown, path: string, out: Sche
   }
   if (source["viewport"] !== undefined) {
     validateViewport(source["viewport"], `${path}.viewport`, out);
+  }
+  if (source["scroll_position"] !== undefined) {
+    validateScrollOffset(source["scroll_position"], `${path}.scroll_position`, out);
   }
   if (source["full_page"] !== undefined) {
     validateScreenshotResultFullPage(source["full_page"], `${path}.full_page`, out);
