@@ -304,6 +304,85 @@ test("an unassigned project is refused a session even though the worker is live"
   );
 });
 
+/**
+ * The two copies of the assignment, and the window between them.
+ *
+ * `browser_worker_projects` is written by the PUT and read by the control
+ * plane's own check, which therefore passes immediately. The worker's copy is
+ * an in-memory set restated on its next heartbeat (ADR-0026), so it converges
+ * up to one heartbeat interval later, and until it does the worker refuses the
+ * allocation the control plane has just authorised.
+ *
+ * That window is designed, not a defect — but a refusal that says only "this
+ * worker is not assigned to the project" while the fleet view says it is has no
+ * way of being read correctly, and it cost a full end-to-end investigation
+ * once: `deploy/compose/e2e/run.sh` waited on the row rather than on the
+ * worker, reported that the worker had "picked up its assignment", and then
+ * lost the race at the next step.
+ */
+test("a worker refusing a project the control plane has assigned is reported as a stale worker copy, not as an unassigned one", async () => {
+  const { projectId } = await seedProjectAndWorker(harness);
+  // seedProjectAndWorker assigns the project, so the control plane's own check
+  // passes; the worker is the one refusing, exactly as a worker that has not
+  // yet heartbeated since the assignment does.
+  harness.worker.refuseWith = {
+    status: 403,
+    code: "PROJECT_CONTEXT_MISMATCH",
+    message: "This worker is not assigned to the project the browser session belongs to.",
+  };
+
+  const response = await harness.built.app.inject({
+    method: "POST",
+    url: `/api/v1/projects/${projectId}/browser-sessions`,
+    headers: AUTH,
+    payload: { viewport: DESKTOP },
+  });
+  const error = (response.json() as { error: { code: string; message: string; details?: Record<string, unknown> } }).error;
+  assert.equal(error.code, "PROJECT_CONTEXT_MISMATCH");
+  assert.match(error.message, /stale/u);
+  assert.match(error.message, /heartbeat/u);
+  // The wait is bounded and the answer says by how much, so a caller can retry
+  // rather than guess or restart the worker.
+  assert.match(error.message, new RegExp(String(FAST.heartbeatIntervalSeconds), "u"));
+  assert.equal(error.details?.["browser_worker_assignment"], "stale");
+});
+
+test("a worker refusing a project the control plane has not assigned is left saying so", async () => {
+  const { projectId, workerId } = await seedProjectAndWorker(harness);
+  const session = await harness.built.app.inject({
+    method: "POST",
+    url: `/api/v1/projects/${projectId}/browser-sessions`,
+    headers: AUTH,
+    payload: { viewport: DESKTOP, allocate: false },
+  });
+  const sessionId = (session.json() as { data: { id: string } }).data.id;
+
+  // The assignment is withdrawn after the reservation, so the allocation runs
+  // with no row anywhere. The worker's refusal is then simply correct and must
+  // not be dressed up as a synchronisation delay that will pass on its own.
+  await harness.built.app.inject({
+    method: "PUT",
+    url: `/api/v1/browser-workers/${workerId}/assignments`,
+    headers: AUTH,
+    payload: { project_ids: [] },
+  });
+  harness.worker.refuseWith = {
+    status: 403,
+    code: "PROJECT_CONTEXT_MISMATCH",
+    message: "This worker is not assigned to the project the browser session belongs to.",
+  };
+
+  const response = await harness.built.app.inject({
+    method: "POST",
+    url: `/api/v1/browser-sessions/${sessionId}/allocate`,
+    headers: AUTH,
+    payload: {},
+  });
+  const error = (response.json() as { error: { code: string; message: string } }).error;
+  assert.equal(error.code, "PROJECT_CONTEXT_MISMATCH");
+  assert.doesNotMatch(error.message, /stale/u);
+});
+
 // ---------------------------------------------------------------------------
 // Reconciliation (docs/OPERATIONS.md section 9)
 // ---------------------------------------------------------------------------

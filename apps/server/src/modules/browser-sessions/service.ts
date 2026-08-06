@@ -379,12 +379,49 @@ export class BrowserSessionService {
       });
       return this.get(session.id);
     } catch (error) {
+      const reported = await this.#explainWorkerRefusal(session, error);
       const failing = await this.get(session.id);
       await this.#setStatus(failing, "FAILED", input.actor, "browser_session.failed", {
-        reason: error instanceof Error ? error.message : String(error),
+        reason: reported instanceof Error ? reported.message : String(reported),
       });
-      throw error;
+      throw reported;
     }
+  }
+
+  /**
+   * Distinguishes "this worker does not serve that project" from "this worker
+   * has not been told yet".
+   *
+   * Both arrive as `PROJECT_CONTEXT_MISMATCH` from the worker, and the second
+   * one contradicts everything the caller can see: the control plane checked
+   * the same assignment moments earlier and passed it, and the fleet view lists
+   * the project against the worker. The two are one fact in two copies —
+   * `browser_worker_projects` here, and an in-memory set on the worker that
+   * converges on the next heartbeat (ADR-0026) — and only this side can compare
+   * them.
+   *
+   * It changes no decision. The refusal stands, because the worker's check is
+   * the one protecting the browser and a control plane that talked it round
+   * would be enforcing nothing. What changes is that the answer says which of
+   * the two conditions it is, and how long the second one lasts.
+   *
+   * `docs/UX_FLOWS.md` section 18: a refusal names the condition and the way
+   * out, rather than restating the rule.
+   */
+  async #explainWorkerRefusal(
+    session: BrowserSessionRecord,
+    error: unknown,
+  ): Promise<unknown> {
+    if (!(error instanceof ApiError) || error.code !== "PROJECT_CONTEXT_MISMATCH") return error;
+    if (session.worker_id === null) return error;
+    const assigned = await this.#workers.assignedProjects(session.worker_id);
+    if (!assigned.includes(session.project_id)) return error;
+    const seconds = this.#workers.config.heartbeatIntervalSeconds;
+    return new ApiError(
+      "PROJECT_CONTEXT_MISMATCH",
+      `The browser worker refused this session's project, but the control plane has it assigned: the worker's copy of its assignment is stale and is restated on its next heartbeat, within ${String(seconds)} seconds of the assignment (ADR-0026). Retry after that; no restart is needed.`,
+      { browser_worker_assignment: "stale", heartbeat_interval_seconds: seconds },
+    );
   }
 
   /**
