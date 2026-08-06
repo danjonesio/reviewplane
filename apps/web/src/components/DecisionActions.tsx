@@ -13,6 +13,15 @@
  * That is the single mistake this design exists to make unwritable, so the
  * inputs arrive from above and there is no query client in scope.
  *
+ * **A decision is offered only for the claim on screen.** `claimIsDecidable`
+ * is false when the reader has selected a prior claim from the history — a
+ * comparison they may read and may not act on — and the controls are then
+ * replaced by a named state saying so. This is not cosmetic: the version check
+ * cannot catch a decision taken on the wrong claim of one snapshot, because
+ * such a request is entirely legitimate at the server. Withdrawing the control
+ * is the only place that difference is visible, and the harm it prevents is a
+ * reviewer's name recorded on evidence they did not read.
+ *
  * **Which controls appear comes from the shared transition table** (ADR-0024,
  * `../review-actions.ts`), never from a list written here. And appearing is not
  * permission: the control plane refuses whatever it should refuse whether or
@@ -95,6 +104,15 @@ export interface FindingDecisionActionsProps {
   readonly expectedVersion: number;
   /** The claim the comparison rendered, or null where the finding holds none. */
   readonly verificationId: string | null;
+  /**
+   * Whether the rendered claim is the one a decision may be taken on. False
+   * while the reader is looking at a prior claim from the history.
+   */
+  readonly claimIsDecidable: boolean;
+  /** The claim that *is* decidable, named so the reader can return to it. */
+  readonly currentVerificationId: string | null;
+  /** Returns the comparison to the current claim. */
+  readonly onShowCurrentClaim: () => void;
   readonly disabled?: boolean;
   readonly pending: FindingDecision | null;
   readonly failure: unknown;
@@ -107,6 +125,9 @@ export function FindingDecisionActions({
   decisions,
   expectedVersion,
   verificationId,
+  claimIsDecidable,
+  currentVerificationId,
+  onShowCurrentClaim,
   disabled = false,
   pending,
   failure,
@@ -126,6 +147,42 @@ export function FindingDecisionActions({
       <p className="mt-4 text-sm" data-decisions-empty={findingId}>
         No decision is available on this finding from its current status.
       </p>
+    );
+  }
+
+  // The reader is looking at a claim that is not the one under review. Showing
+  // the controls here would let them accept a claim whose pictures, summary,
+  // viewports and assurance split are not the ones on screen.
+  if (!claimIsDecidable) {
+    return (
+      <section
+        aria-labelledby={`decision-heading-${findingId}`}
+        data-decisions-withheld={findingId}
+        className="mt-4"
+      >
+        <h5 id={`decision-heading-${findingId}`} className="text-sm font-semibold">
+          Your decision
+        </h5>
+        <p className="mt-1 text-sm">
+          This comparison shows an earlier claim, so no decision can be taken from here. A decision
+          is about the evidence you are reading, and the evidence under review is
+          {currentVerificationId === null
+            ? " no longer a claim this finding holds."
+            : " a different claim."}
+        </p>
+        {currentVerificationId === null ? null : (
+          <p className="mt-2">
+            <button
+              type="button"
+              data-decision-show-current={findingId}
+              onClick={onShowCurrentClaim}
+              className={CONTROL}
+            >
+              Show the claim under review
+            </button>
+          </p>
+        )}
+      </section>
     );
   }
 

@@ -1044,6 +1044,17 @@ identifier, so the audit trail says which claim a human decided rather than only
 that a finding was closed. `finding.resolved` cannot answer that, and after an
 agent has submitted twice it is the only question worth asking.
 
+A finding a human has disposed of takes **no further submission**. Reaching
+`RESOLVED`, `WONT_FIX` or `DUPLICATE` is refused with `POLICY_DENIED` and the
+action the caller can take: ask for the finding to be reopened, which is a human
+decision, and submit against the reopened finding. Before acceptance decided the
+claim beneath it this case could not arise — a disposed finding always still
+held a `submitted` verification, so a later submission superseded it — and
+deciding the claim made it reachable. Without the rule an agent could attach a
+fresh, weaker claim to a finding badged `RESOLVED`, and every surface reading
+"the latest verification" would serve that claim beside a human's acceptance of
+a different one.
+
 A submission also carries the artefact links its claim rests on, in
 `verification_artefacts` with a `before`, `after` or `supporting` role. Deletion
 of a linked artefact is restricted for the same reason a finding restricts

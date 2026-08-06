@@ -524,6 +524,101 @@ test("accepting decides the claim it named, and the event says which", async () 
   }
 });
 
+test("an accepted finding takes no further claim", async () => {
+  const fixture = await findingAwaitingReview();
+  const shownToReviewer = await currentVersion(fixture.findingId);
+  const claimShown = (await currentVerificationId(fixture.findingId)) as string;
+
+  assert.equal((await accept(fixture.findingId, shownToReviewer, claimShown)).statusCode, 200);
+
+  // Accepting decides the claim, so nothing is `submitted` and a new
+  // submission would insert as the current one rather than superseding
+  // anything. Every surface reading "the latest verification" would then serve
+  // an agent's post-hoc claim beside a human's acceptance of a different one.
+  const refused = await harness.built.reviews
+    .submitVerification(
+      { organisationId: fixture.organisationId, projectId: fixture.projectId },
+      fixture.findingId,
+      {
+        summary: "Post-acceptance claim.",
+        branch: "redesign",
+        commit: FIXED_COMMIT,
+        testedViewports: MOBILE_ONLY,
+        checks: WEAKER_CHECKS,
+        artefactIds: [fixture.afterArtefactId],
+        workspaceBranch: null,
+      } as never,
+      AGENT,
+    )
+    .then(() => null)
+    .catch((error: unknown) => error as { code?: string; message?: string });
+
+  assert.equal(refused?.code, "POLICY_DENIED", refused?.message ?? "the submission was accepted");
+  // Nothing was written, and the claim a human accepted is still the one the
+  // finding serves.
+  assert.equal(await currentVerificationId(fixture.findingId), null);
+  assert.equal(await verificationStatus(claimShown), "accepted");
+  const claims = await postgres.pool.query<{ count: string }>(
+    "SELECT count(*) AS count FROM verifications WHERE finding_id = $1",
+    [fixture.findingId],
+  );
+  assert.equal(Number(claims.rows[0]?.count), 1);
+
+  // The route answers the same way, so the rule is not a property of the
+  // service method.
+  const overHttp = await harness.built.app.inject({
+    method: "POST",
+    url: `/api/v1/findings/${fixture.findingId}/verifications`,
+    headers: ADMIN,
+    payload: {
+      summary: "Post-acceptance claim over HTTP.",
+      branch: "redesign",
+      commit: FIXED_COMMIT,
+      tested_viewports: MOBILE_ONLY,
+      checks: WEAKER_CHECKS,
+      artefact_ids: [fixture.afterArtefactId],
+    },
+  });
+  assert.equal(overHttp.statusCode, 403, overHttp.body);
+  assert.equal((overHttp.json() as { error: { code: string } }).error.code, "POLICY_DENIED");
+});
+
+test("a reopened finding takes a claim again", async () => {
+  // The refusal above is about a decided finding, not about a finding that has
+  // been decided once. Reopening is the human act that makes more work
+  // possible, and an agent must be able to submit against the result — a rule
+  // that stopped there would make a reopen a dead end.
+  const fixture = await findingAwaitingReview();
+  const shownToReviewer = await currentVersion(fixture.findingId);
+  const claimShown = (await currentVerificationId(fixture.findingId)) as string;
+
+  assert.equal(
+    (await reopen(fixture.findingId, shownToReviewer, "Still overlaps at 390px.", claimShown))
+      .statusCode,
+    200,
+  );
+
+  const scope = { organisationId: fixture.organisationId, projectId: fixture.projectId };
+  const resubmitted = await harness.built.reviews.submitVerification(
+    scope,
+    fixture.findingId,
+    {
+      summary: "Second attempt after the reopen.",
+      branch: "redesign",
+      commit: FIXED_COMMIT,
+      testedViewports: BOTH_VIEWPORTS,
+      checks: PASSING_CHECKS,
+      artefactIds: [fixture.afterArtefactId],
+      workspaceBranch: null,
+    } as never,
+    AGENT,
+  );
+  assert.equal(resubmitted.verification.status, "submitted");
+  // And the rejected record is still there, which is what makes a repeatedly
+  // reopened finding readable (`docs/DOMAIN_MODEL.md` section 19).
+  assert.equal(await verificationStatus(claimShown), "rejected");
+});
+
 test("reopening rejects the claim it named and keeps the record", async () => {
   const fixture = await findingAwaitingReview();
   const shownToReviewer = await currentVersion(fixture.findingId);

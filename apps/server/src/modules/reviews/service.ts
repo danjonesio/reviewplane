@@ -69,6 +69,7 @@ import {
   assertCompletionEvidence,
   assertDecisionReason,
   assertExpectedVersion,
+  assertFindingTakesVerification,
   assertFindingTransition,
   assertGeometry,
   assertVerificationUnderReview,
@@ -2287,6 +2288,23 @@ export class ReviewService {
     const finding = await this.getFinding(scope, findingId);
     const review = await this.getReview(scope, finding.review_id);
     assertReviewMutable(review.status, { fields: ["verification"] });
+    // A finding a human has disposed of takes no further claim (ADR-0035).
+    //
+    // Until accept decided the claim under it, this was unreachable: a
+    // disposed finding always held a `submitted` verification, so a second
+    // submission superseded it and the finding's own status was never
+    // consulted. Deciding the claim removed that accident, and the gap it left
+    // is worth closing on its own merits — an agent could attach a fresh,
+    // weaker claim to a finding badged `RESOLVED`, and `GET .../verification`
+    // and every surface reading "the latest" would then serve the post-hoc
+    // claim beside a human's acceptance of a different one.
+    //
+    // Nothing about the acceptance is undone by it and the audit trail stays
+    // sound, which is exactly why this is a refusal rather than a repair: the
+    // record is right and the write should not have been possible. A finding
+    // that needs more work is reopened first, which is a human decision and
+    // returns it to a status this permits.
+    assertFindingTakesVerification(finding.status);
 
     const evidence = await this.#requireOwnedEvidence(scope, input.artefactIds, findingId);
     const screenshots = evidence.filter((artefact) => artefact.kind === "screenshot");

@@ -156,6 +156,7 @@ export {
   assertCompletionEvidence,
   assertDecisionReason,
   assertExpectedVersion,
+  assertFindingTakesVerification,
   assertFindingTransition,
   assertVerificationUnderReview,
   assertReviewAcceptable,

@@ -771,8 +771,16 @@ beside the disposition. Won't-fix and duplicate decide neither: waiving a
 reported problem is a judgement about the report rather than about the claim
 made against it. Nothing is deleted, and every claim the finding has ever held
 stays listed and selectable — a superseded record says so in words, and choosing
-it renders its own comparison with a sentence saying no decision can be taken on
-it.
+it renders its own comparison **and withdraws the decision controls**, naming
+the claim that is under review and offering the way back to it.
+
+That last part is not presentation. The comparison and the decision were
+independent values until the adversarial review of RVP-55: choosing a prior
+claim showed one claim's pictures, summary, viewports and assurance split while
+Accept decided a different one, and no version check could catch it because both
+values came from one consistent read. A decision MUST be offered only for the
+claim the reader is looking at, and the request MUST carry that claim's
+identifier rather than whichever one the control plane would accept.
 
 **The two assurance headings are two `section` elements**, each with its own
 heading, its own marker and its own visually hidden words naming what kind of

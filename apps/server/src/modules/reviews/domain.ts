@@ -145,6 +145,32 @@ export function assertVerificationUnderReview(
 }
 
 /**
+ * A finding a human has disposed of takes no further claim (ADR-0035).
+ *
+ * `assertReviewMutable` governs the review; nothing governed the finding,
+ * because until acceptance decided the claim beneath it the case could not
+ * arise — a disposed finding always still held a `submitted` verification, and
+ * a second submission superseded it rather than becoming the first current one
+ * since the decision. Deciding the claim removed that accident and made the
+ * gap reachable: an agent could attach a fresh claim to a finding badged
+ * `RESOLVED`, and every surface that reads "the latest verification" would
+ * then show the agent's post-hoc claim beside a human's acceptance of a
+ * different one.
+ *
+ * The refusal is `POLICY_DENIED` rather than not-found: the caller can already
+ * read this finding and its status, so naming the reason discloses nothing it
+ * did not have, and "reopen it first" is an action the caller can take.
+ */
+export function assertFindingTakesVerification(status: FindingStatus): void {
+  if (!isFinalDisposition(status)) return;
+  throw new ApiError(
+    "POLICY_DENIED",
+    `A finding a human has disposed of as ${status} takes no further verification. Ask for it to be reopened, which is a human decision, and submit the claim against the reopened finding.`,
+    { field: "status" },
+  );
+}
+
+/**
  * A decision that sends work back states why (ADR-0036).
  *
  * `docs/UX_FLOWS.md` section 13 has required this of reopen since it was

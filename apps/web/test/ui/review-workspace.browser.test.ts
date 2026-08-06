@@ -454,6 +454,10 @@ for (const [name, viewport] of VIEWPORTS) {
       const body = sent[0]?.body as { verification_id?: string; expected_version?: number };
       assert.equal(body.verification_id, SEEDED_CLAIM, "the accept named the claim rendered");
       assert.equal(body.expected_version, 1, "the accept carried the version rendered");
+      // The identifier the panel was comparing, read off the page rather than
+      // assumed: a decision must name what the reader was looking at, and the
+      // two values are derived independently in the component tree.
+      assert.match(inputs, new RegExp(SEEDED_CLAIM, "u"));
 
       evidence.push(`accept at ${name}: ${JSON.stringify(body)}`);
       await shot(page, `accept-${name}`);
@@ -625,7 +629,40 @@ test("every claim a finding has accumulated is reachable", async () => {
       /no longer the current one/u,
     );
 
+    // And no decision can be taken from here. This is the assertion the first
+    // version of this suite stopped one step short of, and the gap it left was
+    // real: the panel said "no decision can be taken on it" while the Accept
+    // button stayed live and decided the *other* claim — a reviewer's name on
+    // evidence they had not read, which is RVP-89's harm reached from the
+    // client rather than by an agent's write.
+    await page.locator(`[data-decisions-withheld='${HERO_FINDING}']`).waitFor();
+    assert.equal(
+      await page.locator("[data-decision='accept']").count(),
+      0,
+      "no decision control is offered for a claim that is not under review",
+    );
+    assert.equal(await page.locator(`[data-decision-submit='${HERO_FINDING}']`).count(), 0);
+    assert.match(
+      (await page.locator(`[data-decisions-withheld='${HERO_FINDING}']`).textContent()) ?? "",
+      /no decision can be taken from here/u,
+    );
+
     await shot(page, "verification-history");
+
+    // The way back is named rather than left to the reader to find, and taking
+    // it restores the decision on the claim actually under review.
+    await page.locator(`[data-decision-show-current='${HERO_FINDING}']`).click();
+    await page.waitForFunction(
+      (identifier) =>
+        (document.querySelector("[data-verification-id]")?.textContent ?? "").includes(
+          identifier as string,
+        ),
+      swapped,
+      { timeout: 15_000 },
+    );
+    await page.locator("[data-decision='accept']").waitFor();
+    assert.equal(await page.locator(`[data-decisions-withheld='${HERO_FINDING}']`).count(), 0);
+
     clean(session, "the verification history");
   } finally {
     await session.close();

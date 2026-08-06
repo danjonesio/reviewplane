@@ -255,10 +255,35 @@ function FindingDetail(): ReactElement {
   }
 
   const record = finding.data;
-  // The current claim, which is what a decision must name. It comes from the
-  // list the page rendered, never from a read taken when the button is pressed.
+  // The current claim, which is the only one a decision may be taken on. It
+  // comes from the list the page rendered, never from a read taken when the
+  // button is pressed.
   const currentClaim =
     (claims.data ?? []).find((entry) => entry.status === "submitted")?.verification_id ?? null;
+  /**
+   * Whether the comparison on screen **is** the claim a decision would decide.
+   *
+   * These were two independent values until the adversarial review of RVP-55
+   * found what that costs. `selected` is what the panel renders and
+   * `currentClaim` is what the server will accept; they agree until a reviewer
+   * clicks a prior claim in the history list — the affordance
+   * `docs/DOMAIN_MODEL.md` §19 requires — and then the page shows one claim's
+   * before-and-after pair, summary, viewports and assurance split while the
+   * Accept button decides a different one.
+   *
+   * `expected_version` cannot catch it. Both values come from one snapshot, so
+   * the request is entirely legitimate at the server: it names the current
+   * claim and carries the current version. The harm is RVP-89's — a reviewer's
+   * name recorded on evidence they did not read — reached from the client side
+   * instead of by an agent's write.
+   *
+   * So the decision is offered only when the two agree. `verificationId` below
+   * is `selected` rather than `currentClaim`, so that even if a control were
+   * somehow pressed it would name what was on screen and be refused, and the
+   * disabled state is what tells the reader why rather than leaving them to
+   * diff two identifiers by eye.
+   */
+  const renderedClaimIsDecidable = selected === currentClaim;
   const decisions = findingDecisionsFrom("human_user", record.status);
 
   return (
@@ -337,7 +362,14 @@ function FindingDetail(): ReactElement {
             findingId={record.id}
             decisions={decisions}
             expectedVersion={record.version}
-            verificationId={currentClaim}
+            // What is on screen, not what the server happens to accept. The two
+            // are equal whenever a decision is offered at all.
+            verificationId={selected}
+            claimIsDecidable={renderedClaimIsDecidable}
+            currentVerificationId={currentClaim}
+            onShowCurrentClaim={() => {
+              setChosen(null);
+            }}
             pending={pendingDecision}
             failure={decisionFailure}
             onDecide={(decision, reason) => {
@@ -346,7 +378,7 @@ function FindingDetail(): ReactElement {
                 reason,
                 // Read from the record this page rendered.
                 expectedVersion: record.version,
-                verificationId: currentClaim,
+                verificationId: selected,
               });
             }}
             onReload={() => {

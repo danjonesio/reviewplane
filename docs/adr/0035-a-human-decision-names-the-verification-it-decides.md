@@ -95,6 +95,41 @@ client shape is therefore closed in the control plane, and the browser test in
 `apps/web/test/ui/review-workspace.browser.test.ts` proves the client sends what
 it rendered rather than what it just fetched.
 
+**The identifier a decision carries is the one on screen, not the one the server
+would accept.** The adversarial review of RVP-55 found the difference, and it is
+worth stating as part of the decision rather than as an implementation note. A
+client that derives "what to render" and "what to decide" as two values gets
+them wrong exactly when a reader selects a prior claim from the history — the
+affordance `docs/DOMAIN_MODEL.md` §19 requires — and then shows one claim's
+before-and-after pair, summary, viewports and assurance split while the decision
+names another. The control plane cannot see it: both values come from one
+consistent read, so the request names the current claim and carries the current
+version and is entirely legitimate. The harm is this ADR's own — a reviewer's
+name recorded on evidence they did not read — reached from the client side.
+
+A client MUST therefore offer a decision only while the rendered claim is the
+current one, and MUST send the rendered claim's identifier. The second half is
+what makes the first half fail safe: a control that escaped the guard would name
+what was on screen and be refused, rather than succeeding against something
+else.
+
+### The disposed finding takes no further claim
+
+Deciding the claim beneath a finding has a consequence worth recording here,
+because it was not reachable before this ADR. A disposed finding used to hold a
+`submitted` verification forever, so a later submission superseded it; once
+acceptance moves that row to `accepted`, a new submission would insert as the
+first current claim *since the decision*, and every surface reading "the latest
+verification" would serve an agent's post-hoc claim beside a human's acceptance
+of a different one.
+
+`submitVerification` therefore refuses a finding in a final disposition with
+`POLICY_DENIED`, naming the action: ask for it to be reopened, which is a human
+decision, and submit against the reopened finding. Nothing about the acceptance
+is undone by the submission and the audit trail stays sound either way — which
+is precisely why this is a refusal rather than a repair. The record is right and
+the write should not have been possible.
+
 ### Accepting decides the claim; reopening rejects it
 
 Accepting a finding moves the named verification to `accepted`; reopening moves
@@ -180,7 +215,9 @@ which is how both come to be missing.
   (RVP-89 option 2). It would make the swap visible as a status change and is
   worth doing on its own merits, but it does not answer *which* claim was
   accepted, so it closes one of the two problems and leaves the trail as it was.
-  It remains available and is not excluded by this decision.
+  It remains available and is not excluded by this decision. ADR-0030 §
+  "Supersession under a pending human review, and what answers it" records the
+  comparison from the supersession side, which is where RVP-89 asked for it.
 - **Compare a digest of the rendered evidence rather than an identifier.** It
   would catch a claim edited in place as well. Nothing edits a verification in
   place — supersession is the only way a claim changes — so the digest would

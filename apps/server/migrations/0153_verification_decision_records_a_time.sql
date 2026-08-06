@@ -3,20 +3,23 @@
 -- (docs/DOMAIN_MODEL.md section 19, docs/UX_FLOWS.md section 13, ADR-0035).
 --
 -- Migration 0053 already refuses a verification that leaves `submitted` or
--- `superseded` without a `human_user` in `reviewed_by_actor_type`. That governs
--- the actor and says nothing about the time, so a code path that recorded the
--- decider and left `reviewed_at` null would satisfy the backstop while leaving
--- an acceptance that cannot be placed in a timeline.
+-- `superseded` without a `human_user` in `reviewed_by_actor_type`, so an
+-- `accepted` row with no decider is refused today. What 0053 does **not**
+-- govern is the reverse direction: a row that is still `submitted` — or
+-- `superseded` — while carrying a `reviewed_at`. That is a decision time
+-- recorded against a claim nobody decided, and nothing refuses it.
 --
 -- `docs/UX_FLOWS.md` section 13 requires accept to record human identity **and
--- timestamp**. Half of that was enforced by the database and half by the
--- service, which is the same asymmetry migration 0151 closed for findings: a
--- guarantee resting on a convention the constraint does not enforce is a
--- convention, not a guarantee.
+-- timestamp**. The identity half is enforced; this constraint states the
+-- timestamp half in both directions, so the two columns cannot disagree about
+-- whether the row was decided at all.
 --
--- The equality is stated in both directions deliberately. A `submitted` row
--- carrying a review time would be a decision recorded without a decider, which
--- the 0053 constraint would not catch either.
+-- The forward direction — `accepted` or `rejected` implies `reviewed_at` — is
+-- therefore belt to 0053's braces rather than a new guarantee on its own, and
+-- it is stated anyway because an equality a reader can check in one line is
+-- worth more than two constraints they have to compose. It is also what makes
+-- the mutation legible: a service that sets the status and forgets the time is
+-- refused by name here rather than by a constraint about actors.
 --
 -- As in 0151 this is not a backfill. A decided row with no time is an audit
 -- defect, and inventing one would replace a visible defect with an invisible
