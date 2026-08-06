@@ -35,6 +35,7 @@ import { useState, type ReactElement } from "react";
 
 import { ApiFailure } from "../api/client.ts";
 import {
+  decisionNeedsClaim,
   FINDING_DECISION_LABEL,
   FINDING_DECISION_REQUIRES_REASON,
   REVIEW_DECISION_LABEL,
@@ -207,7 +208,7 @@ export function FindingDecisionActions({
             */}
             <p className={HINT} data-decision-inputs={findingId}>
               Sending version {expectedVersion}
-              {verificationId === null ? "" : `, claim ${verificationId}`}
+              {decisionNeedsClaim(verificationId) ? `, claim ${String(verificationId)}` : ""}
             </p>
           </div>
           {reasonMissing ? (
