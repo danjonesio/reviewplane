@@ -1076,6 +1076,31 @@ On the **annotation canvas** it means four more things:
   being drawn as well as for marks already stored: it states each mark's shape
   and position, selects the same mark the canvas selects, and can remove one.
 
+On the **review workspace** it means three more:
+
+- Every status is a word beside its badge and a sentence saying what the word
+  means, so nothing about a finding's state is carried by colour or by a glyph
+  alone. `AWAITING_HUMAN_REVIEW` reads "an agent has requested review — not
+  accepted", which is the one reading that would otherwise be a colour away from
+  a serious mistake.
+- The two assurance groups of §13 are announced as well as shown. Each row
+  carries visually hidden words — "Verified by the control plane" against
+  "Asserted, not confirmed" — because the glyphs that separate the two lists
+  are invisible to a screen reader and the distinction is the whole point of
+  the split.
+- The result count on the review list is a polite live region, so a filter that
+  changed the result is announced rather than only visible.
+
 ## 20. Mobile
 
 The administration UI should be usable on mobile for viewing, comments, approvals and accepting findings. Full live takeover and detailed annotation may be optimised for tablet and desktop initially.
+
+### Implemented behaviour
+
+Accepting and reopening a finding are proved at 390x844 as well as at 1440x900,
+including the comment a reopen requires, and the page is asserted not to scroll
+horizontally at 390 pixels. The comparison, the claim history and the decision
+controls are one column at that width rather than a desktop layout squeezed into
+it; the review page carries each finding in summary and links to its own page,
+because several before-and-after pairs on one page is the layout that makes a
+phone unusable.
