@@ -27,6 +27,7 @@ import {
   type LiveFailure,
   type LiveStatus,
 } from "../live/client.ts";
+import { OverlayLayer, OverlayList, type BrowserOverlay } from "./BrowserOverlays.tsx";
 import { StatusBadge, type Tone } from "./StatusBadge.tsx";
 
 const TONE_FOR_STATUS: Readonly<Record<LiveStatus, Tone>> = {
@@ -65,9 +66,16 @@ function prefersReducedMotion(): boolean {
 export function LiveSurface({
   session,
   onSessionStatus,
+  overlays,
 }: {
   readonly session: BrowserSession;
   readonly onSessionStatus?: (status: string, url: string | null) => void;
+  /**
+   * Marks drawn over the picture (`docs/UX_FLOWS.md` section 7). They are drawn
+   * in a layer above the canvas and never painted into it: a frame is a live
+   * rendering of another application, and nothing may modify it.
+   */
+  readonly overlays?: readonly BrowserOverlay[];
 }): ReactElement {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const clientRef = useRef<LiveClient | null>(null);
@@ -193,6 +201,7 @@ export function LiveSurface({
           tabIndex={0}
           className="block h-auto w-full max-w-full bg-slate-900"
         />
+        <OverlayLayer overlays={overlays ?? []} />
         {status === "live" ? null : (
           <div className="absolute inset-0 flex items-center justify-center bg-slate-950/85 p-4">
             <div className="max-w-md text-center text-slate-100">
@@ -247,6 +256,8 @@ export function LiveSurface({
           </dd>
         </div>
       </dl>
+
+      <OverlayList overlays={overlays ?? []} headingId="live-overlay-list-heading" />
 
       {reducedMotion ? (
         <p className="text-sm text-slate-700 dark:text-slate-300">

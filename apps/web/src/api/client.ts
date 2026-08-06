@@ -813,3 +813,16 @@ export function liveUrl(sessionId: string, mode: string): string {
   const scheme = globalThis.location.protocol === "https:" ? "wss:" : "ws:";
   return `${scheme}//${globalThis.location.host}/ws/v1/browser-sessions/${encodeURIComponent(sessionId)}/live?mode=${encodeURIComponent(mode)}`;
 }
+
+/**
+ * The project event-stream WebSocket URL, on this same origin
+ * (`docs/API.md` section 18.1).
+ *
+ * The resume position is not a query parameter: it travels in the
+ * `stream.subscribe` message after the upgrade, so it never reaches an access
+ * log or a proxy's URL history.
+ */
+export function eventsUrl(projectId: string): string {
+  const scheme = globalThis.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${scheme}//${globalThis.location.host}/ws/v1/projects/${encodeURIComponent(projectId)}/events`;
+}

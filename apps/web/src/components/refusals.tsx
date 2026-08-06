@@ -190,6 +190,59 @@ export const BROWSER_SESSION_REFUSALS: RefusalTable = {
 };
 
 /**
+ * One title and one action for every stable code the project event stream can
+ * meet (`docs/API.md` section 18.1, `docs/EVENTS.md` section 10).
+ *
+ * The channel refuses in two places and the reader cannot tell them apart, so
+ * the wording must hold for both: before the upgrade, as an HTTP status on the
+ * handshake, and after it, as a `stream.error` on an open subscription.
+ *
+ * `RESOURCE_NOT_FOUND` is the one that carries the weight here. `docs/EVENTS.md`
+ * section 10 requires a project outside the subscriber's scope to be refused
+ * exactly as an unknown identifier is, so that a refusal cannot be used to
+ * discover that another organisation's project exists. The shared wording leaves
+ * that ambiguity intact, and this surface must not resolve it.
+ *
+ * There is no entry that says the history is gone. A refusal on this channel
+ * stops live delivery and never the record: `GET /api/v1/projects/:projectId/activity`
+ * still answers, which is why each action below sends the reader to the page
+ * rather than to an administrator.
+ */
+export const EVENT_STREAM_REFUSALS: RefusalTable = {
+  ...SHARED_REFUSALS,
+  AUTHENTICATION_REQUIRED: {
+    title: "Your session has expired",
+    action:
+      "The event stream closed because this browser is no longer signed in. Sign in again; the history is unaffected and is read again when you do.",
+  },
+  AUTHORISATION_DENIED: {
+    title: "This origin may not open an event stream",
+    action:
+      "The control plane accepts event subscriptions only from the addresses its administrator configured. Open ReviewPlane at its configured address rather than through another host or proxy.",
+  },
+  RATE_LIMITED: {
+    title: "Too many subscriptions from this session",
+    action:
+      "Close another ReviewPlane tab watching this project, or wait a moment. Nothing is lost: the history below is read from the durable record, not from the stream.",
+  },
+  UNSUPPORTED_CAPABILITY: {
+    title: "The control plane refused this subscription",
+    action:
+      "This build of the web application and the control plane do not agree on the event channel. The history below is still read over HTTP; ask the operator to check that both were upgraded together.",
+  },
+  VALIDATION_FAILED: {
+    title: "The subscription request was refused",
+    action:
+      "The control plane rejected the position this view asked to resume from. Reload the page to start again from the current record.",
+  },
+  INTERNAL_ERROR: {
+    title: "The event stream is unavailable",
+    action:
+      "The control plane could not serve live events. The history below is read from the durable record and is complete up to the moment it was read; reload to read it again.",
+  },
+};
+
+/**
  * The refusal, by its stable code (`docs/UX_FLOWS.md` section 18). An
  * unrecognised code is still named rather than flattened into "something went
  * wrong": a reader can act on a code, and can quote it.
