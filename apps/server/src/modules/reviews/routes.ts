@@ -53,6 +53,7 @@ import {
   type ReviewCreateRequest,
   type ReviewTransitionRequest,
   type ReviewUpdateRequest,
+  type ReviewStatus,
   type SchemaViolation,
   type VerificationCreateRequest,
 } from "@reviewplane/protocol/review";
@@ -68,7 +69,7 @@ import {
   scopeParameter,
 } from "../identity/authorisation.ts";
 import type { ViewerPrincipal } from "../live/viewer-sessions.ts";
-import type { CreateAnnotationInput, Scope } from "./service.ts";
+import type { CreateAnnotationInput, ReviewListFilter, Scope } from "./service.ts";
 import type { ReviewService } from "./service.ts";
 
 export interface ReviewRoutesOptions {
@@ -144,6 +145,78 @@ function decode<T>(validate: Validator, body: unknown, what: string): T {
     `${what}: ${first.path} ${first.message}`,
     { field: first.path },
   );
+}
+
+/** One repeated query parameter, or a comma-separated one, as a list. */
+function queryList(value: unknown): string[] | undefined {
+  const raw = Array.isArray(value) ? value : value === undefined ? [] : [value];
+  const values = raw
+    .flatMap((entry) => String(entry).split(","))
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "");
+  return values.length === 0 ? undefined : values;
+}
+
+function queryText(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  // A 200-character search term is a term; anything longer is either a mistake
+  // or an attempt to make the database do arbitrary work for one request.
+  return trimmed === "" ? undefined : trimmed.slice(0, 200);
+}
+
+/**
+ * The review-search dimensions of `docs/UX_FLOWS.md` section 16, read off the
+ * query string (`docs/API.md` section 12).
+ *
+ * Unknown parameters are ignored rather than refused, because a filter is not
+ * a command: a link carrying a parameter this version does not know should
+ * answer with reviews, not with an error. Every value that reaches SQL does so
+ * as a bound parameter, and `status` and `severity` are compared against
+ * columns whose values the database constrains, so an unknown one narrows the
+ * result to nothing rather than widening it.
+ */
+function reviewListFilter(query: unknown): ReviewListFilter {
+  const source = (query ?? {}) as Record<string, unknown>;
+  const statuses = queryList(source["status"]);
+  const severities = queryList(source["severity"]);
+  return {
+    ...(statuses === undefined ? {} : { statuses: statuses as ReviewStatus[] }),
+    ...(severities === undefined ? {} : { severities }),
+    ...(queryText(source["q"]) === undefined ? {} : { text: queryText(source["q"]) as string }),
+    ...(queryText(source["branch"]) === undefined
+      ? {}
+      : { branch: queryText(source["branch"]) as string }),
+    ...(queryText(source["commit"]) === undefined
+      ? {}
+      : { commitPrefix: queryText(source["commit"]) as string }),
+    ...(queryText(source["assigned_agent_session_id"]) === undefined
+      ? {}
+      : { assignedAgentSessionId: queryText(source["assigned_agent_session_id"]) as string }),
+    ...(queryText(source["assigned_user_id"]) === undefined
+      ? {}
+      : { assignedUserId: queryText(source["assigned_user_id"]) as string }),
+    ...(queryTimestamp(source["created_since"]) === undefined
+      ? {}
+      : { createdSince: queryTimestamp(source["created_since"]) as string }),
+    ...(queryTimestamp(source["created_until"]) === undefined
+      ? {}
+      : { createdUntil: queryTimestamp(source["created_until"]) as string }),
+  };
+}
+
+/**
+ * A date or timestamp parameter, or nothing.
+ *
+ * An unparseable value is dropped rather than refused, for the reason above,
+ * and never passed through: PostgreSQL would raise on it, which would turn a
+ * mistyped link into a 500.
+ */
+function queryTimestamp(value: unknown): string | undefined {
+  const text = queryText(value);
+  if (text === undefined) return undefined;
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
 }
 
 export async function registerReviewRoutes(
@@ -381,10 +454,11 @@ export async function registerReviewRoutes(
     const page = readPageRequest(request.query);
     // One extra row is read so that `next_cursor` is absent on the last page
     // rather than present and pointing at nothing (`docs/API.md` section 6).
-    const rows = await reviews.listReviewsPage(scope, {
-      limit: page.limit + 1,
-      after: page.after,
-    });
+    const rows = await reviews.listReviewsPage(
+      scope,
+      { limit: page.limit + 1, after: page.after },
+      reviewListFilter(request.query),
+    );
     const built = buildPage([...rows.items], page, (review) => ({
       sortKey: review.created_at,
       id: review.id,
@@ -657,6 +731,16 @@ export async function registerReviewRoutes(
         ...(body.resolution_note === undefined
           ? {}
           : { resolutionNote: body.resolution_note }),
+        ...(body.reason === undefined ? {} : { reason: body.reason }),
+        // The disposition rules are in the domain, so this route obeys them
+        // too: a human reaching a final disposition or a reopen here names the
+        // claim they are deciding about (ADR-0035) and states why where the
+        // decision requires one (ADR-0036). Forwarding the members is what
+        // makes those rules satisfiable from this route rather than a dead end
+        // that pushes callers towards the dedicated ones.
+        ...(body.verification_id === undefined
+          ? {}
+          : { verificationId: body.verification_id }),
       },
       actor,
     );
@@ -720,6 +804,9 @@ export async function registerReviewRoutes(
         {
           expectedVersion: body.expected_version,
           ...(body.reason === undefined ? {} : { reason: body.reason }),
+          ...(body.verification_id === undefined
+            ? {}
+            : { verificationId: body.verification_id }),
         },
         actor,
       ),
@@ -736,6 +823,9 @@ export async function registerReviewRoutes(
         {
           expectedVersion: body.expected_version,
           ...(body.reason === undefined ? {} : { reason: body.reason }),
+          ...(body.verification_id === undefined
+            ? {}
+            : { verificationId: body.verification_id }),
           ...(body.duplicate_of_finding_id === undefined
             ? {}
             : { duplicateOfFindingId: body.duplicate_of_finding_id }),
@@ -754,6 +844,9 @@ export async function registerReviewRoutes(
         {
           expectedVersion: body.expected_version,
           ...(body.reason === undefined ? {} : { reason: body.reason }),
+          ...(body.verification_id === undefined
+            ? {}
+            : { verificationId: body.verification_id }),
         },
         actor,
       ),
@@ -839,6 +932,32 @@ export async function registerReviewRoutes(
     const { findingId } = request.params as { findingId: string };
     const { scope } = await scopedRecord(request, "findings", findingId, "read");
     return send(reply, request, await reviews.listVerifications(scope, findingId));
+  });
+
+  /**
+   * One named verification, with the assurance split a human decides from
+   * (`docs/API.md` section 13, `docs/UX_FLOWS.md` section 13, ADR-0035).
+   *
+   * This is the route the comparison renders from, and the identifier in its
+   * path is the one the accept then carries. That is the whole design: a
+   * client cannot obtain the identifier of a claim it did not render, so a
+   * decision naming one is a decision about evidence somebody looked at. A
+   * comparison rendered from "latest" could say nothing afterwards about what
+   * it had shown, and the accept taken on it could say nothing about what was
+   * accepted.
+   *
+   * It answers for superseded and decided records too, because
+   * `docs/DOMAIN_MODEL.md` section 19 requires prior claims to be reachable and
+   * not merely retained. `is_current` says which of them a decision may be
+   * taken on.
+   */
+  app.get("/api/v1/findings/:findingId/verifications/:verificationId", async (request, reply) => {
+    const { findingId, verificationId } = request.params as {
+      findingId: string;
+      verificationId: string;
+    };
+    const { scope } = await scopedRecord(request, "findings", findingId, "read");
+    return send(reply, request, await reviews.verificationReview(scope, findingId, verificationId));
   });
 
   /**

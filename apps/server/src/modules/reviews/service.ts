@@ -45,16 +45,19 @@ import type { ProjectSettings } from "@reviewplane/protocol/platform";
 
 import { inTransaction } from "../../db/pool.ts";
 import { ApiError, notFound } from "../../errors.ts";
-import { appendEvent, type EventActor } from "../../events/append.ts";
+import { appendEvent, type ActorType, type EventActor } from "../../events/append.ts";
 import { newId } from "../../ids.ts";
 import { enqueueJob } from "../../jobs/runner.ts";
 import { InboxStore } from "../agents/inbox.ts";
 import type { ArtefactService } from "../artefacts/service.ts";
 import {
+  assuranceFor,
   completionRequirementsFor,
+  evidenceWarnings,
   findingCompletionState,
   missingEvidence,
   type CompletionRequirements,
+  type EvidenceAssurance,
   type EvidenceUnderReview,
   type FindingCompletionState,
 } from "./completion.ts";
@@ -64,9 +67,11 @@ import {
   assertActorMayMoveReview,
   assertCapturedContext,
   assertCompletionEvidence,
+  assertDecisionReason,
   assertExpectedVersion,
   assertFindingTransition,
   assertGeometry,
+  assertVerificationUnderReview,
   assertReviewAcceptable,
   assertReviewMutable,
   assertActorMayCloseReview,
@@ -147,6 +152,8 @@ export interface AssignReviewInput {
 export interface ReviewTransitionInput {
   readonly expectedVersion: number;
   readonly reason?: string;
+  /** The claim the decision is about, where the finding holds one (ADR-0035). */
+  readonly verificationId?: string;
 }
 
 /** A human's final decision about one finding. */
@@ -154,6 +161,8 @@ export interface DisposeFindingInput {
   readonly expectedVersion: number;
   readonly reason?: string;
   readonly duplicateOfFindingId?: string;
+  /** The claim the decision is about, where the finding holds one (ADR-0035). */
+  readonly verificationId?: string;
 }
 
 /** One page of a keyset-paginated collection. */
@@ -178,6 +187,20 @@ export interface ReviewListFilter {
   readonly assignedAgentSessionId?: string;
   readonly slugPrefix?: string;
   readonly updatedSince?: string;
+  /**
+   * The search dimensions of `docs/UX_FLOWS.md` section 16 that were not
+   * already here. Every one of them is applied in the same `WHERE` clause as
+   * the organisation and project terms, never after the rows are read: a
+   * filter applied afterwards is one edit away from being forgotten, and this
+   * is the query whose job is to find rows the caller could not name.
+   */
+  readonly text?: string;
+  readonly branch?: string;
+  readonly commitPrefix?: string;
+  readonly severities?: readonly string[];
+  readonly assignedUserId?: string;
+  readonly createdSince?: string;
+  readonly createdUntil?: string;
 }
 
 export interface PageCursor {
@@ -246,10 +269,27 @@ export interface UpdateFindingInput {
   /** Recorded with a final disposition or a reopen, and on their events. */
   readonly reason?: string;
   readonly duplicateOfFindingId?: string;
+  /**
+   * The verification the decision is about (ADR-0035). Required where the
+   * finding holds a current claim and the requested status is a final
+   * disposition or a reopen.
+   */
+  readonly verificationId?: string;
 }
 
 function timestamp(value: unknown): string {
   return (value as Date).toISOString();
+}
+
+/**
+ * A caller's term as a literal inside a `LIKE` pattern.
+ *
+ * `%` and `_` are escaped, so a single character cannot turn a filter into a
+ * scan of everything — which would be an unbounded response as well as a
+ * surprise. The wildcards belong to the query and never to the term.
+ */
+function likeLiteral(value: string): string {
+  return value.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
 }
 
 function actorOf(
@@ -655,6 +695,19 @@ export class ReviewService {
           AND ($7::text IS NULL OR r.assigned_agent_session_id = $7)
           AND ($8::text IS NULL OR r.slug LIKE $8 || '%')
           AND ($9::timestamptz IS NULL OR r.updated_at >= $9::timestamptz)
+          AND ($10::text IS NULL
+               OR r.title ILIKE $10 OR r.slug ILIKE $10 OR r.description ILIKE $10
+               OR EXISTS (SELECT 1 FROM findings f
+                           WHERE f.review_id = r.id
+                             AND (f.title ILIKE $10 OR f.description ILIKE $10)))
+          AND ($11::text IS NULL OR r.captured_branch = $11)
+          AND ($12::text IS NULL OR r.captured_commit LIKE $12 || '%')
+          AND ($13::text[] IS NULL
+               OR EXISTS (SELECT 1 FROM findings f
+                           WHERE f.review_id = r.id AND f.severity = ANY($13)))
+          AND ($14::text IS NULL OR r.assigned_user_id = $14)
+          AND ($15::timestamptz IS NULL OR r.created_at >= $15::timestamptz)
+          AND ($16::timestamptz IS NULL OR r.created_at <= $16::timestamptz)
         ORDER BY date_trunc('milliseconds', r.created_at) DESC, r.id DESC
         LIMIT $5`,
       [
@@ -667,6 +720,16 @@ export class ReviewService {
         filter.assignedAgentSessionId ?? null,
         filter.slugPrefix ?? null,
         filter.updatedSince ?? null,
+        // The wildcards are added here and the caller's own `%` and `_` are
+        // escaped, so a single character cannot turn a filter into a scan of
+        // everything — the same rule `searchReviews` follows.
+        filter.text === undefined ? null : `%${likeLiteral(filter.text)}%`,
+        filter.branch ?? null,
+        filter.commitPrefix === undefined ? null : likeLiteral(filter.commitPrefix),
+        filter.severities === undefined ? null : [...filter.severities],
+        filter.assignedUserId ?? null,
+        filter.createdSince ?? null,
+        filter.createdUntil ?? null,
       ],
     );
     const all = rows.rows.map((row) =>
@@ -712,7 +775,7 @@ export class ReviewService {
     query: string,
     limit = 10,
   ): Promise<readonly { review: Review; matched: readonly ReviewSearchField[] }[]> {
-    const pattern = `%${query.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
+    const pattern = `%${likeLiteral(query)}%`;
     const rows = await this.#pool.query(
       `SELECT r.*,
               (SELECT count(*) FROM findings f WHERE f.review_id = r.id) AS finding_count,
@@ -1139,6 +1202,11 @@ export class ReviewService {
     input: ReviewTransitionInput,
     actor: EventActor,
   ): Promise<Review> {
+    // Sending a review back requires the same statement a finding does
+    // (ADR-0036). The two routes are the same act at two scales, and a rule
+    // that held on one and not the other would make the weaker one the route to
+    // use.
+    assertDecisionReason("Reopening a review", input.reason);
     return this.updateReview(
       scope,
       reviewId,
@@ -1390,6 +1458,33 @@ export class ReviewService {
       if (input.duplicateOfFindingId !== undefined) {
         await this.#requireFindingInProject(scope, input.duplicateOfFindingId, findingId);
       }
+      // The evidence a human decision is about must be the evidence they were
+      // shown (ADR-0035). The current claim is read under the finding's row
+      // lock, so a submission racing this decision either completed before the
+      // lock — in which case the identifier below is the new one and the check
+      // refuses — or waits for it. Reading it outside the transaction would
+      // reintroduce exactly the window the check exists to close.
+      const deciding = disposing || reopening;
+      const claim = deciding ? await this.#currentVerificationOn(client, scope, findingId) : null;
+      if (deciding) {
+        // Armed like every other refusal of a requested transition
+        // (`docs/DOMAIN_MODEL.md` section 15): a decision refused because the
+        // evidence moved underneath the reader is an attempt, and an attempt
+        // with no record is indistinguishable from one that never happened.
+        denied = {
+          type: "finding.status_change_denied",
+          correlation: { review_id: current.review_id, finding_id: findingId },
+          payload: {
+            finding_id: findingId,
+            review_id: current.review_id,
+            from: current.status,
+            requested: nextStatus,
+            source: current.source,
+          },
+        };
+        assertVerificationUnderReview(claim?.id ?? null, input.verificationId);
+        denied = null;
+      }
       const verificationCount = reopening
         ? await this.#countVerificationsOn(client, scope, findingId)
         : 0;
@@ -1477,6 +1572,73 @@ export class ReviewService {
             ...(input.reason === undefined ? {} : { reason: input.reason }),
           },
         });
+      }
+      // The claim's own decision, before the disposition events below
+      // (`docs/DOMAIN_MODEL.md` section 19, ADR-0035).
+      //
+      // `finding.resolved` says a human closed a finding. It does not say which
+      // evidence they closed it on, and after an agent has submitted twice that
+      // is the only question worth asking. So the verification carries the
+      // decision on itself — status, reviewer and time — and the event names
+      // it. Accept decides the claim; reopen rejects it; `WONT_FIX` and
+      // `DUPLICATE` decide neither, because waiving a reported problem is a
+      // judgement about the report rather than about the claim made against it,
+      // and recording it as an acceptance would put a human's name on evidence
+      // they did not accept.
+      if (claim !== null && (nextStatus === "RESOLVED" || reopening)) {
+        const accepted = nextStatus === "RESOLVED";
+        await client.query(
+          `UPDATE verifications
+              SET status = $4, reviewed_at = now(),
+                  reviewed_by_actor_type = $5, reviewed_by_actor_id = $6
+            WHERE id = $1 AND organisation_id = $2 AND project_id = $3`,
+          [
+            claim.id,
+            scope.organisationId,
+            scope.projectId,
+            accepted ? "accepted" : "rejected",
+            actor.type,
+            actor.id ?? null,
+          ],
+        );
+        await appendEvent(client, {
+          type: accepted ? "finding.verification_accepted" : "finding.verification_rejected",
+          organisationId: scope.organisationId,
+          projectId: scope.projectId,
+          actor,
+          correlation: { review_id: finding.review_id, finding_id: findingId },
+          payload: {
+            verification_id: claim.id,
+            finding_id: findingId,
+            review_id: finding.review_id,
+            submitted_by: claim.submitted_by,
+            decided_by: eventActor(actor),
+            version: finding.version,
+            ...(accepted
+              ? claim.after_artefact_id === null
+                ? {}
+                : { after_artefact_id: claim.after_artefact_id }
+              : {}),
+            ...(input.reason === undefined ? {} : { reason: input.reason }),
+          },
+        });
+      }
+      // A human's reason is a comment as well as an event payload (ADR-0036).
+      // `docs/UX_FLOWS.md` section 13 asks a reopen for a *comment*, and an
+      // event payload is not one: it is not in the discussion the agent reads
+      // through `review_get`, and the whole point of requiring it is that
+      // somebody has to act on it. Written on this transaction, so a decision
+      // and the account of it commit together or not at all.
+      if (deciding && (input.reason ?? "").trim() !== "") {
+        await this.#writeComment(
+          client,
+          scope,
+          finding.review_id,
+          findingId,
+          input.reason as string,
+          null,
+          actor,
+        );
       }
       // The decision events. `finding.status_changed` says the finding moved;
       // these say a human decided, and `docs/EVENTS.md` section 7 lists them
@@ -1609,12 +1771,8 @@ export class ReviewService {
     input: DisposeFindingInput,
     actor: EventActor,
   ): Promise<Finding> {
-    if (disposition === "WONT_FIX" && (input.reason ?? "").trim() === "") {
-      throw new ApiError(
-        "EVIDENCE_REQUIRED",
-        "Waiving a reported problem requires a reason: a decision nobody can read later is not one anybody can review.",
-        { field: "reason", required_evidence: ["reason"] },
-      );
+    if (disposition === "WONT_FIX") {
+      assertDecisionReason("Waiving a reported problem", input.reason);
     }
     if (disposition === "DUPLICATE" && input.duplicateOfFindingId === undefined) {
       throw new ApiError(
@@ -1630,6 +1788,7 @@ export class ReviewService {
         expectedVersion: input.expectedVersion,
         status: disposition,
         ...(input.reason === undefined ? {} : { reason: input.reason }),
+        ...(input.verificationId === undefined ? {} : { verificationId: input.verificationId }),
         ...(input.duplicateOfFindingId === undefined
           ? {}
           : { duplicateOfFindingId: input.duplicateOfFindingId }),
@@ -1638,13 +1797,21 @@ export class ReviewService {
     );
   }
 
-  /** Reopens a finding. Prior verification history is retained, not cleared. */
+  /**
+   * Reopens a finding. Prior verification history is retained, not cleared.
+   *
+   * The reason is required (ADR-0036). `docs/UX_FLOWS.md` section 13 has said
+   * so since it was written and nothing enforced it, so a request that skipped
+   * the form reopened a finding with nothing said — which is work an agent
+   * cannot act on and a decision an auditor cannot read.
+   */
   async reopenFinding(
     scope: Scope,
     findingId: string,
     input: ReviewTransitionInput,
     actor: EventActor,
   ): Promise<Finding> {
+    assertDecisionReason("Reopening a finding", input.reason);
     return this.updateFinding(
       scope,
       findingId,
@@ -1652,6 +1819,7 @@ export class ReviewService {
         expectedVersion: input.expectedVersion,
         status: "REOPENED",
         ...(input.reason === undefined ? {} : { reason: input.reason }),
+        ...(input.verificationId === undefined ? {} : { verificationId: input.verificationId }),
       },
       actor,
     );
@@ -2008,8 +2176,32 @@ export class ReviewService {
     previous: Comment | null,
     actor: EventActor,
   ): Promise<Comment> {
+    return inTransaction(this.#pool, async (client) =>
+      this.#writeComment(client, scope, reviewId, findingId, body, previous, actor),
+    );
+  }
+
+  /**
+   * The comment write itself, on a caller's transaction.
+   *
+   * It is separate from `#insertComment` because a human disposition records
+   * its reason as a comment in the *same* transaction as the decision
+   * (ADR-0036). A second transaction would let a reopen commit while the
+   * statement of what is wrong failed to, which is the one combination that
+   * makes the rule worse than not having it: an agent would be told to do
+   * something again with no account of what went wrong.
+   */
+  async #writeComment(
+    client: PoolClient,
+    scope: Scope,
+    reviewId: string,
+    findingId: string | null,
+    body: string,
+    previous: Comment | null,
+    actor: EventActor,
+  ): Promise<Comment> {
     const id = newId("cmt_");
-    return inTransaction(this.#pool, async (client) => {
+    {
       if (previous !== null) {
         const superseded = await client.query(
           `UPDATE comments SET superseded_at = now()
@@ -2063,7 +2255,7 @@ export class ReviewService {
         payload: { comment },
       });
       return comment;
-    });
+    }
   }
 
   /**
@@ -2389,6 +2581,65 @@ export class ReviewService {
   }
 
   /**
+   * One named verification as a human reviewer reads it (`docs/API.md`
+   * section 13, `docs/UX_FLOWS.md` section 13, ADR-0035).
+   *
+   * Two things about the shape are the point.
+   *
+   * **It is addressed by identifier, not by "latest".** A comparison rendered
+   * from whatever is current at render time cannot say afterwards what it
+   * showed, so an accept taken on it cannot say what was accepted. Rendering
+   * from a named claim gives the client an identifier it can carry into the
+   * decision, which is what closes RVP-89 independently of version arithmetic.
+   *
+   * **The assurance split is computed here and not by the reader.** It is the
+   * same `assuranceFor` the completion gate calls (ADR-0031): a second
+   * implementation in a view model would be a second answer to "did the control
+   * plane check this", and the wrong one is the confident one. `branch_corroborated`
+   * is false on this path for the reason the human submit route records an
+   * uncorroborated branch — no workspace is resolved for a person reading in a
+   * browser, and claiming corroboration from nothing would be the overstatement
+   * ADR-0031 names as the worse direction.
+   */
+  async verificationReview(
+    scope: Scope,
+    findingId: string,
+    verificationId: string,
+  ): Promise<{
+    readonly verification: Verification;
+    readonly assurance: EvidenceAssurance;
+    readonly warnings: readonly string[];
+    readonly is_current: boolean;
+  }> {
+    const verifications = await this.listVerifications(scope, findingId);
+    const verification = verifications.find(
+      (candidate) => candidate.verification_id === verificationId,
+    );
+    // A verification of another finding, of another project, or one that does
+    // not exist are all answered the same way: the identifier must not become
+    // an oracle (`docs/SECURITY.md` section 7).
+    if (verification === undefined) throw notFound("The verification");
+    const evidence: EvidenceUnderReview = {
+      verification_id: verification.verification_id,
+      tested_viewports: verification.tested_viewports ?? [],
+      checks: verification.checks ?? {
+        reproduced_before: false,
+        console_errors_reviewed: false,
+        network_failures_reviewed: false,
+      },
+      after_artefact_id: verification.after_artefact_id ?? null,
+      branch_corroborated: false,
+      submitted_by: verification.submitted_by,
+    };
+    return {
+      verification,
+      assurance: assuranceFor(evidence),
+      warnings: evidenceWarnings(evidence),
+      is_current: verification.status === "submitted",
+    };
+  }
+
+  /**
    * The project's completion requirements (`docs/MCP_SPEC.md` section 7.8).
    *
    * Read from the project row rather than from a constant, so a project that
@@ -2427,7 +2678,18 @@ export class ReviewService {
     workspaceBranch: string | null,
   ): Promise<EvidenceUnderReview | null> {
     const verification = await this.latestVerification(scope, findingId);
-    if (verification === null || verification.status !== "submitted") return null;
+    // A claim that has been accepted still stands behind the finding: the
+    // human agreed with it, and the gate asking "what evidence is there for
+    // this" must not answer "none" for the one case where a person said there
+    // was. A superseded or rejected record is not evidence for the finding's
+    // present state and answers null, which is what leaves the outstanding
+    // requirements outstanding.
+    if (
+      verification === null ||
+      (verification.status !== "submitted" && verification.status !== "accepted")
+    ) {
+      return null;
+    }
     return {
       verification_id: verification.verification_id,
       tested_viewports: verification.tested_viewports ?? [],
@@ -3006,6 +3268,56 @@ export class ReviewService {
       );
       return false;
     }
+  }
+
+  /**
+   * The finding's current claim, read on the caller's transaction.
+   *
+   * "Current" is the row whose status is `submitted`, which
+   * `verifications_one_current_per_finding` makes at most one of
+   * (`docs/DOMAIN_MODEL.md` section 19). A decided or superseded row is not a
+   * claim a decision may be taken on, and answering `null` for one is what
+   * lets a second accept be refused rather than recorded twice.
+   */
+  async #currentVerificationOn(
+    client: PoolClient,
+    scope: Scope,
+    findingId: string,
+  ): Promise<{
+    readonly id: string;
+    readonly after_artefact_id: string | null;
+    readonly submitted_by: { readonly type: ActorType; readonly id?: string; readonly display?: string };
+  } | null> {
+    const rows = await client.query<{
+      id: string;
+      after_artefact_id: string | null;
+      submitted_by_actor_type: string;
+      submitted_by_actor_id: string | null;
+      submitted_by_actor_display: string | null;
+    }>(
+      `SELECT v.id,
+              v.submitted_by_actor_type, v.submitted_by_actor_id, v.submitted_by_actor_display,
+              (SELECT va.artefact_id FROM verification_artefacts va
+                WHERE va.verification_id = v.id AND va.role = 'after'
+                ORDER BY va.position LIMIT 1) AS after_artefact_id
+         FROM verifications v
+        WHERE v.finding_id = $1 AND v.organisation_id = $2 AND v.project_id = $3
+          AND v.status = 'submitted'`,
+      [findingId, scope.organisationId, scope.projectId],
+    );
+    const row = rows.rows[0];
+    if (row === undefined) return null;
+    return {
+      id: row.id,
+      after_artefact_id: row.after_artefact_id,
+      submitted_by: {
+        type: row.submitted_by_actor_type as ActorType,
+        ...(row.submitted_by_actor_id === null ? {} : { id: row.submitted_by_actor_id }),
+        ...(row.submitted_by_actor_display === null
+          ? {}
+          : { display: row.submitted_by_actor_display }),
+      },
+    };
   }
 
   async #countVerificationsOn(

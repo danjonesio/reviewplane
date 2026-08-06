@@ -52,6 +52,7 @@ import type {
   Envelope,
   ErrorClass,
   ErrorDetails,
+  EvidenceAssurance,
   Finding,
   FindingAnnotated,
   FindingClaimRequest,
@@ -68,6 +69,8 @@ import type {
   FindingStatusChanged,
   FindingTransitionRequest,
   FindingUpdateRequest,
+  FindingVerificationAccepted,
+  FindingVerificationRejected,
   FindingVerificationSubmitted,
   InboxItem,
   InboxItemAcknowledged,
@@ -106,6 +109,7 @@ import type {
   VerificationChecks,
   VerificationCreateRequest,
   VerificationReference,
+  VerificationReview,
   VerificationStatus,
   Viewport,
 } from "./types.ts";
@@ -580,6 +584,7 @@ export function decodeFindingTransitionRequest(value: unknown): FindingTransitio
   const source = value as Record<string, unknown>;
   return {
     expected_version: source["expected_version"] as number,
+    ...(source["verification_id"] === undefined ? {} : { verification_id: source["verification_id"] as string }),
     ...(source["reason"] === undefined ? {} : { reason: source["reason"] as string }),
     ...(source["duplicate_of_finding_id"] === undefined ? {} : { duplicate_of_finding_id: source["duplicate_of_finding_id"] as string }),
   };
@@ -654,6 +659,8 @@ export function decodeFindingUpdateRequest(value: unknown): FindingUpdateRequest
     ...(source["status"] === undefined ? {} : { status: source["status"] as FindingStatus }),
     ...(source["acceptance_criteria"] === undefined ? {} : { acceptance_criteria: source["acceptance_criteria"] as string }),
     ...(source["resolution_note"] === undefined ? {} : { resolution_note: source["resolution_note"] as string }),
+    ...(source["verification_id"] === undefined ? {} : { verification_id: source["verification_id"] as string }),
+    ...(source["reason"] === undefined ? {} : { reason: source["reason"] as string }),
   };
 }
 
@@ -1064,6 +1071,64 @@ export function decodeFindingVerificationSubmitted(value: unknown): FindingVerif
     review_id: source["review_id"] as string,
     version: source["version"] as number,
     ...(source["supersedes_verification_id"] === undefined ? {} : { supersedes_verification_id: source["supersedes_verification_id"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated FindingVerificationAccepted.
+ */
+export function decodeFindingVerificationAccepted(value: unknown): FindingVerificationAccepted {
+  const source = value as Record<string, unknown>;
+  return {
+    verification_id: source["verification_id"] as string,
+    finding_id: source["finding_id"] as string,
+    review_id: source["review_id"] as string,
+    ...(source["submitted_by"] === undefined ? {} : { submitted_by: decodeActor(source["submitted_by"]) }),
+    decided_by: decodeActor(source["decided_by"]),
+    ...(source["after_artefact_id"] === undefined ? {} : { after_artefact_id: source["after_artefact_id"] as string }),
+    version: source["version"] as number,
+    ...(source["reason"] === undefined ? {} : { reason: source["reason"] as string }),
+  };
+}
+
+/**
+ * Decodes a validated FindingVerificationRejected.
+ */
+export function decodeFindingVerificationRejected(value: unknown): FindingVerificationRejected {
+  const source = value as Record<string, unknown>;
+  return {
+    verification_id: source["verification_id"] as string,
+    finding_id: source["finding_id"] as string,
+    review_id: source["review_id"] as string,
+    ...(source["submitted_by"] === undefined ? {} : { submitted_by: decodeActor(source["submitted_by"]) }),
+    decided_by: decodeActor(source["decided_by"]),
+    version: source["version"] as number,
+    reason: source["reason"] as string,
+  };
+}
+
+/**
+ * Decodes a validated EvidenceAssurance.
+ */
+export function decodeEvidenceAssurance(value: unknown): EvidenceAssurance {
+  const source = value as Record<string, unknown>;
+  return {
+    verified_by_control_plane: (source["verified_by_control_plane"] as unknown[]).map((item) => item as string),
+    asserted_by_agent: (source["asserted_by_agent"] as unknown[]).map((item) => item as string),
+    ...(source["asserted_by"] === undefined ? {} : { asserted_by: decodeActor(source["asserted_by"]) }),
+  };
+}
+
+/**
+ * Decodes a validated VerificationReview.
+ */
+export function decodeVerificationReview(value: unknown): VerificationReview {
+  const source = value as Record<string, unknown>;
+  return {
+    verification: decodeVerificationReference(source["verification"]),
+    assurance: decodeEvidenceAssurance(source["assurance"]),
+    warnings: (source["warnings"] as unknown[]).map((item) => item as string),
+    is_current: source["is_current"] as boolean,
   };
 }
 

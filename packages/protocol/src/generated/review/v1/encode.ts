@@ -43,6 +43,7 @@ import type {
   ElementContext,
   Envelope,
   ErrorDetails,
+  EvidenceAssurance,
   Finding,
   FindingAnnotated,
   FindingClaimRequest,
@@ -56,6 +57,8 @@ import type {
   FindingStatusChanged,
   FindingTransitionRequest,
   FindingUpdateRequest,
+  FindingVerificationAccepted,
+  FindingVerificationRejected,
   FindingVerificationSubmitted,
   InboxItem,
   InboxItemAcknowledged,
@@ -84,6 +87,7 @@ import type {
   VerificationChecks,
   VerificationCreateRequest,
   VerificationReference,
+  VerificationReview,
   Viewport,
 } from "./types.ts";
 
@@ -732,6 +736,9 @@ export function encodeFindingClaimRequest(value: FindingClaimRequest): string {
 export function encodeFindingTransitionRequest(value: FindingTransitionRequest): string {
   const fields: string[] = [];
   fields.push(`"expected_version":${jsonInteger(value.expected_version)}`);
+  if (value.verification_id !== undefined) {
+    fields.push(`"verification_id":${jsonString(value.verification_id)}`);
+  }
   if (value.reason !== undefined) {
     fields.push(`"reason":${jsonString(value.reason)}`);
   }
@@ -826,6 +833,12 @@ export function encodeFindingUpdateRequest(value: FindingUpdateRequest): string 
   }
   if (value.resolution_note !== undefined) {
     fields.push(`"resolution_note":${jsonString(value.resolution_note)}`);
+  }
+  if (value.verification_id !== undefined) {
+    fields.push(`"verification_id":${jsonString(value.verification_id)}`);
+  }
+  if (value.reason !== undefined) {
+    fields.push(`"reason":${jsonString(value.reason)}`);
   }
   return `{${fields.join(",")}}`;
 }
@@ -1310,6 +1323,70 @@ export function encodeFindingVerificationSubmitted(value: FindingVerificationSub
   if (value.supersedes_verification_id !== undefined) {
     fields.push(`"supersedes_verification_id":${jsonString(value.supersedes_verification_id)}`);
   }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a FindingVerificationAccepted.
+ */
+export function encodeFindingVerificationAccepted(value: FindingVerificationAccepted): string {
+  const fields: string[] = [];
+  fields.push(`"verification_id":${jsonString(value.verification_id)}`);
+  fields.push(`"finding_id":${jsonString(value.finding_id)}`);
+  fields.push(`"review_id":${jsonString(value.review_id)}`);
+  if (value.submitted_by !== undefined) {
+    fields.push(`"submitted_by":${encodeActor(value.submitted_by)}`);
+  }
+  fields.push(`"decided_by":${encodeActor(value.decided_by)}`);
+  if (value.after_artefact_id !== undefined) {
+    fields.push(`"after_artefact_id":${jsonString(value.after_artefact_id)}`);
+  }
+  fields.push(`"version":${jsonInteger(value.version)}`);
+  if (value.reason !== undefined) {
+    fields.push(`"reason":${jsonString(value.reason)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a FindingVerificationRejected.
+ */
+export function encodeFindingVerificationRejected(value: FindingVerificationRejected): string {
+  const fields: string[] = [];
+  fields.push(`"verification_id":${jsonString(value.verification_id)}`);
+  fields.push(`"finding_id":${jsonString(value.finding_id)}`);
+  fields.push(`"review_id":${jsonString(value.review_id)}`);
+  if (value.submitted_by !== undefined) {
+    fields.push(`"submitted_by":${encodeActor(value.submitted_by)}`);
+  }
+  fields.push(`"decided_by":${encodeActor(value.decided_by)}`);
+  fields.push(`"version":${jsonInteger(value.version)}`);
+  fields.push(`"reason":${jsonString(value.reason)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a EvidenceAssurance.
+ */
+export function encodeEvidenceAssurance(value: EvidenceAssurance): string {
+  const fields: string[] = [];
+  fields.push(`"verified_by_control_plane":${`[${value.verified_by_control_plane.map((item) => jsonString(item)).join(",")}]`}`);
+  fields.push(`"asserted_by_agent":${`[${value.asserted_by_agent.map((item) => jsonString(item)).join(",")}]`}`);
+  if (value.asserted_by !== undefined) {
+    fields.push(`"asserted_by":${encodeActor(value.asserted_by)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a VerificationReview.
+ */
+export function encodeVerificationReview(value: VerificationReview): string {
+  const fields: string[] = [];
+  fields.push(`"verification":${encodeVerificationReference(value.verification)}`);
+  fields.push(`"assurance":${encodeEvidenceAssurance(value.assurance)}`);
+  fields.push(`"warnings":${`[${value.warnings.map((item) => jsonString(item)).join(",")}]`}`);
+  fields.push(`"is_current":${jsonBoolean(value.is_current)}`);
   return `{${fields.join(",")}}`;
 }
 

@@ -89,6 +89,85 @@ export function assertExpectedVersion(current: number, expected: number, what: s
   }
 }
 
+/**
+ * The evidence a human decision is about must be the evidence they were shown
+ * (ADR-0035, RVP-89).
+ *
+ * `expected_version` already refuses a decision taken against a stale read,
+ * because submitting a verification bumps the finding's version. That control
+ * is real, and it is one refetch away from being defeated: a client that
+ * re-reads the finding when the button is pressed, in order to "get the current
+ * version", sends the version of the record it never rendered and the swap goes
+ * through. The refetch is a natural thing to write and it is the whole
+ * vulnerability.
+ *
+ * So the decision names the claim as well. A client can only send an identifier
+ * it rendered from — there is no identifier to be had by re-reading, because
+ * re-reading gives the *new* claim's identifier and this check refuses that
+ * too, from the opposite direction: the caller must name the current one, and
+ * the current one is whatever the reviewer was actually looking at only if
+ * nothing moved underneath them.
+ *
+ * The refusal is `VERSION_CONFLICT` rather than a new code because it is the
+ * same event from the reader's point of view — the thing you were looking at
+ * changed — and one recovery path is better than two that mean the same thing.
+ *
+ * `current` is `null` where the finding holds no current claim, in which case
+ * naming one is refused as well: a decision about a claim that is not there is
+ * not a decision the caller can have meant.
+ */
+export function assertVerificationUnderReview(
+  current: string | null,
+  named: string | undefined,
+): void {
+  if (current === null) {
+    if (named === undefined) return;
+    throw new ApiError(
+      "VERSION_CONFLICT",
+      "The verification this decision named is no longer the finding's current claim.",
+      { current_verification_id: null, expected_verification_id: named },
+    );
+  }
+  if (named === undefined) {
+    throw new ApiError(
+      "EVIDENCE_REQUIRED",
+      "A decision about a finding under review must name the verification it is about, so that evidence replaced since it was read cannot be accepted in its place.",
+      { field: "verification_id", required_evidence: ["verification_id"] },
+    );
+  }
+  if (named !== current) {
+    throw new ApiError(
+      "VERSION_CONFLICT",
+      "The verification this decision named is no longer the finding's current claim.",
+      { current_verification_id: current, expected_verification_id: named },
+    );
+  }
+}
+
+/**
+ * A decision that sends work back states why (ADR-0036).
+ *
+ * `docs/UX_FLOWS.md` section 13 has required this of reopen since it was
+ * written, and until this rule existed only the form asked for it: the schema
+ * marked `reason` optional and a crafted request reopened a finding with
+ * nothing said. That is the *"a UI hiding a button is never the control"*
+ * pattern (`docs/SECURITY.md` section 7) applied to an input rather than to an
+ * action.
+ *
+ * It is checked here rather than in the request schema because one schema
+ * serves accept, reopen and wont-fix, and accept legitimately carries no
+ * reason. A rule that depends on which decision is being taken belongs where
+ * the decision is known.
+ */
+export function assertDecisionReason(what: string, reason: string | undefined): void {
+  if ((reason ?? "").trim() !== "") return;
+  throw new ApiError(
+    "EVIDENCE_REQUIRED",
+    `${what} requires a reason: work sent back with nothing said is work nobody can act on, and a decision nobody can read later is not one anybody can review.`,
+    { field: "reason", required_evidence: ["reason"] },
+  );
+}
+
 export function assertReviewTransition(from: ReviewStatus, to: ReviewStatus): void {
   if (from === to) return;
   if (!isReviewTransitionLegal(from, to)) {

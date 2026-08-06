@@ -328,7 +328,7 @@ export function validateVerificationStatus(value: unknown, path: string, out: Sc
  * equal the keys of x-protocol.messages.
  */
 export function validateMessageType(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["review.created","review.named","review.status_changed","finding.created","finding.annotated","finding.status_changed","review.claimed","finding.claimed","finding.comment_added","finding.verification_submitted","review.completion_evaluated","review.assigned","review.accepted","review.reopened","review.archived","review.comment_added","finding.resolved","finding.reopened","review.status_change_denied","finding.status_change_denied","inbox_item.created","inbox_item.acknowledged","inbox_item.completed","inbox_item.dismissed","inbox_item.expired","artefact.upload_started","artefact.upload_completed","artefact.upload_failed","artefact.access_granted","artefact.deleted","artefact.thumbnail_generated","screenshot.captured"] });
+  checkString(value, path, out, { values: ["review.created","review.named","review.status_changed","finding.created","finding.annotated","finding.status_changed","review.claimed","finding.claimed","finding.comment_added","finding.verification_submitted","finding.verification_accepted","finding.verification_rejected","review.completion_evaluated","review.assigned","review.accepted","review.reopened","review.archived","review.comment_added","finding.resolved","finding.reopened","review.status_change_denied","finding.status_change_denied","inbox_item.created","inbox_item.acknowledged","inbox_item.completed","inbox_item.dismissed","inbox_item.expired","artefact.upload_started","artefact.upload_completed","artefact.upload_failed","artefact.access_granted","artefact.deleted","artefact.thumbnail_generated","screenshot.captured"] });
 }
 
 /**
@@ -1553,10 +1553,13 @@ export function validateFindingClaimRequest(value: unknown, path: string, out: S
  * AUTHORISATION_DENIED, whatever credential reached the route.
  */
 export function validateFindingTransitionRequest(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["expected_version", "reason", "duplicate_of_finding_id"], ["expected_version"]);
+  const source = checkObject(value, path, out, ["expected_version", "verification_id", "reason", "duplicate_of_finding_id"], ["expected_version"]);
   if (source === null) return;
   if (source["expected_version"] !== undefined) {
     validateVersionNumber(source["expected_version"], `${path}.expected_version`, out);
+  }
+  if (source["verification_id"] !== undefined) {
+    validateIdentifier(source["verification_id"], `${path}.verification_id`, out);
   }
   if (source["reason"] !== undefined) {
     validateReasonText(source["reason"], `${path}.reason`, out);
@@ -1704,7 +1707,7 @@ export function validateFindingCreateRequest(value: unknown, path: string, out: 
  * docs/DOMAIN_MODEL.md section 15 before anything is written.
  */
 export function validateFindingUpdateRequest(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["expected_version", "title", "description", "severity", "status", "acceptance_criteria", "resolution_note"], ["expected_version"]);
+  const source = checkObject(value, path, out, ["expected_version", "title", "description", "severity", "status", "acceptance_criteria", "resolution_note", "verification_id", "reason"], ["expected_version"]);
   if (source === null) return;
   if (source["expected_version"] !== undefined) {
     validateVersionNumber(source["expected_version"], `${path}.expected_version`, out);
@@ -1726,6 +1729,12 @@ export function validateFindingUpdateRequest(value: unknown, path: string, out: 
   }
   if (source["resolution_note"] !== undefined) {
     validateBodyText(source["resolution_note"], `${path}.resolution_note`, out);
+  }
+  if (source["verification_id"] !== undefined) {
+    validateIdentifier(source["verification_id"], `${path}.verification_id`, out);
+  }
+  if (source["reason"] !== undefined) {
+    validateReasonText(source["reason"], `${path}.reason`, out);
   }
 }
 
@@ -2518,6 +2527,157 @@ export function validateFindingVerificationSubmitted(value: unknown, path: strin
   }
   if (source["supersedes_verification_id"] !== undefined) {
     validateIdentifier(source["supersedes_verification_id"], `${path}.supersedes_verification_id`, out);
+  }
+}
+
+/**
+ * Payload of finding.verification_accepted. It names the verification a human accepted,
+ * which finding.resolved does not: a trail recording that somebody resolved a finding
+ * without recording which claim they were looking at cannot answer the one question an
+ * auditor asks after an evidence swap (RVP-93, ADR-0035).
+ */
+export function validateFindingVerificationAccepted(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["verification_id", "finding_id", "review_id", "submitted_by", "decided_by", "after_artefact_id", "version", "reason"], ["verification_id", "finding_id", "review_id", "decided_by", "version"]);
+  if (source === null) return;
+  if (source["verification_id"] !== undefined) {
+    validateIdentifier(source["verification_id"], `${path}.verification_id`, out);
+  }
+  if (source["finding_id"] !== undefined) {
+    validateIdentifier(source["finding_id"], `${path}.finding_id`, out);
+  }
+  if (source["review_id"] !== undefined) {
+    validateIdentifier(source["review_id"], `${path}.review_id`, out);
+  }
+  if (source["submitted_by"] !== undefined) {
+    validateActor(source["submitted_by"], `${path}.submitted_by`, out);
+  }
+  if (source["decided_by"] !== undefined) {
+    validateActor(source["decided_by"], `${path}.decided_by`, out);
+  }
+  if (source["after_artefact_id"] !== undefined) {
+    validateIdentifier(source["after_artefact_id"], `${path}.after_artefact_id`, out);
+  }
+  if (source["version"] !== undefined) {
+    validateVersionNumber(source["version"], `${path}.version`, out);
+  }
+  if (source["reason"] !== undefined) {
+    validateReasonText(source["reason"], `${path}.reason`, out);
+  }
+}
+
+/**
+ * Payload of finding.verification_rejected. A reopen is a rejection of a specific claim,
+ * and naming it is what keeps a repeatedly-reopened finding legible: the record says which
+ * evidence failed rather than only that the finding came back (RVP-93, ADR-0035).
+ */
+export function validateFindingVerificationRejected(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["verification_id", "finding_id", "review_id", "submitted_by", "decided_by", "version", "reason"], ["verification_id", "finding_id", "review_id", "decided_by", "version", "reason"]);
+  if (source === null) return;
+  if (source["verification_id"] !== undefined) {
+    validateIdentifier(source["verification_id"], `${path}.verification_id`, out);
+  }
+  if (source["finding_id"] !== undefined) {
+    validateIdentifier(source["finding_id"], `${path}.finding_id`, out);
+  }
+  if (source["review_id"] !== undefined) {
+    validateIdentifier(source["review_id"], `${path}.review_id`, out);
+  }
+  if (source["submitted_by"] !== undefined) {
+    validateActor(source["submitted_by"], `${path}.submitted_by`, out);
+  }
+  if (source["decided_by"] !== undefined) {
+    validateActor(source["decided_by"], `${path}.decided_by`, out);
+  }
+  if (source["version"] !== undefined) {
+    validateVersionNumber(source["version"], `${path}.version`, out);
+  }
+  if (source["reason"] !== undefined) {
+    validateReasonText(source["reason"], `${path}.reason`, out);
+  }
+}
+
+/**
+ * What the control plane checked for itself before recording the verification.
+ */
+export function validateEvidenceAssuranceVerifiedByControlPlane(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 12, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateRequirementLabel(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * What the submitter claimed and nothing confirmed. Empty is a truthful answer.
+ */
+export function validateEvidenceAssuranceAssertedByAgent(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 12, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateRequirementLabel(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Who established each piece of evidence (ADR-0031). A surface that reports evidence MUST
+ * NOT merge the two lists: the first names checks this control plane performed, the second
+ * names claims the submitting actor made and nothing confirmed. A reviewer shown one
+ * undifferentiated list of ticks would accept a machine agreeing with itself, which is the
+ * confusion the product exists to remove.
+ */
+export function validateEvidenceAssurance(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["verified_by_control_plane", "asserted_by_agent", "asserted_by"], ["verified_by_control_plane", "asserted_by_agent"]);
+  if (source === null) return;
+  if (source["verified_by_control_plane"] !== undefined) {
+    validateEvidenceAssuranceVerifiedByControlPlane(source["verified_by_control_plane"], `${path}.verified_by_control_plane`, out);
+  }
+  if (source["asserted_by_agent"] !== undefined) {
+    validateEvidenceAssuranceAssertedByAgent(source["asserted_by_agent"], `${path}.asserted_by_agent`, out);
+  }
+  if (source["asserted_by"] !== undefined) {
+    validateActor(source["asserted_by"], `${path}.asserted_by`, out);
+  }
+}
+
+/**
+ * Qualifications on the claim: a defect not reproduced first, an unchecked accessibility
+ * pass, a branch no workspace corroborates. They are statements about the evidence rather
+ * than claims attributed to the submitter, so they are not in the asserted list.
+ */
+export function validateVerificationReviewWarnings(value: unknown, path: string, out: SchemaViolation[]): void {
+  if (!checkArray(value, path, out, { minItems: 0, maxItems: 12, uniqueItems: false })) return;
+  for (let index = 0; index < value.length; index += 1) {
+    validateRequirementLabel(value[index], `${path}[${index}]`, out);
+  }
+}
+
+/**
+ * Whether this claim is still the one a decision may be taken on. False for a superseded
+ * or already-decided record, which a reviewer may read but may not accept.
+ */
+export function validateVerificationReviewIsCurrent(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
+ * One verification as a human reviewer reads it: the claim, the assurance split of
+ * docs/UX_FLOWS.md section 13, and the qualifications on the claim that are worth saying
+ * but not worth refusing. It is served by GET
+ * /api/v1/findings/:findingId/verifications/:verificationId so a comparison is rendered
+ * from a named claim rather than from whatever is latest at render time (ADR-0035).
+ */
+export function validateVerificationReview(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["verification", "assurance", "warnings", "is_current"], ["verification", "assurance", "warnings", "is_current"]);
+  if (source === null) return;
+  if (source["verification"] !== undefined) {
+    validateVerificationReference(source["verification"], `${path}.verification`, out);
+  }
+  if (source["assurance"] !== undefined) {
+    validateEvidenceAssurance(source["assurance"], `${path}.assurance`, out);
+  }
+  if (source["warnings"] !== undefined) {
+    validateVerificationReviewWarnings(source["warnings"], `${path}.warnings`, out);
+  }
+  if (source["is_current"] !== undefined) {
+    validateVerificationReviewIsCurrent(source["is_current"], `${path}.is_current`, out);
   }
 }
 

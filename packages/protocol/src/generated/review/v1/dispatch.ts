@@ -23,6 +23,8 @@ import type {
   FindingResolved,
   FindingStatusChangeDenied,
   FindingStatusChanged,
+  FindingVerificationAccepted,
+  FindingVerificationRejected,
   FindingVerificationSubmitted,
   InboxItemAcknowledged,
   InboxItemCompleted,
@@ -59,6 +61,8 @@ import {
   decodeFindingResolved,
   decodeFindingStatusChangeDenied,
   decodeFindingStatusChanged,
+  decodeFindingVerificationAccepted,
+  decodeFindingVerificationRejected,
   decodeFindingVerificationSubmitted,
   decodeInboxItemAcknowledged,
   decodeInboxItemCompleted,
@@ -93,6 +97,8 @@ import {
   encodeFindingResolved,
   encodeFindingStatusChangeDenied,
   encodeFindingStatusChanged,
+  encodeFindingVerificationAccepted,
+  encodeFindingVerificationRejected,
   encodeFindingVerificationSubmitted,
   encodeInboxItemAcknowledged,
   encodeInboxItemCompleted,
@@ -127,6 +133,8 @@ import {
   validateFindingResolved,
   validateFindingStatusChangeDenied,
   validateFindingStatusChanged,
+  validateFindingVerificationAccepted,
+  validateFindingVerificationRejected,
   validateFindingVerificationSubmitted,
   validateInboxItemAcknowledged,
   validateInboxItemCompleted,
@@ -161,6 +169,8 @@ export type ReviewPayload =
   | FindingClaimed
   | FindingCommentAdded
   | FindingVerificationSubmitted
+  | FindingVerificationAccepted
+  | FindingVerificationRejected
   | ReviewCompletionEvaluated
   | ReviewAssigned
   | ReviewAccepted
@@ -218,6 +228,12 @@ export function validatePayload(type: MessageType, value: unknown, path: string,
       return;
     case "finding.verification_submitted":
       validateFindingVerificationSubmitted(value, path, out);
+      return;
+    case "finding.verification_accepted":
+      validateFindingVerificationAccepted(value, path, out);
+      return;
+    case "finding.verification_rejected":
+      validateFindingVerificationRejected(value, path, out);
       return;
     case "review.completion_evaluated":
       validateReviewCompletionEvaluated(value, path, out);
@@ -313,6 +329,10 @@ export function decodeFrame(envelope: Envelope, value: unknown): ReviewFrame {
       return { envelope, type: "finding.comment_added", payload: decodeFindingCommentAdded(value) };
     case "finding.verification_submitted":
       return { envelope, type: "finding.verification_submitted", payload: decodeFindingVerificationSubmitted(value) };
+    case "finding.verification_accepted":
+      return { envelope, type: "finding.verification_accepted", payload: decodeFindingVerificationAccepted(value) };
+    case "finding.verification_rejected":
+      return { envelope, type: "finding.verification_rejected", payload: decodeFindingVerificationRejected(value) };
     case "review.completion_evaluated":
       return { envelope, type: "review.completion_evaluated", payload: decodeReviewCompletionEvaluated(value) };
     case "review.assigned":
@@ -385,6 +405,10 @@ export function encodeFramePayload(frame: ReviewFrame): string {
       return encodeFindingCommentAdded(frame.payload);
     case "finding.verification_submitted":
       return encodeFindingVerificationSubmitted(frame.payload);
+    case "finding.verification_accepted":
+      return encodeFindingVerificationAccepted(frame.payload);
+    case "finding.verification_rejected":
+      return encodeFindingVerificationRejected(frame.payload);
     case "review.completion_evaluated":
       return encodeReviewCompletionEvaluated(frame.payload);
     case "review.assigned":
