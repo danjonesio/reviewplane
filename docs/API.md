@@ -241,6 +241,18 @@ A workspace registered here retains its `root_path`, because `workspace_hint`
 resolves against it (`MCP_SPEC.md` §4). A connector-reported one does not: the
 path never leaves the development machine.
 
+**`GET` resolves the project inside the caller's scope, and the response
+carries `root_path`.** That makes the read a path-disclosure surface as well as
+a data one: `DOMAIN_MODEL.md` §9 reduces a connector-reported path to
+`path_hash` and `display_label` *so that absolute developer-machine paths are
+not disclosed*, and this route serves the registered ones in full. The project
+identifier in the URL MUST NOT be trusted; the project MUST be resolved with the
+identifier, the caller's project scope and the caller's organisation in one
+predicate, and the listing query MUST carry the organisation term as well. A
+project in another organisation is answered `RESOURCE_NOT_FOUND`, byte for byte
+as an unknown identifier is (§5) — not `PROJECT_CONTEXT_MISMATCH`, which
+distinguishes the two and so confirms that the project exists.
+
 ## 5. Common metadata
 
 Responses include:
@@ -807,9 +819,23 @@ central Chromium against a private development machine. A browser-worker, agent
 or connector credential reaches none of them (`SECURITY.md` §6.3); an agent acts
 through `/mcp/v1`.
 
-Worker assignment (`PUT /api/v1/browser-workers/:workerId/assignments`) and the
-worker listing remain organisation-wide: a project-scoped session may not assign
-a worker.
+**The two worker-administration routes are the exception, and they require the
+deployment administrator.** `GET /api/v1/browser-workers` and
+`PUT /api/v1/browser-workers/:workerId/assignments` act on a pool that belongs
+to the deployment rather than to any organisation (ADR-0034), so there is no
+organisation term to scope them by and an organisation-wide session is not
+sufficient. In Stage 1 that means the bootstrap administrator token: the test is
+that the principal belongs to no organisation (`SECURITY.md` §7). A
+project-scoped session may not reach them either, as before.
+
+An assignment **replaces** the worker's whole project set. Every identifier in
+`project_ids` MUST be resolved inside the caller's scope before any row is
+written, so a set naming a project the caller cannot reach changes nothing;
+an unknown identifier is answered `RESOURCE_NOT_FOUND` (§5).
+
+`GET /internal/v1/protocol`, the encoding example of `ARCHITECTURE.md` §11,
+applies the same deployment-administrator rule. It carries no tenant data, and
+it is stated here so the rule has one statement rather than two.
 
 Every session lookup is filtered by the caller's project scope and organisation
 in one predicate, so a session in another project answers `RESOURCE_NOT_FOUND`
@@ -1007,6 +1033,8 @@ POST /api/v1/browser-sessions/:sessionId/allocate
 Allocation contacts the worker, binds the origin and the freshly minted capability, and moves the session `REQUESTED` → `ALLOCATING` → `READY`. Only a `REQUESTED` session may be allocated; anything else is `BROWSER_SESSION_NOT_ACTIVE`. A published service belonging to another project is refused with `PROJECT_CONTEXT_MISMATCH`, and a session the route does not name is refused with `AUTHORISATION_DENIED` before any capability is minted.
 
 The one-request form remains available for a session that needs no route, or whose route already names it: omit `allocate` and the control plane reserves and allocates in one call.
+
+A browser worker checks the session's project against its own copy of its assignment as well, and that copy is restated on its heartbeat rather than pushed (ADR-0026). So an allocation made within one heartbeat interval of an administrator assigning the project MAY be refused with `PROJECT_CONTEXT_MISMATCH` even though the assignment exists here and the control plane's own check has passed. The refusal stands — the worker's check is the one protecting the browser — but the control plane compares the two copies before answering, and where its own record does hold the assignment the answer says that the worker's copy is stale, carries `details.browser_worker_assignment: "stale"` and `details.heartbeat_interval_seconds`, and states that no restart is needed. A caller that allocates immediately after assigning MUST be prepared to retry for that interval; a client that waits for a browser worker to serve a newly assigned project MUST wait on an allocation succeeding, because no other endpoint observes the worker's copy.
 
 ## 12. Review endpoints
 

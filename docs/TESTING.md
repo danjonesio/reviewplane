@@ -514,6 +514,38 @@ cover these against a real database:
 - Two concurrent creations of one project slug produce one project and one
   stable refusal
 
+### The organisation-wide session is the probe, not the project-scoped one
+
+`apps/server/test/cross-tenant-authority.test.ts` covers the routes where a null
+project scope was read as authority (RVP-91, RVP-92), and the **session shape it
+uses is the requirement**. A guard of this class is invisible to both of the
+probes that were available before it:
+
+- a **project-scoped** session is refused correctly by the wrong predicate, so
+  it passes against the defect and against the fix;
+- the **bootstrap administrator** carries `organisationId: null` and
+  `projectIds: null`, so every tenancy term in every scoped query goes vacuous
+  and a missing one ships green.
+
+So a suite covering a route that a signed-in person reaches MUST include an
+**organisation-wide viewer of a different organisation** — a real sign-in, with
+a real organisation and a real CSRF token — and MUST drive the route over its
+transport rather than the service beneath it. It SHOULD keep the project-scoped
+probe beside it rather than instead of it: the pair is what makes a mutation
+test meaningful, because a term that is doing work fails the organisation-wide
+probe while the project-scoped one still passes. A change that fails both is
+refusing everything, which is a different change.
+
+Asserted today: an organisation-wide viewer of one organisation cannot read
+another's workspaces, and the refusal is **byte-identical** to an unknown
+project identifier — equality of bodies, not of statuses — and discloses neither
+the developer-machine `root_path` nor the victim's organisation identifier; the
+same viewer cannot list the deployment's browser workers, cannot reassign one,
+and the victim's assignment is intact afterwards; an assignment naming a project
+that does not exist writes nothing, because the delete-then-insert would
+otherwise strip the worker first; and the bootstrap administrator can still do
+all of it.
+
 ### Prompt injection
 
 Fixture pages include malicious instructions. Tests verify:

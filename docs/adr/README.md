@@ -47,6 +47,7 @@ ADRs record decisions that materially affect architecture, security, protocols o
 | [0031](0031-agent-assertions-are-not-control-plane-verification.md) | Agent-asserted checks are recorded as assertions, never as control-plane verification | Accepted |
 | [0032](0032-freehand-paths-and-per-type-geometry-versions.md) | A freehand annotation is a bounded list of normalised points, and geometry is versioned per annotation type | Accepted |
 | [0033](0033-element-context-resolved-from-a-captured-snapshot.md) | Element context is resolved by arithmetic over a captured snapshot, never by asking the page | Accepted |
+| [0034](0034-browser-workers-are-a-deployment-wide-shared-pool.md) | Browser workers are a deployment-wide shared pool, administered by the deployment administrator | Accepted |
 
 ## Pending decisions
 
@@ -87,7 +88,7 @@ When one of these ADRs is written, add it to the index and remove its row from t
 
 ## Amendments required
 
-- **ADR-0001** describes central browser workers with no segregation concept between organisations or projects. RVP-50 requires it to be amended with the worker-pool model when pools are introduced.
+- **ADR-0001** describes central browser workers with no segregation concept between organisations or projects. ADR-0034 settles the Stage 1 position — the pool is deployment-wide and a worker belongs to no organisation, so the assignment table is the only tenancy a worker has — and RVP-50 still requires ADR-0001 to be amended with the worker-pool model when pools are introduced. ADR-0034 does not close RVP-50's conditional row above: it records that pool membership is **not** an isolation boundary today, which is the condition under which that ADR is not yet needed.
 
 ## Unresolved document conflict
 

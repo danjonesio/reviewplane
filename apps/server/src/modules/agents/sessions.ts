@@ -184,7 +184,14 @@ export class AgentSessionStore {
     readonly clientCapabilities: Readonly<Record<string, boolean>>;
     readonly transportSessionId: string;
   }): Promise<{ session: AgentSessionRecord; workspace: WorkspaceRecord | null }> {
-    const workspace = await this.#workspaces.resolve(input.project.id, input.workspaceHint);
+    // The organisation comes from the credential rather than from the project
+    // row: it is the tenant the caller authenticated as, and an agent
+    // credential's organisation is non-nullable by construction.
+    const workspace = await this.#workspaces.resolve(
+      input.project.id,
+      input.credential.organisationId,
+      input.workspaceHint,
+    );
     const id = newId("ags_");
     const session = await inTransaction(this.#pool, async (client) => {
       const inserted = await client.query<SessionRow>(

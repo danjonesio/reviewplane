@@ -120,20 +120,48 @@ export class WorkspaceStore {
     return row;
   }
 
-  async listForProject(projectId: string): Promise<WorkspaceRecord[]> {
+  /**
+   * The workspaces of one project, inside one organisation.
+   *
+   * Both terms, and not one. `organisation_id` was in the SELECT list and
+   * absent from the WHERE, so the query answered for whatever project
+   * identifier reached it — and `root_path` is the developer machine's absolute
+   * filesystem path, which `docs/DOMAIN_MODEL.md` section 9 reduces to
+   * `path_hash` and `display_label` on the connector protocol *precisely so that
+   * it is not disclosed*. Serving it to another tenant contradicted a stated
+   * privacy property of the product rather than only an access rule (RVP-92).
+   *
+   * The organisation is required rather than optional. A caller that has not
+   * resolved one has not authorised the read, and an optional parameter is a
+   * term the next caller omits by accident.
+   */
+  async listForProject(projectId: string, organisationId: string): Promise<WorkspaceRecord[]> {
     const rows = await this.#pool.query<WorkspaceRow>(
       `SELECT id, organisation_id, project_id, root_path, branch, head_commit, dirty
-         FROM workspaces WHERE project_id = $1 ORDER BY root_path LIMIT 50`,
-      [projectId],
+         FROM workspaces
+        WHERE project_id = $1 AND organisation_id = $2
+        ORDER BY root_path LIMIT 50`,
+      [projectId, organisationId],
     );
     return rows.rows;
   }
 
-  async get(workspaceId: string): Promise<WorkspaceRecord | null> {
+  /**
+   * One workspace by identifier, inside one organisation.
+   *
+   * This read `WHERE id = $1` and left every caller to check the tenancy for
+   * itself afterwards. Both callers did — `apps/mcp-server/src/tools.ts`
+   * compares `project_id` against the session's project — but "the query
+   * returns rows from other tenants and the caller is expected to drop them" is
+   * the arrangement `docs/SECURITY.md` section 7 rules out: a row failing any
+   * part of the predicate is not returned, rather than returned and then
+   * rejected by a later branch.
+   */
+  async get(workspaceId: string, organisationId: string): Promise<WorkspaceRecord | null> {
     const rows = await this.#pool.query<WorkspaceRow>(
       `SELECT id, organisation_id, project_id, root_path, branch, head_commit, dirty
-         FROM workspaces WHERE id = $1`,
-      [workspaceId],
+         FROM workspaces WHERE id = $1 AND organisation_id = $2`,
+      [workspaceId, organisationId],
     );
     return rows.rows[0] ?? null;
   }
@@ -147,8 +175,12 @@ export class WorkspaceStore {
    * recorded with a warning rather than checked against a workspace picked at
    * random, which would be worse than not checking it.
    */
-  async resolve(projectId: string, hint: string | null): Promise<WorkspaceRecord | null> {
-    const workspaces = await this.listForProject(projectId);
+  async resolve(
+    projectId: string,
+    organisationId: string,
+    hint: string | null,
+  ): Promise<WorkspaceRecord | null> {
+    const workspaces = await this.listForProject(projectId, organisationId);
     if (hint !== null && hint !== "") {
       const normalised = hint.replace(/\/+$/u, "");
       const matched = workspaces.filter(

@@ -34,7 +34,6 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
 import type { Pool } from "pg";
 
-import { ApiError } from "../../errors.ts";
 import { newId } from "../../ids.ts";
 
 /** Cookie the viewer session travels in. */
@@ -274,19 +273,27 @@ export class ViewerSessionStore {
   }
 }
 
-/** Whether a principal may view a project's resources. */
+/**
+ * Whether a principal's **project scope** admits a project.
+ *
+ * Half an authorisation answer, and named so that it cannot be mistaken for
+ * the whole one. `projectIds === null` means "not narrowed to a list", so this
+ * returns true for every organisation-wide principal — which is every real
+ * sign-in. The organisation is the other half and this function does not know
+ * it; the one caller, the live channel in `live/routes.ts`, compares
+ * `principal.organisationId` against the record's before it asks this.
+ *
+ * A `requireProject(principal, projectId)` helper stood beside this and threw
+ * `PROJECT_CONTEXT_MISMATCH` on the project term alone. It had no callers, and
+ * it was the exact shape of RVP-91 and RVP-92 kept in a helper with an
+ * inviting name: importing it would have looked like adopting the house
+ * pattern while dropping the organisation. Anything needing a scoped read
+ * should call `resolveProject` in `modules/identity/authorisation.ts`, which
+ * puts the identifier, the project scope and the organisation in one predicate
+ * and answers `RESOURCE_NOT_FOUND` rather than a distinguishable refusal.
+ */
 export function authorisedForProject(principal: ViewerPrincipal, projectId: string): boolean {
   return principal.projectIds === null || principal.projectIds.has(projectId);
-}
-
-/** Throws the refusal a project-scope failure must report. */
-export function requireProject(principal: ViewerPrincipal, projectId: string): void {
-  if (!authorisedForProject(principal, projectId)) {
-    throw new ApiError(
-      "PROJECT_CONTEXT_MISMATCH",
-      "This viewer session is not authorised for the project that owns this resource.",
-    );
-  }
 }
 
 /** Reads one cookie from a request header without pulling in a parser. */
