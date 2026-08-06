@@ -1,26 +1,39 @@
 /**
- * One review and its findings.
+ * One review, its findings and the review-level decision.
  *
- * Each finding is shown with the captured context that makes it reproducible
- * (`docs/UX_FLOWS.md` section 9) and with its original screenshot under an
- * annotation overlay. The context is not decoration: a reader deciding whether
- * a finding is still real needs the URL, the viewport, the scroll position and
- * the commit as much as the picture.
+ * Each finding is summarised with the captured context that makes it
+ * reproducible (`docs/UX_FLOWS.md` section 9) and its status in words. The
+ * evidence comparison and the per-finding decision are one level down, on the
+ * finding page: a review with several findings, each carrying a before-and-after
+ * pair, is not a page anybody can read at 390 pixels, and the decision deserves
+ * a URL that can be linked to.
  *
- * Nothing here can accept or reopen anything. That is Stage 1
- * (`docs/UX_FLOWS.md` section 13), and the server would refuse an agent
- * attempting it in any case.
+ * The review-level accept of `docs/UX_FLOWS.md` section 12 is here. It is
+ * refused by the control plane unless every human-authored finding has reached
+ * a final disposition, and the refusal names the one that has not — so this
+ * page offers the control the transition table permits and lets the server
+ * decide, rather than computing an eligibility rule of its own.
  */
 
 import { Link, createRoute, useParams } from "@tanstack/react-router";
-import { useQueries, useQuery } from "@tanstack/react-query";
-import type { ReactElement } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState, type ReactElement } from "react";
 
-import { api, type Annotation, type Finding } from "../api/client.ts";
+import { ApiFailure, api, type Finding } from "../api/client.ts";
 import { AgentDeliveryPanel } from "../components/AgentDelivery.tsx";
-import { ArtefactViewer } from "../components/ArtefactViewer.tsx";
+import { CommentThread } from "../components/CommentThread.tsx";
+import {
+  DECISION_REFUSALS,
+  ReviewDecisionActions,
+} from "../components/DecisionActions.tsx";
+import { RefusalPanel } from "../components/refusals.tsx";
 import { StatusBadge, type Tone } from "../components/StatusBadge.tsx";
+import { reviewDecisionsFrom, type ReviewDecision } from "../review-actions.ts";
+import { FINDING_STATUS_WORDS } from "./finding.tsx";
 import { rootRoute } from "./root.tsx";
+
+const CARD =
+  "rounded border border-slate-300 bg-white p-4 dark:border-slate-700 dark:bg-slate-900";
 
 const TONE_FOR_SEVERITY: Readonly<Record<string, Tone>> = {
   critical: "failed",
@@ -30,48 +43,59 @@ const TONE_FOR_SEVERITY: Readonly<Record<string, Tone>> = {
   suggestion: "neutral",
 };
 
-function FindingPanel({
+/** What each review status means in words, so no status is a colour alone. */
+export const REVIEW_STATUS_WORDS: Readonly<Record<string, string>> = {
+  DRAFT: "not yet ready for anybody",
+  READY: "ready to be picked up",
+  ASSIGNED: "given to somebody",
+  IN_PROGRESS: "being worked on",
+  AWAITING_HUMAN_REVIEW: "an agent has requested review — not accepted",
+  CHANGES_REQUESTED: "sent back for more work",
+  ACCEPTED: "accepted by a human",
+  CANCELLED: "withdrawn",
+  ARCHIVED: "kept, not deleted",
+};
+
+function FindingSummary({
   finding,
-  annotations,
+  reviewId,
 }: {
   readonly finding: Finding;
-  readonly annotations: readonly Annotation[];
+  readonly reviewId: string;
 }): ReactElement {
-  // The before-and-after comparison of `docs/UX_FLOWS.md` section 17 is a pair
-  // of artefacts recorded on a verification submission
-  // (`docs/DOMAIN_MODEL.md` section 19). There is none until an agent submits
-  // one, and the viewer says so rather than offering a control that compares
-  // nothing.
-  const verification = useQuery({
-    queryKey: ["finding-verification", finding.id],
-    queryFn: () => api.findingVerification(finding.id),
-  });
-  // Absence arrives as `null` from the API and as an absent member in the
-  // schema, and both mean nobody has claimed this finding.
   const claimedBy = finding.claimed_by ?? null;
   return (
-    <li
-      data-finding={finding.id}
-      className="rounded border border-slate-300 bg-white p-4 dark:border-slate-700 dark:bg-slate-900"
-    >
+    <li data-finding={finding.id} className={CARD}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-base font-semibold">{finding.title}</h3>
+          <h3 className="text-base font-semibold">
+            <Link
+              to="/reviews/$reviewId/findings/$findingId"
+              params={{ reviewId, findingId: finding.id }}
+              className="underline-offset-4 hover:underline"
+            >
+              {finding.title}
+            </Link>
+          </h3>
           <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{finding.description}</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <StatusBadge
             tone={TONE_FOR_SEVERITY[finding.severity] ?? "neutral"}
             label={finding.severity}
+            detail="severity"
           />
-          <StatusBadge tone="neutral" label={finding.status} />
+          <StatusBadge
+            tone={finding.status === "RESOLVED" ? "live" : "warning"}
+            label={finding.status}
+            detail={FINDING_STATUS_WORDS[finding.status] ?? finding.status}
+          />
         </div>
       </div>
 
       <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-2 text-xs sm:grid-cols-4">
         <div className="col-span-2 min-w-0">
           <dt className="text-slate-600 dark:text-slate-400">URL</dt>
-          {/* Page-derived, so it is text and never a link the page controls. */}
           <dd className="truncate font-mono">{finding.url}</dd>
         </div>
         <div>
@@ -79,12 +103,6 @@ function FindingPanel({
           <dd className="font-mono">
             {finding.viewport.width}x{finding.viewport.height} @{" "}
             {finding.viewport.device_scale_factor}x
-          </dd>
-        </div>
-        <div>
-          <dt className="text-slate-600 dark:text-slate-400">Scroll</dt>
-          <dd className="font-mono">
-            {finding.scroll_position.x}, {finding.scroll_position.y}
           </dd>
         </div>
         <div className="min-w-0">
@@ -97,11 +115,6 @@ function FindingPanel({
         </div>
         <div className="min-w-0">
           <dt className="text-slate-600 dark:text-slate-400">Worked by</dt>
-          {/*
-            Who holds the claim, as the actor the control plane recorded
-            (`docs/UX_FLOWS.md` section 12). Nothing resolves an actor
-            identifier to a name, so the identifier is what is shown.
-          */}
           <dd className="break-all font-mono" data-finding-claim={finding.id}>
             {claimedBy === null
               ? "Nobody"
@@ -110,44 +123,86 @@ function FindingPanel({
         </div>
       </dl>
 
-      <div className="mt-4">
-        <ArtefactViewer
-          artefactId={finding.screenshot_artefact_id}
-          annotations={annotations}
-          compareArtefactId={verification.data?.after_artefact_id ?? null}
-          captureScale={finding.viewport.device_scale_factor}
-          caption={`Screenshot of ${finding.url} at ${String(finding.viewport.width)} by ${String(
-            finding.viewport.height,
-          )} CSS pixels, captured for the finding "${finding.title}".`}
-        />
-      </div>
+      <p className="mt-3">
+        <Link
+          to="/reviews/$reviewId/findings/$findingId"
+          params={{ reviewId, findingId: finding.id }}
+          data-open-finding={finding.id}
+          className="inline-block rounded border border-slate-400 px-3 py-2 text-sm font-medium dark:border-slate-600"
+        >
+          Open finding
+        </Link>
+      </p>
     </li>
   );
 }
 
 function ReviewDetail(): ReactElement {
   const { reviewId } = useParams({ from: "/reviews/$reviewId" });
+  const queryClient = useQueryClient();
   const review = useQuery({ queryKey: ["review", reviewId], queryFn: () => api.review(reviewId) });
   const findings = useQuery({
     queryKey: ["findings", reviewId],
     queryFn: () => api.findings(reviewId),
   });
-  const annotationQueries = useQueries({
-    queries: (findings.data ?? []).map((finding) => ({
-      queryKey: ["annotations", finding.id],
-      queryFn: () => api.annotations(finding.id),
-    })),
+  const comments = useQuery({
+    queryKey: ["comments", reviewId],
+    queryFn: () => api.reviewComments(reviewId),
+  });
+
+  const [decisionFailure, setDecisionFailure] = useState<unknown>(null);
+  const [pendingDecision, setPendingDecision] = useState<ReviewDecision | null>(null);
+
+  const decide = useMutation({
+    // The version travels from the record this page rendered, for the reason
+    // ADR-0035 gives about findings: a refetch at press time would send
+    // whatever another writer had just produced.
+    mutationFn: (input: {
+      readonly decision: ReviewDecision;
+      readonly reason: string;
+      readonly expectedVersion: number;
+    }) => api.transitionReview(reviewId, input.decision, input.expectedVersion, input.reason),
+    onMutate: (input) => {
+      setDecisionFailure(null);
+      setPendingDecision(input.decision);
+    },
+    onError: (error: unknown) => {
+      setDecisionFailure(error);
+      setPendingDecision(null);
+    },
+    onSuccess: () => {
+      setPendingDecision(null);
+      void queryClient.invalidateQueries({ queryKey: ["review", reviewId] });
+      void queryClient.invalidateQueries({ queryKey: ["findings", reviewId] });
+      void queryClient.invalidateQueries({ queryKey: ["comments", reviewId] });
+    },
+  });
+
+  const comment = useMutation({
+    mutationFn: (body: string) => api.addComment({ reviewId }, body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["comments", reviewId] });
+    },
   });
 
   if (review.isPending) return <p role="status">Loading the review.</p>;
   if (review.isError) {
+    const failure = review.error;
     return (
       <section aria-labelledby="review-heading">
         <h1 id="review-heading" className="text-xl font-semibold">
           This review could not be loaded
         </h1>
+        {failure instanceof ApiFailure ? (
+          <RefusalPanel
+            code={failure.code}
+            message={failure.message}
+            attribute="data-failure"
+            table={DECISION_REFUSALS}
+            surface="review"
+          />
+        ) : null}
         <p className="mt-2 text-sm">
-          It may belong to a project this session is not authorised for.{" "}
           <Link to="/reviews" className="underline">
             Back to reviews
           </Link>
@@ -157,10 +212,7 @@ function ReviewDetail(): ReactElement {
     );
   }
 
-  const annotationsByFinding = new Map<string, readonly Annotation[]>();
-  (findings.data ?? []).forEach((finding, index) => {
-    annotationsByFinding.set(finding.id, annotationQueries[index]?.data ?? []);
-  });
+  const record = review.data;
 
   return (
     <section aria-labelledby="review-heading">
@@ -169,49 +221,99 @@ function ReviewDetail(): ReactElement {
           Reviews
         </Link>
       </p>
-      <h1 id="review-heading" className="mt-2 text-xl font-semibold">
-        {review.data.title}
-      </h1>
-      <p className="mt-1 font-mono text-xs text-slate-600 dark:text-slate-400">
-        {review.data.slug}
-      </p>
-      {review.data.description === undefined ? null : (
-        <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">{review.data.description}</p>
+      <div className="mt-2 flex flex-wrap items-start justify-between gap-3">
+        <h1 id="review-heading" className="text-xl font-semibold">
+          {record.title}
+        </h1>
+        <StatusBadge
+          tone={record.status === "ACCEPTED" ? "live" : "warning"}
+          label={record.status}
+          detail={REVIEW_STATUS_WORDS[record.status] ?? record.status}
+        />
+      </div>
+      <p className="mt-1 font-mono text-xs text-slate-600 dark:text-slate-400">{record.slug}</p>
+      {record.description === undefined ? null : (
+        <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">{record.description}</p>
       )}
 
       <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
         <div>
           <dt className="text-slate-600 dark:text-slate-400">Status</dt>
-          <dd>{review.data.status}</dd>
+          <dd data-review-status={record.id}>{record.status}</dd>
         </div>
         <div className="min-w-0">
           <dt className="text-slate-600 dark:text-slate-400">Branch</dt>
-          <dd className="truncate font-mono">{review.data.captured_branch}</dd>
+          <dd className="truncate font-mono">{record.captured_branch}</dd>
         </div>
         <div className="min-w-0">
           <dt className="text-slate-600 dark:text-slate-400">Commit</dt>
-          <dd className="truncate font-mono">{review.data.captured_commit.slice(0, 12)}</dd>
+          <dd className="truncate font-mono">{record.captured_commit.slice(0, 12)}</dd>
         </div>
         <div className="min-w-0">
           <dt className="text-slate-600 dark:text-slate-400">Captured from</dt>
-          <dd className="truncate font-mono">{review.data.source_browser_session_id}</dd>
+          <dd className="truncate font-mono">{record.source_browser_session_id}</dd>
+        </div>
+        <div className="min-w-0">
+          <dt className="text-slate-600 dark:text-slate-400">Captured workspace</dt>
+          <dd className="truncate font-mono">{record.captured_workspace_id}</dd>
+        </div>
+        <div>
+          <dt className="text-slate-600 dark:text-slate-400">Priority</dt>
+          <dd>{record.priority ?? "medium"}</dd>
+        </div>
+        <div>
+          <dt className="text-slate-600 dark:text-slate-400">Version</dt>
+          <dd className="font-mono" data-review-version={record.id}>
+            {record.version}
+          </dd>
         </div>
       </dl>
 
-      <AgentDeliveryPanel review={review.data} />
+      <AgentDeliveryPanel review={record} />
+
+      <div className={`mt-6 ${CARD}`}>
+        <ReviewDecisionActions
+          reviewId={record.id}
+          decisions={reviewDecisionsFrom("human_user", record.status)}
+          expectedVersion={record.version}
+          pending={pendingDecision}
+          failure={decisionFailure}
+          onDecide={(decision, reason) => {
+            decide.mutate({ decision, reason, expectedVersion: record.version });
+          }}
+          onReload={() => {
+            setDecisionFailure(null);
+            void queryClient.invalidateQueries({ queryKey: ["review", reviewId] });
+          }}
+        />
+
+        <CommentThread
+          surface={`review-${record.id}`}
+          headingId={`comments-heading-${record.id}`}
+          heading="Discussion on this review"
+          comments={comments.data ?? []}
+          pending={comment.isPending}
+          failure={comment.error}
+          onAdd={(body) => {
+            comment.mutate(body);
+          }}
+        />
+      </div>
 
       <h2 className="mt-6 text-lg font-semibold">Findings</h2>
       {findings.isPending ? <p role="status">Loading findings.</p> : null}
       {findings.data !== undefined && findings.data.length === 0 ? (
-        <p className="mt-2 text-sm">This review has no findings yet.</p>
+        <div className={`mt-3 ${CARD}`} data-findings-empty={record.id}>
+          <h3 className="text-base font-semibold">This review has no findings</h3>
+          <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">
+            A review is created from annotated findings, so an empty one is a review whose findings
+            were withdrawn or never added. There is nothing to accept or reopen here.
+          </p>
+        </div>
       ) : null}
-      <ul className="mt-3 flex flex-col gap-6">
+      <ul className="mt-3 flex flex-col gap-4">
         {(findings.data ?? []).map((finding) => (
-          <FindingPanel
-            key={finding.id}
-            finding={finding}
-            annotations={annotationsByFinding.get(finding.id) ?? []}
-          />
+          <FindingSummary key={finding.id} finding={finding} reviewId={reviewId} />
         ))}
       </ul>
     </section>

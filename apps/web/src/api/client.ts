@@ -23,13 +23,18 @@ import type {
   AnnotationCreateRequest,
   AnnotationGeometry,
   AnnotationType,
+  Comment,
   ElementContext,
+  EvidenceAssurance,
   Finding,
   FindingSeverity,
+  FindingStatus,
   Review,
   ReviewPriority,
+  ReviewStatus,
   ScrollPosition,
   VerificationReference,
+  VerificationReview,
 } from "@reviewplane/protocol/review";
 
 export type {
@@ -37,21 +42,36 @@ export type {
   AnnotationCreateRequest,
   AnnotationGeometry,
   AnnotationType,
+  Comment,
   Connector,
   ConnectorStatus,
   ElementContext,
   Environment,
+  EvidenceAssurance,
   Finding,
   FindingSeverity,
+  FindingStatus,
   Review,
   ReviewPriority,
+  ReviewStatus,
   ScrollPosition,
   VerificationReference,
+  VerificationReview,
   Workspace,
 };
 
 /** The verification shape the review workspace reads. */
 export type Verification = VerificationReference;
+
+/** The review-search dimensions of `docs/UX_FLOWS.md` section 16. */
+export interface ReviewFilters {
+  readonly q?: string;
+  readonly status?: string;
+  readonly severity?: string;
+  readonly branch?: string;
+  readonly commit?: string;
+  readonly createdSince?: string;
+}
 
 export interface ApiErrorBody {
   readonly error?: { readonly code?: string; readonly message?: string };
@@ -845,6 +865,17 @@ export const api = {
   },
 
   /**
+   * One finding (`docs/API.md` §13).
+   *
+   * A finding of another project is answered `RESOURCE_NOT_FOUND`, byte for
+   * byte as an unknown identifier is, so the pair cannot be used to enumerate
+   * the other.
+   */
+  async finding(findingId: string): Promise<Finding> {
+    return request<Finding>(`/api/v1/findings/${encodeURIComponent(findingId)}`);
+  },
+
+  /**
    * The project's inbox, in every status.
    *
    * The endpoint answers with the live statuses alone when none is named, and a
@@ -996,11 +1027,134 @@ export const api = {
     reviewId: string,
     action: "request-review" | "accept" | "reopen" | "archive",
     expectedVersion: number,
+    reason?: string,
   ): Promise<Review> {
-    return request<Review>(
-      `/api/v1/reviews/${encodeURIComponent(reviewId)}/${action}`,
-      { method: "POST", body: JSON.stringify({ expected_version: expectedVersion }) },
+    return request<Review>(`/api/v1/reviews/${encodeURIComponent(reviewId)}/${action}`, {
+      method: "POST",
+      body: JSON.stringify({
+        expected_version: expectedVersion,
+        // Required by the control plane for a reopen (ADR-0036). The field is
+        // sent when it is there and never invented: a client that supplied a
+        // placeholder would satisfy the rule and defeat it.
+        ...(reason === undefined || reason.trim() === "" ? {} : { reason }),
+      }),
+    });
+  },
+
+  /** Every review of a project, with the search filters of `docs/UX_FLOWS.md` §16. */
+  async searchReviews(projectId: string, filters: ReviewFilters): Promise<Review[]> {
+    const query = new URLSearchParams();
+    if (filters.q !== undefined && filters.q.trim() !== "") query.set("q", filters.q.trim());
+    if (filters.status !== undefined && filters.status !== "") query.set("status", filters.status);
+    if (filters.severity !== undefined && filters.severity !== "") {
+      query.set("severity", filters.severity);
+    }
+    if (filters.branch !== undefined && filters.branch.trim() !== "") {
+      query.set("branch", filters.branch.trim());
+    }
+    if (filters.commit !== undefined && filters.commit.trim() !== "") {
+      query.set("commit", filters.commit.trim());
+    }
+    if (filters.createdSince !== undefined && filters.createdSince !== "") {
+      query.set("created_since", filters.createdSince);
+    }
+    const suffix = query.toString();
+    return request<Review[]>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/reviews${suffix === "" ? "" : `?${suffix}`}`,
     );
+  },
+
+  /**
+   * Every verification a finding has accumulated, newest first, superseded and
+   * decided records included (`docs/API.md` §13).
+   *
+   * A surface that showed only the current claim would make a
+   * repeatedly-reopened finding look like a first attempt every time
+   * (`docs/DOMAIN_MODEL.md` §19).
+   */
+  async findingVerifications(findingId: string): Promise<Verification[]> {
+    return request<Verification[]>(
+      `/api/v1/findings/${encodeURIComponent(findingId)}/verifications`,
+    );
+  },
+
+  /**
+   * One **named** verification with its assurance split (ADR-0031, ADR-0035).
+   *
+   * The comparison renders from this rather than from "latest", and the
+   * identifier in the path is the one a decision then carries. That is the
+   * whole point: a client cannot obtain the identifier of a claim it did not
+   * render, so an accept naming one is an accept of evidence somebody looked
+   * at.
+   */
+  async verificationReview(findingId: string, verificationId: string): Promise<VerificationReview> {
+    return request<VerificationReview>(
+      `/api/v1/findings/${encodeURIComponent(findingId)}/verifications/${encodeURIComponent(
+        verificationId,
+      )}`,
+    );
+  },
+
+  /**
+   * A human's decision about one finding (`docs/API.md` §13).
+   *
+   * `verificationId` is the claim the comparison was rendered from, and it
+   * travels with the decision unchanged. **Nothing here re-reads the finding.**
+   * A client that fetched the current version when the button was pressed would
+   * send a version that matches whatever an agent has just written, which is
+   * precisely the defect ADR-0035 exists to close; the caller passes what it
+   * rendered and this function forwards it.
+   */
+  async decideFinding(
+    findingId: string,
+    action: "accept" | "reopen" | "wont-fix",
+    decision: {
+      readonly expectedVersion: number;
+      readonly verificationId?: string | null;
+      readonly reason?: string;
+      readonly duplicateOfFindingId?: string;
+    },
+  ): Promise<Finding> {
+    return request<Finding>(`/api/v1/findings/${encodeURIComponent(findingId)}/${action}`, {
+      method: "POST",
+      body: JSON.stringify({
+        expected_version: decision.expectedVersion,
+        ...(decision.verificationId === undefined || decision.verificationId === null
+          ? {}
+          : { verification_id: decision.verificationId }),
+        ...(decision.reason === undefined || decision.reason.trim() === ""
+          ? {}
+          : { reason: decision.reason }),
+        ...(decision.duplicateOfFindingId === undefined
+          ? {}
+          : { duplicate_of_finding_id: decision.duplicateOfFindingId }),
+      }),
+    });
+  },
+
+  /** Comments on one review, current revisions only (`docs/API.md` §12). */
+  async reviewComments(reviewId: string): Promise<Comment[]> {
+    return request<Comment[]>(`/api/v1/reviews/${encodeURIComponent(reviewId)}/comments`);
+  },
+
+  /** Comments on one finding, current revisions only (`docs/API.md` §13). */
+  async findingComments(findingId: string): Promise<Comment[]> {
+    return request<Comment[]>(`/api/v1/findings/${encodeURIComponent(findingId)}/comments`);
+  },
+
+  /**
+   * Appends a comment. The body carries no author: attribution is derived from
+   * the authenticated actor (`docs/DOMAIN_MODEL.md` §18).
+   */
+  async addComment(
+    target: { readonly reviewId: string } | { readonly findingId: string },
+    body: string,
+  ): Promise<Comment> {
+    const path =
+      "findingId" in target
+        ? `/api/v1/findings/${encodeURIComponent(target.findingId)}/comments`
+        : `/api/v1/reviews/${encodeURIComponent(target.reviewId)}/comments`;
+    return request<Comment>(path, { method: "POST", body: JSON.stringify({ body }) });
   },
 
   /**

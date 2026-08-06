@@ -24,6 +24,7 @@ import {
 } from "./routes/project.tsx";
 import { projectNewRoute } from "./routes/project-new.tsx";
 import { projectsRoute } from "./routes/projects.tsx";
+import { findingRoute } from "./routes/finding.tsx";
 import { reviewRoute } from "./routes/review.tsx";
 import { reviewsRoute } from "./routes/reviews.tsx";
 import { rootRoute } from "./routes/root.tsx";
@@ -35,6 +36,7 @@ const routeTree = rootRoute.addChildren([
   sessionRoute,
   reviewsRoute,
   reviewRoute,
+  findingRoute,
   projectsRoute,
   projectNewRoute,
   projectRoute.addChildren([
