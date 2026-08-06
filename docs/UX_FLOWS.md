@@ -950,6 +950,24 @@ session and viewport it shows; and reduced motion answered by dropping the
 stream to the low frame rate and saying so, rather than by continuing to
 animate at twenty frames a second. `docs/TESTING.md` section 15 holds the tests.
 
+On the **annotation canvas** it means four more things:
+
+- The tool buttons are a labelled toolbar, each carrying `aria-pressed` and a
+  shape glyph beside its word, so the chosen tool is never signalled by colour
+  alone.
+- Every shape but freehand can be placed with no pointer at all: the canvas is
+  focusable, arrow keys move a cursor, Enter fixes a corner and then the shape,
+  Shift gives a finer step and Escape abandons a mark in progress. The cursor's
+  position is written as a percentage, so where it is can be read and not only
+  seen. Freehand is a gesture; rather than simulate one for a keyboard user the
+  surface says so and names the shape that marks the same region, because an
+  affordance that pretends to work is worse than one that explains itself.
+- Every mark carries a text alternative from the moment it exists, not from the
+  moment it is saved, and each placement is announced in a polite live region.
+- The annotation list beside the canvas is the non-canvas alternative for marks
+  being drawn as well as for marks already stored: it states each mark's shape
+  and position, selects the same mark the canvas selects, and can remove one.
+
 ## 20. Mobile
 
 The administration UI should be usable on mobile for viewing, comments, approvals and accepting findings. Full live takeover and detailed annotation may be optimised for tablet and desktop initially.
