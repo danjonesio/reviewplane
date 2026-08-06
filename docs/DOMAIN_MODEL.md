@@ -622,6 +622,14 @@ One actionable unit inside a review.
 - `created_at`
 - `updated_at`
 
+`scroll_position` is the document offset the capture was taken at, and it MUST
+be measured by the producer rather than defaulted. A viewport-sized screenshot
+is a picture of one screenful; without the offset it cannot be placed back on
+the page it came from, and the element context of §17 — which is resolved
+against document coordinates — resolves against the top of the document
+instead. `{0, 0}` is a valid value when it was read and never a stand-in for an
+unknown one.
+
 ### Severities
 
 - `critical`
