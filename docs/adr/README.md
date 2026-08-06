@@ -48,6 +48,8 @@ ADRs record decisions that materially affect architecture, security, protocols o
 | [0032](0032-freehand-paths-and-per-type-geometry-versions.md) | A freehand annotation is a bounded list of normalised points, and geometry is versioned per annotation type | Accepted |
 | [0033](0033-element-context-resolved-from-a-captured-snapshot.md) | Element context is resolved by arithmetic over a captured snapshot, never by asking the page | Accepted |
 | [0034](0034-browser-workers-are-a-deployment-wide-shared-pool.md) | Browser workers are a deployment-wide shared pool, administered by the deployment administrator | Accepted |
+| [0035](0035-a-human-decision-names-the-verification-it-decides.md) | A human decision names the verification it decides | Accepted |
+| [0036](0036-a-reopen-states-why-and-the-statement-is-a-comment.md) | A reopen states why, and the statement is a comment | Accepted |
 
 ## Pending decisions
 

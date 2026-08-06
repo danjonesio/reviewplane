@@ -696,7 +696,21 @@ Like the review table, this one is data in
   `POLICY_DENIED` and `details.allowed_transitions`
 - `WONT_FIX` requires a human decision or explicit project policy, and a reason.
   Waiving a reported problem without one is not a decision anybody can review
-  later
+  later. **`REOPENED` requires one too**, and for the stronger reason: a finding
+  sent back with nothing said is work an agent cannot act on. Both are enforced
+  below the transport, so a request that skips the form is refused
+  `EVIDENCE_REQUIRED` naming the field, and the statement is recorded as a
+  comment on the finding as well as on the event — an event payload is not the
+  discussion anybody reads (ADR-0036)
+- **A final disposition or a reopen taken on a finding that holds a current
+  verification names that verification.** The identifier is the one the deciding
+  client rendered its comparison from, and one that is no longer current is
+  refused `VERSION_CONFLICT`. It is a second control beside the version check,
+  and it exists because the version check is defeated by a client that re-reads
+  the record when the button is pressed — which is a natural thing to write and
+  is the whole of RVP-89. Accepting moves the named claim to `accepted` and
+  reopening moves it to `rejected`, each with the deciding human and the time
+  (ADR-0035)
 - `DUPLICATE` names the finding it duplicates, which must be another finding of
   the same project
 - Reopening preserves prior verification history. The `finding.reopened` event
@@ -1014,6 +1028,21 @@ An agent produces `submitted` and nothing else. The MCP layer has no argument
 that could name `accepted` or `rejected`, and the `verifications` table refuses
 either without a human reviewer, so the human decision of section 15 cannot be
 recorded by anything that is not a human (ADR-0020).
+
+`accepted` and `rejected` are reached by a human accepting or reopening the
+*finding*, naming the claim they were shown (ADR-0035). There is no route that
+decides a verification on its own: a person judges a reported problem, and the
+claim made against it is decided by the same act. `WONT_FIX` and `DUPLICATE`
+leave the claim as it is, because waiving a report is a judgement about the
+report rather than about the claim. A decided row records `reviewed_at` and
+`reviewed_by_actor_type`, which migration 0053 constrains to `human_user` and
+migration 0153 constrains to carry a time — identity **and** timestamp, both in
+the database rather than one there and one in the service.
+
+`finding.verification_accepted` and `finding.verification_rejected` carry the
+identifier, so the audit trail says which claim a human decided rather than only
+that a finding was closed. `finding.resolved` cannot answer that, and after an
+agent has submitted twice it is the only question worth asking.
 
 A submission also carries the artefact links its claim rests on, in
 `verification_artefacts` with a `before`, `after` or `supporting` role. Deletion

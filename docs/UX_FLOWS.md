@@ -654,6 +654,38 @@ Finding card displays:
 
 Statuses must be readable and not rely on colour alone.
 
+### Implemented behaviour
+
+The review list, the review page and the finding page are three surfaces rather
+than one. A review with several findings, each carrying a before-and-after pair
+and a decision, is not a page anybody can read at 390 pixels, and a decision
+deserves an address that can be linked to and returned to.
+
+- `/reviews` lists reviews and carries the search of §16.
+- `/reviews/:reviewId` states the review's facts, its agent delivery, the
+  review-level decision, the discussion, and each finding in summary.
+- `/reviews/:reviewId/findings/:findingId` is the finding card of this section
+  and the verification review of §13, and it is where a human decision is taken.
+
+Every status is a word beside its badge **and a sentence saying what the word
+means**. The sentence matters most for `AWAITING_HUMAN_REVIEW`, which reads
+"an agent has requested review — not accepted": the one reading of this surface
+that would defeat the product is a reviewer taking an agent's request for a
+decision.
+
+**The finding page is a snapshot.** Its queries do not refetch on focus or on a
+staleness timer, and a decision carries the version and the claim the page was
+drawn from. A comparison that quietly replaced itself when an agent submitted
+again would move evidence under a reader between reading the summary and
+pressing Accept, which is the same harm as re-reading the record at the moment
+of the press (RVP-89, ADR-0035). Where something did move, the control plane
+refuses the decision and the surface offers a reload rather than a retry.
+
+Staleness is stated and never computed. The captured commit is on the card with
+the sentence that this deployment does not yet calculate whether the workspace
+has moved since (`docs/DOMAIN_MODEL.md` §24), and the panel position §14
+reserves is left for Stage 2.
+
 ## 13. Verification review
 
 When the agent submits verification:
@@ -711,6 +743,51 @@ repeatedly-reopened finding look like a first attempt every time.
 - Requires a comment
 - Preserves prior verification
 - Creates an inbox item for assigned agent or user
+
+### Implemented behaviour
+
+**A decision names the claim it is about.** The comparison is rendered from
+`GET /api/v1/findings/:findingId/verifications/:verificationId` — a *named*
+verification, not "the latest" — and the accept, reopen or won't-fix carries
+that identifier. Where the finding holds a current claim the identifier is
+required, and one that is no longer current is refused `VERSION_CONFLICT`
+(ADR-0035). This is what closes the case where an agent replaces evidence under
+an open comparison: a client cannot obtain the identifier of a claim it did not
+render, and a client that re-read the record when the button was pressed would
+send the *new* claim and be refused from the other direction.
+
+**The requirement of a comment on reopen is a server rule.** `reason` is
+required by the domain for a reopen and for a won't-fix, at the finding and at
+the review, and a request that skips the form is refused `EVIDENCE_REQUIRED`
+naming the field. The reason is recorded as a comment on the finding by the
+deciding human, in the same transaction as the decision, so it reaches the
+discussion an agent actually reads rather than only an event payload
+(ADR-0036).
+
+**Accepting decides the claim; reopening rejects it.** The named verification
+moves to `accepted` or `rejected` with the deciding human and the time, and
+`finding.verification_accepted` or `finding.verification_rejected` is written
+beside the disposition. Won't-fix and duplicate decide neither: waiving a
+reported problem is a judgement about the report rather than about the claim
+made against it. Nothing is deleted, and every claim the finding has ever held
+stays listed and selectable — a superseded record says so in words, and choosing
+it renders its own comparison with a sentence saying no decision can be taken on
+it.
+
+**The two assurance headings are two `section` elements**, each with its own
+heading, its own marker and its own visually hidden words naming what kind of
+statement its rows are — "Verified by the control plane" against "Asserted, not
+confirmed". A screen-reader user hears the distinction rather than only seeing
+two glyphs. The split itself is computed by the control plane and served with
+the claim, so this surface renders ADR-0031's answer instead of producing a
+second one.
+
+**Which controls appear comes from the shared transition table** (ADR-0024,
+`apps/web/src/review-actions.ts`), and appearing is never permission. A review
+at `READY` is offered no decision at all, because the table permits none from
+there; a review at `AWAITING_HUMAN_REVIEW` is offered accept, and the control
+plane still refuses it while a human-authored finding is outstanding, naming the
+one that is.
 
 ## 14. Stale review experience
 
@@ -779,6 +856,28 @@ Support:
 - Finding text
 
 Review search returns durable reviews, not transient session frames.
+
+### Implemented behaviour
+
+Every dimension above except assignee has a control on `/reviews`, and each one
+is a query parameter on `GET /api/v1/projects/:projectId/reviews` (`docs/API.md`
+§12) rather than a filter applied to a fetched list. That is a privacy decision
+as much as a performance one: a page that filtered in the browser would have to
+read every review of every project in order to show one.
+
+**Project is not a control on this surface**, because it is already the project
+switcher: the page fans out across the projects the session can see and the
+endpoint resolves inside one project, so a cross-project search is not something
+this surface can perform. **Assignee is not a control**, because no endpoint
+resolves an agent session or a user to a name and a field taking a raw
+identifier would be a worse answer than none; the parameters
+(`assigned_agent_session_id`, `assigned_user_id`) exist on the endpoint for a
+client that holds one.
+
+The result count is a polite live region, so a keyboard or screen-reader user is
+told that a filter changed the result rather than having to go and look. An
+empty result says whether it is empty because nothing matched or because nothing
+exists, and the two are different sentences.
 
 ## 17. Artefact viewer
 

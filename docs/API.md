@@ -1074,6 +1074,21 @@ produce one review and one refusal.
 6, newest first. `?slug=...` is the named lookup an agent uses instead; it
 searches active reviews only and answers a single-element list.
 
+It also takes the review-search dimensions of `docs/UX_FLOWS.md` §16 as query
+parameters, all optional and all combined with `AND`: `q` (matched against the
+review's title, slug and description, and against the title and description of
+any finding in it), `status` and `severity` (repeatable or comma-separated),
+`branch`, `commit` (a prefix), `assigned_agent_session_id`, `assigned_user_id`,
+`created_since` and `created_until`. Every term is applied in the same `WHERE`
+clause as the organisation and project terms, so a filter cannot widen what a
+session may read; `%` and `_` in a caller's term are escaped, so one character
+cannot turn a filter into a scan of everything. An unknown parameter is ignored
+rather than refused — a filter is not a command, and a link carrying a parameter
+this version does not know should answer with reviews rather than with an error.
+
+The four lifecycle routes each fix their own target status rather than taking one
+in the body.
+
 The four lifecycle routes each fix their own target status rather than taking
 one in the body, so a caller cannot ask one route for another's transition. Each
 carries `expected_version` and an optional `reason`, which is recorded on the
@@ -1087,10 +1102,13 @@ event and never on the record:
   concurrently cannot slip past between the check and the write. Acceptance
   records `review.accepted` beside `review.status_changed`, naming the human who
   decided.
-- `reopen` moves it to `CHANGES_REQUESTED`. From `ACCEPTED` this is the explicit
-  reopen of `docs/DOMAIN_MODEL.md` section 14 and additionally records
-  `review.reopened` with the new `reopen_count`; prior findings, verifications,
-  comments and events are all retained.
+- `reopen` moves it to `CHANGES_REQUESTED` and **requires a `reason`**
+  (ADR-0036). A review sent back with nothing said is work nobody can act on,
+  and a blank or whitespace-only reason is refused with `EVIDENCE_REQUIRED` and
+  `details.field = "reason"`. From `ACCEPTED` this is the explicit reopen of
+  `docs/DOMAIN_MODEL.md` section 14 and additionally records `review.reopened`
+  with the new `reopen_count`; prior findings, verifications, comments and
+  events are all retained.
 - `archive` moves it to `ARCHIVED` and records `review.archived` with the status
   it was archived from. Archival is not deletion.
 
@@ -1146,6 +1164,7 @@ GET    /api/v1/findings/:findingId/comments
 POST   /api/v1/findings/:findingId/comments
 GET    /api/v1/findings/:findingId/verification
 GET    /api/v1/findings/:findingId/verifications
+GET    /api/v1/findings/:findingId/verifications/:verificationId
 POST   /api/v1/findings/:findingId/verifications
 POST   /api/v1/findings/:findingId/accept
 POST   /api/v1/findings/:findingId/reopen
@@ -1235,9 +1254,49 @@ a human API (`docs/SECURITY.md` section 6.3).
 `accept`, `reopen` and `wont-fix` are the human dispositions. `accept` moves the
 finding to `RESOLVED`; `wont-fix` moves it to `WONT_FIX` and **requires a
 reason**, or to `DUPLICATE` when it also names `duplicate_of_finding_id`, which
-must be another finding of the same project; `reopen` moves it to `REOPENED` and
-retains prior verification history. Each records `finding.resolved` or
-`finding.reopened` beside `finding.status_changed`, naming the human who decided.
+must be another finding of the same project; `reopen` moves it to `REOPENED`,
+**requires a reason** (ADR-0036) and retains prior verification history. Each
+records `finding.resolved` or `finding.reopened` beside
+`finding.status_changed`, naming the human who decided. Where a reason is
+supplied it is additionally appended as a comment on the finding, attributed to
+the deciding actor and written in the same transaction as the decision: an event
+payload is not in the discussion an agent reads, and the purpose of requiring
+the statement is that somebody has to act on it.
+
+**A decision about a finding under review names the verification it decides**
+(ADR-0035). `verification_id` is required on all three routes — and on `PATCH
+/api/v1/findings/:findingId` for the same transitions — whenever the finding
+holds a current claim, which is the verification whose status is `submitted`.
+
+- Omitting it while one is pending is `EVIDENCE_REQUIRED` with
+  `details.field = "verification_id"`.
+- Naming one that is no longer current, or naming one where the finding holds
+  none, is `VERSION_CONFLICT` with `details.current_verification_id` and
+  `details.expected_verification_id`.
+
+The check runs on the transaction holding the finding's row lock, so a
+submission racing a decision either completed before the lock and is refused, or
+waits for it. It is a second control beside `expected_version` rather than a
+replacement for it: the version catches every concurrent change to the finding,
+and this catches the one a client that re-read the record before sending would
+otherwise hide. Both are kept.
+
+`accept` moves the named verification to `accepted` and `reopen` moves it to
+`rejected`, each recording `reviewed_at` and the deciding human, and each
+writing `finding.verification_accepted` or `finding.verification_rejected`.
+`wont-fix` and the duplicate disposition decide neither, because waiving a
+reported problem is a judgement about the report rather than about the claim
+made against it. A rejected or superseded record is retained, never deleted.
+
+`GET /api/v1/findings/:findingId/verifications/:verificationId` answers one named
+verification as a reviewer reads it: the claim, the `evidence_assurance` split of
+ADR-0031, the qualifications on the claim, and `is_current` saying whether a
+decision may be taken on it. It answers for superseded and decided records too,
+because prior claims must be reachable and not merely retained. It is the route
+the review workspace renders a comparison from, and the identifier in its path is
+the one the decision then carries — which is what makes the rule above a control
+rather than a convention, since a client cannot obtain the identifier of a claim
+it never rendered.
 
 `POST /api/v1/findings/:findingId/comments` appends a comment and answers `201`;
 `GET` returns the current revision of each, and `?revisions=all` the retained
@@ -1261,9 +1320,10 @@ and a commit differing from the one the finding was captured at — because both
 surfaces reach one domain method. No workspace is resolved here, so the branch is
 recorded uncorroborated rather than checked against something that is not there.
 
-Accepting and rejecting a verification remain unimplemented; they arrive with the
-review workspace UI, and the statuses those transitions target are the ones
-above.
+Accepting and rejecting a verification are implemented, on the disposition
+routes above rather than on routes of their own: a human decides about a
+*finding*, and the claim under it is decided by the same act (ADR-0035). The
+statuses those transitions target are the ones above.
 
 `GET /api/v1/findings/:findingId/verifications` returns every verification the
 finding has accumulated, newest first, superseded records included. The
@@ -1725,3 +1785,19 @@ one worker stream per browser session and fans it out.
 - Clients must ignore unknown fields.
 - Removing or changing meaning requires a new major path or compatibility adapter.
 - WebSocket message schemas are versioned independently inside the path version.
+
+Two Stage 1 changes are breaking for a client that predates them, and are
+recorded here rather than left for a caller to discover:
+
+- **A human disposition on a finding that holds a current verification must name
+  it.** `verification_id` is an additive field, but the requirement is not
+  additive: a client that accepted a finding under review without one now
+  receives `EVIDENCE_REQUIRED` (ADR-0035). The alternative was to leave the
+  acceptance of evidence a reviewer never saw possible, which is the defect the
+  change exists to close.
+- **A reopen requires a `reason`**, at the finding and at the review
+  (ADR-0036). `docs/UX_FLOWS.md` has required it since it was written and only
+  the form asked; a request that skipped the form succeeded.
+
+Stage 1 has one client of these routes and it ships in this repository, so
+neither change strands a caller outside it.
