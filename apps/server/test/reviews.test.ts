@@ -485,7 +485,7 @@ test("an agent asking for a disposition is refused by authority before legality"
     .updateFinding(scope, findingId, { expectedVersion: 1, status: "RESOLVED" }, agent)
     .then(() => null)
     .catch((error: unknown) => error as { code: string; message: string });
-  assert.equal(denial?.code, "AUTHORISATION_DENIED", denial?.message);
+  assert.equal(denial?.code, "AUTHORISATION_DENIED", denial?.message ?? "no error was raised");
 
   // And the attempt is audited under that class rather than as an impossible
   // move (`docs/DOMAIN_MODEL.md` section 15).
