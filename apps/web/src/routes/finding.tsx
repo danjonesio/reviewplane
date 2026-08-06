@@ -283,7 +283,12 @@ function FindingDetail(): ReactElement {
    * disabled state is what tells the reader why rather than leaving them to
    * diff two identifiers by eye.
    */
-  const renderedClaimIsDecidable = selected === currentClaim;
+  // `claims.isPending` is part of it: before the list has loaded, `selected`
+  // and `currentClaim` are both null and would agree by accident, so a reader
+  // fast enough to press Accept would send no claim and be refused for a reason
+  // that is about timing rather than about evidence. Nothing is decided
+  // wrongly either way; the state is simply not one to offer.
+  const renderedClaimIsDecidable = !claims.isPending && selected === currentClaim;
   const decisions = findingDecisionsFrom("human_user", record.status);
 
   return (
