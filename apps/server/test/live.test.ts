@@ -150,6 +150,71 @@ test("a viewer scoped to another project is refused before any frame is sent", a
   assert.equal(harness.live.opened.length, 0);
 });
 
+/**
+ * The organisation term of the live upgrade, on its own.
+ *
+ * The case above scopes a viewer to a list of projects, which leaves the
+ * organisation comparison unexercised: `projectIds` alone refuses it. An
+ * organisation-wide viewer — `projectIds: null`, one organisation — inverts the
+ * pair, so the project term is vacuous and only the organisation comparison can
+ * refuse. `docs/EVENTS.md` section 10 and `docs/API.md` section 18.2 both
+ * require this channel to authorise by organisation as well as by project, and
+ * the event channel already does; without this case the two channels can drift
+ * apart silently, which is how a project membership that mints an
+ * organisation-wide viewer would turn into a cross-tenant read.
+ */
+test("an organisation-wide viewer is refused a live stream in another organisation", async () => {
+  const { sessionId } = await seededSession();
+  const other = await harness.built.app.inject({
+    method: "POST",
+    url: "/api/v1/organisations",
+    headers: { authorization: `Bearer ${BOOTSTRAP_TOKEN}` },
+    payload: { name: "Elsewhere", slug: "elsewhere-organisation" },
+  });
+  const otherOrganisation = (other.json() as { data: { id: string } }).data.id;
+  const viewer = await harness.built.viewers.issue({
+    organisationId: otherOrganisation,
+    projectIds: null,
+    display: "organisation-wide viewer",
+  });
+  const cookie = `reviewplane_viewer=${encodeURIComponent(viewer.token)}`;
+
+  await assert.rejects(
+    () => connectLive(origin, sessionId, { origin: ALLOWED_ORIGIN, cookie }),
+    (error: unknown) => {
+      assert.ok(error instanceof UpgradeRefused);
+      assert.equal(error.status, 403);
+      assert.match(error.body, /PROJECT_CONTEXT_MISMATCH/u);
+      return true;
+    },
+    "an organisation-wide viewer of another organisation opened a live stream",
+  );
+  assert.equal(harness.live.opened.length, 0, "no worker stream was opened for it");
+});
+
+test("an organisation-wide viewer of the owning organisation is accepted", async () => {
+  // The complement: a check that refused every organisation-wide viewer would
+  // pass the case above, and this is what stops it.
+  const { sessionId, projectId } = await seededSession();
+  const rows = await postgres.pool.query<{ organisation_id: string }>(
+    "SELECT organisation_id FROM projects WHERE id = $1",
+    [projectId],
+  );
+  const organisationId = rows.rows[0]?.organisation_id;
+  assert.ok(organisationId !== undefined);
+  const viewer = await harness.built.viewers.issue({
+    organisationId,
+    projectIds: null,
+    display: "organisation-wide viewer",
+  });
+  const client = await connectLive(origin, sessionId, {
+    origin: ALLOWED_ORIGIN,
+    cookie: `reviewplane_viewer=${encodeURIComponent(viewer.token)}`,
+  });
+  await client.waitFor((current) => current.messages.some((m) => m.type === "live.attached"));
+  await client.close();
+});
+
 test("a viewer scoped to the owning project is accepted", async () => {
   const { sessionId, projectId } = await seededSession();
   const cookie = await projectCookie(projectId);

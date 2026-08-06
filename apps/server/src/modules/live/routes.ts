@@ -316,7 +316,25 @@ export async function registerLiveRoutes(
     const principal = await resolveViewer(request, options);
     const { sessionId } = request.params as { sessionId: string };
     const session = await options.sessions.get(sessionId);
-    if (!authorisedForProject(principal, session.project_id)) {
+    // Both terms, and not one.
+    //
+    // `authorisedForProject` answers the project question only: a principal
+    // with `projectIds === null` is authorised for every project it is asked
+    // about, because the null means "not narrowed to a list" rather than
+    // "narrowed to nothing". That is correct for the bootstrap administrator,
+    // whose organisation is null as well, and it is not a complete answer for
+    // any principal that names an organisation — for that one the project list
+    // is vacuous and the organisation is the only boundary left.
+    //
+    // `docs/EVENTS.md` section 10 and `docs/API.md` section 18.2 require this
+    // channel to authorise by organisation, project and session; the project
+    // event channel already applies both terms, and a live channel applying one
+    // of them would hand an organisation-wide viewer of one tenant the frames
+    // of another. The session's own organisation is the comparison, because the
+    // session is what is being authorised.
+    const organisationDiffers =
+      principal.organisationId !== null && principal.organisationId !== session.organisation_id;
+    if (organisationDiffers || !authorisedForProject(principal, session.project_id)) {
       throw new ApiError(
         "PROJECT_CONTEXT_MISMATCH",
         "This viewer session is not authorised for the project that owns this browser session.",
