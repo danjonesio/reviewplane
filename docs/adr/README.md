@@ -45,6 +45,8 @@ ADRs record decisions that materially affect architecture, security, protocols o
 | [0029](0029-completion-gate-is-advisory-and-non-terminating.md) | The completion gate reports and never decides, and never terminates the agent | Accepted |
 | [0030](0030-verification-supersession.md) | A second verification supersedes the first, and exactly one is current | Accepted |
 | [0031](0031-agent-assertions-are-not-control-plane-verification.md) | Agent-asserted checks are recorded as assertions, never as control-plane verification | Accepted |
+| [0032](0032-freehand-paths-and-per-type-geometry-versions.md) | A freehand annotation is a bounded list of normalised points, and geometry is versioned per annotation type | Accepted |
+| [0033](0033-element-context-resolved-from-a-captured-snapshot.md) | Element context is resolved by arithmetic over a captured snapshot, never by asking the page | Accepted |
 
 ## Pending decisions
 

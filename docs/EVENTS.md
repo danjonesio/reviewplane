@@ -493,6 +493,17 @@ decide whether an event belongs to it. An edited comment produces another
 `*.comment_added` for the new revision: an edit is an append with a
 back-reference, not a different kind of occurrence.
 
+`finding.annotated` follows the same rule, and for the same reason there is no
+`annotation.updated` or `annotation.withdrawn` beside it. An annotation is never
+updated in place: an edit records a new revision and a withdrawal records a
+revision carrying `deleted_at` (`docs/API.md` §14), so all three occurrences are
+"this annotation now reads like this". The event carries the annotation as
+recorded, and its `revision` says which of the three it was — revision 1 is a
+creation, a later revision is an edit, and a revision carrying `deleted_at` is a
+withdrawal. Three types for one shape of occurrence would make a consumer
+reassemble the mark's history from three streams to answer the one question it
+is ever asked: what did the mark say when somebody acted on it.
+
 `review.status_change_denied` and `finding.status_change_denied` record a
 transition a principal asked for and **may not make**. They are the only events
 in this catalogue written for something that did not happen, and they exist

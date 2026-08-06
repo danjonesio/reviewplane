@@ -456,6 +456,54 @@ Unexpected disconnect causes a short grace period and then safe release to `none
 - Project branch and commit
 - Source session
 
+### Implemented behaviour
+
+The flow lives in the session room, under **Annotate this session and create a
+review** (`apps/web/src/components/CaptureFinding.tsx`). Six differences from
+the list above, each of them a decision rather than an omission.
+
+**The evidence is captured first, and the mark is drawn on it.** Selecting
+Annotate takes a screenshot and an accessibility snapshot in the same moment,
+through `take_screenshot` and `snapshot` — both **non-interactive system
+captures**, which a person watching a session may issue without holding the
+interactive control lease (`docs/SECURITY.md` §7). That is what makes annotating
+a live application possible in a stage with no human takeover. The capture is a
+**viewport** screenshot rather than a full-page one: geometry is normalised to
+the artefact's content rectangle, and a viewport capture's content rectangle is
+the frame the human was looking at, scaled by the device pixel ratio.
+
+**A capture whose upload did not complete is not annotated.** The flow reads the
+artefact back and requires `available` before it offers a canvas, so the
+"Evidence upload incomplete" state of §18 is reached instead of a draft finding
+built on unverified bytes.
+
+**All six types of `docs/DOMAIN_MODEL.md` §16 are offered**, not the four the
+list names: rectangle, ellipse, arrow, point, numbered marker and freehand.
+
+**The keyboard is a route to every one of them but freehand.** The canvas is
+focusable; arrow keys move a cursor, Enter fixes a corner and then the shape,
+Shift gives a finer step and Escape abandons a mark in progress. The cursor's
+position is stated as a percentage, so it is knowable and not only visible.
+Freehand is a gesture, and rather than simulate one the surface says so and
+names the shape that marks the same region.
+
+**Element context is resolved from the snapshot taken with the picture**, by the
+rule of `docs/DOMAIN_MODEL.md` §17 — the smallest element containing the centre
+of the first mark. Where nothing is resolved the surface says so and the finding
+is stored without it, because §9 calls this context best effort and an invented
+element is worse than none. Where something is resolved, the surface states that
+it came from the page and is not an instruction.
+
+**A draft finding is held in the browser tab, not on the server.** A finding
+belongs to a review, and §10 groups drafts into one, so there is no review to
+attach the first draft to until it has been named. Drafts are mirrored into
+session storage so a reload recovers them, and the surface says plainly that
+nothing has been saved yet rather than implying that it has.
+
+Nothing drawn here reaches the page under review. The canvas sits over a
+picture — a still capture, or a frame this application renders and never drives
+— and the room's statement that watching is not driving stays true.
+
 ## 10. Create named review
 
 Draft findings can be grouped.
@@ -484,6 +532,40 @@ Example CLI guidance:
 ```text
 Review and resolve control-plane review "bugs-on-homepage".
 ```
+
+### Implemented behaviour
+
+The form appears under the draft findings once there is at least one, and
+carries every field above. Four things about it are decisions:
+
+**The slug is previewed and never validated here.** The field shows what will be
+sent — the title, lowercased and hyphenated — and the control plane decides
+whether it is acceptable. A second implementation of the rules would eventually
+disagree with the one that enforces them. A slug already held by an active
+review of the project is refused with `IDEMPOTENCY_CONFLICT`, and the surface
+names the action: choose another, or archive the review holding it. **The drafts
+survive that refusal**, because a collision is a rename rather than a loss.
+
+**Save draft and Mark ready are the two submits**, creating the review `DRAFT`
+or `READY` and then creating each finding with its annotations in one request.
+The form mints one idempotency key when it opens and reuses it, so a double tap
+produces one review and one set of findings rather than two.
+
+**Assignment takes an agent-session identifier by hand.** No endpoint lists a
+project's agent sessions yet, so a chooser here would be a list this surface had
+invented. The field states that, and leaving it blank creates the review
+unassigned.
+
+**Send inbox item is not a separate control.** An inbox item is what assignment
+causes (`docs/DOMAIN_MODEL.md` §21); a second button that claimed to send one
+would either duplicate the assignment or do nothing.
+
+The copyable command is the documented sentence, quoting the slug. §11's
+prohibition is on a claim, so the surface makes the opposite claim explicitly:
+it states that ReviewPlane does not type into an agent's terminal and that
+nothing reaches the agent until the reader runs the command there. A browser
+that offers no clipboard gets a disabled control and the keyboard route rather
+than a thrown error.
 
 ## 11. CLI retrieval
 

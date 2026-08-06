@@ -628,7 +628,11 @@ test("an organisation-wide session of another organisation cannot annotate, edit
     { email: "intruder@localhost" },
   );
 
-  const attempts: { method: "POST" | "PATCH" | "DELETE"; url: string; payload?: unknown }[] = [
+  const attempts: {
+    method: "POST" | "PATCH" | "DELETE";
+    url: string;
+    payload?: Record<string, unknown>;
+  }[] = [
     {
       method: "POST",
       url: `/api/v1/findings/${findingId}/annotations`,
