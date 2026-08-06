@@ -160,7 +160,7 @@ function Sessions(): ReactElement {
           type: event.type,
           occurred_at: event.occurred_at,
           actor: event.actor,
-          correlation: {},
+          correlation: event.correlation ?? {},
           payload: event.payload,
         } satisfies StreamedEvent),
       );

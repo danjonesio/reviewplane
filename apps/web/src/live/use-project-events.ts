@@ -63,7 +63,9 @@ function toStreamed(event: ActivityEvent): StreamedEvent {
     type: event.type,
     occurred_at: event.occurred_at,
     actor: event.actor,
-    correlation: {},
+    // Carried, not dropped. The room filters on it, so a seed that lost it
+    // would render an empty panel for a session with a full history.
+    correlation: event.correlation ?? {},
     payload: event.payload,
   };
 }

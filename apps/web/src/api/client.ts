@@ -184,6 +184,16 @@ export interface ActivityEvent {
   readonly type: string;
   readonly occurred_at: string;
   readonly actor: { readonly type: string; readonly display?: string };
+  /**
+   * What this event is about, by identifier (`docs/EVENTS.md` section 5).
+   *
+   * It is not decoration. The session room shows one browser session's rows and
+   * decides which those are from `browser_session_id` here; an event read over
+   * HTTP that arrived without its correlation would be filtered out of the very
+   * panel it belongs in, and the room would look empty until something new
+   * happened to arrive over the socket instead.
+   */
+  readonly correlation?: Record<string, string>;
   readonly payload: Record<string, unknown>;
 }
 

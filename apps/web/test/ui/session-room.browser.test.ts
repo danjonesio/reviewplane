@@ -265,6 +265,13 @@ for (const [name, viewport] of [
   test(`the session room renders the header, activity and tabs at ${name}`, async () => {
     await withSession(viewport, {}, async ({ page, errors }) => {
       await openRoom(page);
+      // The panel is populated before anything is read from the document.
+      // Reading the body first and asserting on it later would assert against a
+      // snapshot taken before the history arrived, which passes or fails by
+      // timing rather than by behaviour.
+      await page
+        .locator('[data-timeline="session-activity"] [data-event-type="finding.verification_submitted"]')
+        .waitFor();
 
       const body = (await page.textContent("body")) ?? "";
       for (const label of [
@@ -440,32 +447,87 @@ test("a thumbnail stops streaming when its card leaves the screen", async () => 
   await withSession(MOBILE, {}, async ({ page, errors }) => {
     const thumbnail = page.locator(`[data-thumbnail="${SESSION.id}"]`);
     await thumbnail.waitFor();
-    await page.waitForFunction(
-      (id) =>
-        document
-          .querySelector(`[data-thumbnail="${id}"]`)
-          ?.getAttribute("data-thumbnail-streaming") === "true",
-      SESSION.id,
-      { timeout: 5000 },
-    );
+    // On screen first. At 390px the card can start below the fold, and a
+    // thumbnail that had never been visible would satisfy the "stopped"
+    // assertion below without ever having started.
+    await thumbnail.scrollIntoViewIfNeeded();
+    try {
+      await page.waitForFunction(
+        (id) =>
+          document
+            .querySelector(`[data-thumbnail="${id}"]`)
+            ?.getAttribute("data-thumbnail-streaming") === "true",
+        SESSION.id,
+        { timeout: 5000 },
+      );
+    } catch (error) {
+      const diagnosis = await page.evaluate((id) => {
+        const element = document.querySelector(`[data-thumbnail="${id}"]`);
+        return {
+          streaming: element?.getAttribute("data-thumbnail-streaming") ?? "absent",
+          text: element?.textContent ?? "",
+          reducedMotion: globalThis.matchMedia("(prefers-reduced-motion: reduce)").matches,
+          hasObserver: typeof globalThis.IntersectionObserver === "function",
+          rect: element?.getBoundingClientRect().top ?? null,
+        };
+      }, SESSION.id);
+      throw new Error(
+        `the thumbnail never started streaming: ${JSON.stringify(diagnosis)} (${String(error)})`,
+      );
+    }
 
     // Push the card well below the fold. Stopping is a closed socket, and the
     // page's own record of whether it is streaming is the only observable
     // difference between that and a paused paint.
-    await page.evaluate(() => {
+    //
+    // The shell may scroll an inner element rather than the window, so every
+    // scrollable ancestor is driven rather than assuming which one moves. A
+    // scroll that silently did nothing would leave the thumbnail on screen and
+    // make this case pass or fail for the wrong reason.
+    await page.evaluate((id) => {
+      const card = document.querySelector(`[data-session-card="${id}"]`);
       const spacer = document.createElement("div");
-      spacer.style.height = "4000px";
-      document.body.prepend(spacer);
-      globalThis.scrollTo(0, 4000);
-    });
-    await page.waitForFunction(
-      (id) =>
-        document
-          .querySelector(`[data-thumbnail="${id}"]`)
-          ?.getAttribute("data-thumbnail-streaming") === "false",
-      SESSION.id,
-      { timeout: 5000 },
-    );
+      spacer.style.height = "5000px";
+      card?.parentElement?.prepend(spacer);
+
+      // The spacer goes above the card and the page is scrolled back to the
+      // top, so the card ends five thousand pixels below the fold. Scrolling to
+      // the bottom instead would land on the card again, which is how this
+      // check first passed the scroll and still found the thumbnail on screen.
+      let node: HTMLElement | null = card as HTMLElement | null;
+      while (node !== null) {
+        node.scrollTop = 0;
+        node = node.parentElement;
+      }
+      document.scrollingElement?.scrollTo(0, 0);
+      globalThis.scrollTo(0, 0);
+    }, SESSION.id);
+    try {
+      await page.waitForFunction(
+        (id) =>
+          document
+            .querySelector(`[data-thumbnail="${id}"]`)
+            ?.getAttribute("data-thumbnail-streaming") === "false",
+        SESSION.id,
+        { timeout: 5000 },
+      );
+    } catch (error) {
+      const diagnosis = await page.evaluate((id) => {
+        const element = document.querySelector(`[data-thumbnail="${id}"]`);
+        const rect = element?.getBoundingClientRect();
+        return {
+          streaming: element?.getAttribute("data-thumbnail-streaming") ?? "absent",
+          top: rect?.top ?? null,
+          bottom: rect?.bottom ?? null,
+          viewportHeight: globalThis.innerHeight,
+          scrollY: globalThis.scrollY,
+          documentHeight: document.documentElement.scrollHeight,
+        };
+      }, SESSION.id);
+      throw new Error(
+        `the thumbnail did not stop when scrolled off screen: ${JSON.stringify(diagnosis)} (${String(error)})`,
+      );
+    }
 
     assert.deepEqual(errors, []);
   });
@@ -475,12 +537,24 @@ test("the room is reachable and operable by keyboard with visible focus", async 
   await withSession(DESKTOP, {}, async ({ page, errors }) => {
     await openRoom(page);
 
-    // Every tab in the strip is reachable and operable without a pointer.
-    await page.getByRole("tab", { name: "Git" }).focus();
-    const focusedIsTab = await page.evaluate(
-      () => document.activeElement?.getAttribute("role") === "tab",
-    );
-    assert.equal(focusedIsTab, true, "a tab can hold focus");
+    // Focus is driven by the keyboard and never by `focus()`. `:focus-visible`
+    // is a statement about how the element was reached, so a programmatic focus
+    // would measure a ring the reader never sees and pass against a page that
+    // shows none.
+    await page.evaluate(() => {
+      (document.activeElement as HTMLElement | null)?.blur();
+    });
+
+    let reached = false;
+    let steps = 0;
+    while (!reached && steps < 120) {
+      await page.keyboard.press("Tab");
+      steps += 1;
+      reached = await page.evaluate(
+        () => document.activeElement?.id === "session-tab-git",
+      );
+    }
+    assert.ok(reached, `the Git tab was not reachable by keyboard within ${String(steps)} stops`);
 
     // A focus ring the page provides itself, not merely the browser default.
     const outline = await page.evaluate(() => {
@@ -491,10 +565,11 @@ test("the room is reachable and operable by keyboard with visible focus", async 
     });
     assert.ok(outline !== null);
     assert.ok(
-      outline.style !== "none" || outline.shadow !== "none",
+      (outline.style !== "none" && outline.width !== "0px") || outline.shadow !== "none",
       `focus is not visible: ${JSON.stringify(outline)}`,
     );
 
+    // Operable, not merely reachable.
     await page.keyboard.press("Tab");
     await page.keyboard.press("Enter");
     await page.getByRole("tabpanel").waitFor();
