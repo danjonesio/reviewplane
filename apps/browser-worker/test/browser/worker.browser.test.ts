@@ -312,7 +312,10 @@ test("a snapshot of the fixture home page has the docs/MCP_SPEC.md section 7.4 s
 test("a capture of a scrolled page reports the offset it was taken at", async () => {
   const id = newId("brs_");
   await manager.allocate(id, allocationFor());
-  await run(id, navigate("/"));
+  // `/form` is four thousand pixels tall, which is the fixture that can
+  // actually be scrolled; the home page fits on one screen and would make this
+  // case pass for the wrong reason.
+  await run(id, navigate("/form"));
 
   // Unscrolled, the offset is the origin — and it is the origin because it was
   // read, not because nothing was known.
@@ -325,6 +328,13 @@ test("a capture of a scrolled page reports the offset it was taken at", async ()
     scroll: { direction: "down", amount_px: 400 },
   });
   assert.equal(scrolled.ok, true, JSON.stringify(scrolled.error));
+  // A wheel event is delivered asynchronously and the compositor applies it on
+  // its own schedule, so this waits for the scroll rather than for a delay.
+  const session = manager.get(id);
+  assert.ok(session !== undefined);
+  await session.requirePage().waitForFunction(() => window.scrollY > 0, undefined, {
+    timeout: 5000,
+  });
 
   // Both captures report the page's real offset. A hard-coded origin here is
   // what makes an annotation resolve against the top of the document instead
