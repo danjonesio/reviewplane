@@ -90,7 +90,20 @@ interface Session {
   close(): Promise<void>;
 }
 
-async function openReview(viewport: { width: number; height: number }): Promise<Session> {
+/**
+ * Which finding of the fixture review to open, in the order the review page
+ * lists them. The evidence lives on the finding page (RVP-55), so a case about
+ * a particular artefact opens the finding that carries it rather than scrolling
+ * a review page that no longer holds any.
+ */
+const HERO = 0;
+const UNMEASURED = 1;
+const ACTIVE_CONTENT = 2;
+
+async function openReview(
+  viewport: { width: number; height: number },
+  finding: number = HERO,
+): Promise<Session> {
   const context = await browser.newContext({ viewport });
   const page = await context.newPage();
   const errors: string[] = [];
@@ -125,18 +138,22 @@ async function openReview(viewport: { width: number; height: number }): Promise<
   // The evidence lives on the finding page: a review with several findings,
   // each carrying a before-and-after pair, is not a page anybody can read at
   // 390 pixels (RVP-55).
-  await page.getByRole("link", { name: "Open finding" }).first().click();
-  await page
-    .getByRole("heading", { name: "Hero heading overlaps the basket button" })
-    .waitFor();
-  await page.waitForFunction(
-    () => {
-      const image = document.querySelector<HTMLImageElement>("[data-testid=artefact-image]");
-      return image !== null && image.complete && image.naturalWidth > 0;
-    },
-    undefined,
-    { timeout: 20_000 },
-  );
+  await page.getByRole("link", { name: "Open finding" }).nth(finding).click();
+  await page.locator("[data-verification-panel]").waitFor();
+  if (finding === ACTIVE_CONTENT) {
+    // A DOM snapshot is offered as a download and never rendered, so there is
+    // no image to wait for; waiting for one would be waiting for the defect.
+    await page.locator("[data-testid=active-content-notice]").first().waitFor();
+  } else {
+    await page.waitForFunction(
+      () => {
+        const image = document.querySelector<HTMLImageElement>("[data-testid=artefact-image]");
+        return image !== null && image.complete && image.naturalWidth > 0;
+      },
+      undefined,
+      { timeout: 20_000 },
+    );
+  }
 
   return {
     page,
@@ -276,7 +293,7 @@ for (const [name, viewport] of [
 }
 
 test("a DOM snapshot is offered as a download and is never rendered", async () => {
-  const session = await openReview(DESKTOP);
+  const session = await openReview(DESKTOP, ACTIVE_CONTENT);
   try {
     const panel = session.page.locator("[data-finding='fin_ui_suite_active']");
     const notice = panel.locator("[data-testid=active-content-notice]").first();
@@ -307,7 +324,7 @@ test("a DOM snapshot is offered as a download and is never rendered", async () =
 });
 
 test("a finding with no after screenshot says so instead of offering a comparison", async () => {
-  const session = await openReview(DESKTOP);
+  const session = await openReview(DESKTOP, UNMEASURED);
   try {
     const panel = session.page.locator("[data-finding='fin_ui_suite_unmeasured']");
     const empty = panel.locator("[data-testid=artefact-compare-empty]").first();

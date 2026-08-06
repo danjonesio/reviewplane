@@ -506,7 +506,7 @@ test("an agent cannot resolve a human-authored finding through the domain servic
     fixture.browserSessionId,
     encodePng(781, 1688),
   );
-  await reviews.submitVerification(
+  const claim = await reviews.submitVerification(
     scope,
     findingId,
     {
@@ -549,11 +549,18 @@ test("an agent cannot resolve a human-authored finding through the domain servic
   assert.equal(unchanged.status, "AWAITING_HUMAN_REVIEW");
   assert.equal(unchanged.version, 6);
 
-  // A human completes the same transition.
+  // A human completes the same transition, naming the claim they were shown
+  // (ADR-0035). The identifier is not decoration: it is what makes this an
+  // acceptance of *this* evidence rather than of whatever is current when the
+  // request lands.
   const accepted = await reviews.updateFinding(
     scope,
     findingId,
-    { expectedVersion: 6, status: "RESOLVED" },
+    {
+      expectedVersion: 6,
+      status: "RESOLVED",
+      verificationId: claim.verification.verification_id,
+    },
     { type: "human_user", id: "bootstrap", display: "bootstrap administrator" },
   );
   assert.equal(accepted.status, "RESOLVED");

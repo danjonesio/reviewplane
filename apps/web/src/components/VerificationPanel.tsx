@@ -201,7 +201,12 @@ export function VerificationPanel({
 
   if (claims.length === 0) {
     return (
-      <section aria-labelledby={headingId} data-verification-panel={findingId} className={CARD}>
+      <section
+        aria-labelledby={headingId}
+        data-verification-panel={findingId}
+        data-finding={findingId}
+        className={CARD}
+      >
         <h4 id={headingId} className="text-base font-semibold">
           Verification
         </h4>
@@ -226,7 +231,12 @@ export function VerificationPanel({
   const assertedBy = assurance?.asserted_by;
 
   return (
-    <section aria-labelledby={headingId} data-verification-panel={findingId} className={CARD}>
+    <section
+        aria-labelledby={headingId}
+        data-verification-panel={findingId}
+        data-finding={findingId}
+        className={CARD}
+      >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <h4 id={headingId} className="text-base font-semibold">
           Verification

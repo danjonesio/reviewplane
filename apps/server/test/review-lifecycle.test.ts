@@ -1684,7 +1684,14 @@ test("every new lifecycle event satisfies the protocol schema", async () => {
     HUMAN,
   );
   await reviews.disposeFinding(scope, finding.id, "RESOLVED", { expectedVersion: 5 }, HUMAN);
-  await reviews.reopenFinding(scope, finding.id, { expectedVersion: 6 }, HUMAN);
+  // A reopen states why (ADR-0036); the reason is also appended as a comment,
+  // which is a further `finding.comment_added` for the decoder below.
+  await reviews.reopenFinding(
+    scope,
+    finding.id,
+    { expectedVersion: 6, reason: "The navigation still overlaps at 390px." },
+    HUMAN,
+  );
   await reviews
     .updateFinding(
       scope,

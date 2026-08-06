@@ -18,17 +18,26 @@
  *      nothing** — no disposition, no `finding.resolved`.
  *
  * Both are properties of the control plane. Neither is a property of the user
- * interface, and this file cannot test the interface: the remaining way to
- * accept swapped evidence is a client that re-reads the finding when the button
- * is pressed and sends the version it has just fetched rather than the version
- * it rendered. That is a natural thing to write, it defeats everything below,
- * and catching it needs a browser test in RVP-55 that opens the comparison,
- * lets an agent supersede underneath it, and then presses Accept.
+ * interface, and the version check alone cannot be: the way to accept swapped
+ * evidence is a client that re-reads the finding when the button is pressed and
+ * sends the version it has just fetched rather than the version it rendered.
+ * That is a natural thing to write, and it defeats everything the first three
+ * tests prove.
  *
- * The second test is not decoration. A client that always sent a
- * stale-by-construction version would satisfy the first test and be unable to
+ * RVP-55 therefore added a second control, and the tests under **the pin**
+ * below are about it: a decision names the verification it is about, and the
+ * control plane refuses one that is no longer the finding's current claim
+ * (ADR-0035). A re-read cannot produce the identifier the reviewer was shown —
+ * it produces the *new* claim's identifier, which is refused from the other
+ * direction — so the refetching client is closed here rather than only in the
+ * browser. `apps/web/test/ui/review-workspace.browser.test.ts` proves the
+ * client actually sends what it rendered, which is the half a server test still
+ * cannot see.
+ *
+ * The third test is not decoration. A client that always sent a
+ * stale-by-construction version would satisfy the second and be unable to
  * accept anything at all, so the pair asserts that the refusal is specific to a
- * superseded version rather than general.
+ * superseded claim rather than general.
  */
 
 import assert from "node:assert/strict";
@@ -265,12 +274,66 @@ async function supersedeWithWeakerEvidence(fixture: Fixture): Promise<void> {
   );
 }
 
-function accept(findingId: string, expectedVersion: number) {
+/** The claim a decision may currently be taken on, or null. */
+async function currentVerificationId(findingId: string): Promise<string | null> {
+  const rows = await postgres.pool.query<{ id: string }>(
+    "SELECT id FROM verifications WHERE finding_id = $1 AND status = 'submitted'",
+    [findingId],
+  );
+  return rows.rows[0]?.id ?? null;
+}
+
+/** One verification's stored status, read rather than inferred. */
+async function verificationStatus(verificationId: string): Promise<string> {
+  const rows = await postgres.pool.query<{ status: string }>(
+    "SELECT status FROM verifications WHERE id = $1",
+    [verificationId],
+  );
+  return rows.rows[0]?.status ?? "missing";
+}
+
+/** Events of one type for one finding, read from the store. */
+async function eventsFor(type: string, findingId: string): Promise<Record<string, unknown>[]> {
+  const rows = await postgres.pool.query<{ payload: Record<string, unknown> }>(
+    `SELECT payload FROM events
+      WHERE type = $2 AND payload->>'finding_id' = $1
+      ORDER BY sequence`,
+    [findingId, type],
+  );
+  return rows.rows.map((row) => row.payload);
+}
+
+function accept(findingId: string, expectedVersion: number, verificationId?: string | null) {
   return harness.built.app.inject({
     method: "POST",
     url: `/api/v1/findings/${findingId}/accept`,
     headers: ADMIN,
-    payload: { expected_version: expectedVersion },
+    payload: {
+      expected_version: expectedVersion,
+      ...(verificationId === undefined || verificationId === null
+        ? {}
+        : { verification_id: verificationId }),
+    },
+  });
+}
+
+function reopen(
+  findingId: string,
+  expectedVersion: number,
+  reason: string,
+  verificationId?: string | null,
+) {
+  return harness.built.app.inject({
+    method: "POST",
+    url: `/api/v1/findings/${findingId}/reopen`,
+    headers: ADMIN,
+    payload: {
+      expected_version: expectedVersion,
+      reason,
+      ...(verificationId === undefined || verificationId === null
+        ? {}
+        : { verification_id: verificationId }),
+    },
   });
 }
 
@@ -336,8 +399,9 @@ test("an accept carrying the version the reviewer was shown is refused after a s
 test("an accept with no interleaving succeeds the first time", async () => {
   const fixture = await findingAwaitingReview();
   const shownToReviewer = await currentVersion(fixture.findingId);
+  const claimShown = await currentVerificationId(fixture.findingId);
 
-  const accepted = await accept(fixture.findingId, shownToReviewer);
+  const accepted = await accept(fixture.findingId, shownToReviewer, claimShown);
 
   assert.equal(accepted.statusCode, 200, accepted.body);
   assert.equal(await findingStatus(fixture.findingId), "RESOLVED");
@@ -350,4 +414,194 @@ test("an accept with no interleaving succeeds the first time", async () => {
     (resolved[0]?.["decided_by"] as { type?: string } | undefined)?.type,
     "human_user",
   );
+});
+
+// ------------------------------------------------------------------- the pin
+//
+// The three tests above are about version arithmetic, and the docstring at the
+// top of this file names the client shape that defeats it: one that re-reads
+// the finding when the button is pressed. The tests below are about the control
+// that survives that shape, because it is not arithmetic — the decision names
+// the claim, and a re-read cannot supply the identifier the reviewer was shown
+// (it returns the *new* claim's identifier, which this refuses from the other
+// direction) (ADR-0035).
+
+test("an accept refetching the version it sends is still refused after a swap", async () => {
+  const fixture = await findingAwaitingReview();
+
+  // What the comparison rendered from.
+  const claimShown = await currentVerificationId(fixture.findingId);
+  assert.notEqual(claimShown, null);
+
+  // The agent swaps the evidence underneath the open comparison.
+  await supersedeWithWeakerEvidence(fixture);
+
+  // The defective client: it re-reads the finding to "get the current version"
+  // and sends that, which is exactly what makes the version check useless. It
+  // still sends the verification it rendered, because that is the only one it
+  // has.
+  const refetched = await currentVersion(fixture.findingId);
+  const refused = await accept(fixture.findingId, refetched, claimShown);
+
+  assert.equal(refused.statusCode, 409, refused.body);
+  assert.equal(
+    (refused.json() as { error: { code: string } }).error.code,
+    "VERSION_CONFLICT",
+    refused.body,
+  );
+  assert.deepEqual(
+    await resolvedEvents(fixture.findingId),
+    [],
+    "a refused accept must not record a disposition",
+  );
+  assert.equal(await findingStatus(fixture.findingId), "AWAITING_HUMAN_REVIEW");
+});
+
+test("an accept naming no claim at all is refused while one is pending", async () => {
+  const fixture = await findingAwaitingReview();
+  const shownToReviewer = await currentVersion(fixture.findingId);
+
+  const refused = await accept(fixture.findingId, shownToReviewer);
+
+  assert.equal(refused.statusCode, 422, refused.body);
+  const body = refused.json() as { error: { code: string; details?: { field?: string } } };
+  assert.equal(body.error.code, "EVIDENCE_REQUIRED", refused.body);
+  assert.equal(body.error.details?.field, "verification_id");
+  assert.deepEqual(await resolvedEvents(fixture.findingId), []);
+  assert.equal(await findingStatus(fixture.findingId), "AWAITING_HUMAN_REVIEW");
+
+  // A refused decision is an attempt, and every refused transition is audited
+  // (`docs/DOMAIN_MODEL.md` section 15).
+  const denials = await eventsFor("finding.status_change_denied", fixture.findingId);
+  assert.equal(denials.length, 1, "the refused decision is audited");
+  assert.equal(denials[0]?.["requested"], "RESOLVED");
+  assert.equal(denials[0]?.["code"], "EVIDENCE_REQUIRED");
+});
+
+test("accepting decides the claim it named, and the event says which", async () => {
+  const fixture = await findingAwaitingReview();
+  const shownToReviewer = await currentVersion(fixture.findingId);
+  const claimShown = (await currentVerificationId(fixture.findingId)) as string;
+
+  const accepted = await accept(fixture.findingId, shownToReviewer, claimShown);
+  assert.equal(accepted.statusCode, 200, accepted.body);
+
+  // The claim carries the decision on itself, with a human reviewer and a time
+  // the database now requires (migration 0153).
+  assert.equal(await verificationStatus(claimShown), "accepted");
+  const decided = await postgres.pool.query<{
+    reviewed_at: Date | null;
+    reviewed_by_actor_type: string | null;
+  }>("SELECT reviewed_at, reviewed_by_actor_type FROM verifications WHERE id = $1", [claimShown]);
+  assert.notEqual(decided.rows[0]?.reviewed_at ?? null, null);
+  assert.equal(decided.rows[0]?.reviewed_by_actor_type, "human_user");
+
+  // And the trail names the evidence, which `finding.resolved` never did
+  // (RVP-93).
+  const events = await eventsFor("finding.verification_accepted", fixture.findingId);
+  assert.equal(events.length, 1, "exactly one acceptance");
+  assert.equal(events[0]?.["verification_id"], claimShown);
+  assert.equal((events[0]?.["decided_by"] as { type?: string } | undefined)?.type, "human_user");
+  assert.equal(
+    (events[0]?.["submitted_by"] as { type?: string } | undefined)?.type,
+    "agent_session",
+  );
+  assert.equal(events[0]?.["after_artefact_id"], fixture.afterArtefactId);
+
+  // Nothing is current afterwards, so a second accept has no claim to name.
+  assert.equal(await currentVerificationId(fixture.findingId), null);
+});
+
+test("reopening rejects the claim it named and keeps the record", async () => {
+  const fixture = await findingAwaitingReview();
+  const shownToReviewer = await currentVersion(fixture.findingId);
+  const claimShown = (await currentVerificationId(fixture.findingId)) as string;
+
+  const reopened = await reopen(
+    fixture.findingId,
+    shownToReviewer,
+    "The navigation still overlaps the logo at 390px.",
+    claimShown,
+  );
+  assert.equal(reopened.statusCode, 200, reopened.body);
+  assert.equal(await findingStatus(fixture.findingId), "REOPENED");
+
+  // Rejected, not deleted: the history of what has been claimed before and
+  // failed is what a human needs in order to judge the next claim
+  // (`docs/DOMAIN_MODEL.md` section 19).
+  assert.equal(await verificationStatus(claimShown), "rejected");
+  const kept = await postgres.pool.query<{ count: string }>(
+    "SELECT count(*) AS count FROM verifications WHERE finding_id = $1",
+    [fixture.findingId],
+  );
+  assert.equal(Number(kept.rows[0]?.count), 1);
+
+  const events = await eventsFor("finding.verification_rejected", fixture.findingId);
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.["verification_id"], claimShown);
+  assert.equal(events[0]?.["reason"], "The navigation still overlaps the logo at 390px.");
+});
+
+test("a reopen with no reason is refused when the request skips the form", async () => {
+  const fixture = await findingAwaitingReview();
+  const shownToReviewer = await currentVersion(fixture.findingId);
+  const claimShown = await currentVerificationId(fixture.findingId);
+
+  // Sent directly at the API, which is the only way to observe the rule: a form
+  // that requires a field proves nothing about the server behind it
+  // (`docs/SECURITY.md` section 7).
+  const refused = await harness.built.app.inject({
+    method: "POST",
+    url: `/api/v1/findings/${fixture.findingId}/reopen`,
+    headers: ADMIN,
+    payload: {
+      expected_version: shownToReviewer,
+      ...(claimShown === null ? {} : { verification_id: claimShown }),
+    },
+  });
+
+  assert.equal(refused.statusCode, 422, refused.body);
+  const body = refused.json() as { error: { code: string; details?: { field?: string } } };
+  assert.equal(body.error.code, "EVIDENCE_REQUIRED", refused.body);
+  assert.equal(body.error.details?.field, "reason");
+  assert.equal(await findingStatus(fixture.findingId), "AWAITING_HUMAN_REVIEW");
+  assert.equal(await verificationStatus(claimShown as string), "submitted");
+
+  // A whitespace reason is the same refusal: the rule is about a statement, not
+  // about a field being present.
+  const blank = await reopen(fixture.findingId, shownToReviewer, "   ", claimShown);
+  assert.equal(blank.statusCode, 422, blank.body);
+  assert.equal((blank.json() as { error: { code: string } }).error.code, "EVIDENCE_REQUIRED");
+});
+
+test("a decision's reason is readable as a comment, not only as an event payload", async () => {
+  const fixture = await findingAwaitingReview();
+  const shownToReviewer = await currentVersion(fixture.findingId);
+  const claimShown = await currentVerificationId(fixture.findingId);
+
+  const reopened = await reopen(
+    fixture.findingId,
+    shownToReviewer,
+    "Still overlaps at 390px; the breakpoint moved the wrong way.",
+    claimShown,
+  );
+  assert.equal(reopened.statusCode, 200, reopened.body);
+
+  // `docs/UX_FLOWS.md` section 13 asks a reopen for a *comment*. An event
+  // payload is not one: it is not in the discussion an agent reads, and the
+  // whole point of requiring the statement is that somebody has to act on it
+  // (ADR-0036).
+  const comments = await harness.built.app.inject({
+    method: "GET",
+    url: `/api/v1/findings/${fixture.findingId}/comments`,
+    headers: ADMIN,
+  });
+  assert.equal(comments.statusCode, 200, comments.body);
+  const bodies = (comments.json() as { data: { body: string; created_by: { type: string } }[] })
+    .data;
+  const decision = bodies.find(
+    (comment) => comment.body === "Still overlaps at 390px; the breakpoint moved the wrong way.",
+  );
+  assert.notEqual(decision, undefined, comments.body);
+  assert.equal(decision?.created_by.type, "human_user");
 });

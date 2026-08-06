@@ -384,13 +384,24 @@ test("reopening a finding delivers a new inbox item to the session holding the r
     assert.equal(awaiting.envelope["ok"], true, JSON.stringify(awaiting.envelope));
     const awaitingVersion = (dataOf(awaiting.envelope)["finding"] as { version: number }).version;
 
+    // The reopen names the claim it rejects, as any human decision on a finding
+    // holding a current verification must (ADR-0035). The identifier is the one
+    // the submission answered with, which is what a reviewer's page would have
+    // rendered its comparison from.
+    const claimId = (
+      dataOf(submitted.envelope)["verification"] as { verification_id: string }
+    ).verification_id;
     const reopened = await harness.control.app.inject({
       method: "POST",
       url: `/api/v1/findings/${agent.seeded.findingId}/reopen`,
       headers: ADMIN,
-      payload: { expected_version: awaitingVersion, reason: "Still overlaps at 820px." },
+      payload: {
+        expected_version: awaitingVersion,
+        verification_id: claimId,
+        reason: "Still overlaps at 820px.",
+      },
     });
-    assert.equal(reopened.statusCode, 200);
+    assert.equal(reopened.statusCode, 200, reopened.body);
 
     const listed = await call(agent.client, "agent_inbox_list", {});
     const items = dataOf(listed.envelope)["items"] as { type: string; finding_id?: string }[];
