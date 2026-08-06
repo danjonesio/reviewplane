@@ -510,6 +510,18 @@ test("accepting decides the claim it named, and the event says which", async () 
 
   // Nothing is current afterwards, so a second accept has no claim to name.
   assert.equal(await currentVerificationId(fixture.findingId), null);
+
+  // The whole trail an accept leaves, read out of the event store rather than
+  // described. RVP-93 was that this was answerable only by ordering.
+  const trail = await postgres.pool.query<{ type: string; payload: Record<string, unknown> }>(
+    `SELECT type, payload FROM events
+      WHERE payload->>'finding_id' = $1 AND type LIKE 'finding.%'
+      ORDER BY sequence`,
+    [fixture.findingId],
+  );
+  for (const row of trail.rows) {
+    process.stdout.write(`EVIDENCE event ${row.type} ${JSON.stringify(row.payload)}\n`);
+  }
 });
 
 test("reopening rejects the claim it named and keeps the record", async () => {
