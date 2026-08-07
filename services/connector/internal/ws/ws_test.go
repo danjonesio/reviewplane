@@ -1,13 +1,16 @@
 package ws
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -247,6 +250,99 @@ func TestReadMessageHonoursContextCancellation(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > 5*time.Second {
 		t.Fatalf("ReadMessage returned after %s", elapsed)
+	}
+}
+
+// deadlineRecorder observes the read deadlines set on a connection, so that a
+// test can wait for the one cancellation sets rather than sleep and hope.
+type deadlineRecorder struct {
+	net.Conn
+	mutex sync.Mutex
+	past  bool
+}
+
+func (r *deadlineRecorder) SetReadDeadline(deadline time.Time) error {
+	r.mutex.Lock()
+	if !deadline.IsZero() && !deadline.After(time.Now()) {
+		r.past = true
+	}
+	r.mutex.Unlock()
+	return r.Conn.SetReadDeadline(deadline)
+}
+
+func (r *deadlineRecorder) pastDeadlineSet() bool {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	return r.past
+}
+
+// TestAPongHandlerCannotReviveACancelledRead pins the failure of RVP-88.
+//
+// The read deadline is the only route by which a cancelled context reaches a
+// goroutine parked in a socket read, and the signal that carries it fires once.
+// The pong handler runs on that same goroutine between frames and exists to
+// restore the idle window, so a pong already in the buffer when cancellation
+// landed used to re-park the reader for the whole window with nothing left to
+// wake it — a stall of tens of seconds rather than a slow shutdown, which is why
+// it presented as a teardown that never finished.
+//
+// The ordering here is the one that used to lose, made deterministic: the
+// handler does not extend the deadline until cancellation has demonstrably
+// already moved it into the past.
+func TestAPongHandlerCannotRevivePastACancelledRead(t *testing.T) {
+	clientSide, serverSide := net.Pipe()
+	defer func() { _ = serverSide.Close() }()
+	recorder := &deadlineRecorder{Conn: clientSide}
+	conn := &Conn{
+		conn:            recorder,
+		reader:          bufio.NewReader(recorder),
+		isClient:        true,
+		maxMessageBytes: 4096,
+	}
+
+	inPong := make(chan struct{})
+	release := make(chan struct{})
+	conn.SetPongHandler(func() {
+		close(inPong)
+		<-release
+		// Exactly what internal/channel does on every pong: restore the idle
+		// window so that a peer with nothing to say still proves it is alive.
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	failed := make(chan error, 1)
+	go func() {
+		_, _, err := conn.ReadMessage(ctx)
+		failed <- err
+	}()
+
+	// An unmasked, empty pong frame, which is what a server sends.
+	go func() { _, _ = serverSide.Write([]byte{0x80 | OpPong, 0x00}) }()
+
+	select {
+	case <-inPong:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the pong never reached the handler")
+	}
+	cancel()
+	deadline := time.Now().Add(10 * time.Second)
+	for !recorder.pastDeadlineSet() {
+		if time.Now().After(deadline) {
+			t.Fatal("cancellation never moved the read deadline into the past")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(release)
+
+	select {
+	case err := <-failed:
+		if err == nil {
+			t.Fatal("ReadMessage must fail once its context is cancelled")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("ReadMessage stayed parked after its context was cancelled")
 	}
 }
 

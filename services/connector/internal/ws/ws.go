@@ -118,6 +118,11 @@ type Conn struct {
 	closeOnce  sync.Once
 	closeSent  bool
 
+	// deadlineMutex orders every change to the read deadline against the one
+	// cancellation makes, and readEnded records that cancellation has made it.
+	deadlineMutex sync.Mutex
+	readEnded     bool
+
 	// onPong runs on the reading goroutine when a pong arrives. The connector
 	// uses it to extend its read deadline, so that a control plane that has
 	// nothing to say still proves the channel is alive.
@@ -337,8 +342,45 @@ func headerContainsToken(header http.Header, name, token string) bool {
 
 // SetReadDeadline bounds how long the next read may block. The connector uses
 // it to notice a control plane that stopped answering without closing.
+//
+// Once a read's context has ended the deadline is fixed in the past and this
+// call does nothing. That is what makes cancellation final: see endRead.
 func (c *Conn) SetReadDeadline(deadline time.Time) error {
+	c.deadlineMutex.Lock()
+	defer c.deadlineMutex.Unlock()
+	if c.readEnded {
+		return nil
+	}
 	return c.conn.SetReadDeadline(deadline)
+}
+
+// endRead is how a cancelled context reaches a parked read: the deadline is
+// moved into the past, and no later call may move it forward again.
+//
+// The second half is the load-bearing one. The read deadline is the only route
+// by which cancellation reaches a goroutine parked in a socket read, and the
+// signal that carries it is one-shot — context.AfterFunc fires once. Anything
+// that pushed the deadline forward afterwards would park the reader again for a
+// whole idle window with nothing left to wake it, which is a stall rather than
+// a slow shutdown.
+//
+// Something does. A pong handler runs on the reading goroutine between frames
+// and exists precisely to restore the idle window, so a pong that was already
+// in the socket buffer when cancellation landed is enough to undo it. The window
+// between reading that frame and running the handler is a few instructions wide,
+// which is why the failure needed CPU contention to be seen at all and why it
+// then looked like an unbounded hang rather than slowness (RVP-88). Ordering
+// both under one mutex and latching the outcome makes the loss impossible in
+// either interleaving rather than unlikely in one.
+//
+// The latch is never cleared. Every caller of ReadMessage in this repository
+// treats a cancelled read context as the end of the connection, so there is no
+// read after this one to bound.
+func (c *Conn) endRead() {
+	c.deadlineMutex.Lock()
+	defer c.deadlineMutex.Unlock()
+	c.readEnded = true
+	_ = c.conn.SetReadDeadline(time.Now())
 }
 
 // RemoteAddr reports the peer address.
@@ -440,7 +482,7 @@ func (c *Conn) discard(length int64) error {
 // closed with 1009 and the payload is discarded rather than assembled.
 func (c *Conn) ReadMessage(ctx context.Context) (byte, []byte, error) {
 	if ctx != nil {
-		stop := context.AfterFunc(ctx, func() { _ = c.conn.SetReadDeadline(time.Now()) })
+		stop := context.AfterFunc(ctx, c.endRead)
 		defer stop()
 	}
 

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -155,6 +156,11 @@ type Harness struct {
 	streamSeq atomic.Uint64
 	cancel    context.CancelFunc
 	stopped   chan struct{}
+
+	// tasks are the connector goroutines teardown waits on, so that a stalled
+	// shutdown can name which one has not returned.
+	tasksMu sync.Mutex
+	tasks   []*task
 
 	// WorkspacePath is the checkout the connector observes, when the harness was
 	// asked for one.
@@ -404,10 +410,13 @@ func (h *Harness) enrolAndRun(t *testing.T, options Options) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	h.cancel = cancel
+	supervisor := h.supervise("the data-channel supervisor")
+	control := h.supervise("the control channel")
 	var running sync.WaitGroup
 	running.Add(2)
 	go func() {
 		defer running.Done()
+		defer supervisor.finished.Store(true)
 		manager.SuperviseDataChannel(ctx, routes.SupervisorOptions{
 			Store:  store,
 			Config: cfg,
@@ -422,6 +431,7 @@ func (h *Harness) enrolAndRun(t *testing.T, options Options) {
 	}()
 	go func() {
 		defer running.Done()
+		defer control.finished.Store(true)
 		_ = runner.Run(ctx)
 	}()
 	go func() {
@@ -432,10 +442,63 @@ func (h *Harness) enrolAndRun(t *testing.T, options Options) {
 		cancel()
 		select {
 		case <-h.stopped:
-		case <-time.After(15 * time.Second):
-			t.Error("the connector did not stop within fifteen seconds")
+		case <-time.After(StopTimeout):
+			t.Error(h.stallReport())
 		}
 	})
+}
+
+// StopTimeout bounds the wait for the connector's goroutines to return once the
+// harness has cancelled their context.
+//
+// It is deliberately not configurable and deliberately not generous. Every path
+// a connector goroutine can be parked on is either selecting on its context or
+// bounded by a deadline shorter than this, so a shutdown that exceeds it is a
+// stall rather than a slow machine: RVP-88 measured 286 of 288 shutdowns at a
+// median of 0 ms and a maximum of 19 ms, with nothing between that and the
+// bound. Raising the constant would only make the stall rarer and harder to see.
+const StopTimeout = 15 * time.Second
+
+// task is one connector goroutine the harness waits on during teardown.
+type task struct {
+	name     string
+	finished atomic.Bool
+}
+
+// supervise registers a goroutine teardown must see end, so that a stalled
+// shutdown names it.
+func (h *Harness) supervise(name string) *task {
+	entry := &task{name: name}
+	h.tasksMu.Lock()
+	h.tasks = append(h.tasks, entry)
+	h.tasksMu.Unlock()
+	return entry
+}
+
+// stallReport says which connector goroutines never returned and dumps every
+// goroutine's stack.
+//
+// A bare "the connector did not stop" leaves the next reader to reproduce a
+// failure that needs multi-test process context and CPU contention to appear at
+// all. The stack of whatever is still parked is the whole diagnosis, and the
+// only moment it can be taken is the moment the bound expires.
+func (h *Harness) stallReport() string {
+	h.tasksMu.Lock()
+	outstanding := make([]string, 0, len(h.tasks))
+	for _, entry := range h.tasks {
+		if !entry.finished.Load() {
+			outstanding = append(outstanding, entry.name)
+		}
+	}
+	h.tasksMu.Unlock()
+	if len(outstanding) == 0 {
+		outstanding = append(outstanding, "no named task (the goroutines returned but the harness never observed it)")
+	}
+	buffer := make([]byte, 1<<20)
+	buffer = buffer[:runtime.Stack(buffer, true)]
+	return fmt.Sprintf(
+		"the connector did not stop within %s; still running: %s\n\ngoroutine dump:\n%s",
+		StopTimeout, strings.Join(outstanding, ", "), buffer)
 }
 
 // initialiseWorkspace makes a real checkout at path, with a remote whose
@@ -717,6 +780,6 @@ func (h *Harness) Stop() {
 	}
 	select {
 	case <-h.stopped:
-	case <-time.After(15 * time.Second):
+	case <-time.After(StopTimeout):
 	}
 }
