@@ -975,13 +975,23 @@ red when a harness the change required did not run or did not succeed.
 The `ci:harnesses` label remains a manual override. It forces the harnesses onto
 a pull request the filter exempted; it is no longer how they are obtained.
 
-`CI gates` and `Harness gates` are the two status checks to require on `main`
-(AGENTS.md, "Change delivery"). The `protect main` ruleset does not list them
-yet, so today they report rather than block, and a maintainer who merges past a
-red one is doing so knowingly.
+`CI gates` and `Harness gates` are the two status checks required on `main`
+(AGENTS.md, "Change delivery"). The `protect main` ruleset lists both, so a pull
+request whose gates are red cannot be merged rather than merely showing that it
+should not be. Both are workflow-level rollups for this reason: exactly two
+entries are required, and neither has to be revised when a job is added to or
+renamed inside its workflow.
+
+Requiring them depends on a property of `Harness gates` that is easy to lose. It
+reports green on a documentation-only pull request rather than being skipped,
+recording in the run summary which files led to that verdict. A workflow that
+`paths` filtered itself out would report nothing, and a required check that never
+reports blocks every merge for ever — so the documentation-only decision MUST
+stay inside the workflow, as section 16.1 already requires.
 
 `pnpm test:install` owns two of the conditions above: it runs
-`docs/DEPLOYMENT.md` section 8 verbatim from a clean checkout to arendered login page, which is the Stage 1 exit criterion "fresh installation from
+`docs/DEPLOYMENT.md` section 8 verbatim from a clean checkout to a rendered
+login page, which is the Stage 1 exit criterion "fresh installation from
 release artefacts in one documented flow", and it asserts that the browser worker
 is not running with unsupported insecure defaults — non-root, sandbox enabled as
 the worker itself reported it at registration, no Docker socket, no database or
