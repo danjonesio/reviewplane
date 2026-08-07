@@ -9,6 +9,7 @@
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
 import {
@@ -311,4 +312,45 @@ test("the MCP server's artefact defaults are the artefact module's own", () => {
   const store = loadArtefactStoreConfig({});
   assert.equal(store.path, mcp.artefactPath);
   assert.equal(store.maxBytes, mcp.artefactMaxBytes);
+});
+
+/**
+ * Every browser-session read on this surface goes through `getForScope`.
+ *
+ * **This is a source-level assertion, and it is here because no behavioural one
+ * exists.** `docs/SECURITY.md` §7 requires the identifier, the project scope and
+ * the organisation to be terms of one `WHERE` clause, with a row "never returned
+ * and then rejected by a later branch". `browserSessionIfPermitted` read through
+ * the unscoped `get()` and compared `project_id` in an `if`, with no
+ * organisation term at all (ADR-0037).
+ *
+ * Restoring that defect changes no observable behaviour: `projects.id` is a
+ * global primary key and `projects.organisation_id` is `NOT NULL`, so a specific
+ * project term already refuses every session the organisation term would refuse.
+ * A behavioural test would need a session whose project belongs to one
+ * organisation and whose caller belongs to another *with the project matching*,
+ * which the schema makes unrepresentable.
+ *
+ * So the rule is asserted where it is visible: this file holds one shape for
+ * "resolve a browser session in the caller's scope", because a second shape is
+ * how the wrong one gets copied. The exception list is empty and should stay
+ * empty; a read that genuinely needs no scope belongs in the domain layer with a
+ * name that says so, as `published-services/service.ts` names `EVERY_SCOPE`.
+ */
+test("no browser-session read on the agent surface is unscoped", () => {
+  const source = readFileSync(
+    fileURLToPath(new URL("../src/tools.ts", import.meta.url)),
+    "utf8",
+  );
+  const unscoped = source
+    .split("\n")
+    .map((line, index) => ({ line, number: index + 1 }))
+    .filter((entry) => /browserSessions\s*\n?\s*\.?get\(/u.test(entry.line))
+    .filter((entry) => !entry.line.trimStart().startsWith("//"))
+    .filter((entry) => !entry.line.trimStart().startsWith("*"));
+  assert.deepEqual(
+    unscoped.map((entry) => `${String(entry.number)}: ${entry.line.trim()}`),
+    [],
+    "apps/mcp-server/src/tools.ts resolves a browser session without the caller's scope",
+  );
 });

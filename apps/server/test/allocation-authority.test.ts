@@ -419,3 +419,39 @@ test("allocating a session in another tenancy is absent, not forbidden", async (
   );
   assert.equal(still.rows[0]?.status, "REQUESTED");
 });
+
+test("allocate refuses a session outside the scope it was handed, whatever its caller resolved", async () => {
+  // Through the **service**, because that is where the property has to hold.
+  // The HTTP route above resolves the session in the caller's scope before it
+  // calls `allocate`, so the route test passes whether or not `allocate` carries
+  // a scope of its own — which is precisely the shape ADR-0037 rules out: every
+  // authorisation `allocate` enjoyed happened above it, and was a property of
+  // its callers rather than of it. `browser_session_allocate` takes the session
+  // identifier as an argument and inherits none of that.
+  const owner = await tenant("allocate-service-owner@example.test");
+  const stranger = await tenant("allocate-service-stranger@example.test");
+  const theirs = await reserve(owner);
+
+  await assert.rejects(
+    async () =>
+      harness.built.sessions.allocate({
+        browserSessionId: theirs,
+        scope: {
+          organisationId: stranger.organisationId,
+          projectIds: [stranger.projectId],
+        },
+        actor: { type: "system" },
+        requestId: "req_service_scope",
+      }),
+    (error: unknown) => {
+      assert.equal((error as { code?: string }).code, "RESOURCE_NOT_FOUND");
+      return true;
+    },
+  );
+
+  const still = await postgres.pool.query<{ status: string }>(
+    "SELECT status FROM browser_sessions WHERE id = $1",
+    [theirs],
+  );
+  assert.equal(still.rows[0]?.status, "REQUESTED", "the reservation was allocated out of scope");
+});
