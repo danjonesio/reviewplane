@@ -765,7 +765,17 @@ export async function insertCapability(
     // `ALLOCATING`", because `POST /published-services/:id/capabilities`
     // (`docs/API.md` §10) legitimately mints for a `READY` or `ACTIVE` session
     // that a human is already driving. Ending is the condition that makes a
-    // credential unaccountable; being past allocation is not.
+    // credential unaccountable; being past allocation is not. A second minting
+    // path for the human case would be a worse outcome than a wider predicate
+    // here — there is one place a capability comes into existence, and it stays
+    // one place.
+    //
+    // **The agent path's `ALLOCATING` invariant is not lost by widening it.**
+    // That invariant is enforced upstream and by construction: the
+    // status-guarded claim `UPDATE ... WHERE status = 'REQUESTED'` is what puts
+    // the row in `ALLOCATING`, and only the allocator that won it reaches the
+    // mint at all. This predicate is the backstop for both paths rather than the
+    // enforcement for either.
     `INSERT INTO route_capabilities (
        id, organisation_id, project_id, published_service_id,
        browser_session_id, key_id, issued_at, expires_at
