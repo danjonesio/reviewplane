@@ -66,7 +66,7 @@ plumbing that run them against this installation.
 | `browser-worker` | Chromium. |
 | `tunnel-gateway` | Session-scoped route capabilities to connector routes. |
 | `postgres` | Authoritative metadata and events, pinned by digest. |
-| `dev-fixture` | A developer's machine, standing in for a real one. `development` profile only. |
+| `dev-fixture` | A developer's machine, standing in for a real one: the loopback applications, a real Git checkout at `/opt/reviewplane/dev-fixture` for the connector to observe, and the connector itself. `development` profile only. |
 
 `api` and `jobs` are the same image running two commands, because
 `docs/ARCHITECTURE.md` §4.2 makes them two roles of one codebase. `api` sets

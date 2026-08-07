@@ -70,7 +70,10 @@ starts seven services:
 | `postgres` | `postgres:17-alpine`, pinned by digest | Authoritative metadata and events. |
 
 An eighth, `dev-fixture`, stands in for a developer's machine and is in the
-`development` profile, so the default installation does not start it (§6).
+`development` profile, so the default installation does not start it (§6). It
+holds a real Git checkout at `/opt/reviewplane/dev-fixture`, because a
+development machine has one and a connector reports nothing about a directory
+that is not a checkout (`CONNECTOR_PROTOCOL.md` §9).
 
 Artefacts default to the filesystem driver on the `artefact-data` volume; no
 object-storage service is bundled (ADR-0012). PostgreSQL is pinned by immutable
@@ -167,7 +170,8 @@ members that need it.
 | `artefact-data` | api (read-only in mcp) | Artefacts, through the filesystem driver (ADR-0012). |
 | `caddy-data` | gateway | Caddy's internal certificate authority and its issued certificates. |
 | `connector-ca` | api (read-only in tunnel-gateway) | The connector authority's certificate, published at startup (ADR-0014). Never the key. |
-| `dev-fixture-vite-src` | dev-fixture | The `development` profile fixture's own sources. |
+| `dev-fixture-vite-src` | dev-fixture | The `development` profile fixture's Vite sources, outside its checkout so that the hot-reload proof cannot dirty the working tree. |
+| `dev-fixture-workspace` | dev-fixture | The `development` profile fixture's Git checkout, which the connector observes (`CONNECTOR_PROTOCOL.md` §9). Writable so the end-to-end scenario can move `HEAD`; the connector only reads it. |
 
 `artefact-data` is the whole of the `filesystem` driver's storage (ADR-0012).
 It holds one directory, `sha256/`, whose contents are content-addressed: a

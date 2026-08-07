@@ -23,6 +23,51 @@ Both ports are in the Stage 0 destination allow-list (`docs/CONFIGURATION.md`
 §4, `docs/CONNECTOR_PROTOCOL.md` §20), so a route to either is publishable
 without widening any policy.
 
+## The checkout
+
+A development machine has a repository on it, and a connector that cannot see
+one reports nothing about the environment: `docs/CONNECTOR_PROTOCOL.md` §9 says
+a directory that is not a Git checkout yields **no observation at all**, rather
+than an observation with invented fields.
+
+So in the container the layout is:
+
+| Path | What it is |
+|---|---|
+| `/opt/reviewplane/dev-fixture` | A real Git repository on branch `main` with one commit, created in `Dockerfile`. This is the path `deploy/compose/connector-config.yaml` configures, and the only path the connector ever looks at. |
+| `/opt/reviewplane/dev-fixture/static-app` | The static application, served from inside the checkout — so the checkout is the source of what the scenario renders, not a repository put there to be looked at. |
+| `/app/vite-app` | The Vite application, deliberately **outside** the checkout. |
+
+That last row is the load-bearing one. RVP-14's proof edits
+`vite-app/src/Marker.tsx` while the stack is running; inside the checkout that
+edit would make the working tree dirty and emit a `workspace.head_changed`,
+coupling the hot-reload proof to the observation proof for no reason. Keep the
+two apart.
+
+The commit's author and committer dates are pinned in the `Dockerfile`, so the
+image builds reproducibly and the head commit is the same object on every build.
+No remote is configured, so `repository_identity` is reported as absent — which
+is the §9 behaviour for a checkout whose remote cannot be normalised, exercised
+rather than papered over.
+
+The checkout is mounted from the `dev-fixture-workspace` volume, seeded from the
+image, because the container's root filesystem is read-only and the end-to-end
+scenario moves `HEAD` while the stack is up:
+
+```bash
+docker compose exec dev-fixture git -C /opt/reviewplane/dev-fixture switch -c e2e/head-change
+docker compose exec dev-fixture git -C /opt/reviewplane/dev-fixture commit --allow-empty -m "…"
+```
+
+The connector never writes to it. Every `git` invocation it makes disables
+optional locks and automatic garbage collection, so observing a checkout does
+not modify it.
+
+`entrypoint.sh` refuses to start unless the path is a work tree with a commit on
+`HEAD`. The alternative failure is silent: the connector logs "no Git context"
+at debug and reports nothing, and the scenario waits out a timeout with nothing
+to point at.
+
 ## Why loopback only
 
 The connector connects **outbound** and dials the development service over

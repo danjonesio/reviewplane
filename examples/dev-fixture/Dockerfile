@@ -23,6 +23,14 @@
 # a static file tree, so the Vite application's dependencies belong in this
 # image now.
 #
+# The layout below is not arbitrary. `static-app` is installed inside a real Git
+# repository at `/opt/reviewplane/dev-fixture`, which is the path the connector
+# is configured to observe: a development machine has a checkout on it, and
+# without one the connector reports nothing about this environment
+# (`docs/CONNECTOR_PROTOCOL.md` §9). `vite-app` is installed outside that
+# checkout at `/app/vite-app`, so RVP-14's live source edit cannot perturb the
+# checkout's dirty state. The reasoning is repeated at each COPY below.
+#
 # The build context is the repository root, because the connector is built from
 # source in the same workspace the rest of the repository uses. Building with
 # the root `.dockerignore` would exclude `examples/`, so this Dockerfile carries
@@ -80,8 +88,16 @@ FROM node:24-bookworm-slim AS runtime
 # needs to run: RVP-11 requires `ss -ltnp` captured *during* a successful load,
 # and the listener that has to be shown as loopback-only lives in this
 # container's network namespace, so the command has to run in here.
+#
+# git is a different matter: the fixture needs it to be what it claims to be. A
+# development machine has a checkout on it, and the connector derives that
+# checkout's branch, head commit and dirty state by running `git`
+# (`docs/CONNECTOR_PROTOCOL.md` §9). Without git in this image the connector
+# reports `git_not_installed` and observes nothing, which is exactly the state
+# that let the end-to-end scenario insert a workspace row by hand and call it
+# an observation.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends iproute2 \
+    && apt-get install -y --no-install-recommends iproute2 git \
     && rm -rf /var/lib/apt/lists/*
 
 # A dedicated service user at the UID every other ReviewPlane image uses. The
@@ -93,7 +109,50 @@ RUN groupadd --system --gid 10001 reviewplane \
        --create-home --shell /usr/sbin/nologin reviewplane
 
 COPY --from=connector-builder /out/reviewplane-connector /usr/local/bin/reviewplane-connector
-COPY examples/dev-fixture/static-app /app/static-app
+
+# The development machine's checkout.
+#
+# `deploy/compose/connector-config.yaml` points the connector's single
+# configured workspace at this path, and the connector looks at no other
+# (`docs/CONNECTOR_PROTOCOL.md` §9). It has to be a real Git repository: a
+# directory that is not a checkout yields no observation at all, and a scenario
+# that then wrote the row an observation would have produced would be asserting
+# its own fixture rather than the product.
+#
+# The static application lives *inside* the checkout, so the checkout is the
+# source of the application the scenario serves rather than a repository put
+# here to be looked at. The Vite application deliberately stays outside it:
+# RVP-14's proof edits `vite-app/src/Marker.tsx` while the stack is running, and
+# an edit inside the checkout would make the working tree dirty and emit a
+# `workspace.head_changed` that the branch switch did not cause — coupling two
+# proofs that have nothing to do with each other.
+COPY examples/dev-fixture/static-app /opt/reviewplane/dev-fixture/static-app
+
+# The commit.
+#
+# The author and committer dates are pinned, so the image builds reproducibly:
+# the same tree at the same dates is the same commit object, and a fixture whose
+# head commit changed on every build would make a recorded head commit
+# meaningless to compare. The committer identity is written into this
+# repository's own configuration rather than a global one, because the
+# end-to-end scenario makes a further commit from inside the running container
+# to prove `workspace.head_changed`, and that commit must not need an identity
+# supplied on its command line.
+#
+# No remote is configured. `repository_identity` is then reported as absent
+# rather than guessed at, which is what §9 requires of a checkout whose remote a
+# connector cannot normalise, and this fixture exercises that path rather than
+# papering over it.
+RUN cd /opt/reviewplane/dev-fixture \
+    && git init --quiet --initial-branch=main \
+    && git config user.name "ReviewPlane fixture" \
+    && git config user.email "fixture@reviewplane.invalid" \
+    && git add -A \
+    && GIT_AUTHOR_DATE="2026-01-01T00:00:00+00:00" \
+       GIT_COMMITTER_DATE="2026-01-01T00:00:00+00:00" \
+       git commit --quiet -m "The fixture application, as a development machine holds it" \
+    && chown -R reviewplane:reviewplane /opt/reviewplane
+
 # --chown, not a later chown layer: the Vite dev server writes to
 # node_modules/.vite (its dependency-optimisation cache) and the end-to-end
 # scenario edits src/Marker.tsx with `sed` from inside the running container,
