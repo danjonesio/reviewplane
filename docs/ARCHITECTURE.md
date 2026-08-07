@@ -179,11 +179,24 @@ session to a route (ADR-0021). Its artefact volume is mounted read-only, because
 evidence is written by the worker through the control-plane API and only read
 here.
 
-The tunnel credential is there for one operation. Revoking a published service
-must reach the gateway to be a revocation at all, because the gateway verifies a
-route capability from its signature without a database read. It holds no
-connector control channel, so it cannot publish a route by itself: it writes the
-route as `requested` and the control-plane API completes it (ADR-0021).
+The tunnel credential permits two operations and no others: `route:revoke` and
+`capability:revoke`, for every organisation in the deployment (ADR-0038,
+`CONFIGURATION.md` §4.1). Revoking a published service must reach the gateway to
+be a revocation at all, because the gateway verifies a route capability from its
+signature without a database read.
+
+State that as authority and not as intent, because the two were conflated here
+until ADR-0038 and RVP-76 was the result. A holder of this credential — which
+includes anyone who has compromised the agent-facing process — MAY withdraw any
+route the gateway carries and any capability whose identifier they can produce.
+That is a denial of service against publications; it is bounded, and the
+gateway records every use of it against the credential's name. A holder MUST NOT
+be able to register a route, enumerate or read routes, revoke a connector
+identity, or read the gateway's metrics, and the gateway refuses each of those
+rather than relying on this process not to ask. It also holds no connector
+control channel, so it could not publish a route even with the authority: it
+writes the route as `requested` and the control-plane API completes it
+(ADR-0021).
 
 ### 4.5 Browser worker
 
@@ -216,9 +229,13 @@ It must not become an unrestricted SOCKS or general network proxy. It therefore 
 
 It serves three listeners, and the separation is a control rather than a convenience: the browser-facing listener is the only one a deployment publishes, the connector listener terminates mutually authenticated data channels, and the control listener carrying the route-registration API and metrics binds to loopback by default.
 
+Private is not the same as unauthorised, and the control listener is authorised as well as unpublished. Each caller presents a **named control credential** carrying a set of operations from a closed vocabulary and the organisations it may act for; every route on that surface names the operation it requires, an enumeration returns only what the credential's scope admits, a route outside that scope is absent rather than refused, and every call — allowed, refused or failed — produces an audit record naming the credential (ADR-0038, `CONFIGURATION.md` §4.1). Until ADR-0038 that surface took one shared unscoped token, and `GET /internal/v1/routes` returned every route in the deployment across every organisation to any holder of it.
+
 Connector identity is derived from the verified client-certificate chain issued by the control plane's certificate authority; the gateway holds only the authority's root and never issues. Where in the certificate the identifier is read from is configuration, so that the issuing side can change without a gateway release.
 
 The gateway holds no database connection. Route registrations arrive from the control plane, and route lifecycle is emitted as structured audit records; the durable event rows of §10 belong to the control plane, which owns the project event sequence.
+
+It keeps exactly one thing across a restart: **what it has revoked.** Everything else it holds is a working copy of a record the control plane owns, and losing it is safe, because losing it means the gateway carries nothing. A withdrawal is the opposite — losing it means the gateway carries something it was told to stop carrying — so withdrawals are appended to a journal on a volume and reloaded at startup, and a withdrawal the gateway cannot write down is refused rather than performed (ADR-0038, `DEPLOYMENT.md` §5). The journal holds no route registrations: routes are the control plane's to register, and a gateway that restored them from its own file would carry traffic nobody had asked it to carry.
 
 ### 4.7 Connector
 
@@ -504,7 +521,11 @@ Capabilities are minted by the control plane and verified by the gateway. A capa
 
 A capability's lifetime is bounded by the route's **and by its browser session's**: `min(now + requested_ttl, route.expires_at, session.created_at + session.limits.max_duration_seconds)`. A credential that outlived the browser it was minted for is one nobody is accounting for, and this bound is the only part of the guarantee that holds without the gateway's cooperation (ADR-0037).
 
-**Individual revocation is best effort, and the sentence above is stronger than the deployment.** Ending a browser session — by termination, by a failed reservation, or by a worker-reported failure — marks that session's live capabilities revoked and tells the gateway, in that order: marking a record closed while the gateway still carried it would turn a closure into a claim. But the gateway verifies a capability from its signature without a database read, and its revocation set is held in memory and does not survive a restart (RVP-76). So a revocation is durable in the control plane and not necessarily at the gateway: a deployment that restarts its gateway between a revocation and a capability's natural expiry has a revoked capability the gateway would accept again. The TTL bound above is what limits that window; RVP-99 is what closes it. Read this paragraph and not the sentence above for the guarantee.
+**What a revocation is worth, stated exactly.** Ending a browser session — by termination, by a failed reservation, or by a worker-reported failure — marks that session's live capabilities revoked and tells the gateway, in that order: marking a record closed while the gateway still carried it would turn a closure into a claim.
+
+A revocation the gateway has acknowledged is durable there, and ADR-0038 is what makes that true. The gateway keeps a withdrawal set on disk, writes an entry before it acts on it, reloads the set at startup, and refuses a revocation it cannot write rather than reporting one it did not keep. Revoking a **route** withdraws the capabilities that route had outstanding, recorded as the instant of the revocation and compared against each capability's signed `issued_at`, so registering the same route identifier again — which `DOMAIN_MODEL.md` §10 requires to stay possible — resurrects none of them. Expiry and connector revocation record a withdrawal the same way.
+
+Two limits remain, and they are limits of reach rather than of durability. A revocation the control plane could not deliver — an unreachable gateway — is one the gateway never hears about, and it is the control plane's retry to own. And a capability minted with a longer life than its route is not refused by the gateway on its own: that bound is applied by the control plane at minting, which is why a withdrawal is kept for the configured maximum route lifetime rather than only until the route's expiry. The TTL bound above is what limits the first window; RVP-99 carries the coverage of every path that ends a session.
 
 An agent reaches the same publication path through `development_services_list`, `development_service_publish` and `development_service_unpublish` (`MCP_SPEC.md` §7.2). Those tools take no connector, no project and no browser session: all three are resolved from the agent session, because a caller that could name any of them would be choosing which development machine the central browser reaches.
 

@@ -18,6 +18,15 @@ import { ApiError } from "../../errors.ts";
 /** What the control plane asks the gateway to carry. */
 export interface GatewayRegisterRequest {
   readonly route_id: string;
+  /**
+   * The tenancy the route belongs to.
+   *
+   * The gateway does not resolve organisations and never infers one. It carries
+   * this so that a control credential scoped to an organisation can be held to
+   * it: enumeration, reads and revocation on that surface all take their scope
+   * from the credential and compare it with this (ADR-0038).
+   */
+  readonly organisation_id: string;
   readonly project_id: string;
   readonly connector_id: string;
   readonly workspace_id: string;
@@ -34,6 +43,7 @@ export interface GatewayRegisterRequest {
 /** The gateway's account of a route. */
 export interface GatewayRouteView {
   readonly route_id: string;
+  readonly organisation_id: string;
   readonly project_id: string;
   readonly connector_id: string;
   readonly public_alias: string;

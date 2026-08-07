@@ -229,8 +229,9 @@ Every setting is `REVIEWPLANE_TUNNEL_`-prefixed and validated at startup
 | `MAX_REQUEST_BODY_BYTES` | `8388608` | |
 | `MAX_DATA_CHANNEL_MESSAGE_BYTES` | `65536` | |
 | `SWEEP_INTERVAL` | `5s` | Expiry and deadline enforcement |
-| `ADMIN_TOKEN`(`_FILE`) | — | Required, at least 32 characters |
+| `CONTROL_CREDENTIALS`(`_FILE`) | — | Required, a JSON array of `{id, secret, operations, organisations}` |
 | `CAPABILITY_KEYS`(`_FILE`) | — | Required, `key-id:base64[,…]` |
+| `REVOCATION_JOURNAL_PATH` | `/var/lib/reviewplane/tunnel/revocations.jsonl` | Where withdrawals are kept; must be writable |
 | `CONNECTOR_CA_FILE` | — | Required, PEM roots |
 | `TLS_CERT_FILE`, `TLS_KEY_FILE` | — | Required |
 | `IDENTITY_SOURCE` | `subject_common_name` | or `uri_san` |
@@ -242,19 +243,49 @@ refused whatever the allow-list says.
 
 ## Control API
 
-Bearer-authenticated with `ADMIN_TOKEN`, compared in constant time and never
-logged. Served on the control listener only.
+Served on the control listener only, and authorised as well as unpublished. A
+caller presents a named control credential from `CONTROL_CREDENTIALS`; the secret
+is compared in constant time and never logged, and the credential's identifier
+appears in every audit record it produces. Each route names the operation it
+requires, and an operation the credential does not carry is
+`AUTHORISATION_DENIED` (ADR-0038).
 
 ```text
-PUT    /internal/v1/routes/{routeId}
-GET    /internal/v1/routes
-GET    /internal/v1/routes/{routeId}
-DELETE /internal/v1/routes/{routeId}
-DELETE /internal/v1/connectors/{connectorId}
-DELETE /internal/v1/capabilities/{capabilityId}
-GET    /metrics
-GET    /healthz  /readyz          (unauthenticated)
+PUT    /internal/v1/routes/{routeId}          route:register
+GET    /internal/v1/routes                    route:read
+GET    /internal/v1/routes/{routeId}          route:read
+DELETE /internal/v1/routes/{routeId}          route:revoke
+DELETE /internal/v1/connectors/{connectorId}  connector:revoke
+DELETE /internal/v1/capabilities/{capabilityId}  capability:revoke
+GET    /metrics                               metrics:read
+GET    /healthz  /readyz                      (unauthenticated)
 ```
+
+A registration carries `organisation_id`. A credential bounded to organisations
+may register only into them, enumerates only them, and finds a route outside
+them **absent** rather than refused — `docs/API.md` §5 requires a foreign
+identifier and an unknown one to be indistinguishable. A credential naming no
+organisation acts for all of them, which is what the deployment's own control
+plane holds.
+
+## Revocation
+
+The gateway keeps one thing across a restart: what it has revoked. Everything
+else it holds is a working copy of a record the control plane owns, and losing it
+means it carries nothing; losing a withdrawal means it carries something it was
+told to stop carrying.
+
+Revoking a route records the **instant**, and a capability whose signed
+`issued_at` is at or before it is refused. That is what makes registering the
+same route identifier again — which `docs/DOMAIN_MODEL.md` §10 requires to stay
+possible after a connector reconnects — resurrect nothing. Revoking a capability
+records it by identity, which is the narrower case.
+
+Withdrawals are appended to `REVOCATION_JOURNAL_PATH` and flushed **before** the
+route is removed, and reloaded when the gateway starts. A withdrawal that cannot
+be written is answered `503` and not performed: the route keeps carrying traffic
+and the caller may retry, which is honest, where a revocation reported as done
+and not kept is a closure a restart silently reopens.
 
 It is not yet generated from `packages/protocol`: `docs/DEVELOPMENT.md` §3 says
 API schemas belong there, and the generator is built for the connector protocol
@@ -283,17 +314,28 @@ reviewplane_tunnel_requests_total{code}
 reviewplane_tunnel_denied_total{reason}
 reviewplane_tunnel_route_bytes{route_id,direction}
 reviewplane_tunnel_route_streams{route_id,state}
+reviewplane_tunnel_control_actions_total{outcome}
+reviewplane_tunnel_revocations{subject}
 ```
+
+`reviewplane_tunnel_revocations` is the size of the withdrawal set. It is worth
+watching across a restart: a gateway that came up having forgotten what it
+revoked reports zero, which is visible rather than silent.
 
 Route lifecycle is also emitted as structured audit records using the
 `docs/EVENTS.md` §7 names — `published_service.ready`, `.failed`, `.expired`,
-`.revoked` — and retained in a bounded ring. The durable event rows belong to
-the control plane, which owns the database and the project event sequence;
-giving the gateway a database connection would put the most exposed component
-inside the control plane's persistence boundary.
+`.revoked` — and retained in a bounded ring, alongside `tunnel.control_action`,
+which names the credential behind every call on the control API. That name is
+gateway-local: `docs/EVENTS.md` §7 is the control plane's durable project event
+vocabulary, and this is neither durable nor project-scoped. The durable event
+rows belong to the control plane, which owns the database and the project event
+sequence; giving the gateway a database connection would put the most exposed
+component inside the control plane's persistence boundary.
 
 No log line, metric label or audit payload carries a capability, a cookie, an
-authorisation header or the control-plane token. There is a test for it.
+authorisation header or a control credential's secret. There is a test for it.
+A credential's **identifier** appears in every record it produces, because that
+is the attribution an operator needs and it is not secret.
 
 ## Building and testing
 

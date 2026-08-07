@@ -95,6 +95,7 @@ class RecordingGateway implements TunnelGateway {
     this.registered.push(request);
     return Promise.resolve({
       route_id: request.route_id,
+      organisation_id: request.organisation_id,
       project_id: request.project_id,
       connector_id: request.connector_id,
       public_alias: request.public_alias,
@@ -368,6 +369,13 @@ describe("published-service endpoints", () => {
     assert.equal(registered.route_id, created["id"]);
     assert.equal(registered.public_alias, created["public_alias"]);
     assert.deepEqual(registered.allowed_browser_session_ids, [sessionOf("prj_test_01")]);
+    // The gateway is told the route's tenancy, taken from the record rather
+    // than from the request: it is what an organisation-scoped control
+    // credential is held to on that surface, and a route registered without one
+    // would sit outside every scope (ADR-0038). It is the organisation and not
+    // the project, which the two identifiers being distinct here proves.
+    assert.equal(registered.organisation_id, ORGANISATION_ID);
+    assert.notEqual(registered.organisation_id, registered.project_id);
 
     assert.deepEqual(await eventTypes(String(created["id"])), [
       "published_service.requested",

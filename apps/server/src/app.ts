@@ -307,10 +307,11 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
   const sessionBinder = new PublishedServiceBinder(publishedServices);
   const sessions = new BrowserSessionService(pool, workers, workerClient, sessionBinder, {
     authoriser: sessionBinder,
-    // Ending a session withdraws the capabilities minted for it. Best effort:
-    // the gateway's revocation set is in memory and does not survive a restart
-    // (RVP-76), so the bound `mint` applies is what stands when this fails.
-    // RVP-99 carries the gap.
+    // Ending a session withdraws the capabilities minted for it. A withdrawal
+    // the gateway acknowledges is durable there (ADR-0038); what is still best
+    // effort is the delivery, so the bound `mint` applies is what stands when
+    // the gateway cannot be reached. RVP-99 carries the coverage of every path
+    // that ends a session.
     revoker: {
       revokeForSession: (browserSessionId) =>
         publishedServices.revokeCapabilitiesForSession(browserSessionId),

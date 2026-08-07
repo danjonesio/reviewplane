@@ -1262,7 +1262,9 @@ info "${THROUGHPUT_LINE}"
 
 # The gateway's own counters, which are the other side of the same story: how
 # many upgrades it carried and how many bytes went each way.
-TUNNEL_TOKEN="$(cat "${COMPOSE_DIR}/secrets/tunnel_control_token")"
+# The `api` credential, which is the one carrying metrics:read; the `mcp`
+# credential withdraws and reads nothing (ADR-0038).
+TUNNEL_TOKEN="$(cat "${COMPOSE_DIR}/secrets/tunnel_control_token_api")"
 "${COMPOSE[@]}" exec -T -e RP_TOKEN="${TUNNEL_TOKEN}" api node -e '
     const response = await fetch("http://tunnel-gateway:8445/metrics", {
       headers: { authorization: `Bearer ${process.env.RP_TOKEN}` },

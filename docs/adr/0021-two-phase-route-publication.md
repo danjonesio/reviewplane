@@ -77,6 +77,15 @@ nothing. `development_service_unpublish` therefore reaches the gateway's control
 listener directly, and the `mcp` service joins the `tunnel` network for that one
 purpose. It holds no connector channel and registers no route; it withdraws.
 
+**Amended by ADR-0038.** When this was written, "registers no route" described
+what the process does and not what its credential permits: the gateway's control
+API took one shared unscoped token, so the sentence was true by the code's
+restraint. ADR-0038 makes the credential name its operations, and the `mcp`
+process's credential carries `route:revoke` and `capability:revoke` and nothing
+else — so the gateway now *refuses* a registration presented with it. Read the
+consequences below for what the credential permits; read this paragraph for what
+the process does with it.
+
 **Minting stays where the key is.** `PublishedServiceConfig.capability` is
 optional, and the MCP process is built without it. Minting binds a route to one
 browser session and the control plane is the minting authority
@@ -104,6 +113,17 @@ placeholder.
 - The `mcp` service reaches the tunnel gateway's control listener. That listener
   binds to loopback by default and to the internal `tunnel` network in Compose;
   it is not published, and the MCP process reaches nothing else on that network.
+- **What that credential permits, as amended by ADR-0038.** It carries
+  `route:revoke` and `capability:revoke`, for every organisation the deployment
+  has. So a holder of it — including anyone who has compromised the agent-facing
+  process — can withdraw any route the gateway carries and any capability whose
+  identifier they can produce. That is a denial of service against publications,
+  it is bounded, and every use of it is audited against the credential's name.
+  A holder **cannot** register a route, read or enumerate routes, revoke a
+  connector identity, or read the gateway's metrics: the gateway refuses each of
+  those with `AUTHORISATION_DENIED` and records the refusal. It also cannot mint,
+  for the separate reason below. This paragraph states authority; the decision
+  above states use, and the two were conflated until ADR-0038.
 - `published_service.requested` may now be written by an `agent_session` actor.
   `docs/EVENTS.md` §5 already admits that actor type, and an auditor can tell an
   agent's publication from a human's by it.

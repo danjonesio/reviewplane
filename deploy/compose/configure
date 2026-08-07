@@ -208,7 +208,39 @@ write_secret postgres_password "$(random_token)"
 write_secret bootstrap_token "$(random_token)"
 write_secret worker_credential "$(random_token)"
 write_secret worker_command_credential "$(random_token)"
-write_secret tunnel_control_token "$(random_token)"
+
+# Two control credentials for the gateway's control API, not one shared token
+# (ADR-0038). `api` publishes, reads and withdraws; `mcp` only withdraws, which
+# is what ADR-0021 says the agent-facing process does — as authority now, rather
+# than as restraint in its code. Each process reads its own secret; the gateway
+# reads the set, which states what each of them may do.
+write_secret tunnel_control_token_api "$(random_token)"
+write_secret tunnel_control_token_mcp "$(random_token)"
+
+if [[ ! -s "${SECRETS}/tunnel_control_credentials" || "${FORCE}" -eq 1 ]]; then
+  TUNNEL_API_SECRET="$(cat "${SECRETS}/tunnel_control_token_api")"
+  TUNNEL_MCP_SECRET="$(cat "${SECRETS}/tunnel_control_token_mcp")"
+  cat > "${SECRETS}/tunnel_control_credentials" <<CREDENTIALS
+[
+  {
+    "id": "api",
+    "secret": "${TUNNEL_API_SECRET}",
+    "operations": ["route:register", "route:read", "route:revoke",
+                   "connector:revoke", "capability:revoke", "metrics:read"],
+    "organisations": ["*"]
+  },
+  {
+    "id": "mcp",
+    "secret": "${TUNNEL_MCP_SECRET}",
+    "operations": ["route:revoke", "capability:revoke"],
+    "organisations": ["*"]
+  }
+]
+CREDENTIALS
+  chmod 644 "${SECRETS}/tunnel_control_credentials"
+  say "   wrote secrets/tunnel_control_credentials"
+  GENERATED=$((GENERATED + 1))
+fi
 
 # The database URL has to agree with the password that was just written, which
 # may be one an earlier run generated.

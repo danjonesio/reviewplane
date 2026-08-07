@@ -244,6 +244,9 @@ and a denial that refuses correctly and records nothing would otherwise pass.
 - Connector reconnect
 - Route expiry
 - Revocation during active stream, including an already-upgraded connection
+- A capability revoked with its route stays revoked when that route identifier is registered again, and across a restart of the gateway process
+- A withdrawal the gateway cannot record durably is refused rather than performed
+- The control API's authority: an operation the credential does not carry is refused, an enumeration returns only the credential's own organisation's routes, and every control action names the credential that made it
 - Destination host substitution rejected
 - Cross-project capability rejected
 - Link-local and metadata destination rejected
@@ -255,6 +258,12 @@ and a denial that refuses correctly and records nothing would otherwise pass.
 - Workspace identifier already held in another project refused
 - No workspace observation for an unchanged repeat
 - Connector reports nothing about paths it was not configured with
+
+Revocation durability is proven where it is decided, in `services/tunnel-gateway`: `internal/registry/revocation_test.go` for the withdrawal set, and `internal/gatewayhttp/control_authority_test.go` for the same sequence through the whole gateway — publish, browse, revoke, re-register the identifier, present the original capability. `internal/gatewayhttp/restart_test.go` runs it **across a real process boundary**: the test binary re-executes itself as a gateway, the parent kills it, and a second gateway is started over the same journal. A restart expressed as a second object in one process would prove the journal is read and leave "does anything else carry the withdrawal across" answered by inspection.
+
+Because that child runs no connector listener, its discriminator is which answer the authorisation path reaches: a capability that passes every check stops at `CONNECTOR_OFFLINE`, and a withdrawn one is refused earlier with `ROUTE_EXPIRED`. The test asserts a freshly minted capability reaches the first, so the second is about the withdrawal and not about a route that failed to come back. A test that asserted only a refusal would pass against a gateway that had simply lost the route.
+
+A control-plane test MUST NOT assert that the gateway refuses a withdrawn capability. The gateway verifies from a signature without a database read, so what a double in `apps/server` can show is the **call** — the control plane's half — and asserting the refusal there would assert a property of a stub.
 
 Connector reconnect is the Stage 0 exit criterion "Protocol round trip survives connector reconnect", and it is a three-part assertion rather than a single one: a request issued before the interruption succeeds, a request issued during it fails with `CONNECTOR_OFFLINE` or `PUBLISHED_SERVICE_UNAVAILABLE` and does not hang, and an equivalent request issued afterwards succeeds over the same `route_id` against the same destination with no operator action. A test making it MUST also show that no request was served by a different environment, which needs a second environment to be wrong about.
 

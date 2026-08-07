@@ -39,10 +39,12 @@ export class AcceptingGateway implements TunnelGateway {
    * Recorded rather than discarded, because "the control plane told the gateway"
    * is an assertion a test has to be able to make. It is **not** an assertion
    * that the gateway then refuses the capability: the gateway verifies from a
-   * signature without a database read and its revocation set does not survive a
-   * restart (RVP-76), so a test claiming that would assert a property the system
-   * does not have. What this records is the call, which is the part the control
-   * plane is responsible for.
+   * signature without a database read, so what a double records is the call and
+   * never the refusal. That the refusal is durable — that it outlives the
+   * gateway process and is not undone by registering the route identifier again
+   * — is proven where it is implemented, in
+   * `services/tunnel-gateway/internal/registry` and
+   * `services/tunnel-gateway/internal/gatewayhttp` (ADR-0038).
    */
   readonly revokedCapabilities: string[] = [];
 
@@ -50,6 +52,7 @@ export class AcceptingGateway implements TunnelGateway {
     this.registered.push(request);
     return Promise.resolve({
       route_id: request.route_id,
+      organisation_id: request.organisation_id,
       project_id: request.project_id,
       connector_id: request.connector_id,
       public_alias: request.public_alias,

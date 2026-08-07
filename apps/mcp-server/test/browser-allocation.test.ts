@@ -477,8 +477,10 @@ test("a route that does not name the reservation is refused, and no route is ame
 
     // The allow-list is a control, not a formality: the refusal does not add the
     // session to it. Amending a live route would require re-registering it with
-    // the gateway, which RVP-76 shows resurrects capabilities already revoked
-    // against that identifier.
+    // the gateway, which would grant reach to a credential that could not have
+    // published the route. (Re-registration no longer resurrects capabilities
+    // revoked against the identifier — ADR-0038 — and that was never the whole
+    // of the reason.)
     const list = await postgres.pool.query<{ allowed_browser_session_ids: string[] }>(
       "SELECT allowed_browser_session_ids FROM published_services WHERE id = $1",
       [route],
@@ -938,10 +940,9 @@ test("A10: a capability denial is recorded, for a tool this change did not add",
 });
 
 test("B2: allocation never re-registers a route with the gateway", async () => {
-  // The test that fails if the route-amendment design is ever introduced — the
-  // design RVP-76 proves resurrects capabilities already revoked against a route
-  // identifier. It costs one counter and it is the only automated defence
-  // against that path returning.
+  // The test that fails if the route-amendment design is ever introduced. It
+  // costs one counter and it is the only automated defence against that path
+  // returning.
   const agent = await connected();
   try {
     const { connectorId } = await seedConnector(harness, agent.seeded);

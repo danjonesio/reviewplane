@@ -662,6 +662,38 @@ holds.
 
 Header handling MUST be normalised before the origin is resolved to a route, on the upgrade path exactly as on the ordinary one. Ordering is the control: a route-confusion header removed after a route had already been chosen would be removed from the wrong thing.
 
+### Revocation, and what makes it one
+
+"Immediate revocation" above is a claim about the gateway, because the gateway
+verifies a route capability from its signature without a database read. Three
+rules make it true rather than nearly true (ADR-0038):
+
+- **A withdrawal is recorded, and the record is the revocation.** The route's
+  absence MUST NOT stand in for it. Revoking a route records the instant, and a
+  capability whose signed `issued_at` is at or before that instant is refused —
+  so registering the same route identifier again, which `DOMAIN_MODEL.md` §10
+  requires to stay possible, resurrects nothing. Expiry and connector revocation
+  record a withdrawal the same way.
+- **The record is written before it is acted on, and survives the process.** The
+  gateway MUST write a withdrawal to durable storage before it removes the route,
+  MUST reload the set at startup, and MUST refuse a withdrawal it cannot record
+  rather than report one it did not keep. A revocation reported as done but not
+  made durable is a closure a restart silently reopens.
+- **A withdrawal is kept until nothing it refuses can still be presented.** The
+  bound is the record's own lifetime and never how long ago it was written. It is
+  the configured maximum route lifetime measured from the revocation and never
+  less than the route's remaining life, because the gateway does not itself
+  verify that a capability's expiry lies inside its route's — that bound is
+  applied by the control plane at minting (`ARCHITECTURE.md` §7.3).
+
+### The gateway's control API
+
+The control listener carrying route registration, revocation and metrics binds to loopback by default and is never published. That is topology, not authorisation, and it MUST NOT be the only thing standing between a caller and the deployment's routes.
+
+Each caller MUST present a **named control credential** carrying a set of operations from a closed vocabulary and the organisations it may act for (`CONFIGURATION.md` §4.1). Every route on that surface names the operation it requires; an enumeration returns only routes the credential's scope admits; a read or a revocation of a route outside the scope answers as absent rather than refused, for the reason §5 of `API.md` gives; and every call — allowed, refused or failed — produces an audit record naming the credential.
+
+Until ADR-0038 this surface took one shared unscoped token, and `GET /internal/v1/routes` returned every route in the deployment across every organisation to any holder of it. The holders included the agent-facing MCP process, which is built without the administrator bootstrap token and without the capability signing key precisely so that a compromise there stays bounded. Its credential now carries `route:revoke` and `capability:revoke` and nothing else.
+
 ## 10. Browser-worker isolation
 
 Minimum controls:

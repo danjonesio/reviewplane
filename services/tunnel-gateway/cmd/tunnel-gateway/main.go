@@ -53,6 +53,14 @@ func run() error {
 			slog.Any("widened", settings.WidenedDestinationScope))
 	}
 
+	// The withdrawal set is the one thing the gateway keeps across a restart.
+	// Opening it before the listeners exist means a gateway that cannot record
+	// a revocation never begins carrying traffic it could not revoke.
+	journal, err := registry.NewFileJournal(settings.RevocationJournalPath)
+	if err != nil {
+		return err
+	}
+
 	gateway, err := gatewayhttp.New(gatewayhttp.Config{
 		Proxy: gatewayhttp.ProxyConfig{
 			InternalSuffix:      settings.InternalSuffix,
@@ -64,13 +72,14 @@ func run() error {
 			RelayBufferBytes:    settings.RelayBufferBytes,
 		},
 		Admin: gatewayhttp.AdminConfig{
-			Token:          settings.AdminToken,
+			Credentials:    settings.ControlCredentials,
 			InternalSuffix: settings.InternalSuffix,
 		},
 		Registry: registry.Config{
 			Policy:                settings.DestinationPolicy,
 			MaxRoutesPerConnector: settings.MaxRoutesPerConnector,
 			MaxRouteTTL:           settings.RouteTTLMax,
+			Journal:               journal,
 		},
 		Session: datachannel.SessionConfig{
 			MaxStreams:         settings.MaxStreamsPerConnector,
@@ -133,12 +142,21 @@ func run() error {
 	go serve(failures, func() error { return connector.ListenAndServeTLS("", "") })
 	go serve(failures, admin.ListenAndServe)
 
+	// The authority each control credential carries is stated at startup, so
+	// that "which process may register a route here" is answerable from the
+	// deployment's own logs rather than from the code. No secret appears.
+	authorities := make([]string, 0, len(settings.ControlCredentials))
+	for _, credential := range settings.ControlCredentials {
+		authorities = append(authorities, credential.Describe())
+	}
 	logger.Info("tunnel gateway listening",
 		slog.String("proxy", settings.ProxyListenAddress),
 		slog.String("connector", settings.ConnectorListenAddress),
 		slog.String("admin", settings.AdminListenAddress),
 		slog.String("internal_suffix", settings.InternalSuffix),
 		slog.Bool("proxy_tls", proxyTLS != nil),
+		slog.String("revocation_journal", journal.Path()),
+		slog.Any("control_credentials", authorities),
 	)
 
 	signals := make(chan os.Signal, 1)

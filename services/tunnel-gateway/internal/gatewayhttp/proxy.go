@@ -344,7 +344,13 @@ func (p *Proxy) authorise(r *http.Request) (*registry.Route, connectorv1.Capabil
 	if !route.AuthorisesSession(claims.BrowserSessionID) {
 		return nil, noClaims, nil, &denial{http.StatusForbidden, CodeAuthorisationDenied, "browser_session_not_authorised"}
 	}
-	if p.routes.CapabilityRevoked(claims.CapabilityID) {
+	// Withdrawal is asked of the authenticated claims rather than of the
+	// identifier alone, because a capability is withdrawn two ways: by its own
+	// identity, and with the route it was minted for. The second is the one the
+	// route's absence used to stand in for, and standing in for it was the bug:
+	// registering the route identifier again brought the route back and nothing
+	// remembered that its capabilities were dead (RVP-76, ADR-0038).
+	if p.routes.Withdrawn(claims) {
 		return nil, noClaims, nil, &denial{http.StatusForbidden, CodeRouteExpired, "capability_revoked"}
 	}
 

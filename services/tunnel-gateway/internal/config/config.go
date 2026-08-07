@@ -11,6 +11,7 @@ package config
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"os"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/danjonesio/reviewplane/packages/protocol/connectorv1"
+	"github.com/danjonesio/reviewplane/services/tunnel-gateway/internal/gatewayhttp"
 	"github.com/danjonesio/reviewplane/services/tunnel-gateway/policy"
 )
 
@@ -55,7 +57,18 @@ type Config struct {
 	DestinationPolicy       policy.Policy
 	WidenedDestinationScope []string
 
-	AdminToken      string
+	// ControlCredentials are the named principals allowed on the control API,
+	// each carrying the operations and organisations it may act for (ADR-0038).
+	// There is deliberately no single-token form: a deployment that could
+	// configure one unscoped credential in one line would, and that is the
+	// arrangement RVP-76 recorded.
+	ControlCredentials gatewayhttp.ControlCredentials
+	// RevocationJournalPath is where the withdrawal set is kept so that it
+	// survives a restart. It has a default rather than being optional: a
+	// gateway whose revocations live only in memory is the defect, not a
+	// configuration choice.
+	RevocationJournalPath string
+
 	CapabilityKeys  connectorv1.CapabilityKeyring
 	ConnectorCAFile string
 	TLSCertFile     string
@@ -102,6 +115,9 @@ func LoadFrom(lookup func(string) (string, bool)) (Config, error) {
 		SweepInterval:          l.duration("SWEEP_INTERVAL", 5*time.Second),
 		MaxDataChannelMessage:  l.number("MAX_DATA_CHANNEL_MESSAGE_BYTES", 64<<10),
 
+		RevocationJournalPath: l.text("REVOCATION_JOURNAL_PATH",
+			"/var/lib/reviewplane/tunnel/revocations.jsonl"),
+
 		ConnectorCAFile: l.text("CONNECTOR_CA_FILE", ""),
 		TLSCertFile:     l.text("TLS_CERT_FILE", ""),
 		TLSKeyFile:      l.text("TLS_KEY_FILE", ""),
@@ -121,10 +137,7 @@ func LoadFrom(lookup func(string) (string, bool)) (Config, error) {
 		config.WidenedDestinationScope = append(config.WidenedDestinationScope, "link_local_destinations")
 	}
 
-	config.AdminToken = l.secret("ADMIN_TOKEN")
-	if len(config.AdminToken) < 32 {
-		l.problems = append(l.problems, Prefix+"ADMIN_TOKEN must be at least 32 characters")
-	}
+	config.ControlCredentials = l.controlCredentials()
 	config.CapabilityKeys = l.capabilityKeys()
 
 	if len(l.problems) > 0 {
@@ -254,6 +267,67 @@ func (l *loader) destinationPolicy() policy.Policy {
 		l.problems = append(l.problems, Prefix+"ALLOWED_PROTOCOLS must name at least one protocol")
 	}
 	return built
+}
+
+// credentialDocument is the configured form of one control credential.
+type credentialDocument struct {
+	ID            string   `json:"id"`
+	Secret        string   `json:"secret"`
+	Operations    []string `json:"operations"`
+	Organisations []string `json:"organisations"`
+}
+
+// controlCredentials reads the control-API credential set.
+//
+// It is a JSON array in a secret file rather than a token per environment
+// variable, because the authority a credential carries is part of the
+// credential: splitting the secret from its operations across two settings is
+// how a deployment ends up with a token whose authority nobody can state
+// (ADR-0038). "organisations": ["*"] — or an absent member — means every
+// organisation, and is what the deployment's own control plane holds.
+func (l *loader) controlCredentials() gatewayhttp.ControlCredentials {
+	raw := l.secret("CONTROL_CREDENTIALS")
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var documents []credentialDocument
+	if err := json.Unmarshal([]byte(raw), &documents); err != nil {
+		l.problems = append(l.problems, Prefix+
+			"CONTROL_CREDENTIALS must be a JSON array of {id, secret, operations, organisations}")
+		return nil
+	}
+	credentials := make(gatewayhttp.ControlCredentials, 0, len(documents))
+	for _, document := range documents {
+		credential := gatewayhttp.ControlCredential{
+			ID:     strings.TrimSpace(document.ID),
+			Secret: strings.TrimSpace(document.Secret),
+		}
+		for _, name := range document.Operations {
+			operation, err := gatewayhttp.ParseControlOperation(name)
+			if err != nil {
+				l.problems = append(l.problems, Prefix+"CONTROL_CREDENTIALS: "+err.Error())
+				continue
+			}
+			credential.Operations = append(credential.Operations, operation)
+		}
+		for _, organisation := range document.Organisations {
+			organisation = strings.TrimSpace(organisation)
+			if organisation == gatewayhttp.OrganisationWildcard {
+				// One wildcard makes the whole list unbounded. Mixing a
+				// wildcard with named organisations would read as a narrowing
+				// and behave as none.
+				credential.Organisations = nil
+				break
+			}
+			credential.Organisations = append(credential.Organisations, organisation)
+		}
+		credentials = append(credentials, credential)
+	}
+	if err := credentials.Validate(); err != nil {
+		l.problems = append(l.problems, err.Error())
+		return nil
+	}
+	return credentials
 }
 
 // capabilityKeys reads "key-id:base64,key-id:base64". Several keys are accepted

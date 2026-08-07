@@ -51,6 +51,7 @@ ADRs record decisions that materially affect architecture, security, protocols o
 | [0035](0035-a-human-decision-names-the-verification-it-decides.md) | A human decision names the verification it decides | Accepted |
 | [0036](0036-a-reopen-states-why-and-the-statement-is-a-comment.md) | A reopen states why, and the statement is a comment | Accepted |
 | [0037](0037-an-agent-admits-its-own-reservation-to-its-own-projects-route.md) | An agent admits a browser session it reserved to a route its own project already publishes, and the reservation is the handoff to the process that mints | Proposed |
+| [0038](0038-a-withdrawal-is-a-recorded-instant-and-a-control-credential-names-its-authority.md) | A withdrawal is a recorded instant the gateway keeps, and a control credential names the operations and organisations it may act for | Proposed |
 
 ## Pending decisions
 

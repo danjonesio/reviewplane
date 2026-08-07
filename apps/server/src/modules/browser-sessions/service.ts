@@ -276,20 +276,21 @@ export interface AllocationAuthoriser {
  * accounting for, so ending a session withdraws them (ADR-0037). This gives
  * `HttpTunnelGateway.revokeCapability` its first production caller.
  *
- * **Withdrawal is best effort, and every mention of it says so.** The gateway
- * verifies a capability from its signature without a database read, and RVP-76
- * records that its revocation set is in memory and does not survive a restart. A
- * revocation recorded here is durable in the control plane and not necessarily
- * at the gateway. The bound `mint` applies — a capability may not outlive its
- * session's maximum duration — is what stands when this fails, and it stands
- * without the gateway's cooperation. RVP-99 carries the gap.
+ * **The delivery is best effort; the withdrawal is not.** The gateway verifies a
+ * capability from its signature without a database read, so what refuses the
+ * credential is the gateway's own withdrawal set — written to disk before it is
+ * acted on and reloaded when the gateway starts (ADR-0038). What remains best
+ * effort is reaching the gateway at all. The bound `mint` applies — a capability
+ * may not outlive its session's maximum duration — is what stands when that
+ * fails, and it stands without the gateway's cooperation. RVP-99 carries the
+ * coverage of every path that ends a session.
  *
  * Both processes construct one. The MCP process may **withdraw** a capability
  * and still cannot mint one, which is ADR-0021's existing carve-out for
  * `development_service_unpublish` extended to the credential rather than only to
- * the route. That the gateway's control token is unscoped means "withdraws,
- * never registers" is restraint rather than authority — also RVP-76's, and
- * stated rather than assumed.
+ * the route. Since ADR-0038 that is authority and not restraint: its control
+ * credential carries `route:revoke` and `capability:revoke` and nothing else,
+ * and the gateway refuses a registration presented with it.
  */
 export interface SessionCapabilityRevoker {
   revokeForSession(browserSessionId: string): Promise<readonly string[]>;

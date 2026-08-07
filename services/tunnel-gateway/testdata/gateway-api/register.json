@@ -10,11 +10,12 @@
   },
   "authentication": {
     "scheme": "Bearer",
-    "setting": "REVIEWPLANE_TUNNEL_ADMIN_TOKEN",
-    "note": "Compared in constant time. Never logged, never echoed in an error body."
+    "setting": "REVIEWPLANE_TUNNEL_CONTROL_CREDENTIALS",
+    "note": "Each caller presents a named control credential carrying a set of operations and an organisation scope (ADR-0038). Secrets are compared in constant time, never logged and never echoed in an error body; the credential's identifier is recorded in every audit record."
   },
   "register_request_fields": [
     "route_id",
+    "organisation_id",
     "project_id",
     "connector_id",
     "workspace_id",
@@ -29,6 +30,7 @@
   ],
   "route_view_fields": [
     "route_id",
+    "organisation_id",
     "project_id",
     "connector_id",
     "public_alias",
@@ -50,6 +52,7 @@
   "examples": {
     "register_request": {
       "route_id": "svc_01K9G3ZJ4T2W6Q8C",
+      "organisation_id": "org_01K9G3ZJ4T2W6Q8B",
       "project_id": "prj_01K9G3ZJ4T2W6Q8D",
       "connector_id": "con_01K9G3ZJ4T2W6Q8F",
       "workspace_id": "wsp_01K9G3ZJ4T2W6Q8G",
@@ -59,12 +62,15 @@
       "protocol": "http",
       "scope": "browser_session",
       "expires_at": "2026-07-30T13:00:00Z",
-      "allowed_browser_session_ids": ["brs_01K9G3ZJ4T2W6Q8E"],
+      "allowed_browser_session_ids": [
+        "brs_01K9G3ZJ4T2W6Q8E"
+      ],
       "observed_destination": "127.0.0.1:5173"
     },
     "register_response": {
       "data": {
         "route_id": "svc_01K9G3ZJ4T2W6Q8C",
+        "organisation_id": "org_01K9G3ZJ4T2W6Q8B",
         "project_id": "prj_01K9G3ZJ4T2W6Q8D",
         "connector_id": "con_01K9G3ZJ4T2W6Q8F",
         "public_alias": "svc-01k9g3zj4t2w6q8c",
@@ -78,7 +84,9 @@
         "bytes_to_destination": 0,
         "bytes_from_destination": 0
       },
-      "meta": { "request_id": "reqexamplereqexample" }
+      "meta": {
+        "request_id": "reqexamplereqexample"
+      }
     },
     "register_rejection": {
       "error": {
@@ -89,7 +97,9 @@
           "policy_reason": "host_is_a_cloud_metadata_endpoint"
         }
       },
-      "meta": { "request_id": "reqexamplereqexample" }
+      "meta": {
+        "request_id": "reqexamplereqexample"
+      }
     }
   },
   "rejection_codes": {
@@ -104,5 +114,20 @@
     "too_many_browser_sessions": "PROJECT_NOT_AUTHORISED",
     "identifier_missing": "PROJECT_NOT_AUTHORISED",
     "scope_not_supported": "PROJECT_NOT_AUTHORISED"
+  },
+  "operations": {
+    "register": "route:register",
+    "show": "route:read",
+    "list": "route:read",
+    "revoke_route": "route:revoke",
+    "revoke_connector": "connector:revoke",
+    "revoke_capability": "capability:revoke",
+    "metrics": "metrics:read"
+  },
+  "refusal_codes": {
+    "unrecognised_credential": "AUTHENTICATION_REQUIRED",
+    "operation_not_granted": "AUTHORISATION_DENIED",
+    "organisation_out_of_scope": "AUTHORISATION_DENIED",
+    "revocation_not_recorded": "INTERNAL_ERROR"
   }
 }

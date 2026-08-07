@@ -1,7 +1,9 @@
 package registry
 
 import (
+	"errors"
 	"net/netip"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -25,8 +27,24 @@ func (r *recorder) RouteRejected(_ Registration, x *Rejection)  { r.rejected = a
 
 func testRegistry(t *testing.T, now *time.Time, maxRoutes int) (*Registry, *recorder) {
 	t.Helper()
+	registry, observer, _ := testRegistryWithJournal(t, now, maxRoutes, nil)
+	return registry, observer
+}
+
+// testRegistryWithJournal builds a registry over a real on-disk journal unless
+// one is supplied, so the ordinary unit tests exercise the durable path rather
+// than a memory-only shortcut nothing ships with.
+func testRegistryWithJournal(t *testing.T, now *time.Time, maxRoutes int, journal Journal) (*Registry, *recorder, Journal) {
+	t.Helper()
 	observer := &recorder{}
-	return New(Config{
+	if journal == nil {
+		file, err := NewFileJournal(filepath.Join(t.TempDir(), "revocations.jsonl"))
+		if err != nil {
+			t.Fatalf("open journal: %v", err)
+		}
+		journal = file
+	}
+	registry, err := New(Config{
 		Policy: policy.Policy{
 			AllowedHosts:     []netip.Addr{netip.MustParseAddr("127.0.0.1")},
 			AllowedPorts:     []policy.PortRange{{Low: 3000, High: 5999}},
@@ -34,13 +52,19 @@ func testRegistry(t *testing.T, now *time.Time, maxRoutes int) (*Registry, *reco
 		},
 		MaxRoutesPerConnector: maxRoutes,
 		MaxRouteTTL:           8 * time.Hour,
+		Journal:               journal,
 		Now:                   func() time.Time { return *now },
-	}, observer), observer
+	}, observer)
+	if err != nil {
+		t.Fatalf("build registry: %v", err)
+	}
+	return registry, observer, journal
 }
 
 func registration(now time.Time) Registration {
 	return Registration{
 		RouteID:                  "svc_a",
+		OrganisationID:           "org_a",
 		ProjectID:                "prj_a",
 		ConnectorID:              "con_a",
 		WorkspaceID:              "wsp_a",
@@ -107,7 +131,10 @@ func TestExpiringSweepsTerminateStreamsAndRecordTheReason(t *testing.T) {
 	}
 
 	now = now.Add(2 * time.Hour)
-	expired := registry.ExpireDue()
+	expired, err := registry.ExpireDue()
+	if err != nil {
+		t.Fatalf("expire: %v", err)
+	}
 	if len(expired) != 1 || expired[0].Status != StatusExpired {
 		t.Fatalf("expired %d routes", len(expired))
 	}
@@ -136,9 +163,9 @@ func TestRevocationTerminatesStreamsAndReportsRevoked(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("attach: %v", err)
 	}
-	route, revoked := registry.Revoke("svc_a", ReasonRevoked)
-	if !revoked || route.Status != StatusRevoked {
-		t.Fatal("the route was not revoked")
+	route, err := registry.Revoke("svc_a", ReasonRevoked)
+	if err != nil || route.Status != StatusRevoked {
+		t.Fatalf("the route was not revoked: %v", err)
 	}
 	select {
 	case <-terminated:
@@ -148,8 +175,8 @@ func TestRevocationTerminatesStreamsAndReportsRevoked(t *testing.T) {
 	if len(observer.ended) != 1 || observer.ended[0] != ReasonRevoked {
 		t.Fatalf("lifecycle reasons %v", observer.ended)
 	}
-	if _, revokedAgain := registry.Revoke("svc_a", ReasonRevoked); revokedAgain {
-		t.Fatal("a route was revoked twice")
+	if _, err := registry.Revoke("svc_a", ReasonRevoked); !errors.Is(err, ErrRouteNotRegistered) {
+		t.Fatalf("a route was revoked twice: %v", err)
 	}
 }
 
@@ -187,6 +214,7 @@ func TestRegistrationRefusals(t *testing.T) {
 		want   RejectionReason
 	}{
 		{"missing project", func(r *Registration) { r.ProjectID = "" }, RejectMissingIdentifier},
+		{"missing organisation", func(r *Registration) { r.OrganisationID = "" }, RejectMissingIdentifier},
 		{"missing connector", func(r *Registration) { r.ConnectorID = "" }, RejectMissingIdentifier},
 		{"alias with an underscore", func(r *Registration) { r.PublicAlias = "svc_a" }, RejectAliasInvalid},
 		{"alias too long", func(r *Registration) { r.PublicAlias = strings.Repeat("a", MaxAliasLength+1) }, RejectAliasInvalid},
@@ -246,7 +274,10 @@ func TestConnectorRevocationEndsEveryRouteItCarries(t *testing.T) {
 		t.Fatalf("register: %v", rejection)
 	}
 
-	ended := registry.RevokeConnector("con_a")
+	ended, err := registry.RevokeConnector("con_a", OrganisationScope{})
+	if err != nil {
+		t.Fatalf("revoke connector: %v", err)
+	}
 	if len(ended) != 2 {
 		t.Fatalf("revoked %d routes, want 2", len(ended))
 	}
@@ -258,7 +289,9 @@ func TestConnectorRevocationEndsEveryRouteItCarries(t *testing.T) {
 func TestCapabilityRevocationIsRememberedAndBounded(t *testing.T) {
 	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 	registry, _ := testRegistry(t, &now, 10)
-	registry.RevokeCapability("cap_a", now)
+	if err := registry.RevokeCapability("cap_a", now.Add(30*time.Minute)); err != nil {
+		t.Fatalf("revoke capability: %v", err)
+	}
 	if !registry.CapabilityRevoked("cap_a") {
 		t.Fatal("a revoked capability was not remembered")
 	}

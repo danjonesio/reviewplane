@@ -70,6 +70,11 @@ func (c Config) withDefaults() Config {
 	if c.Admin.InternalSuffix == "" {
 		c.Admin.InternalSuffix = c.Proxy.InternalSuffix
 	}
+	if c.Admin.MaxCapabilityLifetime <= 0 {
+		// A capability may not outlive its route, so the maximum route lifetime
+		// is the upper bound on how long a withdrawal has to be remembered.
+		c.Admin.MaxCapabilityLifetime = c.Registry.MaxRouteTTL
+	}
 	return c
 }
 
@@ -98,7 +103,10 @@ func New(config Config, logger *slog.Logger) (*Gateway, error) {
 	channels := NewChannels()
 
 	lifecycle := &observer{auditor: auditor, metrics: registryMetrics}
-	routes := registry.New(config.Registry, lifecycle)
+	routes, err := registry.New(config.Registry, lifecycle)
+	if err != nil {
+		return nil, err
+	}
 	lifecycle.registry = routes.Routes
 
 	proxy := NewProxy(config.Proxy, routes, channels, CapabilityKeys{Keyring: config.Keyring},
@@ -107,6 +115,7 @@ func New(config Config, logger *slog.Logger) (*Gateway, error) {
 	if err != nil {
 		return nil, err
 	}
+	reportRevocations(registryMetrics, routes)
 	return &Gateway{
 		config:   config,
 		metrics:  registryMetrics,
@@ -215,7 +224,14 @@ func TLSConfig(serverCertificate tls.Certificate, clientAuthority *x509.CertPool
 // the caller decides the cadence. Expiry that only happened on a timer would be
 // untestable without sleeping.
 func (g *Gateway) Sweep(now time.Time) (routesExpired int, streamsClosed int) {
-	expired := g.routes.ExpireDue()
+	expired, err := g.routes.ExpireDue()
+	if err != nil {
+		// An expired route is already unreachable, so the sweep does not stop
+		// here; but a journal the gateway cannot write is the durability
+		// guarantee failing, and it says so at error level rather than once.
+		g.logger.Error("the gateway could not record an expiry",
+			slog.String("error", err.Error()))
+	}
 	closed := g.channels.EnforceDeadlines(now)
 	if closed.Deadline > 0 {
 		g.metrics.Add(metrics.Streams, float64(closed.Deadline), "outcome", "deadline_exceeded")
@@ -226,9 +242,32 @@ func (g *Gateway) Sweep(now time.Time) (routesExpired int, streamsClosed int) {
 		// means nothing moved for the window that stream's mode allows.
 		g.metrics.Add(metrics.Streams, float64(closed.Idle), "outcome", "idle_timeout")
 	}
-	g.routes.ForgetRevocations(now.Add(-24 * time.Hour))
+	// Withdrawals are dropped when nothing could still present them, which is
+	// the record's own NotAfter and not how long ago it was written. The sweep
+	// used to pass now-24h, so a revocation was forgotten by age while the
+	// credential it refused might still be live, and kept long after it could
+	// not be.
+	g.routes.ForgetRevocations(now)
+	reportRevocations(g.metrics, g.routes)
 	g.metrics.SetGauge(metrics.RoutesActive, float64(len(g.routes.Routes())))
 	return len(expired), closed.Total()
+}
+
+// reportRevocations publishes the size of the withdrawal set. It is a gauge an
+// operator can watch across a restart: a gateway that came up having forgotten
+// what it revoked reports zero, and that is visible rather than silent.
+func reportRevocations(registryMetrics *metrics.Registry, routes *registry.Registry) {
+	byKind := map[registry.RevocationKind]float64{
+		registry.RevokeRouteSubject:      0,
+		registry.RevokeCapabilitySubject: 0,
+	}
+	for _, entry := range routes.Revocations() {
+		byKind[entry.Kind]++
+	}
+	registryMetrics.SetGauge(metrics.Revocations, byKind[registry.RevokeRouteSubject],
+		"subject", metrics.SubjectRoute)
+	registryMetrics.SetGauge(metrics.Revocations, byKind[registry.RevokeCapabilitySubject],
+		"subject", metrics.SubjectCapability)
 }
 
 // Run sweeps until the context-like stop channel is closed.
