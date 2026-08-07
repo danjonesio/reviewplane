@@ -394,30 +394,53 @@ The sweep touches only reservations that carry a requested route. A reservation
 made with `allocate: false` and no route is somebody's in-progress work and is
 left alone.
 
-**The record.** Migration 0160 adds one nullable column,
-`browser_sessions.requested_published_service_id`, and it is the whole handoff:
-the MCP process writes the route it was asked to bind, and `api` reads it. There
-is no foreign key, so a route that has gone is refused by the joined read rather
-than reported by a constraint — the same choice ADR-0034 made for
-`PUT .../assignments`.
+**The record.** Migration 0160 adds two nullable columns to `browser_sessions`,
+`requested_published_service_id` and `allocation_requested_at`, and together they
+are the whole handoff: the MCP process writes the route it was asked to bind and
+the instant it asked, and `api` reads both.
 
-Its meaning is exact and is what makes the sweep a single predicate: **non-null
-means "this reservation asked for a route and has not been bound to one".** A
-successful bind writes `published_service_id` and `service_origin` and **clears**
-it in the same statement, so a bound session never matches the sweep, and the
-agent-facing view's `published_service_id` — "Published service this session may
-reach" — stays true rather than becoming an intention.
+`requested_published_service_id` carries a foreign key to `published_services`
+with `ON DELETE SET NULL`. It is not load-bearing — the route identifier is
+authorised by the joined read before it is ever written, and a route is ended by
+a status transition rather than deleted — so nothing depends on the constraint
+firing. It is there because a column that names a route and could hold an
+identifier no route ever had is a column a later reader has to be careful about.
+
+The pair's meaning is exact and is what makes each sweep a single predicate:
+**non-null means "this reservation asked for a route and has not been bound to
+one".** A successful bind writes `published_service_id` and `service_origin` and
+**clears** both in the same statement, so a bound session never matches a sweep,
+and the agent-facing view's `published_service_id` — "Published service this
+session may reach" — stays true rather than becoming an intention. A database
+constraint requires the two to be null or non-null together: a row carrying a
+route and no timestamp would be invisible to the sweep for ever while still
+counting against the worker's capacity.
 
 `published_service_id` is not overloaded to carry the intention while the status
-is `REQUESTED`. It would have avoided the migration and made that description
+is `REQUESTED`. It would have avoided the first column and made that description
 false for every pending reservation.
 
-**The deadline** is `created_at + REVIEWPLANE_ALLOCATION_DEADLINE_SECONDS`
-(default 120). No second timestamp column: `created_at` already exists, and the
-deadline applies only to reservations carrying a requested route. 120 seconds is
-comfortably past any legitimate completion — the worker call is bounded by
-`workerRequestTimeoutMs`, a Chromium context takes seconds and the MCP wait is
-fifteen — and far inside a session's own `max_duration_seconds`.
+**The deadline** is
+`allocation_requested_at + REVIEWPLANE_ALLOCATION_DEADLINE_SECONDS` (default
+120). 120 seconds is comfortably past any legitimate completion — the worker call
+is bounded by `workerRequestTimeoutMs`, a Chromium context takes seconds and the
+MCP wait is thirty — and far inside a session's own `max_duration_seconds`.
+
+**It is measured from when admission was asked for and never from when the
+session was reserved,** and that is why the second column exists rather than the
+deadline running off `created_at`. The agent's order is reserve, *then* publish a
+route naming the reservation, *then* allocate — and the middle step is the slow
+one: `docs/CONNECTOR_PROTOCOL.md` §11 gives a connector a ten-second startup
+grace, a human choosing a route on the Live page takes as long as a human takes,
+and nothing bounds the gap at all. A deadline measured from `created_at` would
+fail the allocation of every reservation that spent longer than the deadline
+becoming useful, and would fail it *at the moment the agent finally asked* —
+which is the one moment the reservation is provably not abandoned. The sweep
+would be at its most destructive exactly where the flow is working.
+
+A reservation that asks for nothing still has no lifetime and still holds a slot;
+this decision bounds the ones it creates, and the human `{"allocate": false}`
+reservation of `docs/API.md` §11 is its own issue.
 
 **The two states it must reach.** `REQUESTED` past the deadline means nothing
 claimed it: `api` was down, or restarted before claiming. `ALLOCATING` past the
@@ -436,22 +459,38 @@ the process that would have withdrawn it has just had its write rejected.**
 Two mechanisms close it, because the mint can land on either side of the sweep.
 
 **Mint after the fail: the capability row cannot be written.** `insertCapability`
-takes the session's status as a predicate —
-`INSERT INTO route_capabilities (...) SELECT ... FROM browser_sessions WHERE id = $1 AND status = 'ALLOCATING'`
+takes the session's own liveness as a predicate of the insert —
+`INSERT INTO route_capabilities (...) SELECT ... FROM browser_sessions WHERE id = $5 AND ended_at IS NULL AND status NOT IN ('TERMINATED', 'FAILED', 'TERMINATING')`
 — so an insert for a session already failed writes nothing, `mint` raises, and
 `bind` throws before returning. The signed token exists in memory and is
 discarded there: it is never returned, never reaches `SessionAllocate`, and never
 reaches a worker. This gives the mint the same property `markReady` and
 `markFailed` already have — the losing side of a race writes nothing.
 
-**Mint before the fail: the sweep withdraws what is there.** The sweep's
-`UPDATE ... SET status = 'FAILED'` and the capability withdrawal run in **one
-transaction**, so the two paths serialise against the same row: whichever commits
-first, the other sees its result. The sweep does not need to know whether a mint
-happened — `route_capabilities.browser_session_id` is the query, and it keys on
-`(published_service_id, browser_session_id)`, which is
-`route_capabilities_service_idx` exactly (`migrations/0021_route_capabilities.sql:29-30`).
-Zero rows is the ordinary answer and costs an index probe.
+The predicate is **"has not ended"** and not the narrower `status = 'ALLOCATING'`,
+because `POST /api/v1/published-services/:serviceId/capabilities`
+(`docs/API.md` §10) legitimately mints for a `READY` or `ACTIVE` session a human
+is already driving, and `ALLOCATING` would have refused every one of them. Ending
+is the condition that makes a credential unaccountable; being past allocation is
+not.
+
+**Mint before the fail: the sweep withdraws what is there.** The sweep marks the
+session `FAILED` and then withdraws the session's live capabilities — the gateway
+first and the record second, for the reason revocation and reconnect
+reconciliation already give: marking a record closed while the gateway still
+carried it turns a closure into a claim. The withdrawal keys on
+`route_capabilities.browser_session_id`, which is the leading pair of
+`route_capabilities_service_idx` (`migrations/0021_route_capabilities.sql:29-30`),
+so zero rows is the ordinary answer and costs an index probe.
+
+**The two are not one transaction, and cannot be.** The gateway call is a network
+request; a transaction held open across it would hold a row lock for the
+gateway's timeout, and a gateway that is merely slow would stall the sweep. So the
+ordering is the mechanism rather than atomicity, and the window it leaves is a
+mint that lands between the sweep's `UPDATE` and its withdrawal query. That
+window is closed from the other side by the insert predicate above: a mint
+landing there finds the session already `FAILED` and writes nothing. Neither
+mechanism alone is sufficient and both are present.
 
 **The process that failed the row is the process that withdraws.** Usually that
 is `api`. Where the caller-scoped opportunistic sweep failed it, the MCP process
@@ -479,15 +518,15 @@ read rather than a second allocation or a double failure — the property
 -- claim
 UPDATE browser_sessions SET status = 'ALLOCATING'
  WHERE id = $1 AND status = 'REQUESTED'
--- fail on deadline
-UPDATE browser_sessions SET status = 'FAILED', ended_at = now()
- WHERE id = $1
+-- select for the deadline
+SELECT * FROM browser_sessions
+ WHERE ended_at IS NULL
    AND status IN ('REQUESTED', 'ALLOCATING', 'DEGRADED')
    AND requested_published_service_id IS NOT NULL
-   AND created_at < $2
+   AND allocation_requested_at <= $1
 ```
 
-The index is partial, on `created_at` where
+The index is partial, on `allocation_requested_at` where
 `requested_published_service_id IS NOT NULL AND ended_at IS NULL`.
 
 **The event** is `browser_session.failed` with `trigger: "allocation_deadline"`,
@@ -496,10 +535,19 @@ CONTROL_PLANE_UNAVAILABLE` — the honest diagnosis in both states, since a
 reservation nobody claimed and one somebody abandoned are both the control plane
 not having been there. The payload carries the status the record was actually in,
 for the reason the expiry sweep records
-(`modules/published-services/service.ts:702-708`): a status it was never in is a
-fact an auditor cannot see through. `reason_code` is a closed vocabulary declared
-in `packages/protocol` by this change, because none exists today — which is why
-`#failReservation` was writing free text at all.
+(`modules/published-services/service.ts`): a status it was never in is a fact an
+auditor cannot see through.
+
+`reason_code` is drawn from a **closed vocabulary named in the domain**
+(`AllocationFailureClass`), whose members are the stable codes of
+`docs/API.md` §5 and `docs/CONNECTOR_PROTOCOL.md` §21 — the same source
+`published_service_failure_class` draws on — and anything unrecognised becomes
+`INTERNAL_ERROR` rather than widening it at write time. It is not added to
+`packages/protocol`: `browser.command_rejected` and `browser_session.failed` have
+no per-type payload schema there, so a member declared for them would be
+validated by nothing, and `docs/EVENTS.md` §7 already records that only an
+assertion against the event store catches a renamed one. Declaring a vocabulary
+the generator cannot enforce would look like a gate and be none.
 
 ### A capability may not outlive the session it was minted for
 
@@ -581,11 +629,13 @@ development machine it could never have published a route to.
 - `browser_session_start_input` carries a member that can only be refused, until
   the next major protocol version retires it. The schema description says so, and
   a reader who finds it will still have to be told why it is there.
-- One migration for one nullable column, on a table that did not need one.
-  Overloading `published_service_id` as "requested" while the status is
-  `REQUESTED` would have avoided it and would have made the agent-facing view's
-  own description — "Published service this session may reach" — untrue for a
-  session that may reach nothing yet.
+- One migration for **two** nullable columns and a check constraint, on a table
+  that needed none. Overloading `published_service_id` as "requested" while the
+  status is `REQUESTED` would have avoided the first and would have made the
+  agent-facing view's own description — "Published service this session may
+  reach" — untrue for a session that may reach nothing yet. The second,
+  `allocation_requested_at`, is the price of a deadline that cannot fire on a
+  reservation whose agent is still preparing a route for it.
 - A second sweep interval in `api`, and a second place a status-guarded `UPDATE`
   has to stay guarded.
 - **A stranded reservation is released by `api` and by nothing else.** The

@@ -352,11 +352,23 @@ had tried to drive a terminated session received the same answer as if nothing
 had.
 
 `browser.command_rejected` covers refused **lifecycle acts** as well as refused
-browser commands: a pause, resume, end, control request or control release that
-is refused writes one, with `kind: "lifecycle"` and `command` naming the act
-(`pause`, `resume`, `end`, `control_request`, `control_release`). A browser
-command carries `kind: "command"`'s absence — it is the default shape — and
-`command` from the browser command vocabulary.
+browser commands: a pause, resume, end, allocate, control request or control
+release that is refused writes one, with `kind: "lifecycle"` and `command` naming
+the act (`pause`, `resume`, `end`, `allocate`, `control_request`,
+`control_release`). A browser command carries `kind: "command"`'s absence — it is
+the default shape — and `command` from the browser command vocabulary.
+
+`allocate` joined the set with ADR-0037. Allocation is the transition `REQUESTED`
+→ `ALLOCATING` → `READY`, so it is a lifecycle act and it shares this type for the
+reason the others do. Two of its refusals carry **no `browser_session_id` at
+all**, because there is no session to correlate them to: a
+`browser_session_start` that named a published service is refused before anything
+is reserved, and a `browser_session_allocate` naming a session the caller cannot
+resolve must not be told whether that session exists. Both are written to the
+**actor's** project stream and carry `browser_session_unresolved: true`, so an
+auditor reads a deliberate absence rather than a lost correlation. They carry no
+`presented_epoch` either: none was presented, and an epoch invented for the
+record would be a fact about nothing.
 
 Sharing one type is deliberate. The question an auditor asks is "did anything
 try to act on this session and get refused?", and splitting the answer across
@@ -373,6 +385,17 @@ the record is correlated to `browser_session_id`, so every member is about that
 one session by construction — which is the opposite of the refusal `details`
 object of `API.md` §5, one object serving reviews, findings and sessions, where
 a bare `status` would say nothing about which record it described.
+
+A failure rather than a refusal carries a **reason code** and not free text.
+`browser_session.failed` records `reason_code` from a closed vocabulary — the
+stable codes of `API.md` §5 and `CONNECTOR_PROTOCOL.md` §21, with anything
+unrecognised recorded as `INTERNAL_ERROR` — plus a `trigger` distinguishing
+`allocation_refused` from `allocation_deadline`, and the `previous_status` the
+record was actually in. It recorded the caught exception's `message` until
+ADR-0037, which §8 forbids and which the publication path had already got right:
+a refusal recorded as free text is not one an auditor can query for, and a query
+that counted refused allocations by matching a message stops counting them the
+first time somebody rewords one, without failing.
 
 A **capacity** refusal is deliberately not one of these. `BROWSER_CAPACITY_EXHAUSTED`
 is a scheduling outcome rather than an authority denial: no session exists for

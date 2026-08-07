@@ -401,22 +401,19 @@ than forbidden.
 
 ### `browser_session_start`
 
-Starts or reuses a browser session.
+Starts a browser session, or reserves one.
 
 Input:
 
 ```json
 {
-  "published_service_id": "svc_...",
+  "allocate": false,
   "viewport": {
     "width": 1440,
     "height": 900,
     "device_scale_factor": 1
   },
-  "recording": {
-    "trace": true,
-    "video": false
-  }
+  "idempotency_key": "start-homepage-review-1"
 }
 ```
 
@@ -426,14 +423,107 @@ Output includes browser session ID, control epoch, current controller and live-v
 video stays disabled, so a field that could ask for either would be answering a
 request the product cannot honour.
 
-`published_service_id` names the route the session may reach. **In Stage 1 the
-MCP endpoint cannot bind one**: binding mints a session-scoped route capability,
-and the MCP process deliberately holds no signing key — a process that cannot
-mint cannot leak a minting key (`ARCHITECTURE.md` §7.3). A start request naming
-one is refused with `UNSUPPORTED_CAPABILITY` and says so. A session started
-without one allocates normally and reaches nothing until a route is bound through
-`API.md` §11 or the project Live page, which is where the human flow of
-`UX_FLOWS.md` §6 binds it.
+`allocate` defaults to `true` and carries the meaning `API.md` §11 already gives
+it. `true` reserves and allocates in one request, for a session that needs no
+route. `false` reserves and stops: the response is a `REQUESTED` session
+(`DOMAIN_MODEL.md` §12) with an identifier and a chosen worker, no worker has
+been contacted, and that identifier can then appear in a route's
+`allowed_browser_session_ids`.
+
+**An agent that wants its browser to reach a development service MUST use this
+order**, and it is the only order that can work (ADR-0037):
+
+```text
+browser_session_start {allocate: false}   -> a REQUESTED reservation
+development_service_publish {...}         -> a route naming that reservation
+browser_session_allocate {browser_session_id, published_service_id}
+```
+
+`published_service_id` is **deprecated on this tool and is refused.** A route
+names the browser sessions it authorises when it is published
+(`CONNECTOR_PROTOCOL.md` §11), so it cannot authorise a session that did not
+exist when it was published; and a worker's egress policy is fixed when its
+browser context is created and MUST NOT be widened afterwards (`SECURITY.md`
+§10). This call reserves and allocates at once, so a route published beforehand
+names the *previous* session. The obstacle is the ordering and not the MCP
+process's missing signing key: handing that process a key would have moved the
+refusal from `UNSUPPORTED_CAPABILITY` to `AUTHORISATION_DENIED` and no further.
+
+A request carrying it is refused with `VALIDATION_FAILED` and
+`details.field: "published_service_id"`, **before anything is reserved**, with a
+message naming `browser_session_allocate` and the order above. The refusal is
+recorded as `browser.command_rejected` with `kind: "lifecycle"` and no
+`browser_session_id`, because there is no session to correlate it to
+(`EVENTS.md` §7).
+
+The member is retained rather than removed because §14 forbids a breaking tool
+change without a new major protocol version or a parallel tool name, and because
+removing it would route a foreseeable refusal into the generated validator —
+the one layer that records nothing and whose message names neither the condition
+nor the replacement (`UX_FLOWS.md` §18). It is removed at the next major protocol
+version.
+
+### `browser_session_allocate`
+
+Allocates a reserved browser session on its worker and, optionally, admits it to
+a route.
+
+Input:
+
+```json
+{
+  "browser_session_id": "brs_...",
+  "published_service_id": "svc_...",
+  "idempotency_key": "allocate-homepage-review-1"
+}
+```
+
+The authority this tool carries is one sentence: **an authenticated agent may
+admit a browser session it reserved itself, in its own project, to a route that
+project already published and that already names that session.** It carries no
+other authority, and the absence is structural rather than checked. There is no
+origin, no connector, no workspace, no project and no organisation argument —
+each would be an authorisation input the caller chose — and the control plane
+re-derives every one of them from records the caller did not author.
+
+Both identifiers are resolved inside the credential's organisation and the
+session's project in one predicate before either is used, so a session or a route
+in another tenancy is reported **not found**, byte for byte as an unknown
+identifier is (`API.md` §5). On the row that read returns:
+
+| Condition | Refusal |
+|---|---|
+| The reservation belongs to another agent session | `AUTHORISATION_DENIED` |
+| The reservation is not `REQUESTED` | `BROWSER_SESSION_NOT_ACTIVE` with `details.browser_session_status` |
+| The route is not `ready` | `PUBLISHED_SERVICE_UNAVAILABLE` with `details.status` |
+| The route's connector identity is revoked | `IDENTITY_REVOKED` with `details.connector_status` |
+| The route's connector is not connected | `CONNECTOR_OFFLINE` with `details.connector_status` |
+| The route does not name the reservation | `AUTHORISATION_DENIED` with `details.published_service_id` |
+
+**No route is ever amended to make a call succeed.** The control plane does not
+add a session to a live route's `allowed_browser_session_ids`: doing so would
+require re-registering the route with the gateway, which resurrects capabilities
+already revoked against that identifier, and it would grant reach to a credential
+that could not have published the route.
+
+Where a route is named, the allocation is **two phases**. The MCP endpoint
+authorises and records the request, touching nothing outside PostgreSQL; the
+process holding the capability signing key claims it, re-runs the same
+authorisation, mints, allocates on the worker and marks the session `READY`
+(ADR-0021, ADR-0037). The tool then waits, bounded, and **the wait ends in the
+record as it stands**: a session still `REQUESTED` or `ALLOCATING` when the
+deadline passes is reported as such with an `allocation_incomplete` warning and
+never as ready, because an agent that navigated to an origin nothing was carrying
+would read the failure as a fault in the application it is reviewing.
+
+Where no route is named there is nothing to mint, so the endpoint completes the
+allocation itself.
+
+A reservation carrying a requested route that nothing completes is failed once it
+outlives the allocation deadline, so it stops counting against its worker's
+capacity. Every refusal on this tool is recorded as `browser.command_rejected`
+with `kind: "lifecycle"` and `command: "allocate"`, and **no refusal consumes a
+browser slot**.
 
 ### `browser_session_status`
 
@@ -1250,8 +1340,14 @@ Initial stable codes:
 - `RESOURCE_STALE`
 - `VERSION_CONFLICT`
 - `IDEMPOTENCY_CONFLICT`
+- `VALIDATION_FAILED`
 - `CONNECTOR_OFFLINE`
+- `IDENTITY_REVOKED`
 - `PUBLISHED_SERVICE_UNAVAILABLE`
+- `ROUTE_EXPIRED`
+- `ROUTE_LIMIT_EXCEEDED`
+- `DESTINATION_NOT_ALLOWED`
+- `WORKSPACE_NOT_FOUND`
 - `BROWSER_CAPACITY_EXHAUSTED`
 - `BROWSER_SESSION_NOT_ACTIVE`
 - `CONTROL_NOT_OWNED`
@@ -1267,6 +1363,23 @@ Initial stable codes:
 - `INTERNAL_ERROR`
 
 Adding a code is additive within a protocol version, and clients MUST tolerate a code they do not recognise.
+
+**Six of these were emitted before they were declared, and that was a defect
+rather than a lenience.** `VALIDATION_FAILED`, `ROUTE_EXPIRED`,
+`ROUTE_LIMIT_EXCEEDED`, `DESTINATION_NOT_ALLOWED` and `WORKSPACE_NOT_FOUND` all
+reach an agent from the publication path, and `refusalEnvelope` casts the
+domain's code rather than validating it — so a client validating a refusal
+against this enumeration would have rejected an answer the server was entitled to
+send, and nothing compared the two vocabularies. ADR-0037 declares them, adds
+`IDENTITY_REVOKED` with them, and adds the test that compares the MCP enumeration
+against the API's.
+
+`IDENTITY_REVOKED` and `CONNECTOR_OFFLINE` are distinguished on purpose, like the
+two artefact codes below. A revoked connector identity will not come back and the
+route must be published through another connector; a connector the deployment has
+and cannot reach reconnects on its own and is worth waiting for. Both carry
+`details.connector_status`, so a caller can tell `DEGRADED` from `DISCONNECTED`
+without a second call.
 
 `ARTEFACT_UPLOAD_INCOMPLETE` and `ARTEFACT_STORE_UNAVAILABLE` are distinguished on purpose, in the same way as the two connector codes below. The first says the artefact is not evidence: its upload never completed verification, and the caller must produce it again. The second says the artefact *is* evidence and the store cannot be reached: the request should be retried unchanged. Answering the second case with the first would send an operator to examine an upload that had in fact succeeded. Neither code's message names the store — an absolute path or a bucket endpoint in a refusal is deployment data in a response, which `docs/SECURITY.md` section 18 forbids — so the reason is carried by the code and the detail goes to the server log.
 
@@ -1297,7 +1410,8 @@ resume from one it should replace; `POLICY_DENIED` for a refused value carries
 `details.detected`, which names the **rule** the value matched and never the
 value — a refusal that quoted the credential would put it in the response, the
 log and the event; and the route-association `AUTHORISATION_DENIED` carries
-`details.published_service_id`.
+`details.published_service_id`; `IDENTITY_REVOKED` and `CONNECTOR_OFFLINE` carry
+`details.connector_status`.
 
 The `details` object is closed (`additionalProperties: false`), so a member a
 handler sets and the schema does not declare is dropped on the way out rather
@@ -1387,6 +1501,7 @@ registered set and the schema's set are the same list.
 | `finding_submit_verification` | 7.7 | `verification:submit` |
 | `browser_take_screenshot` | 7.4 | `browser:capture` |
 | `browser_session_start` | 7.3 | `browser:control` |
+| `browser_session_allocate` | 7.3 | `browser:control` |
 | `browser_session_status` | 7.3 | `browser:control` |
 | `browser_session_pause` | 7.3 | `browser:control` |
 | `browser_session_resume` | 7.3 | `browser:control` |
