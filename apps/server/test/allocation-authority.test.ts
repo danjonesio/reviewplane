@@ -293,6 +293,91 @@ test("ending a session withdraws the capabilities it held", async () => {
   assert.notEqual(after.rows[0]?.revoked_at, null, "the capability outlived its session");
 });
 
+// ------------------------------------------ the organisation term, structurally
+
+test("the binder passes the caller's organisation and never constructs a null one", async () => {
+  // **This test is structural on purpose, and the reason is worth stating.**
+  //
+  // Setting `organisationId: null` here changes no observable behaviour today,
+  // and a behavioural test for it cannot be written: `projects.id` is a global
+  // primary key and `projects.organisation_id` is `NOT NULL`, so a specific,
+  // caller-derived project term already refuses everything the organisation term
+  // would refuse. Every cross-organisation route is also a cross-project route.
+  //
+  // That is exactly why the term has to be asserted rather than inferred. The
+  // safety is a property of *every caller* passing a specific project, not a
+  // property of the binder — and a shipped release violated the same implication
+  // elsewhere, which is why `CreatePublishedServiceInput.organisationId` carries
+  // the comment it does (RVP-91, RVP-92, ADR-0037). A regression that
+  // reintroduced `organisationId: null` would pass every behavioural test in
+  // this repository. It does not pass this one.
+  const scopes: { organisationId: string | null; projectIds: readonly string[] | null }[] = [];
+  const recording = {
+    readBindable(input: { scope: { organisationId: string | null; projectIds: readonly string[] | null } }) {
+      scopes.push(input.scope);
+      return Promise.resolve({
+        published_service_id: "svc_recorded",
+        public_alias: "svc-recorded",
+        route_status: "ready",
+        route_expires_at: new Date(Date.now() + 600_000),
+        connector_id: "con_recorded",
+        connector_status: "ACTIVE",
+        session_authorised: true,
+        session_created_at: new Date(),
+        session_max_duration_seconds: 7200,
+        organisation_id: "org_expected",
+        project_id: "prj_expected",
+      });
+    },
+    mint(
+      _serviceId: string,
+      _browserSessionId: string,
+      _ttlSeconds: number | undefined,
+      scope: { organisationId: string | null; projectIds: readonly string[] | null },
+    ) {
+      scopes.push(scope);
+      return Promise.resolve({
+        capability_id: "cap_recorded",
+        capability: "rp1.recorded",
+        browser_session_id: "brs_recorded",
+        internal_origin: "https://svc-recorded.internal.invalid/",
+        expires_at: new Date().toISOString(),
+      });
+    },
+  };
+  const { PublishedServiceBinder } = await import(
+    "../src/modules/published-services/session-binder.ts"
+  );
+  const binder = new PublishedServiceBinder(
+    recording as unknown as ConstructorParameters<typeof PublishedServiceBinder>[0],
+  );
+
+  await binder.authorise({
+    publishedServiceId: "svc_recorded",
+    organisationId: "org_expected",
+    projectId: "prj_expected",
+    browserSessionId: "brs_recorded",
+  });
+  await binder.bind({
+    publishedServiceId: "svc_recorded",
+    organisationId: "org_expected",
+    projectId: "prj_expected",
+    browserSessionId: "brs_recorded",
+    actor: { type: "system" },
+    requestId: "req_structural",
+  });
+
+  // Three reads: `authorise`'s, `bind`'s, and the mint `bind` performs. Every
+  // one of them carries the organisation it was given, and none of them carries
+  // null — including the mint, which is the last gate before a signed credential
+  // exists.
+  assert.equal(scopes.length, 3);
+  for (const scope of scopes) {
+    assert.equal(scope.organisationId, "org_expected", "the binder dropped the organisation term");
+    assert.deepEqual(scope.projectIds, ["prj_expected"]);
+  }
+});
+
 // ------------------------------------------------- the scope allocate carries
 
 test("allocating a session in another tenancy is absent, not forbidden", async () => {
