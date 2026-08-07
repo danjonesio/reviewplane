@@ -1080,6 +1080,14 @@ also run inside `pnpm test`. The `security` job therefore checks that the script
 exists before running it and fails the release when it does not, so the table
 above cannot quietly become a claim about a command nobody wrote.
 
+Its membership is a **filename suffix rather than a list** (§10): the script runs
+every `*-gate.test.ts` in the packages that declare it. A standing gate added
+later is therefore run by this release job without anybody remembering to edit
+the pipeline — which matters, because "remembering to add it" is how the
+conditions in this section came to be unenforced in the first place. The
+corollary is that this job's coverage is defined in §5 and §10 and not here, and
+a reader who wants to know what it actually asserts has to look there.
+
 Two further jobs run beside them. `faults` executes the fault-injection matrix
 of §11 against the deployed stack and blocks the release. `baselines` records and
 publishes the §12 performance figures and **does not** gate on any of them; §16.3
