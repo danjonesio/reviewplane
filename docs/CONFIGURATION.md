@@ -259,7 +259,7 @@ configured separately, because it is a separate process:
 | `REVIEWPLANE_ARTEFACT_PATH` | `/var/lib/reviewplane/artefacts` | Artefact store, mounted read-only |
 | `REVIEWPLANE_API_PATH_PREFIX` | `/api/v1` | Prefix used to build the evidence path an agent fetches |
 | `REVIEWPLANE_TUNNEL_CONTROL_URL` | `http://tunnel-gateway:8445` | Gateway control listener, for `development_service_unpublish` |
-| `REVIEWPLANE_TUNNEL_CONTROL_TOKEN` | none | Credential presented to that listener |
+| `REVIEWPLANE_TUNNEL_CONTROL_TOKEN` | none | This process's own control credential. It carries `route:revoke` and `capability:revoke` and nothing else (§4.1, ADR-0038), so the gateway refuses a registration presented with it. |
 | `REVIEWPLANE_INTERNAL_SUFFIX` | `internal.invalid` | Domain the internal origins live under; must match the control plane's |
 | `REVIEWPLANE_ROUTE_TTL_MAX_SECONDS` | `28800` | Longest route lifetime `development_service_publish` may request |
 | `REVIEWPLANE_MCP_PUBLISH_WAIT_MS` | `15000` | How long `development_service_publish` waits for a requested route to become ready or failed |
@@ -344,6 +344,7 @@ tunnel:
   upgrade_idle_timeout: 15m              # no progress on an upgraded connection
   sweep_interval: 5s
   relay_buffer_bytes: 32768
+  revocation_journal_path: /var/lib/reviewplane/tunnel/revocations.jsonl
   allowed_hosts:
     - 127.0.0.1
     - ::1
@@ -358,7 +359,39 @@ tunnel:
   identity_source: subject_common_name   # or uri_san
 ```
 
-Settings are supplied as `REVIEWPLANE_TUNNEL_`-prefixed environment variables, with the `_FILE` form of §7 for the control-plane token, the capability signing keys and the TLS material. Every setting is validated at startup and every problem is reported together.
+Settings are supplied as `REVIEWPLANE_TUNNEL_`-prefixed environment variables, with the `_FILE` form of §7 for the control credentials, the capability signing keys and the TLS material. Every setting is validated at startup and every problem is reported together.
+
+### 4.1 Control credentials
+
+`REVIEWPLANE_TUNNEL_CONTROL_CREDENTIALS` (or its `_FILE` form) is a JSON array naming who may call the gateway's control API, what each of them may do, and which organisations each may act for (ADR-0038). There is deliberately **no** single-token form: a shared unscoped token is what RVP-76 recorded as the defect, and a setting that could express one in a line would be used.
+
+```json
+[
+  { "id": "api", "secret": "…",
+    "operations": ["route:register", "route:read", "route:revoke",
+                   "connector:revoke", "capability:revoke", "metrics:read"],
+    "organisations": ["*"] },
+  { "id": "mcp", "secret": "…",
+    "operations": ["route:revoke", "capability:revoke"] }
+]
+```
+
+| Member | Meaning |
+|---|---|
+| `id` | The credential's name. Not a secret; it appears in every audit record the credential produces, and it is how an operator answers "which process did this". |
+| `secret` | The bearer value, at least 32 characters. Compared in constant time, never logged, never echoed in an error body. |
+| `operations` | A closed set: `route:register`, `route:read`, `route:revoke`, `connector:revoke`, `capability:revoke`, `metrics:read`. An unknown name is a startup error; an empty set is refused. |
+| `organisations` | The tenancy the credential may act for. `["*"]`, or an absent member, means every organisation. |
+
+The gateway MUST refuse to start on a set with no credential, a credential with no operation, a secret shorter than 32 characters, two credentials sharing a name, or two credentials sharing a secret. The last is not fussiness: two principals sharing a secret is one principal with two names, and it would make the audit trail's attribution a guess.
+
+Each calling process reads only its own secret, through `REVIEWPLANE_TUNNEL_CONTROL_TOKEN_FILE`. The set — which states the authority — is read by the gateway alone.
+
+### 4.2 The revocation journal
+
+`revocation_journal_path` is where the gateway records what it has revoked, so that a withdrawal survives the process. It defaults to `/var/lib/reviewplane/tunnel/revocations.jsonl` and MUST be on durable storage that the gateway can write; a gateway that cannot open it does not start, and a revocation it cannot write is refused rather than reported as done (ADR-0038).
+
+It is the only state the gateway keeps. It holds no route registrations — routes are the control plane's to re-register, and a gateway that resurrected them from its own file would carry traffic nobody had asked it to carry.
 
 The three lifetime settings are not interchangeable, and `CONNECTOR_PROTOCOL.md` §13.3 records why. `stream_max_lifetime` is a backstop whose default equals `route_ttl_max`, so a stream is normally bounded by its route rather than by a clock; the idle timeouts are what close a stalled or abandoned stream. There are two of them because a request/response stream and an upgraded connection mean different things by silence: an editing pause on a hot-reload WebSocket is normal, and a minute of silence in the middle of an HTTP exchange is not. Setting `stream_max_lifetime` low is not a substitute for either, and MUST NOT be used as one: it would cut a server-sent-event stream or a working hot-reload connection.
 
@@ -446,7 +479,7 @@ Secret material is mounted as a file and is never passed as an environment
 value. Every service reads its secrets through a `*_FILE` setting, and a value
 that cannot be read is a startup error naming the setting and the path.
 
-The nine `deploy/compose/compose.yaml` declares (`docs/DEPLOYMENT.md` §7), all
+The eleven `deploy/compose/compose.yaml` declares (`docs/DEPLOYMENT.md` §7), all
 created by `deploy/compose/configure`:
 
 ```text
@@ -457,9 +490,18 @@ created by `deploy/compose/configure`:
 /run/secrets/worker_command_credential
 /run/secrets/capability_signing_key
 /run/secrets/capability_keys
-/run/secrets/tunnel_control_token
+/run/secrets/tunnel_control_token_api          # read by `api`
+/run/secrets/tunnel_control_token_mcp          # read by `mcp`
+/run/secrets/tunnel_control_credentials        # read by `tunnel-gateway`
 /run/secrets/enrolment_token          # development profile; created empty
 ```
+
+The three tunnel-control files are one arrangement, not three secrets. Each
+calling process reads its own bearer value; the gateway reads the set that says
+what each of those values may do and which organisations it may act for (§4.1,
+ADR-0038). A deployment that gave both processes one file would be back to a
+credential whose authority nobody can state and whose actions the audit trail
+cannot attribute.
 
 `enrolment_token` is the one that is not a generated value: an enrolment token is
 issued by the running control plane, and only the `development` profile's

@@ -170,6 +170,7 @@ members that need it.
 | `artefact-data` | api (read-only in mcp) | Artefacts, through the filesystem driver (ADR-0012). |
 | `caddy-data` | gateway | Caddy's internal certificate authority and its issued certificates. |
 | `connector-ca` | api (read-only in tunnel-gateway) | The connector authority's certificate, published at startup (ADR-0014). Never the key. |
+| `tunnel-revocations` | tunnel-gateway | What the gateway has revoked, as an append-only journal (ADR-0038). |
 | `dev-fixture-vite-src` | dev-fixture | The `development` profile fixture's Vite sources, outside its checkout so that the hot-reload proof cannot dirty the working tree. |
 | `dev-fixture-workspace` | dev-fixture | The `development` profile fixture's Git checkout, which the connector observes (`CONNECTOR_PROTOCOL.md` §9). Writable so the end-to-end scenario can move `HEAD`; the connector only reads it. |
 
@@ -187,6 +188,17 @@ container, so the question does not arise there.
 
 The browser worker does not mount it at all: workers upload through the
 control-plane artefact API and hold no storage credentials (ADR-0012).
+
+`tunnel-revocations` is the only state the tunnel gateway keeps, and it is kept
+for one reason: a withdrawal the gateway forgets is a credential it accepts
+again. It holds no route registrations — routes are the control plane's to
+re-register — and its records are dropped once nothing they refuse can still be
+presented, so it stays small. It MUST be durable: a gateway that cannot open it
+does not start, and a revocation it cannot write is refused rather than reported
+as done (ADR-0038). It is **not** in a backup archive, and does not need to be:
+every withdrawal it holds is also `route_capabilities.revoked_at` in the
+database, and a restored installation republishes its routes under new
+identifiers.
 
 Browser profiles use ephemeral container storage — tmpfs, per session, removed
 on termination — unless project policy enables reusable authentication state.
@@ -215,7 +227,7 @@ Configuration priority:
 5. Built-in defaults
 
 Secret material MUST be mounted as a file and MUST NOT be passed as an
-environment value. `deploy/compose/compose.yaml` declares nine, all created by
+environment value. `deploy/compose/compose.yaml` declares eleven, all created by
 `./configure` and none committed:
 
 ```yaml
@@ -227,16 +239,25 @@ secrets:
   worker_command_credential:    { file: ./secrets/worker_command_credential }
   capability_signing_key:       { file: ./secrets/capability_signing_key }
   capability_keys:              { file: ./secrets/capability_keys }
-  tunnel_control_token:         { file: ./secrets/tunnel_control_token }
+  tunnel_control_token_api:     { file: ./secrets/tunnel_control_token_api }
+  tunnel_control_token_mcp:     { file: ./secrets/tunnel_control_token_mcp }
+  tunnel_control_credentials:   { file: ./secrets/tunnel_control_credentials }
   enrolment_token:              { file: ./secrets/enrolment_token }   # development profile
 ```
 
-Eight of the nine are generated values. `enrolment_token` is not: an enrolment
+Ten of the eleven are generated values. `enrolment_token` is not: an enrolment
 token is issued by the running control plane, and only the `development`
 profile's `dev-fixture` mounts it. `./configure` creates the file **empty**,
 because Compose refuses to start a stack whose declared secret file is missing
 whether or not anything reads it, and a run that needs a real token writes one
 into it.
+
+The three tunnel-control files are one arrangement. `api` and `mcp` each read
+their own bearer value; `tunnel-gateway` reads the credential set, which states
+the operations and the organisations each of those values may act for
+(`docs/CONFIGURATION.md` §4.1, ADR-0038). `api` publishes, reads and withdraws;
+`mcp` only withdraws, which is the authority behind ADR-0021's "it holds no
+connector channel and registers no route; it withdraws".
 
 Every service reads its secrets through a `*_FILE` setting. A missing file makes
 Compose refuse to start the service that needs it, naming the file: a control

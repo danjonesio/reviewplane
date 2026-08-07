@@ -52,6 +52,15 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" \
 RUN printf 'root:x:0:0:root:/:/sbin/nologin\nreviewplane:x:10001:10001::/nonexistent:/sbin/nologin\n' > /out/passwd \
     && printf 'root:x:0:\nreviewplane:x:10001:\n' > /out/group
 
+# The directory the revocation journal lives in (ADR-0038). It is created here,
+# empty and owned by the service user, because the runtime stage has no shell to
+# create one in and because Compose copies an image directory's ownership into a
+# fresh named volume. Without it the volume would arrive owned by root and the
+# gateway — which runs as 10001 with a read-only root filesystem — could not
+# write down a revocation, which is a failure it correctly refuses to start
+# past.
+RUN mkdir -p /out/state
+
 # ---------------------------------------------------------------------------
 # runtime
 # ---------------------------------------------------------------------------
@@ -60,6 +69,7 @@ FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 COPY --from=builder /out/passwd /etc/passwd
 COPY --from=builder /out/group /etc/group
 COPY --from=builder /out/tunnel-gateway /usr/local/bin/tunnel-gateway
+COPY --from=builder --chown=10001:10001 /out/state /var/lib/reviewplane/tunnel
 
 # The three listeners of services/tunnel-gateway/README.md. Only the proxy port
 # is published to the host; the connector port is reachable from the development

@@ -681,12 +681,13 @@ export async function findSessionLifetime(
  * individually as well as through its route", and until ADR-0037 nothing in the
  * product revoked one when the session it was minted for ended.
  *
- * **This is best effort and the ADR says so.** The gateway verifies a capability
- * from its signature without a database read, and RVP-76 records that its
- * revocation set is in memory and does not survive a restart. A revocation
- * recorded here is durable in the control plane and not necessarily at the
- * gateway; the TTL bound `mint` applies is what stands in the meantime, and
- * RVP-99 is what closes the gap.
+ * **The delivery is best effort; the withdrawal is not.** The gateway verifies a
+ * capability from its signature without a database read, so this row is not what
+ * refuses it — the gateway's own withdrawal set is, and since ADR-0038 that set
+ * is written to disk before it is acted on and reloaded when the gateway starts.
+ * What remains best effort is reaching the gateway at all: a revocation it never
+ * hears about is one the TTL bound `mint` applies has to stand in for. RVP-99
+ * carries the coverage of every path that ends a session.
  */
 export async function revokeCapabilitiesForSession(
   client: PoolClient,

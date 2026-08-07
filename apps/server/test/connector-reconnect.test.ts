@@ -53,6 +53,7 @@ class RecordingGateway implements TunnelGateway {
     this.registered.push(request);
     return Promise.resolve({
       route_id: request.route_id,
+      organisation_id: request.organisation_id,
       project_id: request.project_id,
       connector_id: request.connector_id,
       public_alias: request.public_alias,

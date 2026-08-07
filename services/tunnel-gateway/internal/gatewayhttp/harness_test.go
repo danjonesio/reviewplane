@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,11 +26,39 @@ import (
 	"github.com/danjonesio/reviewplane/services/tunnel-gateway/wsx"
 )
 
-func registryConfigForTest(destinations policy.Policy, maxRoutes int) registry.Config {
+func registryConfigForTest(t *testing.T, destinations policy.Policy, maxRoutes int) registry.Config {
+	t.Helper()
+	// Every harness runs over a real on-disk journal. A test suite that ran the
+	// memory-only path would prove the gateway refuses a revoked capability and
+	// prove nothing about the property RVP-76 is actually about.
+	journal, err := registry.NewFileJournal(filepath.Join(t.TempDir(), "revocations.jsonl"))
+	if err != nil {
+		t.Fatalf("open revocation journal: %v", err)
+	}
 	return registry.Config{
 		Policy:                destinations,
 		MaxRoutesPerConnector: maxRoutes,
 		MaxRouteTTL:           8 * time.Hour,
+		Journal:               journal,
+	}
+}
+
+// testCredentials is the shipped shape: one credential for the process that
+// publishes and one for the process that only withdraws.
+func testCredentials() ControlCredentials {
+	return ControlCredentials{
+		{
+			ID:         "api",
+			Secret:     testAdminToken,
+			Operations: ControlOperations(),
+		},
+		{
+			ID:     "mcp",
+			Secret: testWithdrawToken,
+			Operations: []ControlOperation{
+				OperationRouteRevoke, OperationCapabilityRevoke,
+			},
+		},
 	}
 }
 
@@ -41,12 +70,16 @@ func registryConfigForTest(destinations policy.Policy, maxRoutes int) registry.C
 
 const (
 	testConnectorID = "con_test_01"
+	testOrgID       = "org_test_01"
 	testProjectID   = "prj_test_01"
 	testWorkspaceID = "wsp_test_01"
 	testRouteID     = "svc_test_01"
 	testAlias       = "svc-test-01"
 	testSessionID   = "brs_test_01"
 	testAdminToken  = "gateway-control-plane-token-0123456789"
+	// The narrow credential the MCP process holds in the shipped deployment:
+	// it withdraws and it registers nothing (ADR-0021, ADR-0038).
+	testWithdrawToken = "gateway-withdraw-only-token-01234567890"
 	testKeyID       = "stage0-a"
 	testSuffix      = "internal.invalid"
 )
@@ -166,6 +199,10 @@ type harnessOptions struct {
 	// wrapConn lets a test observe the data channel's frames without changing
 	// how the gateway or the connector behave.
 	wrapConn func(datachannel.MessageConn) datachannel.MessageConn
+	// extraCredentials add principals to the control API beyond the two the
+	// shipped deployment configures, so a test can say what a narrower
+	// credential may and may not do.
+	extraCredentials ControlCredentials
 }
 
 func newHarness(t *testing.T, options harnessOptions) *harness {
@@ -222,8 +259,11 @@ func newHarness(t *testing.T, options harnessOptions) *harness {
 
 	gateway, err := New(Config{
 		Proxy: proxyCfg,
-		Admin: AdminConfig{Token: testAdminToken, InternalSuffix: testSuffix},
-		Registry: registryConfigForTest(policy.Policy{
+		Admin: AdminConfig{
+			Credentials:    append(testCredentials(), options.extraCredentials...),
+			InternalSuffix: testSuffix,
+		},
+		Registry: registryConfigForTest(t, policy.Policy{
 			AllowedHosts:     mustHosts(t, "127.0.0.1,::1"),
 			AllowedPorts:     []policy.PortRange{{Low: 1024, High: 65535}},
 			AllowedProtocols: []connectorv1.DestinationProtocol{connectorv1.DestinationProtocolHTTP},
@@ -367,6 +407,7 @@ func (h *harness) publish(request RegisterRequest) *http.Response {
 func (h *harness) defaultRegistration() RegisterRequest {
 	return RegisterRequest{
 		RouteID:                  testRouteID,
+		OrganisationID:           testOrgID,
 		ProjectID:                testProjectID,
 		ConnectorID:              testConnectorID,
 		WorkspaceID:              testWorkspaceID,
@@ -494,17 +535,74 @@ func (h *harness) recorded() recordedRequest {
 }
 
 func (h *harness) adminRequest(method, path string) *http.Response {
+	return h.adminRequestAs(testAdminToken, method, path)
+}
+
+// adminRequestAs presents a named credential, so a test can say which process
+// is calling rather than which token happens to be in scope.
+func (h *harness) adminRequestAs(secret, method, path string) *http.Response {
 	h.t.Helper()
 	request, err := http.NewRequest(method, h.admin.URL+path, nil)
 	if err != nil {
 		h.t.Fatalf("build admin request: %v", err)
 	}
-	request.Header.Set("Authorization", "Bearer "+testAdminToken)
+	request.Header.Set("Authorization", "Bearer "+secret)
 	response, err := h.admin.Client().Do(request)
 	if err != nil {
 		h.t.Fatalf("admin request: %v", err)
 	}
 	return response
+}
+
+// listRoutesAs reads the control API's enumeration with a named credential.
+func (h *harness) listRoutesAs(secret string) []RouteView {
+	h.t.Helper()
+	response := h.adminRequestAs(secret, http.MethodGet, "/internal/v1/routes")
+	body := readBody(h.t, response)
+	if response.StatusCode != http.StatusOK {
+		h.t.Fatalf("list routes: %d %s", response.StatusCode, body)
+	}
+	var envelope struct {
+		Data []RouteView `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(body), &envelope); err != nil {
+		h.t.Fatalf("decode route list: %v", err)
+	}
+	return envelope.Data
+}
+
+// registerAs offers a registration with a named credential, without the
+// bookkeeping publish does: a registration that must be refused has no route to
+// admit to the connector.
+func (h *harness) registerAs(secret string, request RegisterRequest) *http.Response {
+	h.t.Helper()
+	body, err := json.Marshal(request)
+	if err != nil {
+		h.t.Fatalf("encode registration: %v", err)
+	}
+	httpRequest, err := http.NewRequest(http.MethodPut,
+		h.admin.URL+"/internal/v1/routes/"+request.RouteID, bytes.NewReader(body))
+	if err != nil {
+		h.t.Fatalf("build registration request: %v", err)
+	}
+	httpRequest.Header.Set("Authorization", "Bearer "+secret)
+	httpRequest.Header.Set("Content-Type", "application/json")
+	response, err := h.admin.Client().Do(httpRequest)
+	if err != nil {
+		h.t.Fatalf("register route: %v", err)
+	}
+	return response
+}
+
+// auditRecords returns the retained audit entries of one type.
+func (h *harness) auditRecords(eventType string) []Record {
+	matching := make([]Record, 0)
+	for _, record := range h.gateway.Auditor().Records() {
+		if record.Type == eventType {
+			matching = append(matching, record)
+		}
+	}
+	return matching
 }
 
 func (h *harness) auditTypes() []string {

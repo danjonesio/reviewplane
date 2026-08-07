@@ -504,6 +504,7 @@ export class PublishedServiceService {
       });
       const registered: GatewayRouteView = await this.#gateway.register({
         route_id: record.id,
+        organisation_id: organisationId,
         project_id: projectId,
         connector_id: record.connector_id,
         workspace_id: record.workspace_id,
@@ -849,10 +850,10 @@ export class PublishedServiceService {
     // plane. A session's maximum duration is already the deployment's statement
     // of how long that browser may exist, and a credential that outlives the
     // browser it was minted for is a credential nobody is accounting for. The
-    // revocation this change also performs is best effort — the gateway's
-    // revocation set is in memory and does not survive a restart (RVP-76) — so
-    // this bound is what stands when that fails, and it stands without the
-    // gateway's cooperation.
+    // revocation this change also performs depends on reaching the gateway —
+    // the withdrawal is durable once it lands (ADR-0038), and a gateway the
+    // control plane cannot reach hears nothing — so this bound is what stands
+    // when that fails, and it stands without the gateway's cooperation.
     //
     // A session whose `limits` carry no maximum contributes no bound rather than
     // an instant expiry: the column is `jsonb` and an older row could lack the
@@ -984,9 +985,10 @@ export class PublishedServiceService {
     if (!route.session_authorised) {
       // The allow-list is written by `request`, which validates every session
       // named in it against the route's own project. A route is never amended to
-      // add one: re-registering a route identifier at the gateway resurrects
-      // capabilities already revoked against it (RVP-76), and it would grant
-      // reach to a credential that could not have published the route.
+      // add one: it would grant reach to a credential that could not have
+      // published the route. Re-registering a route identifier at the gateway
+      // no longer resurrects capabilities revoked against it (ADR-0038), but
+      // that was never the whole of the reason and is not why this stands.
       //
       // `AUTHORISATION_DENIED` and not `RESOURCE_NOT_FOUND`: both records are
       // inside the caller's scope and the caller is already entitled to know the
@@ -1098,14 +1100,14 @@ export class PublishedServiceService {
    * reconciliation already give: marking a record closed while the gateway still
    * carried it turns a closure into a claim.
    *
-   * **This is best effort and is described as such everywhere it is mentioned.**
-   * The gateway verifies a capability from its signature without a database
-   * read, and RVP-76 records that its revocation set is in memory and does not
-   * survive a restart. So a revocation recorded here is durable in the control
-   * plane and not necessarily at the gateway: a deployment that restarts its
-   * gateway between a revocation and a capability's natural expiry has a revoked
-   * capability the gateway would accept again. The TTL bound {@link mint}
-   * applies is what limits that window; RVP-99 is what closes it.
+   * **The delivery is best effort; what lands is durable.** The gateway verifies
+   * a capability from its signature without a database read, so the row this
+   * writes is not what refuses it — the gateway's own withdrawal set is, and
+   * since ADR-0038 that set is written to disk before it is acted on, reloaded
+   * when the gateway starts, and not undone by registering the route identifier
+   * again. What is still best effort is reaching the gateway: a revocation it
+   * never hears about is one the TTL bound {@link mint} applies has to stand in
+   * for. RVP-99 carries the coverage of every path that ends a session.
    *
    * A gateway that refuses is logged and not raised. This runs on the way out of
    * a session — from `terminate`, from a failed reservation and from a

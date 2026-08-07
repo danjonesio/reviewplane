@@ -257,8 +257,8 @@ test("a route capability may not outlive the browser session it was minted for",
   // The credential expires with the browser, not with the route. A capability
   // that outlived the browser it was minted for is a credential nobody is
   // accounting for, and this bound holds without the gateway's cooperation —
-  // which matters, because the gateway's revocation set is in memory and does
-  // not survive a restart (RVP-76, RVP-99).
+  // which matters, because a gateway the control plane cannot reach never hears
+  // the withdrawal at all (ADR-0038, RVP-99).
   assert.equal(claims.expiresAt, bound, "the mint did not apply the session bound");
 
   const stored = await postgres.pool.query<{ expires_at: Date }>(
@@ -293,10 +293,10 @@ test("ending a session withdraws the capabilities it held", async () => {
   // nothing withdrew this. `docs/ARCHITECTURE.md` §7.3 nevertheless states that
   // a capability is revocable individually as well as through its route.
   //
-  // **This is durable in the control plane and best effort at the gateway.**
-  // The gateway verifies from a signature without a database read and its
-  // revocation set is in memory (RVP-76), so what this asserts is the record —
-  // which is what an auditor reads, and what RVP-99 will make sufficient.
+  // What this asserts is the record, which is what an auditor reads. The
+  // gateway verifies from a signature without a database read, so its refusal
+  // is its own withdrawal set and is proven in `services/tunnel-gateway`
+  // (ADR-0038); RVP-99 carries the coverage of every path that ends a session.
   const after = await postgres.pool.query<{ revoked_at: Date | null }>(
     "SELECT revoked_at FROM route_capabilities WHERE browser_session_id = $1",
     [sessionId],
@@ -575,9 +575,10 @@ test("C2: a sweep after the mint leaves no live capability and the session never
   );
 
   // Note what this does **not** assert: that the gateway then refuses the
-  // capability. It verifies from a signature without a database read and its
-  // revocation set does not survive a restart (RVP-76), so a test claiming that
-  // would assert a property the system does not have. RVP-99 carries it.
+  // capability. It verifies from a signature without a database read, so its
+  // refusal lives in its own withdrawal set and is proven where that is
+  // implemented, in `services/tunnel-gateway` (ADR-0038). What a double here
+  // can show is the call, which is the control plane's half.
   const session = await postgres.pool.query<{ status: string }>(
     "SELECT status FROM browser_sessions WHERE id = $1",
     [sessionId],

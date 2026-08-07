@@ -45,6 +45,36 @@ type Auditor interface {
 	ConnectorChannelRefused(reason, remote string)
 	// RequestRefused records a browser request the gateway would not carry.
 	RequestRefused(requestID, code, reason string)
+	// ControlAction records one call on the gateway control API, and which
+	// credential made it.
+	//
+	// docs/SECURITY.md section 16 requires an audit trail to say who did
+	// something. While the control API took one shared token, this record could
+	// not have existed: every call would have named the same principal, and
+	// "which process registered this route" would have had no answer (ADR-0038).
+	ControlAction(action ControlAction)
+}
+
+// ControlAction is one call on the gateway control API.
+type ControlAction struct {
+	// CredentialID names the acting credential. It is empty only when the
+	// presented secret matched no credential at all.
+	CredentialID string
+	// Operation is the authority the call required.
+	Operation string
+	// Subject is the route, connector or capability identifier it was about.
+	Subject string
+	// OrganisationID is the tenancy the subject belongs to, where the gateway
+	// knows it.
+	OrganisationID string
+	// Outcome is allowed, refused or failed.
+	Outcome string
+	// Reason classifies a refusal or a failure.
+	Reason string
+	// Count reports how many objects an enumeration or a sweep touched.
+	Count int
+	// OccurredAt is set by the recorder.
+	OccurredAt time.Time
 }
 
 // Record is one audit entry. It is retained in a bounded ring so that the
@@ -66,6 +96,11 @@ const (
 	EventConnectorDisconnected   = "connector.disconnected"
 	EventChannelRefused          = "connector.channel_refused"
 	EventRequestRefused          = "tunnel.request_refused"
+	// EventControlAction is gateway-local: docs/EVENTS.md section 7 is the
+	// control plane's durable project event vocabulary, and this is neither
+	// durable nor project-scoped. It is named in the same shape so that an
+	// operator reading one log reads one vocabulary.
+	EventControlAction = "tunnel.control_action"
 )
 
 // SlogAuditor writes audit records to a structured logger, keeps a bounded
@@ -200,6 +235,38 @@ func (a *SlogAuditor) RequestRefused(requestID, code, reason string) {
 		"code":       code,
 		"reason":     reason,
 	})
+}
+
+func (a *SlogAuditor) ControlAction(action ControlAction) {
+	a.metrics.Count(metrics.ControlActions, "outcome", action.Outcome)
+	payload := map[string]any{
+		// An unrecognised secret has no credential to name. Recording the
+		// absence explicitly is better than an empty field a reader has to
+		// interpret, and it is the one case where attribution is impossible.
+		"credential_id": credentialOrUnknown(action.CredentialID),
+		"operation":     action.Operation,
+		"outcome":       action.Outcome,
+	}
+	if action.Subject != "" {
+		payload["subject"] = action.Subject
+	}
+	if action.OrganisationID != "" {
+		payload["organisation_id"] = action.OrganisationID
+	}
+	if action.Reason != "" {
+		payload["reason"] = action.Reason
+	}
+	if action.Count > 0 {
+		payload["count"] = action.Count
+	}
+	a.record(EventControlAction, payload)
+}
+
+func credentialOrUnknown(credentialID string) string {
+	if credentialID == "" {
+		return "unknown"
+	}
+	return credentialID
 }
 
 // observer adapts the registry's lifecycle callbacks onto the auditor and the

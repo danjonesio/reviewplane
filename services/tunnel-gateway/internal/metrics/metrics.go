@@ -60,6 +60,8 @@ func New() *Registry {
 			Denials:               "Browser requests refused, by the stable reason recorded in the audit trail.",
 			RouteBytes:            "Bytes transferred on each route registered now, by direction.",
 			RouteStreams:          "Streams opened on each route registered now.",
+			ControlActions:        "Gateway control-API calls, by outcome.",
+			Revocations:           "Withdrawals the gateway is currently honouring, by subject kind.",
 		},
 	}
 	return registry
@@ -81,6 +83,14 @@ const (
 	Denials               = "reviewplane_tunnel_denied_total"
 	RouteBytes            = "reviewplane_tunnel_route_bytes"
 	RouteStreams          = "reviewplane_tunnel_route_streams"
+	ControlActions        = "reviewplane_tunnel_control_actions_total"
+	Revocations           = "reviewplane_tunnel_revocations"
+)
+
+// Revocation subject labels. They are a closed set, so the series is bounded.
+const (
+	SubjectRoute      = "route"
+	SubjectCapability = "capability"
 )
 
 // Direction labels for byte counters.

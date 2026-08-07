@@ -100,11 +100,19 @@ revocable individually as well as through its route".
 RVP-90's sixth check asked for the capability to be "revoked when the session
 ends". **That is not achievable inside this change**, and this ADR does not
 claim it. The gateway verifies a capability from its signature without a
-database read, and RVP-76 records that its revocation set is in-memory and does
-not survive a restart, so a revocation this change records is only as durable as
-the gateway underneath it. The gap is RVP-99. What *is* achievable here is
+database read, and at the time this was written its revocation set was in memory
+and did not survive a restart (RVP-76), so a revocation this change records was
+only as durable as the gateway underneath it. What *is* achievable here is
 bounding the credential's lifetime by the session's, and that is what this
 decision does.
+
+**Amended by ADR-0038.** The gateway now keeps its withdrawal set on disk,
+writes an entry before acting on it, and reloads it at startup; revoking a route
+withdraws the capabilities that route had outstanding, and registering the same
+identifier again resurrects none of them. So a withdrawal the gateway
+acknowledges is durable there. What remains is delivery — a gateway the control
+plane cannot reach hears nothing — and the coverage of every path that ends a
+session, which is what RVP-99 still carries.
 
 Finally, `#failReservation` records its reason as **free text** — the caught
 error's `message` (`modules/browser-sessions/service.ts:329-334`) — where
@@ -583,27 +591,32 @@ into a claim. This gives `HttpTunnelGateway.revokeCapability` its first
 production caller.
 
 **What this does not do.** The gateway verifies from a signature without a
-database read, and RVP-76 records that its revocation set is in-memory and does
-not survive a restart. So a revocation recorded here is durable in the control
-plane and not necessarily at the gateway, and this ADR claims nothing stronger.
-Closing that is RVP-99. The TTL bound above is what stands in the meantime, and
-it stands without the gateway's cooperation.
+database read, so what refuses a withdrawn capability is the gateway's own
+withdrawal set. When this was written that set was in memory and did not survive
+a restart (RVP-76); ADR-0038 made it durable, so a withdrawal the gateway
+acknowledges now holds across its restart and across the route identifier being
+registered again. What this ADR still claims nothing about is **delivery** — a
+gateway the control plane cannot reach hears nothing — and the coverage of every
+path that ends a session, which is RVP-99. The TTL bound above is what stands
+when delivery fails, and it stands without the gateway's cooperation.
 
 The port is `SessionCapabilityRevoker`, constructed in both processes. The MCP
 process may **withdraw** a capability and still cannot mint one, which is
 ADR-0021's existing carve-out for `development_service_unpublish` extended to the
-credential rather than only to the route. That the gateway's control token is
-unscoped means "withdraws, never registers" is restraint rather than authority —
-also RVP-76's, and stated rather than assumed.
+credential rather than only to the route. When this was written the gateway's
+control token was unscoped, so "withdraws, never registers" was restraint rather
+than authority; ADR-0038 made it authority — the MCP process's credential
+carries `route:revoke` and `capability:revoke` and nothing else.
 
 ### No route is ever amended
 
 The control plane does not add a session to a live route's
 `allowed_browser_session_ids`. Doing so would require re-registering the route
-with the gateway, and RVP-76 proves by execution that re-registering a route
-identifier resurrects capabilities already revoked against it. It would also let
-a credential holding `browser:control` but not `service:publish` reach a
-development machine it could never have published a route to.
+with the gateway, and it would let a credential holding `browser:control` but
+not `service:publish` reach a development machine it could never have published
+a route to. When this was written it also resurrected capabilities already
+revoked against the identifier, which ADR-0038 closed; that was never the whole
+of the reason, and the reason above stands without it.
 
 ## Consequences
 
@@ -652,13 +665,15 @@ development machine it could never have published a route to.
   capability minted into a lost race live, until `api` returns. The MCP process
   can still start unbound sessions during that outage, so the held slots are not
   merely idle bookkeeping — they compete with work that would succeed.
-- **The capability revocation this change adds is not durable on its own.** It is
-  recorded in the control plane and notified to the gateway, and the gateway's
-  revocation set is in-memory (RVP-76). A deployment that restarts its gateway
-  between a revocation and a capability's natural expiry has a revoked
-  capability the gateway would accept again. The TTL bound is what limits that
-  window; RVP-99 is what closes it. Anyone reading this ADR for the guarantee
-  should read this paragraph and not the section heading.
+- **The capability revocation this change adds depends on delivery.** It is
+  recorded in the control plane and notified to the gateway. Since ADR-0038 the
+  gateway keeps what it is told across its own restart and across the route
+  identifier being registered again, so a withdrawal it acknowledges holds; when
+  this ADR was written its revocation set was in memory and did not (RVP-76). A
+  revocation the control plane could not deliver is still one the gateway never
+  hears about, and the TTL bound is what limits that window. RVP-99 carries the
+  coverage of every path that ends a session. Anyone reading this ADR for the
+  guarantee should read this paragraph and not the section heading.
 - Bounding the mint by the session's maximum duration makes the credential's
   lifetime depend on a `limits` value that an operator can raise. It is a bound
   and not a guarantee of shortness.
@@ -697,9 +712,11 @@ development machine it could never have published a route to.
 - **Add the session to the route's `allowed_browser_session_ids` on demand.** It
   is the only design in which `browser_session_start {published_service_id}`
   keeps working unchanged, which is what makes it tempting. It requires
-  re-registering the route at the gateway, which RVP-76 shows resurrects revoked
-  capabilities; it converts the allow-list from a control into a formality; and
-  it grants reach to a credential that could not have published the route.
+  re-registering the route at the gateway; it converts the allow-list from a
+  control into a formality; and it grants reach to a credential that could not
+  have published the route. When this was written re-registration also
+  resurrected revoked capabilities (RVP-76), which ADR-0038 closed — the two
+  remaining objections stand without it.
 - **Let `browser_session_start` find the reservation the route names.** One
   fewer argument, and it sources the subject of the act from the record being
   authorised — the shape RVP-30's blocker rules out and ADR-0028 removed from the
@@ -752,8 +769,10 @@ development machine it could never have published a route to.
   `refusalEnvelope` casts the domain's code rather than validating it. This
   change adds `IDENTITY_REVOKED` to the enumeration and should repair the rest
   with it.
-- ADR-0021's consequences describe the `mcp` process's tunnel credential by the
+- ADR-0021's consequences described the `mcp` process's tunnel credential by the
   operation it performs rather than by the authority it carries, which RVP-76
-  records as a defect in that ADR. This decision extends that credential's use to
-  capability withdrawal and states the authority in the section above; ADR-0021's
-  own wording is amended by whichever of the two changes lands first.
+  recorded as a defect in that ADR. This decision extended that credential's use
+  to capability withdrawal and stated the authority in the section above;
+  **ADR-0038 amended ADR-0021's own wording and made the authority real**, so
+  the credential now carries `route:revoke` and `capability:revoke` and the
+  gateway refuses anything else presented with it.

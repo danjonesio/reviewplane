@@ -200,9 +200,10 @@ export async function buildMcpApp(options: BuildMcpAppOptions): Promise<BuiltMcp
   //
   // The **revoker** withdraws capabilities and cannot mint one, which is
   // ADR-0021's existing carve-out for `development_service_unpublish` extended
-  // to the credential rather than only to the route. That the gateway's control
-  // token is unscoped means "withdraws, never registers" is restraint rather
-  // than authority, and it is stated rather than assumed (RVP-76).
+  // to the credential rather than only to the route. Since ADR-0038 this is
+  // authority rather than restraint: this process's control credential carries
+  // `route:revoke` and `capability:revoke` and nothing else, so the gateway
+  // refuses a registration presented with it.
   const sessionBinder = new PublishedServiceBinder(publishedServices);
   const browserSessions = new BrowserSessionService(pool, workers, workerClient, null, {
     authoriser: sessionBinder,
