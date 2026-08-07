@@ -40,12 +40,19 @@ export class PublishedServiceBinder implements ServiceBinder, AllocationAuthoris
   }
 
   /**
-   * The half of {@link bind} that needs no signing key.
+   * **Entitlement only**, so a process with no signing key may run it.
    *
-   * It is the same read, and it is deliberately the same read: a process that
-   * diagnosed an allocation with one rule and a process that performed it with
-   * another would tell an agent its route was fine and then refuse it a sweep
-   * interval later.
+   * It answers "may this caller name these two records at all" — the four-term
+   * scoped read and the route's own allow-list — and deliberately answers
+   * nothing about whether the route is usable now.
+   *
+   * That restraint is the design and not an omission. A route status checked
+   * here would look authoritative and be wrong the moment the route is revoked,
+   * expires, or loses its connector between the request and the claim; the
+   * process that mints re-reads all of it at the instant it acts. So an
+   * entitlement refusal precedes the claim and leaves the reservation
+   * `REQUESTED` and reusable, and a state refusal follows the claim and fails
+   * it (ADR-0037).
    */
   async authorise(input: {
     readonly publishedServiceId: string;
@@ -53,11 +60,21 @@ export class PublishedServiceBinder implements ServiceBinder, AllocationAuthoris
     readonly projectId: string;
     readonly browserSessionId: string;
   }): Promise<void> {
-    await this.#services.readBindable({
+    await this.#services.readAdmissible({
       publishedServiceId: input.publishedServiceId,
       browserSessionId: input.browserSessionId,
       scope: { organisationId: input.organisationId, projectIds: [input.projectId] },
     });
+  }
+
+  /**
+   * Whether a route exists outside this caller's scope.
+   *
+   * For the audit trail alone; see {@link PublishedServiceService.existsUnscoped}.
+   * Its answer never reaches a response.
+   */
+  async existsUnscoped(publishedServiceId: string): Promise<boolean> {
+    return this.#services.existsUnscoped(publishedServiceId);
   }
 
   async bind(input: {

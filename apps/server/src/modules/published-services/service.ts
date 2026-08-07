@@ -945,21 +945,25 @@ export class PublishedServiceService {
   }
 
   /**
-   * Resolves a route a browser session may be admitted to, in one query, and
-   * refuses on the state it finds.
+   * **Entitlement**: may this caller name these two records at all?
    *
    * The route identifier, the session identifier, the caller's organisation and
    * the caller's project scope are four terms of one predicate
    * ({@link repository.findBindableRoute}), so a route or a session outside the
    * caller's tenancy is **absent** and earns the refusal an unknown identifier
    * earns, byte for byte (`docs/API.md` §5). Nothing is returned and then
-   * refused by a later branch for a tenancy reason.
+   * refused by a later branch for a tenancy reason. The allow-list is
+   * entitlement too: it is a fact about who the route was published *for*, and
+   * it cannot change under a caller the way a status can.
    *
-   * What *is* refused after the read is state, and each refusal names a
-   * different act to take next: republish the route, wait for the connector,
-   * enrol the machine again, or publish a route that names this session.
+   * It deliberately says **nothing about whether the route is usable now.**
+   * That is {@link readBindable}'s, and the split is the whole reason the MCP
+   * endpoint may run this one: a status this process checked at request time
+   * would look authoritative and be wrong the moment the route is revoked
+   * between the request and the claim. The process that mints re-reads
+   * everything at the instant it acts (ADR-0037).
    */
-  async readBindable(input: {
+  async readAdmissible(input: {
     readonly publishedServiceId: string;
     readonly browserSessionId: string;
     readonly scope: repository.CallerScope;
@@ -977,6 +981,70 @@ export class PublishedServiceService {
       client.release();
     }
     if (route === null) throw new ApiError("RESOURCE_NOT_FOUND", "No such published service.");
+    if (!route.session_authorised) {
+      // The allow-list is written by `request`, which validates every session
+      // named in it against the route's own project. A route is never amended to
+      // add one: re-registering a route identifier at the gateway resurrects
+      // capabilities already revoked against it (RVP-76), and it would grant
+      // reach to a credential that could not have published the route.
+      //
+      // `AUTHORISATION_DENIED` and not `RESOURCE_NOT_FOUND`: both records are
+      // inside the caller's scope and the caller is already entitled to know the
+      // route exists, so "not found" here would leave a caller unable to
+      // distinguish "you may not" from "it is not there" and able to act on
+      // neither.
+      throw new ApiError(
+        "AUTHORISATION_DENIED",
+        "That browser session is not authorised for this published service. A route names the sessions it authorises when it is published; reserve a session first and publish a route that names it.",
+        { published_service_id: route.published_service_id },
+      );
+    }
+    return route;
+  }
+
+  /**
+   * Whether a route exists at all, ignoring every scope.
+   *
+   * **Its answer is for the audit trail and must never reach a response.** It
+   * exists so a refused bind can be recorded as `cross_project: true` on the
+   * actor's own stream while the caller still receives the bytes an unknown
+   * identifier earns — the arrangement `docs/EVENTS.md` §7 already requires of
+   * the command path, where "a cross-project attempt is recorded on the actor's
+   * project stream and never on the named session's".
+   *
+   * Without it an auditor cannot tell an agent probing another project's route
+   * identifiers from an operator's typo, because both are `RESOURCE_NOT_FOUND`
+   * with the same message. The wire-level indistinguishability is the control
+   * and stays; the record is what makes the attempt visible to somebody
+   * entitled to see it.
+   */
+  async existsUnscoped(publishedServiceId: string): Promise<boolean> {
+    const rows = await this.#pool.query<{ present: boolean }>(
+      "SELECT true AS present FROM published_services WHERE id = $1",
+      [publishedServiceId],
+    );
+    return rows.rows.length > 0;
+  }
+
+  /**
+   * **State**: entitlement, and then is the route usable at this instant?
+   *
+   * Only the process that mints calls this, and it calls it at the moment it
+   * acts rather than at the moment the request was made. Each refusal names a
+   * different act to take next: republish the route, wait for the connector, or
+   * enrol the machine again.
+   */
+  async readBindable(input: {
+    readonly publishedServiceId: string;
+    readonly browserSessionId: string;
+    readonly scope: repository.CallerScope;
+  }): Promise<repository.BindableRoute> {
+    const route = await this.readAdmissible(input);
+    if (route.route_expires_at.getTime() <= this.#now().getTime()) {
+      throw new ApiError("ROUTE_EXPIRED", "This published service has expired.", {
+        published_service_id: route.published_service_id,
+      });
+    }
     if (route.route_status !== "ready") {
       throw new ApiError(
         "PUBLISHED_SERVICE_UNAVAILABLE",
@@ -1007,18 +1075,6 @@ export class PublishedServiceService {
               published_service_id: route.published_service_id,
             },
           );
-    }
-    if (!route.session_authorised) {
-      // The allow-list is written by `request`, which validates every session
-      // named in it against the route's own project. A route is never amended to
-      // add one: re-registering a route identifier at the gateway resurrects
-      // capabilities already revoked against it (RVP-76), and it would grant
-      // reach to a credential that could not have published the route.
-      throw new ApiError(
-        "AUTHORISATION_DENIED",
-        "That browser session is not authorised for this published service. A route names the sessions it authorises when it is published; reserve a session first and publish a route that names it.",
-        { published_service_id: route.published_service_id },
-      );
     }
     return route;
   }

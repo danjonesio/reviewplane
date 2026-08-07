@@ -283,6 +283,89 @@ async function auditReservedStatusAttempt(
 }
 
 /**
+ * What each allocation failure class means to an agent, and what to do next.
+ *
+ * The message is written here rather than carried through the event, because
+ * `docs/EVENTS.md` §8 keeps free text out of an append-only table and
+ * `docs/UX_FLOWS.md` §18 wants a refusal that names the condition and the way
+ * out. The class is the durable fact; this is its rendering.
+ */
+const ALLOCATION_FAILURE_MESSAGES: Readonly<Record<string, string>> = {
+  PUBLISHED_SERVICE_UNAVAILABLE:
+    "That route stopped carrying traffic before the session could be admitted to it. Publish it again and allocate a fresh reservation.",
+  IDENTITY_REVOKED:
+    "The connector carrying that route had its identity revoked before the session could be admitted. Publish through another connector.",
+  CONNECTOR_OFFLINE:
+    "The connector carrying that route disconnected before the session could be admitted. It reconnects on its own; publish again and retry.",
+  ROUTE_EXPIRED:
+    "That route expired before the session could be admitted to it. Publish it again with a longer lifetime.",
+  AUTHORISATION_DENIED:
+    "That route does not authorise this browser session. A route names the sessions it may carry when it is published.",
+  BROWSER_CAPACITY_EXHAUSTED:
+    "No browser worker had capacity to allocate this session. Retry once a session ends.",
+  PROJECT_CONTEXT_MISMATCH:
+    "The browser worker refused this session's project. Retry after its next heartbeat.",
+  CONTROL_PLANE_UNAVAILABLE:
+    "Nothing completed this allocation before its deadline, so the reservation was ended and its worker slot released. Reserve again and retry.",
+  BROWSER_SESSION_NOT_ACTIVE: "The browser session ended before it could be allocated.",
+  RESOURCE_NOT_FOUND: "The route this allocation named was not found.",
+  UNSUPPORTED_CAPABILITY: "This deployment cannot admit a browser session to a route.",
+  VALIDATION_FAILED: "The allocation was refused as invalid.",
+  INTERNAL_ERROR: "The allocation could not be completed.",
+};
+
+/**
+ * Records an authority denial raised **before any domain code runs**.
+ *
+ * `callTool` refuses a call whose session was not granted the tool's capability,
+ * and that refusal reached no domain layer, so nothing recorded it — for any of
+ * the tools, not only these. `docs/EVENTS.md` §7 says "**Every** refused browser
+ * command produces `browser.command_rejected`", and execution against two real
+ * processes proved that sentence false: a credential without `browser:control`
+ * calling `browser_session_start` produced a correct `AUTHORISATION_DENIED` and
+ * **zero** events.
+ *
+ * It is the denial that regresses invisibly. Removing this write changes no
+ * response and breaks no other test, and the single attempt an auditor goes
+ * looking for — *did a credential try to use an authority it was not granted?* —
+ * is the one attempt nothing recorded.
+ *
+ * The record goes to the agent session's own project stream and carries no
+ * record correlation, because the call was refused before any record was
+ * resolved and a fabricated correlation would file the attempt against somebody
+ * else's timeline. It names the capability that was missing and the tool that
+ * wanted it, which is what an operator needs to decide whether to widen the
+ * credential or to investigate.
+ *
+ * **This is not audited for a malformed call.** A schema violation is not an
+ * authority denial — nobody was refused an authority they might have held —
+ * and auditing one would let a client loop on a bad argument and write to an
+ * append-only table at request rate. That is the same reason `docs/EVENTS.md`
+ * §7 gives for excluding `BROWSER_CAPACITY_EXHAUSTED`. The one exception is
+ * `auditReservedStatusAttempt`, which records a schema refusal precisely
+ * because *that* refusal is an authority denial wearing a validator's clothes.
+ */
+async function auditCapabilityDenial(
+  tool: ToolDefinition,
+  context: ToolContext,
+): Promise<void> {
+  const { connection, services } = context;
+  await services.browserSessions
+    .recordCapabilityDenial({
+      organisationId: connection.credential.organisationId,
+      projectId: connection.project.id,
+      actor: agentActor(connection.session, connection.client.name),
+      tool: tool.name,
+      capability: tool.capability,
+    })
+    // Best effort, and logged nowhere else because there is nowhere else: the
+    // refusal the caller receives must not become an internal error because the
+    // audit write failed. A lost record is a defect; a refusal turned into a
+    // 500 is a worse one.
+    .catch(() => undefined);
+}
+
+/**
  * The trust label an inbox response carries.
  *
  * An item's title is the review's or the finding's, and both are human-authored
@@ -1772,6 +1855,27 @@ const TOOLS: readonly ToolDefinition[] = [
       const settled = await services.browserSessions.awaitAllocation(browserSessionId, scope, {
         timeoutMs: services.config.allocateWaitMs,
       });
+      if (settled.status === "FAILED") {
+        // The wait ended at a failure `api` raised **after it claimed** — a
+        // route revoked between the request and the claim, a connector that
+        // went, a route that expired. Those are state refusals and this process
+        // deliberately did not pre-check any of them: a status checked at
+        // request time would have looked authoritative and been wrong.
+        //
+        // So the class is read back from the record rather than guessed, and
+        // the agent receives the same code it would have received had the whole
+        // act run in one process. Answering `ok: true` with a `FAILED` session
+        // would make the agent decide for itself what went wrong.
+        const failure = await services.browserSessions.allocationFailure(browserSessionId);
+        throw new ApiError(
+          failure?.code ?? "INTERNAL_ERROR",
+          failure === null
+            ? "The allocation failed and no reason was recorded."
+            : (ALLOCATION_FAILURE_MESSAGES[failure.code] ??
+              "The allocation could not be completed."),
+          failure?.details,
+        );
+      }
       if (settled.status === "REQUESTED" || settled.status === "ALLOCATING") {
         // The wait ends in the record as it stands and never in a claim. An
         // agent told a session was ready when nothing was carrying its origin
@@ -2430,6 +2534,13 @@ export async function callTool(
     }
 
     if (!connection.session.capabilities.includes(tool.capability)) {
+      // Recorded before it is raised, so neither can happen alone. This is
+      // RVP-90's A10 and it is fixed here for **every** tool rather than for the
+      // ones this change adds: the check is one place with no per-tool
+      // branching, so fixing it selectively would mean *adding* a branch, which
+      // is worse than the gap. The eleven review, finding and inbox tools'
+      // cross-project refusals are RVP-100's and are not touched here.
+      await auditCapabilityDenial(tool, context);
       throw new ApiError(
         "AUTHORISATION_DENIED",
         `This agent session was not granted ${tool.capability}, so it may not call ${tool.name}.`,

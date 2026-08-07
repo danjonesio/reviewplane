@@ -258,6 +258,15 @@ export interface AllocationAuthoriser {
     readonly projectId: string;
     readonly browserSessionId: string;
   }): Promise<void>;
+  /**
+   * Whether a route exists at all, ignoring every scope.
+   *
+   * **For the audit trail and never for a response.** A refused bind must reach
+   * the caller as the bytes an unknown identifier earns and must reach the
+   * auditor as something they can tell apart from a typo; this is what makes the
+   * second half possible without weakening the first.
+   */
+  existsUnscoped(publishedServiceId: string): Promise<boolean>;
 }
 
 /**
@@ -531,7 +540,7 @@ export class BrowserSessionService {
         "Only a reserved browser session can be allocated.",
         { browser_session_status: session.status },
       );
-      await this.#recordAllocationRejection(session, input.actor, refusal);
+      await this.#recordAllocationRejection(session, input.actor, refusal, input.publishedServiceId);
       throw refusal;
     }
     if (session.worker_id === null) {
@@ -569,7 +578,17 @@ export class BrowserSessionService {
           requestId: input.requestId,
         });
       } catch (error) {
-        await this.#failReservation(session, input.actor, allocationFailureClassOf(error));
+        await this.#failReservation(
+          session,
+          input.actor,
+          allocationFailureClassOf(error),
+          "allocation_refused",
+          input.publishedServiceId,
+          // The detail the refusal carried, so the record answers the same
+          // question the response did. An agent whose wait ended at a `FAILED`
+          // record reads its class from here.
+          error instanceof ApiError ? error.details : undefined,
+        );
         throw error;
       }
       await this.#pool.query(
@@ -672,7 +691,7 @@ export class BrowserSessionService {
         "Only a reserved browser session can be allocated.",
         { browser_session_status: session.status },
       );
-      await this.#recordAllocationRejection(session, input.actor, refusal);
+      await this.#recordAllocationRejection(session, input.actor, refusal, input.publishedServiceId);
       throw refusal;
     }
     if (this.#authoriser === null) {
@@ -695,7 +714,7 @@ export class BrowserSessionService {
       // one and call again, which is what an agent that fixed its arguments
       // needs. It still holds a worker slot, and the deadline sweep is what ends
       // one nobody comes back for.
-      await this.#recordAllocationRejection(session, input.actor, error);
+      await this.#recordAllocationRejection(session, input.actor, error, input.publishedServiceId);
       throw error;
     }
 
@@ -848,6 +867,7 @@ export class BrowserSessionService {
         // reservation's side: the control plane was not there to finish it.
         "CONTROL_PLANE_UNAVAILABLE",
         "allocation_deadline",
+        session.requested_published_service_id ?? undefined,
       );
       // `ALLOCATING` past the deadline means something claimed it and did not
       // finish, possibly after the worker had begun opening a context. The
@@ -977,9 +997,23 @@ export class BrowserSessionService {
     actor: EventActor,
     reasonCode: AllocationFailureClass,
     trigger: "allocation_refused" | "allocation_deadline" = "allocation_refused",
+    publishedServiceId?: string,
+    details?: Readonly<Record<string, unknown>>,
   ): Promise<void> {
     await this.#revokeLeases(session.id, `allocation refused: ${reasonCode}`);
     await this.#setStatus(session, "FAILED", actor, "browser_session.failed", {
+      // Only the members the refusal vocabulary declares, never the whole detail
+      // object: `details` is assembled for a response and an append-only table
+      // is not a response.
+      ...(typeof details?.["connector_status"] === "string"
+        ? { connector_status: details["connector_status"] }
+        : {}),
+      // The route the reservation was trying to reach. No event on the bind path
+      // carried it until ADR-0037, so "which route did this session try to
+      // reach?" was unanswerable from `events` whatever the refusal said.
+      ...(publishedServiceId === undefined
+        ? {}
+        : { published_service_id: publishedServiceId }),
       reason_code: reasonCode,
       // The two are distinguished because they send an operator to different
       // places: a refusal is the request's fault and names its own class, and a
@@ -1013,7 +1047,25 @@ export class BrowserSessionService {
     session: BrowserSessionRecord,
     actor: EventActor,
     error: unknown,
+    publishedServiceId?: string,
   ): Promise<void> {
+    const code = allocationFailureClassOf(error);
+    // A `RESOURCE_NOT_FOUND` on this path means one of two things the caller
+    // must not be able to tell apart and the auditor must: the route does not
+    // exist, or it exists somewhere this caller may not reach. Asking is an
+    // internal read whose answer never reaches the response, and marking the
+    // record is the arrangement `docs/EVENTS.md` §7 already requires of the
+    // command path — the attempt is recorded on the **actor's** stream with
+    // `cross_project: true`, and the refusal the caller receives is unchanged.
+    //
+    // Without it an agent probing another project's route identifiers and an
+    // operator's typo produce byte-identical audit records, which is the
+    // execution evidence that prompted this.
+    const crossProject =
+      code === "RESOURCE_NOT_FOUND" &&
+      publishedServiceId !== undefined &&
+      this.#authoriser !== null &&
+      (await this.#authoriser.existsUnscoped(publishedServiceId).catch(() => false));
     await this.#recordLifecycleRejection(
       session,
       {
@@ -1024,10 +1076,19 @@ export class BrowserSessionService {
         projectId: session.project_id,
       },
       {
-        code: allocationFailureClassOf(error) as CommandDenial["code"],
+        code: code as CommandDenial["code"],
         message: error instanceof Error ? error.message : "The allocation was refused.",
-        reason: "allocation_refused",
+        // `project_mismatch` is the reason token the command path already uses
+        // for an identifier outside the caller's tenancy, and reusing it is what
+        // makes the rest fall out: the record goes to the actor's own project
+        // stream and withholds the session's epoch and status. Withholding them
+        // is deliberate even though the *session* here is the caller's own — the
+        // record is of a refused reach into another tenancy, its status is
+        // readable from that session's own timeline, and one marker with one
+        // meaning is worth more to an auditor than two that overlap.
+        reason: crossProject ? "project_mismatch" : "allocation_refused",
       },
+      publishedServiceId === undefined ? {} : { published_service_id: publishedServiceId },
     );
   }
 
@@ -1082,6 +1143,97 @@ export class BrowserSessionService {
           // session because there was none to name, so an auditor does not read
           // a missing correlation as a lost write.
           browser_session_unresolved: true,
+        },
+      });
+    });
+  }
+
+  /**
+   * The stable class a reservation was failed with, and the detail that names
+   * the condition.
+   *
+   * The bounded wait ends in the record as it stands, and a record that stands
+   * at `FAILED` has a *reason* the caller needs: a route that was revoked
+   * between the request and the claim, a connector that went, a route that
+   * expired. Those are the state refusals `api` raises after it claims, and
+   * without this the agent would receive a successful envelope carrying a
+   * `FAILED` session and no way to tell which of them happened.
+   *
+   * It reads the event rather than a column because the event is where the class
+   * was written and `docs/EVENTS.md` §9 makes it part of the same transaction as
+   * the status change. A second column would be a second copy to keep in step.
+   */
+  async allocationFailure(
+    browserSessionId: string,
+  ): Promise<{ readonly code: AllocationFailureClass; readonly details: Record<string, unknown> } | null> {
+    const rows = await this.#pool.query<{ payload: Record<string, unknown> }>(
+      `SELECT payload FROM events
+        WHERE type = 'browser_session.failed'
+          AND correlation ->> 'browser_session_id' = $1
+        ORDER BY sequence DESC
+        LIMIT 1`,
+      [browserSessionId],
+    );
+    const payload = rows.rows[0]?.payload;
+    if (payload === undefined) return null;
+    const code = payload["reason_code"];
+    if (typeof code !== "string" || !ALLOCATION_FAILURE_CLASSES.includes(code)) return null;
+    return {
+      code: code as AllocationFailureClass,
+      details: {
+        ...(typeof payload["published_service_id"] === "string"
+          ? { published_service_id: payload["published_service_id"] }
+          : {}),
+        ...(typeof payload["connector_status"] === "string"
+          ? { connector_status: payload["connector_status"] }
+          : {}),
+      },
+    };
+  }
+
+  /**
+   * Records an authority denial raised before any record was resolved.
+   *
+   * The MCP endpoint refuses a call whose session lacks the tool's capability
+   * before any domain code runs, so no domain layer could record it — for every
+   * tool, not only this change's. `docs/EVENTS.md` §7 requires a refused act to
+   * be logged as well as refused, and execution proved that no event at all was
+   * written for this one.
+   *
+   * It shares `browser.command_rejected` with every other refused act, for §7's
+   * own reason: an auditor asks "was anything refused here?", and a second type
+   * would let one who checked the first get a confident wrong answer. `command`
+   * names the **tool**, because the tool is what was refused — there was no
+   * browser command and no lifecycle act, since the call never reached one.
+   *
+   * No correlation and no session: none was resolved. `capability_denied: true`
+   * says the record is that shape deliberately rather than having lost one.
+   */
+  async recordCapabilityDenial(input: {
+    readonly organisationId: string;
+    readonly projectId: string;
+    readonly actor: EventActor;
+    readonly tool: string;
+    readonly capability: string;
+  }): Promise<void> {
+    await inTransaction(this.#pool, async (client) => {
+      await appendEvent(client, {
+        type: "browser.command_rejected",
+        organisationId: input.organisationId,
+        projectId: input.projectId,
+        actor: input.actor,
+        correlation: {},
+        payload: {
+          kind: "capability",
+          command: input.tool,
+          reason_code: "AUTHORISATION_DENIED",
+          reason: "capability_not_granted",
+          interactive: false,
+          // The authority that was missing, never the set the credential holds:
+          // one is what an operator acts on, the other is a disclosure of the
+          // credential's shape into an append-only table.
+          required_capability: input.capability,
+          capability_denied: true,
         },
       });
     });
@@ -1675,6 +1827,16 @@ export class BrowserSessionService {
       readonly projectId: string;
     },
     denial: CommandDenial,
+    /**
+     * Members this act adds to the payload.
+     *
+     * Allocation names a **route**, and until ADR-0037 no event on the bind path
+     * carried it — so "which route did this session try to reach?" was
+     * unanswerable from `events`, whatever the refusal said. It is a member of
+     * the payload rather than of the correlation because the route is what the
+     * act was about rather than a second record the row belongs to.
+     */
+    extra: Readonly<Record<string, unknown>> = {},
   ): Promise<void> {
     const crossProject = denial.reason === "project_mismatch";
     const stream = crossProject
@@ -1699,6 +1861,10 @@ export class BrowserSessionService {
           ...(crossProject
             ? { cross_project: true }
             : { current_epoch: session.control_epoch, session_status: session.status }),
+          // Last, so an act that names a cross-project route sets the marker
+          // even where the *session* was in the caller's own project — the two
+          // are different records and either can be the foreign one.
+          ...extra,
         },
       });
     });
