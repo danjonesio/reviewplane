@@ -97,6 +97,22 @@ volumes:
   # the proof edits. A bind mount of the repository would have done the same
   # job while writing into the developer's checkout, which a test must not do.
   dev-fixture-vite-src:
+  # The development machine's Git checkout, seeded from the image the first time
+  # the volume is attached. `development` profile only.
+  #
+  # It is a volume for the same reason `dev-fixture-vite-src` is: the container's
+  # root filesystem is read-only, and this is a checkout somebody works in. The
+  # connector only ever *reads* it, but the end-to-end scenario switches its
+  # branch and makes a commit while the stack is running, which is how
+  # `workspace.head_changed` is proved rather than assumed. A read-only checkout
+  # could be observed and never moved, and an unmoved checkout proves half of
+  # §9.
+  #
+  # The volume is discarded with the rest of the project at teardown, and the
+  # scenario tears down its own project name before it starts, so every run
+  # begins from the image's committed `main` rather than from whatever the last
+  # run left behind.
+  dev-fixture-workspace:
 
 services:
   # PostgreSQL is pinned by digest rather than by tag, because
@@ -588,10 +604,18 @@ services:
       # connector-config.yaml; the end-to-end script rewrites it with the real
       # identifier before this service starts.
       - ./connector-config.generated.yaml:/etc/reviewplane-connector/config.yaml:ro
-      # The one writable source path. RVP-14 edits a file here while the stack
-      # is running and watches the change reach central Chromium without a full
-      # page reload; every other path in this container stays read-only.
+      # The one writable Vite source path. RVP-14 edits a file here while the
+      # stack is running and watches the change reach central Chromium without a
+      # full page reload. It is deliberately *outside* the checkout below, so
+      # that the hot-reload edit does not dirty the working tree and emit a
+      # workspace observation the branch-switch proof did not cause.
       - dev-fixture-vite-src:/app/vite-app/src
+      # The checkout the connector observes and the static application is served
+      # from, seeded from the image. Writable so that the end-to-end scenario can
+      # move HEAD (RVP-80); the connector itself never writes to it — every git
+      # invocation it makes disables optional locks and automatic garbage
+      # collection (`docs/CONNECTOR_PROTOCOL.md` §9).
+      - dev-fixture-workspace:/opt/reviewplane/dev-fixture
     read_only: true
     tmpfs:
       - /tmp:size=128m,mode=1777

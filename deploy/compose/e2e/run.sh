@@ -4,7 +4,8 @@
 #
 #   1. Start the Compose stack.
 #   2. Enrol the connector fixture.
-#   3. Start the fixture web application on connector loopback.
+#   3. Start the fixture web application on connector loopback, and observe the
+#      development machine's checkout (steps 3a and 3b below).
 #   4. Publish the service.
 #   5. Start a browser session.
 #   6. Navigate and capture evidence.
@@ -148,6 +149,22 @@ body = json.loads(outer["body"])
 value = eval(os.environ["RP_EXPRESSION"], {"data": body.get("data"), "body": body})
 sys.stdout.write("" if value is None else str(value))
 '
+}
+
+# One scalar from the database: unaligned, no column header, no trailing
+# newline. Used for the two bounded waits below, where the condition is a count
+# and a call site that had to strip whitespace on every comparison would be one
+# forgotten `tr` away from comparing "0\n" with "0" forever.
+psql_scalar() {
+  "${COMPOSE[@]}" exec -T postgres psql -U reviewplane -d reviewplane -At -c "$1" | tr -d '\r\n'
+}
+
+# One row from the database as pipe-separated fields, with carriage returns
+# stripped. NULL is rendered by the caller's `coalesce`, because psql prints it
+# as the empty string and an empty field is indistinguishable from a column that
+# happens to hold one.
+psql_row() {
+  "${COMPOSE[@]}" exec -T postgres psql -U reviewplane -d reviewplane -At -F'|' -c "$1" | tr -d '\r'
 }
 
 
@@ -302,41 +319,29 @@ info "no container publishes a host port"
 TOKEN_RESPONSE="$(api POST /api/v1/connectors/enrolment-tokens "{\"max_uses\":1,\"expires_in_seconds\":600}")"
 ORGANISATION_ID="$(field "${TOKEN_RESPONSE}" 'data["organisation_id"]')" || fail "the enrolment token named no organisation"
 
-# The project and the workspace are created with the identifiers
-# `connector-config.yaml` declares, and that is the point of doing it here
-# rather than through the API, which generates them.
+# The project is created with the identifier `connector-config.yaml` declares,
+# and that is the point of doing it here rather than through the API, which
+# generates one.
 #
 # The fixture connector is configured with `project: prj_fixture` and
 # `workspaces: [{id: wsp_fixture}]`, and it validates the workspace association
-# itself (`docs/CONNECTOR_PROTOCOL.md` §11). `wsp_fixture` existed in no table:
-# the connector reports no workspace here — the fixture is a served directory
-# and not a Git checkout, so there is nothing to observe — and while the control
-# plane wrote whatever `workspace_id` it was given, nothing noticed. Once the
-# control plane stopped forwarding an identifier it could not resolve, the
-# connector refused it too, on its own check.
+# itself (`docs/CONNECTOR_PROTOCOL.md` §11).
 #
-# The row is `administrative_registration` and not `connector_report`. No
-# connector reported it, and `0080_workspace_git_context.sql` keeps the two
-# apart precisely so that a reader can tell which happened. Making the fixture a
-# real checkout, so that observation is proven rather than stood in for, is
-# follow-up work.
+# **No workspace row is written here.** One used to be, with a placeholder head
+# commit and a path hash of sixty-four zeroes, because the fixture was a served
+# directory rather than a Git checkout and the connector was never going to
+# report one. That row was the shape an observation produces without any
+# observation having happened, in a scenario that is release-blocking. The
+# fixture is a real checkout now (`examples/dev-fixture/Dockerfile`), and step
+# 3a below waits for the connector's own report and asserts it against that
+# checkout's actual HEAD. Remove the connector and the scenario fails there,
+# which is the property the insert destroyed.
 "${COMPOSE[@]}" exec -T postgres psql -U reviewplane -d reviewplane -q -c \
   "insert into projects (id, organisation_id, name, slug)
    values ('${PROJECT_ID}', '${ORGANISATION_ID}', 'Fixture', '${PROJECT_SLUG}')
    on conflict (id) do nothing" >/dev/null \
   || fail "could not create the project"
-"${COMPOSE[@]}" exec -T postgres psql -U reviewplane -d reviewplane -q -c \
-  "insert into workspaces (
-     id, organisation_id, project_id, root_path, branch, head_commit, path_hash,
-     display_path, source)
-   values ('wsp_fixture', '${ORGANISATION_ID}', '${PROJECT_ID}',
-           '/opt/reviewplane/dev-fixture', 'main',
-           '0000000000000000000000000000000000000001',
-           'sha256:$(printf '0%.0s' {1..64})', 'dev-fixture', 'administrative_registration')
-   on conflict (id) do nothing" >/dev/null \
-  || fail "could not register the fixture workspace"
-WORKSPACE_ID="wsp_fixture"
-info "organisation ${ORGANISATION_ID}, project ${PROJECT_ID}, workspace ${WORKSPACE_ID}"
+info "organisation ${ORGANISATION_ID}, project ${PROJECT_ID}"
 ENROLMENT_TOKEN="$(field "${TOKEN_RESPONSE}" 'data["enrolment_token"]')" || fail "could not issue an enrolment token"
 printf '%s' "${ENROLMENT_TOKEN}" > "${COMPOSE_DIR}/secrets/enrolment_token"
 # 0644 for the reason generate-secrets.sh records: a plain-Compose file secret
@@ -370,6 +375,312 @@ info "the fixture binds loopback only"
 
 CONNECTOR_ID="$(field "$(api GET /api/v1/connectors)" 'data[0]["id"]')" || fail "no connector enrolled"
 info "connector ${CONNECTOR_ID}"
+
+# ---------------------------------------------------------------------------
+step "3a. The connector observes the development machine's checkout (docs/CONNECTOR_PROTOCOL.md §9)"
+# ---------------------------------------------------------------------------
+# The workspace the connector is configured to serve, read from the
+# configuration file the fixture actually mounts rather than restated here. A
+# constant typed twice would only assert that this script agrees with itself;
+# reading the configuration asserts that the control plane recorded what this
+# deployment configured.
+CONNECTOR_CONFIG="${COMPOSE_DIR}/connector-config.generated.yaml"
+CONFIGURED_WORKSPACE_ID="$(awk '/^workspaces:/ {inside = 1; next}
+                                inside && $1 == "-" && $2 == "id:" {print $3; exit}' "${CONNECTOR_CONFIG}")"
+CONFIGURED_WORKSPACE_PATH="$(awk '/^workspaces:/ {inside = 1; next}
+                                  inside && $1 == "path:" {print $2; exit}' "${CONNECTOR_CONFIG}")"
+[[ -n "${CONFIGURED_WORKSPACE_ID}" && -n "${CONFIGURED_WORKSPACE_PATH}" ]] \
+  || fail "could not read the connector's configured workspace out of ${CONNECTOR_CONFIG}"
+
+# `docs/DOMAIN_MODEL.md` §9 hashes the checkout's absolute path precisely so the
+# path itself never leaves the development machine, and RVP-92 was an Urgent
+# defect about disclosing it. The path is therefore used here to derive the
+# digest the control plane must have recorded, and is never printed, never
+# written to the evidence directory and never read back out of the database —
+# only digests are compared, and only digests are kept.
+EXPECTED_PATH_HASH="$(RP_PATH="${CONFIGURED_WORKSPACE_PATH}" python3 -c '
+import hashlib, os, sys
+sys.stdout.write("sha256:" + hashlib.sha256(os.environ["RP_PATH"].encode("utf-8")).hexdigest())
+')"
+EXPECTED_DISPLAY_PATH="$(basename "${CONFIGURED_WORKSPACE_PATH}")"
+
+# The checkout's own answers, read from inside the development environment with
+# the same questions the connector asks it. Taking the head commit from the
+# repository rather than from a literal is what makes the comparison below an
+# assertion about an observation rather than about two constants agreeing.
+fixture_git() {
+  "${COMPOSE[@]}" exec -T dev-fixture git -C "${CONFIGURED_WORKSPACE_PATH}" "$@" | tr -d '\r\n'
+}
+FIXTURE_BRANCH="$(fixture_git rev-parse --abbrev-ref HEAD)" \
+  || fail "the fixture workspace is not a Git checkout; the connector reports nothing about a directory that is not one"
+FIXTURE_HEAD="$(fixture_git rev-parse HEAD)" \
+  || fail "the fixture checkout has no commit on HEAD, which yields no observation"
+[[ "${FIXTURE_HEAD}" =~ ^[0-9a-f]{40}$ ]] \
+  || fail "the fixture checkout reported '${FIXTURE_HEAD}' as its head commit, which is not an object name"
+info "the development machine holds a checkout on ${FIXTURE_BRANCH} at ${FIXTURE_HEAD}"
+
+# The bounded wait, and what it proves.
+#
+# `workspace.observed` is appended by `insertObserved` in
+# `apps/server/src/modules/connectors/workspaces.ts`, in the same transaction as
+# the workspace row and only on the connector-report path; nothing else in the
+# product emits it. So the event existing means a `workspace.observed` frame
+# arrived on the mutually authenticated connector channel, the control plane
+# re-derived that this identity may act for this project, and it created the
+# record. Every assertion below reads that record. The wait is therefore the
+# condition the assertions need and not a proxy for it — the failure mode of
+# RVP-82, RVP-85 and this script's own `await_worker_assignment`.
+#
+# The bound: the connector observes its workspaces once before its first dial
+# and reports the whole set as soon as §17 reconciliation completes on the
+# established channel, then re-observes every `git_context.interval`, which is
+# 5s here. 120s covers enrolment, the handshake, reconciliation and a first
+# report many times over; it is an outer bound rather than an expected duration,
+# and the elapsed time is reported so that a regression shows up as a worse
+# number before it shows up as a failure.
+OBSERVATION_WAIT_SECONDS=0
+await_workspace_observation() {
+  local deadline=$((SECONDS + 120)) started="${SECONDS}" observed
+  while (( SECONDS < deadline )); do
+    observed="$(psql_scalar "select count(*) from events
+                              where project_id = '${PROJECT_ID}'
+                                and type = 'workspace.observed'")"
+    if [[ -n "${observed}" && "${observed}" != "0" ]]; then
+      OBSERVATION_WAIT_SECONDS=$((SECONDS - started))
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+await_workspace_observation \
+  || fail "no workspace.observed event for ${PROJECT_ID} within 120s: no connector reported a checkout, so nothing observed this development machine's workspace"
+info "workspace.observed arrived ${OBSERVATION_WAIT_SECONDS}s after the development environment reported ready"
+
+WORKSPACE_ROWS="$(psql_row "select id, source, coalesce(root_path, '<null>'), path_hash, display_path,
+                                   branch, head_commit, dirty, coalesce(environment_id, '<null>'),
+                                   coalesce(connector_id, '<null>'), coalesce(repository_identity, '<absent>')
+                              from workspaces
+                             where organisation_id = '${ORGANISATION_ID}'
+                               and project_id = '${PROJECT_ID}'")"
+[[ "$(grep -c . <<< "${WORKSPACE_ROWS}")" == "1" ]] \
+  || fail "expected exactly one workspace in ${PROJECT_ID}, got: ${WORKSPACE_ROWS}"
+IFS='|' read -r W_ID W_SOURCE W_ROOT_PATH W_PATH_HASH W_DISPLAY W_BRANCH W_HEAD W_DIRTY \
+  W_ENVIRONMENT W_CONNECTOR W_REPOSITORY <<< "${WORKSPACE_ROWS}"
+
+# The row was produced by an observation and not by anything else.
+# `0080_workspace_git_context.sql` keeps `connector_report` and
+# `administrative_registration` apart precisely so a reader can tell which
+# happened, and the scenario used to write the second while claiming the first.
+[[ "${W_SOURCE}" == "connector_report" ]] \
+  || fail "the workspace record is ${W_SOURCE}, not connector_report: nothing observed it"
+[[ "${W_ENVIRONMENT}" != "<null>" ]] \
+  || fail "the workspace record belongs to no environment, so no connector reported it"
+[[ "${W_CONNECTOR}" == "${CONNECTOR_ID}" ]] \
+  || fail "the workspace record names connector ${W_CONNECTOR}, not the enrolled ${CONNECTOR_ID}"
+
+# The identifier is the connector's own, because a publication names it (§11)
+# and step 4 is about to.
+[[ "${W_ID}" == "${CONFIGURED_WORKSPACE_ID}" ]] \
+  || fail "the observed workspace is ${W_ID}, not the configured ${CONFIGURED_WORKSPACE_ID}"
+
+# The privacy properties of `docs/DOMAIN_MODEL.md` §9, asserted rather than
+# assumed. A connector-reported workspace stores no filesystem path at all; the
+# digest identifies the checkout and the display label is the directory's own
+# name, which the column constraint additionally refuses to let hold a
+# separator.
+[[ "${W_ROOT_PATH}" == "<null>" ]] \
+  || fail "the observed workspace stores a root path, which a connector-reported workspace must never do"
+[[ "${W_PATH_HASH}" == "${EXPECTED_PATH_HASH}" ]] \
+  || fail "the recorded path hash is not the digest of the configured checkout path"
+[[ "${W_DISPLAY}" == "${EXPECTED_DISPLAY_PATH}" ]] \
+  || fail "the recorded display path is ${W_DISPLAY}, not the checkout directory's own name"
+
+# The Git context, against what the checkout itself says.
+[[ "${W_BRANCH}" == "${FIXTURE_BRANCH}" ]] \
+  || fail "the recorded branch is ${W_BRANCH}, but the checkout is on ${FIXTURE_BRANCH}"
+[[ "${W_HEAD}" == "${FIXTURE_HEAD}" ]] \
+  || fail "the recorded head commit is ${W_HEAD}, but the checkout's HEAD is ${FIXTURE_HEAD}"
+[[ "${W_DIRTY}" == "f" ]] \
+  || fail "the observed checkout is dirty, which the fixture's committed tree should not be"
+# The fixture's checkout has no remote, so §9's "an absent value is reported as
+# absent rather than guessed at" is the path being exercised here.
+[[ "${W_REPOSITORY}" == "<absent>" ]] \
+  || fail "a repository identity was recorded for a checkout with no remote: ${W_REPOSITORY}"
+WORKSPACE_ID="${W_ID}"
+info "workspace ${WORKSPACE_ID} was reported by ${CONNECTOR_ID}: ${W_BRANCH} at ${W_HEAD}, clean, no path stored"
+
+# The same record through the product's own surface, which is where a human
+# sees it (`docs/API.md` §9). It is read as well as the row because the two can
+# disagree: the view is what decides whether an operator can see the checkout at
+# all, and it deliberately carries no `root_path` — a property worth asserting
+# in the response rather than only in the column.
+ENVIRONMENTS_RESPONSE="$(api GET "/api/v1/projects/${PROJECT_ID}/environments")"
+echo "${ENVIRONMENTS_RESPONSE}" > "${EVIDENCE}/environments.json"
+[[ "$(field "${ENVIRONMENTS_RESPONSE}" 'len(data)')" == "1" ]] \
+  || fail "the project view reports no single environment for the development machine"
+[[ "$(field "${ENVIRONMENTS_RESPONSE}" 'len(data[0]["workspaces"])')" == "1" ]] \
+  || fail "the environment view carries no workspace"
+[[ "$(field "${ENVIRONMENTS_RESPONSE}" 'data[0]["workspaces"][0]["head_commit"]')" == "${FIXTURE_HEAD}" ]] \
+  || fail "the environment view reports a different head commit from the checkout"
+[[ "$(field "${ENVIRONMENTS_RESPONSE}" 'data[0]["workspaces"][0]["source"]')" == "connector_report" ]] \
+  || fail "the environment view does not report the workspace as connector-reported"
+[[ "$(field "${ENVIRONMENTS_RESPONSE}" '"root_path" in data[0]["workspaces"][0]')" == "False" ]] \
+  || fail "the environment view exposes a root path for a connector-reported workspace"
+info "the environment view carries the workspace, with no filesystem path in it"
+
+# ---------------------------------------------------------------------------
+step "3b. Move the checkout's HEAD and prove workspace.head_changed"
+# ---------------------------------------------------------------------------
+# An observation that never changes proves half of §9. The other half is that a
+# change on the development machine reaches the control plane as
+# `workspace.head_changed` carrying both sides of the move, which is what
+# `docs/DOMAIN_MODEL.md` §24 will read when staleness is computed.
+#
+# The commit is empty on purpose. The working tree here is the application this
+# scenario is about to serve, screenshot and drive through a WebSocket, and
+# editing it mid-run would change the thing under test for a reason unrelated to
+# this assertion. What §9 reports is the branch, the head commit and the dirty
+# flag; a new branch carrying a new commit moves two of the three without
+# touching a byte the browser will render.
+#
+# Both git commands run in one `exec`, so the window in which the connector
+# could observe the branch switch without the commit is milliseconds rather than
+# a round trip. The assertions below do not depend on that being closed — see
+# the two events they read.
+HEAD_CHANGE_BRANCH="e2e/head-change"
+"${COMPOSE[@]}" exec -T dev-fixture sh -c "
+  set -e
+  git -C ${CONFIGURED_WORKSPACE_PATH} switch --quiet -c ${HEAD_CHANGE_BRANCH}
+  git -C ${CONFIGURED_WORKSPACE_PATH} commit --quiet --allow-empty \
+    -m 'e2e: move HEAD so the connector reports a change'
+" || fail "could not move the fixture checkout onto a new branch and commit"
+CHANGED_BRANCH="$(fixture_git rev-parse --abbrev-ref HEAD)"
+CHANGED_HEAD="$(fixture_git rev-parse HEAD)"
+[[ "${CHANGED_BRANCH}" == "${HEAD_CHANGE_BRANCH}" ]] \
+  || fail "the checkout is on ${CHANGED_BRANCH}, not ${HEAD_CHANGE_BRANCH}"
+[[ "${CHANGED_HEAD}" != "${FIXTURE_HEAD}" ]] || fail "the commit did not move HEAD"
+info "the development machine moved to ${CHANGED_BRANCH} at ${CHANGED_HEAD}"
+
+# The bounded wait, and what it proves.
+#
+# `workspace.head_changed` is appended by `updateObserved` only when the branch,
+# head commit or dirty state a connector reports differs from the record it is
+# updating, and it is written in the same transaction as that update. The poll
+# matches on the *new* head commit — the object name `git rev-parse` just read
+# inside the development environment — rather than on the event type, so an
+# earlier transition cannot satisfy it and the record it describes already
+# carries that commit when the wait returns.
+#
+# The bound: the connector re-observes every `git_context.interval`, 5s in this
+# deployment, and reports a change on the following tick. 90s is eighteen
+# intervals, so a failure here is a connector that stopped observing rather than
+# one that was merely slow.
+HEAD_CHANGE_WAIT_SECONDS=0
+await_head_change() {
+  local deadline=$((SECONDS + 90)) started="${SECONDS}" seen
+  while (( SECONDS < deadline )); do
+    seen="$(psql_scalar "select count(*) from events
+                          where project_id = '${PROJECT_ID}'
+                            and type = 'workspace.head_changed'
+                            and payload ->> 'head_commit' = '${CHANGED_HEAD}'")"
+    if [[ -n "${seen}" && "${seen}" != "0" ]]; then
+      HEAD_CHANGE_WAIT_SECONDS=$((SECONDS - started))
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+await_head_change \
+  || fail "no workspace.head_changed carrying ${CHANGED_HEAD} within 90s; git_context.interval is 5s, so the connector stopped observing rather than being slow"
+info "workspace.head_changed arrived ${HEAD_CHANGE_WAIT_SECONDS}s after the commit"
+
+# Both sides of the move, read from two events rather than one.
+#
+# The *first* head_changed for this project is the one whose previous state is
+# the state step 3a asserted, whether or not the connector happened to observe
+# the branch switch and the commit separately. The one carrying the new commit
+# is the one whose current state is what the checkout now holds. Reading them
+# apart is what makes the assertion independent of that timing rather than
+# occasionally wrong about it.
+FIRST_CHANGE="$(psql_row "select payload ->> 'workspace_id', payload ->> 'previous_branch',
+                                 payload ->> 'previous_head_commit'
+                            from events
+                           where project_id = '${PROJECT_ID}' and type = 'workspace.head_changed'
+                           order by sequence asc limit 1")"
+IFS='|' read -r F_WORKSPACE F_PREVIOUS_BRANCH F_PREVIOUS_HEAD <<< "${FIRST_CHANGE}"
+[[ "${F_WORKSPACE}" == "${WORKSPACE_ID}" ]] \
+  || fail "the first head change names workspace ${F_WORKSPACE}, not ${WORKSPACE_ID}"
+[[ "${F_PREVIOUS_BRANCH}" == "${FIXTURE_BRANCH}" ]] \
+  || fail "the first head change reports a previous branch of ${F_PREVIOUS_BRANCH}, not ${FIXTURE_BRANCH}"
+[[ "${F_PREVIOUS_HEAD}" == "${FIXTURE_HEAD}" ]] \
+  || fail "the first head change reports a previous head commit of ${F_PREVIOUS_HEAD}, not ${FIXTURE_HEAD}"
+
+LAST_CHANGE="$(psql_row "select payload ->> 'workspace_id', payload ->> 'branch', payload ->> 'head_commit'
+                           from events
+                          where project_id = '${PROJECT_ID}' and type = 'workspace.head_changed'
+                            and payload ->> 'head_commit' = '${CHANGED_HEAD}'
+                          order by sequence desc limit 1")"
+IFS='|' read -r L_WORKSPACE L_BRANCH L_HEAD <<< "${LAST_CHANGE}"
+[[ "${L_WORKSPACE}" == "${WORKSPACE_ID}" ]] \
+  || fail "the head change names workspace ${L_WORKSPACE}, not ${WORKSPACE_ID}"
+[[ "${L_BRANCH}" == "${CHANGED_BRANCH}" ]] \
+  || fail "the head change reports branch ${L_BRANCH}, not ${CHANGED_BRANCH}"
+[[ "${L_HEAD}" == "${CHANGED_HEAD}" ]] \
+  || fail "the head change reports head commit ${L_HEAD}, not ${CHANGED_HEAD}"
+
+# The record moved in place. A second row would mean the control plane had
+# treated the moved checkout as a different one, which is the identity question
+# `(project_id, environment_id, path_hash)` exists to settle.
+MOVED_ROWS="$(psql_row "select id, branch, head_commit, path_hash
+                          from workspaces
+                         where organisation_id = '${ORGANISATION_ID}'
+                           and project_id = '${PROJECT_ID}'")"
+[[ "$(grep -c . <<< "${MOVED_ROWS}")" == "1" ]] \
+  || fail "the head change created a second workspace record: ${MOVED_ROWS}"
+IFS='|' read -r M_ID M_BRANCH M_HEAD M_PATH_HASH <<< "${MOVED_ROWS}"
+[[ "${M_ID}" == "${WORKSPACE_ID}" ]] || fail "the workspace identifier changed to ${M_ID}"
+[[ "${M_BRANCH}" == "${CHANGED_BRANCH}" ]] || fail "the record is still on ${M_BRANCH}"
+[[ "${M_HEAD}" == "${CHANGED_HEAD}" ]] || fail "the record still holds ${M_HEAD}"
+[[ "${M_PATH_HASH}" == "${EXPECTED_PATH_HASH}" ]] || fail "the record's path hash changed with the branch"
+info "the record moved in place: one workspace, now ${M_BRANCH} at ${M_HEAD}"
+
+# The evidence carries digests and object names and no filesystem path, for the
+# reason `docs/DOMAIN_MODEL.md` §9 gives: the path is what is deliberately not
+# recorded, and an artefact attached to a build is the last place to reintroduce
+# it.
+{
+  printf 'Workspace observation and head change (docs/CONNECTOR_PROTOCOL.md section 9)\n'
+  printf '===========================================================================\n\n'
+  printf 'Recorded by deploy/compose/e2e/run.sh on %s\n\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  printf 'What produced the record\n'
+  printf -- '------------------------\n'
+  printf '  source                 %s\n' "${W_SOURCE}"
+  printf '  connector              %s\n' "${W_CONNECTOR}"
+  printf '  environment            %s\n' "${W_ENVIRONMENT}"
+  printf '  workspace              %s\n' "${WORKSPACE_ID}"
+  printf '  workspace.observed     after %ss\n\n' "${OBSERVATION_WAIT_SECONDS}"
+  printf 'What the connector reported about the checkout\n'
+  printf -- '---------------------------------------------\n'
+  printf '  path hash              %s\n' "${W_PATH_HASH}"
+  printf '  display path           %s\n' "${W_DISPLAY}"
+  printf '  repository identity    %s\n' "${W_REPOSITORY}"
+  printf '  branch                 %s\n' "${W_BRANCH}"
+  printf '  head commit            %s\n' "${W_HEAD}"
+  printf '  dirty                  %s\n' "${W_DIRTY}"
+  printf '  root path stored       none\n\n'
+  printf '  The checkout answered git rev-parse HEAD with %s inside the\n' "${FIXTURE_HEAD}"
+  printf '  development environment, which is the value above. The absolute path is\n'
+  printf '  not recorded here or in the database: only its digest travels, and this\n'
+  printf '  file holds the digest for the same reason.\n\n'
+  printf 'The move\n'
+  printf -- '--------\n'
+  printf '  previous               %s at %s\n' "${F_PREVIOUS_BRANCH}" "${F_PREVIOUS_HEAD}"
+  printf '  current                %s at %s\n' "${M_BRANCH}" "${M_HEAD}"
+  printf '  workspace.head_changed after %ss (git_context.interval is 5s)\n' "${HEAD_CHANGE_WAIT_SECONDS}"
+} > "${EVIDENCE}/workspace-observation.txt"
+info "wrote the workspace observation evidence"
 
 # A worker serves only the projects an assignment names, and there is no
 # wildcard: an unassigned worker receives no sessions (docs/API.md section 11).
@@ -657,7 +968,8 @@ done
 "${COMPOSE[@]}" exec -T postgres psql -U reviewplane -d reviewplane -At -F'|' -c \
   "select sequence, type from events where project_id = '${PROJECT_ID}' order by sequence" \
   > "${EVIDENCE}/event-sequence.txt" || fail "could not read the event stream"
-for expected in published_service.requested published_service.ready \
+for expected in workspace.observed workspace.head_changed \
+                published_service.requested published_service.ready \
                 browser_session.requested browser_session.allocated \
                 browser_session.ready browser_session.navigated; do
   grep -q "|${expected}$" "${EVIDENCE}/event-sequence.txt" \

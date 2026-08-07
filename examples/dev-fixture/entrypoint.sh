@@ -1,12 +1,17 @@
 #!/bin/sh
 # Entry point for the containerised development-environment fixture.
 #
-# It starts the loopback application, waits for it to answer, enrols the
-# connector and then hands the process over to the connector's channel. The
-# order matters: `docs/CONNECTOR_PROTOCOL.md` section 11 gives route publication
-# a bounded startup grace on the destination port, and publishing before the
-# application listens ends that grace with `PORT_NOT_LISTENING` rather than an
-# indefinite wait.
+# It checks the checkout, starts the loopback applications, waits for them to
+# answer, enrols the connector and then hands the process over to the
+# connector's channel. The order matters: `docs/CONNECTOR_PROTOCOL.md` section
+# 11 gives route publication a bounded startup grace on the destination port,
+# and publishing before the application listens ends that grace with
+# `PORT_NOT_LISTENING` rather than an indefinite wait.
+#
+# The checkout comes first because it is the cheapest check and the one whose
+# failure is otherwise silent: the connector reports nothing about a directory
+# that is not a Git work tree, so a broken workspace surfaces as an absence
+# minutes later rather than as an error here.
 #
 # Every failure here exits non-zero with an explanation on stderr. A fixture
 # that failed quietly would leave the end-to-end scenario waiting for a route
@@ -34,6 +39,12 @@ fail() {
 
 CONFIG_FILE=/etc/reviewplane-connector/config.yaml
 DATA_DIR=/var/lib/reviewplane-connector
+# The checkout this development machine holds, and the directory the static
+# application is served from. It is the path `connector-config.yaml` names in
+# its `workspaces` block; the two have to agree, and this script checks that it
+# is a checkout before it starts anything, rather than leaving the connector to
+# report `not_a_git_checkout` every interval into a log nobody is reading.
+WORKSPACE_DIR=/opt/reviewplane/dev-fixture
 FIXTURE_HOST=${HOST:-127.0.0.1}
 FIXTURE_PORT=${PORT:-4321}
 FIXTURE_ORIGIN="http://${FIXTURE_HOST}:${FIXTURE_PORT}"
@@ -53,6 +64,25 @@ VITE_READY_TIMEOUT_MS=${FIXTURE_VITE_READY_TIMEOUT_MS:-30000}
 [ -w "$DATA_DIR" ] ||
 	fail "$DATA_DIR is not writable by uid $(id -u). The connector writes its device key there and cannot enrol without it; in Compose this directory is a tmpfs and needs uid=10001,gid=10001,mode=0700."
 
+# The workspace is checked before anything starts, because the alternative is a
+# silent one. A connector whose configured workspace is not a checkout reports
+# no observation at all (`docs/CONNECTOR_PROTOCOL.md` §9) and logs it at debug,
+# so the end-to-end scenario would wait out its observation timeout with nothing
+# to point at. Failing here names the directory and the reason instead.
+#
+# Two separate facts, because they fail for different reasons: that the
+# directory is a work tree at all, and that it has a commit on HEAD. A
+# repository initialised but never committed to has a branch and no head commit,
+# which yields no observation either.
+command -v git >/dev/null 2>&1 ||
+	fail "no git executable is on PATH. The connector derives this machine's branch, head commit and dirty state by running git, and reports nothing about the workspace without it."
+git -C "$WORKSPACE_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
+	fail "$WORKSPACE_DIR is not a Git work tree. The connector observes exactly the paths configured in $CONFIG_FILE and reports no context for a directory that is not a checkout, so the workspace would never appear in the control plane."
+git -C "$WORKSPACE_DIR" rev-parse --verify --quiet HEAD >/dev/null 2>&1 ||
+	fail "$WORKSPACE_DIR has no commit on HEAD. There is no head commit the connector protocol would accept, so the checkout yields no observation."
+printf 'dev-fixture: workspace %s is a checkout on branch %s\n' \
+	"$WORKSPACE_DIR" "$(git -C "$WORKSPACE_DIR" rev-parse --abbrev-ref HEAD)" >&2
+
 # Flags shared by both connector invocations. Paths are passed explicitly rather
 # than left to the binary's defaults so that the container's layout is visible
 # in the process table and in these logs, not only in internal/config.
@@ -70,7 +100,7 @@ if [ -n "${REVIEWPLANE_CONTROL_PLANE_CA_FILE:-}" ]; then
 fi
 
 printf 'dev-fixture: starting the static application on %s\n' "$FIXTURE_ORIGIN" >&2
-node /app/static-app/src/main.ts &
+node "$WORKSPACE_DIR/static-app/src/main.ts" &
 APP_PID=$!
 
 # One Node process polls until the application answers, rather than a shell loop
