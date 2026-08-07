@@ -23,7 +23,10 @@
     "test:edge": "bash deploy/compose/e2e/edge-smoke.sh",
     "test:install": "bash deploy/compose/e2e/install-smoke.sh",
     "protocol:generate": "pnpm --filter @reviewplane/protocol run generate",
-    "protocol:check": "pnpm --filter @reviewplane/protocol run check"
+    "protocol:check": "pnpm --filter @reviewplane/protocol run check",
+    "//release": "The two commands the release pipeline owns (docs/TESTING.md section 16). `test:faults` is a container harness like test:e2e; `audit:dependencies` needs network access to the npm and Go advisory sources and fails closed without it.",
+    "test:faults": "bash deploy/compose/e2e/fault-injection.sh",
+    "audit:dependencies": "node .github/scripts/dependency-audit.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.0",

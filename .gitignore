@@ -37,6 +37,7 @@ deploy/compose/connector-config.generated.yaml
 # committed: it names generated identifiers that mean nothing on another run.
 deploy/compose/e2e/evidence/
 deploy/compose/e2e/evidence-install/
+deploy/compose/e2e/evidence-faults/
 
 # Logs
 *.log

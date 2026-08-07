@@ -321,3 +321,47 @@ new certificate needs a new pin:
 ./configure --force                    # reissues the certificate and rewrites the pin
 docker compose up -d --force-recreate tunnel-gateway browser-worker
 ```
+
+## Fault-injection matrix
+
+`pnpm test:faults` runs `e2e/fault-injection.sh`: the rows of the
+`docs/TESTING.md` §11 matrix that can only be answered against a deployed stack,
+and the release-blocking part of `docs/TESTING.md` §16. It brings the stack up
+the same way the scenario does, publishes a service, allocates a browser session
+— and then breaks things on purpose.
+
+| Case | The fault |
+|---|---|
+| API restart during live view | `docker compose restart api` under an attached WebSocket viewer |
+| Database unavailable | `docker compose stop postgres` mid-run |
+| Artefact store unavailable | every directory on the artefact volume made unwritable |
+| Duplicate verification request | two identical submissions at once against one finding |
+| Connector disconnect during navigation | `docker compose stop dev-fixture` mid-flight |
+| Worker crash after screenshot upload | `SIGKILL` to the worker, restart policy removed first |
+
+Retention deletion is recorded as **not applicable in Stage 1 and asserted to
+be**: the `job_kind` enumeration in the protocol schema names no retention job,
+so the assertion fails the day retention arrives rather than the row staying
+quietly absent.
+
+```bash
+pnpm test:faults                            # about fifteen minutes, needs Docker
+REVIEWPLANE_FAULTS_KEEP_UP=1 pnpm test:faults
+```
+
+Most of the fifteen minutes is one wait: the worker-crash case sits out the
+shipped ninety-second worker-loss bound rather than a shortened one, because a
+harness that reconfigured the timers would be measuring a deployment nobody
+runs. It uses its own per-run Compose project name for the reason the scenario
+does.
+
+Evidence lands in `e2e/evidence-faults/`, and is written on a failing run as
+well as a passing one: `fault-injection-report.md` names each case's verdict,
+the bounds the run applied and the §11 rows it does not cover, and
+`diagnosis/` holds every service's log, a dump of the event store and an
+inventory of the artefact metadata beside the objects actually on the volume.
+A fault-injection failure that cannot be reproduced on demand is diagnosed from
+that directory or not at all. None of it is committed.
+
+The cases run in order and the run stops at the first failure, so a case the
+report lists as neither passed nor failed **was not reached, and is not a pass**.

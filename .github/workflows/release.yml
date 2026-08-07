@@ -1,0 +1,495 @@
+name: Release gates
+
+# The release pipeline of `docs/TESTING.md` section 16.
+#
+# It is deliberately a **third** workflow, distinct from `ci.yml` (`CI gates`)
+# and `container-harnesses.yml` (`Harness gates`). Those two answer "may this
+# change land"; this one answers "may this be released", and the two questions
+# have different answers. A change gate that is green tells you nothing about a
+# critical advisory published this morning against a dependency nobody touched.
+#
+# Every one of the seven conditions section 16 lists is a job here, and the
+# rolled-up `Release gates` check below is red unless every one of them
+# succeeded. Three properties make that claim worth something.
+#
+#   * **A skipped job is a failure.** `needs.*.result` is examined for
+#     `skipped` and `cancelled` as well as `failure`. A condition that did not
+#     run has not been shown to hold, and an absent check cannot be told apart
+#     from a check nobody added — which is the defect RVP-74 and this issue
+#     exist to close.
+#
+#   * **There is no `paths` filter.** This workflow runs in full on every
+#     trigger. `container-harnesses.yml` decides a documentation-only exemption
+#     *inside* the workflow for exactly the reason section 16.1 records; a
+#     release pipeline needs no exemption at all, because a release is a release
+#     whatever the last commit touched.
+#
+#   * **Coverage bounds are printed.** Every job that narrows what it looks at
+#     says so in the run summary. A gate that quietly covers less than its name
+#     suggests is worse than an absent one, because the reader stops looking.
+#
+# What is **recorded and not gated**: the section 12 performance baselines. They
+# are published with the release and no figure fails the build. `docs/ROADMAP.md`
+# defers tuning, and a threshold nobody has calibrated produces a flaky gate,
+# and a flaky gate that cannot be diagnosed gets disabled — at which point it
+# still reads as coverage. The `baselines` job therefore fails only when it
+# could not *publish* a baseline, which is a pipeline defect rather than a
+# performance verdict.
+#
+# Every action is pinned to a commit, not a tag, because a tag is mutable and
+# `docs/SECURITY.md` section 19 requires a pinned supply chain.
+
+on:
+  # The release itself. `release-images.yml` publishes the images from the same
+  # tag; this decides whether that tag should have been cut.
+  push:
+    tags: ["v*"]
+  # A rehearsal, and the way a maintainer answers "could we ship today".
+  workflow_dispatch:
+  # Nightly. The dependency-vulnerability condition has an input that changes
+  # without a commit: an advisory published against a dependency nobody touched
+  # makes a tree that was releasable yesterday unreleasable today, and nothing
+  # in a change gate would ever notice.
+  schedule:
+    - cron: "41 4 * * *"
+
+concurrency:
+  group: release-${{ github.ref }}
+  # Never cancel a release run in flight. Unlike a change gate, the answer is
+  # not superseded by a newer commit: this one was about a particular tag.
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Condition 1: the primary end-to-end scenario
+  # -------------------------------------------------------------------------
+  scenario:
+    name: Primary end-to-end scenario
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # `docs/TESTING.md` section 3. The scenario is release-blocking there and
+      # this is where that sentence becomes true.
+      - name: pnpm test:e2e
+        run: pnpm test:e2e
+
+      # Steps 9 to 12 against a real MCP client, which the Compose scenario
+      # reaches differently. Both, not either: they exercise the same steps
+      # through different transports and a regression can appear in one alone.
+      - name: pnpm test:integration
+        run: pnpm test:integration
+
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scenario-evidence
+          path: deploy/compose/e2e/evidence
+          if-no-files-found: warn
+
+  # -------------------------------------------------------------------------
+  # Conditions 2 and 3: cross-project isolation, and stale control commands
+  # -------------------------------------------------------------------------
+  security:
+    name: Isolation and stale-epoch gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: pnpm
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.work
+          cache: false
+
+      - run: pnpm install --frozen-lockfile
+
+      # The standing security gates: cross-project and cross-organisation
+      # isolation, and stale-epoch rejection (`docs/TESTING.md` sections 5 and
+      # 10). They are the narrow command; the same suites also run inside
+      # `pnpm test`, and the wide run below is what keeps this job honest if the
+      # narrow one is ever quietly emptied.
+      #
+      # The absence of the script is a **failure**, not a skip. A release gate
+      # whose command has gone away has stopped gating, and finding that out
+      # from a green run is how the conditions this workflow enforces came to be
+      # unenforced in the first place.
+      - name: pnpm test:security
+        run: |
+          set -euo pipefail
+          if ! node -e '
+            const scripts = require("./package.json").scripts ?? {};
+            process.exit(scripts["test:security"] === undefined ? 1 : 0);
+          '; then
+            echo "::error::package.json declares no test:security script, so the cross-project isolation and stale-epoch conditions of docs/TESTING.md section 16 have no owner in this build."
+            exit 1
+          fi
+          pnpm test:security
+
+  # -------------------------------------------------------------------------
+  # Condition 4: migration and restore
+  # -------------------------------------------------------------------------
+  migration-restore:
+    name: Migration and restore
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: pnpm
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.work
+          cache: false
+
+      - run: pnpm install --frozen-lockfile
+
+      # The committed Stage 0 fixture is restored, migrated, read back and
+      # backed up again by `apps/server/test/upgrade-stage0.test.ts` and
+      # `backup.test.ts`, both inside `pnpm test` (`docs/TESTING.md` sections 13
+      # and 14). The whole root suite is run rather than those two files: the
+      # release question is whether this build is sound, and narrowing it to two
+      # paths would be a bound with nothing to gain.
+      - run: pnpm test
+
+  # -------------------------------------------------------------------------
+  # Condition 5: the browser worker's shipped defaults, and the installation
+  # -------------------------------------------------------------------------
+  installation:
+    name: Fresh installation and worker defaults
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # `docs/DEPLOYMENT.md` section 8 run verbatim from a clean checkout, plus
+      # the section 20 negative checks: non-root, sandbox enabled as the worker
+      # itself reported it at registration, no Docker socket, no database or
+      # artefact credential, no published debugging port.
+      - run: pnpm test:install
+
+      # The edge gateway's own behaviour, which every other suite runs behind
+      # rather than through. A released stack whose gateway is wrong is a
+      # released stack nobody can reach.
+      - run: pnpm test:edge
+
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: installation-evidence
+          path: deploy/compose/e2e/evidence-install
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------------
+  # Condition 6: critical dependency vulnerabilities
+  # -------------------------------------------------------------------------
+  dependencies:
+    name: Dependency vulnerabilities
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: pnpm
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.work
+          cache: false
+
+      - run: pnpm install --frozen-lockfile
+
+      # Pinned to an exact version for the reason every action here is pinned.
+      # `@latest` would make the gate's own behaviour change without a commit,
+      # which is the property a release gate must not have.
+      - name: Install govulncheck
+        env:
+          GOVULNCHECK_VERSION: v1.6.0
+        run: go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+
+      # The gate fails closed: an advisory source that cannot be reached,
+      # answers unparseably, or answers from a database older than its staleness
+      # bound is a failure and never a pass. It writes its own report — every
+      # advisory, its verdict, and what it did not look at — into the run
+      # summary.
+      - name: pnpm audit:dependencies
+        run: pnpm audit:dependencies --json dependency-audit.json
+
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dependency-audit
+          path: dependency-audit.json
+          if-no-files-found: warn
+
+  # -------------------------------------------------------------------------
+  # Condition 7: protocol compatibility
+  # -------------------------------------------------------------------------
+  protocol:
+    name: Protocol compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: pnpm
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.work
+          cache: false
+
+      - run: pnpm install --frozen-lockfile
+
+      # The committed fixture corpora run in both languages, and either
+      # language's models differing from the schema source is a failure
+      # (`docs/TESTING.md` section 2, "Contract").
+      - run: pnpm protocol:check
+
+  # -------------------------------------------------------------------------
+  # The fault-injection matrix (`docs/TESTING.md` section 11)
+  # -------------------------------------------------------------------------
+  faults:
+    name: Fault-injection matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Faults injected into the deployed stack: a connector stopped mid
+      # navigation, the control plane restarted under a live viewer, the
+      # database stopped, the artefact volume made unwritable, two identical
+      # verifications at once, and the browser worker killed after an upload.
+      # Retention deletion is recorded as not applicable in Stage 1 **and
+      # asserted to be**, so the day retention arrives the case fails rather
+      # than staying quietly absent.
+      - run: pnpm test:faults
+
+      # The report is published whether the run passed or failed, and it carries
+      # the matrix verdicts, the bounds this run applied and the rows it does
+      # not cover. Beside it: the logs, the event dump and the artefact
+      # inventory that make a failure diagnosable.
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fault-injection
+          path: deploy/compose/e2e/evidence-faults
+          if-no-files-found: warn
+
+      - name: Publish the matrix in the run summary
+        if: always()
+        run: |
+          set -euo pipefail
+          report=deploy/compose/e2e/evidence-faults/fault-injection-report.md
+          if [[ -f "${report}" ]]; then
+            cat "${report}" >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "The fault-injection run wrote no report, so no case can be shown to have been decided." \
+              >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+  # -------------------------------------------------------------------------
+  # Performance baselines: recorded and published, never gated
+  # -------------------------------------------------------------------------
+  baselines:
+    name: Performance baselines
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Two sources, because the figures section 12 asks for are measured where
+      # the thing being measured runs. `pnpm test:e2e` records tunnel throughput
+      # and hot-reload responsiveness from a real browser through a real route;
+      # `pnpm test:browser` prints the measured live-frame rate for each capture
+      # mode from a real Chromium.
+      #
+      # `pnpm test:e2e` also runs in the `scenario` job, and this deliberately
+      # does not reuse its evidence. Taking the artefact would mean `needs:
+      # scenario`, which makes a failing scenario *skip* this job — and a
+      # skipped job is a failure here, so one broken scenario would report as
+      # two broken conditions. Twenty parallel runner-minutes on a release or a
+      # nightly run is a smaller price than a rollup that names the wrong cause.
+      - run: pnpm test:e2e
+      - name: pnpm test:browser
+        run: pnpm test:browser | tee browser-suite.log
+
+      # A baseline is a recorded number, not a threshold. What this step
+      # enforces is publication, not performance: a release that claims
+      # published baselines and shipped an empty file has made a false claim,
+      # and that is a pipeline defect. No figure in the file is compared with
+      # anything.
+      - name: Collect and publish the baselines
+        run: |
+          set -euo pipefail
+          baseline=deploy/compose/e2e/evidence/performance-baseline.txt
+          if [[ ! -s "${baseline}" ]]; then
+            echo "::error::${baseline} is missing or empty, so this release would publish no section 12 baseline."
+            exit 1
+          fi
+
+          mkdir -p baselines
+          cp "${baseline}" baselines/tunnel-and-hot-reload.txt
+
+          # The live-capture rates the browser suite prints. Absence is
+          # recorded rather than passed over: "no figure was captured" and "the
+          # figure was fine" must not read the same.
+          if grep -Eiq 'frame|fps|rate' browser-suite.log; then
+            grep -Ei 'frame|fps|rate' browser-suite.log > baselines/live-capture.txt
+          else
+            echo "The browser suite printed no live-capture rate in this run." > baselines/live-capture.txt
+          fi
+
+          {
+            printf '## Performance baselines (docs/TESTING.md section 12)\n\n'
+            printf 'Recorded with this release and **not gated**. No figure below fails the build:\n'
+            printf '`docs/ROADMAP.md` defers tuning, and an uncalibrated threshold produces a\n'
+            printf 'flaky gate that gets disabled and then still reads as coverage.\n\n'
+            printf '### Measured here\n\n'
+            printf -- '- Tunnel throughput and hot-reload responsiveness, from `pnpm test:e2e`.\n'
+            printf -- '- Live-frame rate per capture mode, from `pnpm test:browser`.\n\n'
+            printf '### Not measured here\n\n'
+            printf 'Section 12 also lists browser allocation latency, screenshot capture latency,\n'
+            printf 'review retrieval latency, event fan-out, concurrent browser capacity and object\n'
+            printf 'upload throughput. No harness records those yet, so this release publishes no\n'
+            printf 'figure for them rather than an unattributed one.\n\n'
+            printf '```\n'
+            cat baselines/tunnel-and-hot-reload.txt
+            printf '```\n\n'
+            printf '```\n'
+            cat baselines/live-capture.txt
+            printf '```\n'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: performance-baselines
+          path: baselines
+          if-no-files-found: warn
+
+  # -------------------------------------------------------------------------
+  # The rollup
+  # -------------------------------------------------------------------------
+  gates:
+    # One check that is green only when every condition above held. It is the
+    # release decision, and it is a single check for the same reason `CI gates`
+    # and `Harness gates` are: adding a condition must not mean editing
+    # something else to make it count.
+    name: Release gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: always()
+    needs:
+      - scenario
+      - security
+      - migration-restore
+      - installation
+      - dependencies
+      - protocol
+      - faults
+      - baselines
+    steps:
+      - name: Decide whether this build may be released
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+
+          # The map from a job to the section 16 condition it owns. It is
+          # written out rather than inferred so that a failure names the
+          # condition an operator has to reason about, not a job identifier.
+          declare -A CONDITION=(
+            [scenario]="Primary end-to-end scenario fails"
+            [security]="Cross-project isolation tests fail; stale control commands are accepted"
+            [migration-restore]="Migration or restore test fails"
+            [installation]="Browser worker runs with unsupported insecure defaults"
+            [dependencies]="Critical dependency vulnerability lacks documented mitigation"
+            [protocol]="Protocol compatibility tests fail"
+            [faults]="Fault-injection matrix (docs/TESTING.md section 11)"
+            [baselines]="Performance baselines recorded and published (docs/TESTING.md section 12)"
+          )
+
+          {
+            printf '## Release gates\n\n'
+            printf '| Job | Condition | Result |\n|---|---|---|\n'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          status=0
+          while IFS='=' read -r job result; do
+            printf '| `%s` | %s | %s |\n' "${job}" "${CONDITION[${job}]:-unmapped}" "${result}" \
+              >> "${GITHUB_STEP_SUMMARY}"
+            case "${result}" in
+              success) ;;
+              skipped)
+                # A condition that did not run has not been shown to hold. This
+                # workflow has no path that legitimately skips one, so a skip
+                # means something upstream broke and the release must stop.
+                echo "::error::${job} did not run, so the condition it owns (${CONDITION[${job}]:-unmapped}) is unproven."
+                status=1
+                ;;
+              *)
+                echo "::error::${job} reported ${result}: ${CONDITION[${job}]:-unmapped}."
+                status=1
+                ;;
+            esac
+          done < <(jq -r 'to_entries[] | "\(.key)=\(.value.result)"' <<< "${RESULTS}")
+
+          {
+            printf '\n### What a green check here does and does not mean\n\n'
+            printf 'It means every condition `docs/TESTING.md` §16 lists was checked by a job that\n'
+            printf 'succeeded. It does **not** mean the performance baselines were within any\n'
+            printf 'bound: they are recorded and published, and no figure gates this build.\n'
+            printf 'It does not cover container base-image vulnerabilities, image signing or SBOMs\n'
+            printf '(`docs/SECURITY.md` §19 records those as not implemented), and it does not\n'
+            printf 'cover multi-architecture or air-gapped installation.\n'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          exit "${status}"

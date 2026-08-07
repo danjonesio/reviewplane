@@ -74,12 +74,24 @@ A usable end-to-end personal product.
 
 ### Exit criteria
 
-- Fresh installation from release artefacts in one documented flow
+- Fresh installation **from a clean checkout** in one documented flow
 - User can complete the full primary product loop without database access or manual object-store work
 - Human-authored finding cannot be accepted through agent credentials
 - Browser control commands are project scoped
 - Core end-to-end workflow is covered by automated tests
 - Upgrade from previous stage data fixture succeeds
+
+This criterion read "from release artefacts" until RVP-97, and nothing in Stage 1
+publishes any. Signing and publishing connector binaries and container images
+with SBOMs and checksums is Stage 2 below (RVP-54), so a Stage 1 criterion naming
+release artefacts could not be met by anything Stage 1 builds, and the suite that
+claimed to meet it — `pnpm test:install`, which runs `docs/DEPLOYMENT.md` §8
+verbatim from a clean checkout — was meeting a criterion the document did not
+state. Amending the wording is the honest repair: the property Stage 1 actually
+needs is that a person with a checkout, the documented steps and nothing else
+reaches a working installation, and that is what is tested. The stronger
+criterion is not discarded; it moves to Stage 2, where the artefacts it names
+exist.
 
 ## 4. Stage 2: Reliable personal product
 
@@ -111,6 +123,14 @@ Make the product dependable for daily use across several VMs and projects.
 - Redaction policy is tested against common secret surfaces
 - External storage deployment is documented and tested
 - Two browser workers can register and receive sessions
+- Fresh installation from **signed, published release artefacts** in one documented flow, with the signature verified before anything is started
+
+The last criterion is the one Stage 1 could not carry, moved here rather than
+dropped. It belongs with "Signed connector and image releases" above: until an
+installation can verify a signature, `./configure` builds the images from the
+checkout and says so, because an installation that cannot verify a signature is
+better served by a build it performed itself than by an unsigned pull
+(`docs/SECURITY.md` §19).
 
 ## 5. Stage 3: Team collaboration
 

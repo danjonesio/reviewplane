@@ -8,9 +8,14 @@ name: CI
 # build images and take minutes rather than seconds, so they run in
 # `.github/workflows/container-harnesses.yml`, which reports its own rolled-up
 # `Harness gates` check: on a schedule, on demand, and on every pull request
-# that is not documentation-only. Turning the whole of `docs/TESTING.md` section
-# 16 into a release pipeline is RVP-57; these two workflows are the part of it
-# that can run on every change today.
+# that is not documentation-only.
+#
+# Both of these are **change** gates: they answer "may this land". "May this be
+# released" is a different question and is answered by
+# `.github/workflows/release.yml`, which runs on a tag, nightly and on demand,
+# and reports `Release gates` (`docs/TESTING.md` section 16). Only the two
+# checks these workflows report are required on `main`; requiring the release
+# rollup would require a check that never reports on a pull request.
 #
 # Every action is pinned to a commit, not a tag, because a tag is mutable and
 # `docs/SECURITY.md` section 19 requires a pinned supply chain. The version each

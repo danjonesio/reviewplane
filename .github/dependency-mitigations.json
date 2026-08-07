@@ -1,0 +1,30 @@
+{
+  "$comment": [
+    "The mitigation register read by .github/scripts/dependency-audit.mjs, which owns the",
+    "docs/TESTING.md section 16 release condition 'critical dependency vulnerability lacks",
+    "documented mitigation'.",
+    "",
+    "An entry here is the 'documented mitigation' that condition names. It does not silence an",
+    "advisory: the advisory still appears in every run summary, with the entry's review date",
+    "beside it. What an entry does is let a release ship while the advisory is present, on the",
+    "record of somebody having looked.",
+    "",
+    "Each entry carries:",
+    "  advisory     the identifier the source reports: a GHSA for npm, a GO-YYYY-NNNN for Go.",
+    "  ecosystem    'npm' or 'go'.",
+    "  package      the vulnerable package or module, for a reader scanning this file.",
+    "  severity     the severity the source reported, recorded so a later change of severity is",
+    "               visible as a disagreement rather than silently inherited.",
+    "  mitigation   why this advisory does not reach this product, or what was done about it.",
+    "               At least forty characters, because 'not exploitable' documents nothing.",
+    "  recorded_on  the ISO date the entry was written.",
+    "  review_by    the ISO date the statement stops being current. Past it the gate blocks",
+    "               again. An undated permanent exception is how a register of this kind rots",
+    "               into a list nobody reads.",
+    "",
+    "The array is empty because nothing currently needs an entry: the tree carries no critical",
+    "npm advisory and no reachable Go advisory. An empty register is a fact about today, not a",
+    "statement that the gate does nothing."
+  ],
+  "mitigations": []
+}
