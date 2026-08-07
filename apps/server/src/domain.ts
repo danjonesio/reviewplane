@@ -137,10 +137,18 @@ export {
 } from "./modules/artefacts/store/index.ts";
 
 export {
+  ALLOCATION_DEADLINE_MS,
+  ALLOCATION_GRACE_MS,
   BrowserSessionService,
   DEFAULT_SESSION_LIMITS,
+  allocationFailureClassOf,
+  type AllocationAuthoriser,
+  type AllocationFailureClass,
   type BrowserSessionRecord,
+  type SessionCapabilityRevoker,
+  type SessionScope,
 } from "./modules/browser-sessions/service.ts";
+export { PublishedServiceBinder } from "./modules/published-services/session-binder.ts";
 export { BrowserWorkerClient } from "./modules/browser-sessions/worker-client.ts";
 export { WorkerRegistry } from "./modules/browser-sessions/workers.ts";
 

@@ -183,6 +183,9 @@ export function validatePayload(type: MessageType, value: unknown, path: string,
     case "browser_session_start":
       validateBrowserSessionResult(value, path, out);
       return;
+    case "browser_session_allocate":
+      validateBrowserSessionResult(value, path, out);
+      return;
     case "browser_session_status":
       validateBrowserSessionResult(value, path, out);
       return;
@@ -281,6 +284,8 @@ export function decodeFrame(envelope: Envelope, value: unknown): McpFrame {
       return { envelope, type: "browser_take_screenshot", payload: decodeBrowserTakeScreenshotResult(value) };
     case "browser_session_start":
       return { envelope, type: "browser_session_start", payload: decodeBrowserSessionResult(value) };
+    case "browser_session_allocate":
+      return { envelope, type: "browser_session_allocate", payload: decodeBrowserSessionResult(value) };
     case "browser_session_status":
       return { envelope, type: "browser_session_status", payload: decodeBrowserSessionResult(value) };
     case "browser_session_pause":
@@ -360,6 +365,8 @@ export function encodeFramePayload(frame: McpFrame): string {
     case "browser_take_screenshot":
       return encodeBrowserTakeScreenshotResult(frame.payload);
     case "browser_session_start":
+      return encodeBrowserSessionResult(frame.payload);
+    case "browser_session_allocate":
       return encodeBrowserSessionResult(frame.payload);
     case "browser_session_status":
       return encodeBrowserSessionResult(frame.payload);

@@ -728,6 +728,7 @@ test("a control plane that becomes unavailable mid-session refuses with a retrya
       internalSuffix: "internal.invalid",
       routeTtlMaxSeconds: 28800,
       publishWaitMs: 15000,
+      allocateWaitMs: 30000,
     },
     pool: failing,
   });

@@ -224,6 +224,25 @@ The two credentials have no defaults: the worker refuses to start without them. 
 
 The control plane reads `REVIEWPLANE_WORKER_CREDENTIAL`, `REVIEWPLANE_WORKER_COMMAND_CREDENTIAL`, `REVIEWPLANE_WORKER_ENDPOINT`, `REVIEWPLANE_ARTEFACT_PATH`, `REVIEWPLANE_ARTEFACT_MAX_BYTES` and `REVIEWPLANE_WORKER_REQUEST_TIMEOUT_MS` alongside the settings of §2, each with the same `*_FILE` support. Its listen address is `REVIEWPLANE_HOST`, which is the name §2 gives it; there is no separate `REVIEWPLANE_LISTEN_ADDRESS`.
 
+| Setting | Default | Meaning |
+|---|---|---|
+| `REVIEWPLANE_ALLOCATION_DEADLINE_SECONDS` | `120` | How long a browser-session reservation that has asked to be admitted to a route may live before the control plane fails it |
+
+A reservation is `REQUESTED` with `ended_at IS NULL`, which is exactly what the
+worker capacity query counts, so one that nothing can complete would hold a
+browser slot indefinitely — and four of them fill a default worker. The deadline
+is the mechanism and the sweep is only what notices it (ADR-0037). It is measured
+from when admission was asked for and never from when the session was reserved: a
+reservation waits for a route to be published against it, and a deadline running
+from creation would fail the allocation at the moment the agent finally asked.
+Raise it only where a browser worker is genuinely slower than two minutes to open
+a context; lowering it below the time a Chromium context takes turns a working
+allocation into a refusal.
+
+It bounds only reservations this path creates. One made through
+`POST /api/v1/projects/:projectId/browser-sessions` with `{"allocate": false}`
+and **no** route has no lifetime and holds its slot until a human ends it.
+
 ### 3.1 MCP-server environment
 
 The agent-facing process (`docs/ARCHITECTURE.md` section 4.4, ADR-0020) is
@@ -244,6 +263,7 @@ configured separately, because it is a separate process:
 | `REVIEWPLANE_INTERNAL_SUFFIX` | `internal.invalid` | Domain the internal origins live under; must match the control plane's |
 | `REVIEWPLANE_ROUTE_TTL_MAX_SECONDS` | `28800` | Longest route lifetime `development_service_publish` may request |
 | `REVIEWPLANE_MCP_PUBLISH_WAIT_MS` | `15000` | How long `development_service_publish` waits for a requested route to become ready or failed |
+| `REVIEWPLANE_MCP_ALLOCATE_WAIT_MS` | `30000` | How long `browser_session_allocate` waits for the control-plane API to finish an allocation it requested |
 
 The tunnel-control pair is what makes `development_service_unpublish` a
 revocation rather than a note in the database. The gateway verifies a route
@@ -254,6 +274,14 @@ no connector control channel, and a publication it requests is completed by the
 control-plane API (ADR-0021). `REVIEWPLANE_MCP_PUBLISH_WAIT_MS` bounds the wait
 for that completion and never shortens it into a false answer — a route still
 `requested` when it expires is reported as `requested`.
+
+`REVIEWPLANE_MCP_ALLOCATE_WAIT_MS` is the same arrangement one layer down
+(ADR-0037). Admitting a browser session to a route mints a session-scoped
+capability, so the MCP endpoint records the request and the control-plane API
+completes it. It is longer than the publication wait because what it waits for is
+a Chromium context coming up rather than a connector answering, and it ends in
+the record as it stands for the same reason: a session still `REQUESTED` or
+`ALLOCATING` when it expires is reported as such and never as ready.
 
 It deliberately does **not** read `REVIEWPLANE_BOOTSTRAP_TOKEN`, and it holds no
 capability signing key. The agent-facing process has no administrative work to

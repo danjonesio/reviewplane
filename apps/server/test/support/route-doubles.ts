@@ -33,6 +33,18 @@ export type {
 export class AcceptingGateway implements TunnelGateway {
   readonly registered: GatewayRegisterRequest[] = [];
   readonly revokedRoutes: string[] = [];
+  /**
+   * Capability identifiers the control plane asked the gateway to withdraw.
+   *
+   * Recorded rather than discarded, because "the control plane told the gateway"
+   * is an assertion a test has to be able to make. It is **not** an assertion
+   * that the gateway then refuses the capability: the gateway verifies from a
+   * signature without a database read and its revocation set does not survive a
+   * restart (RVP-76), so a test claiming that would assert a property the system
+   * does not have. What this records is the call, which is the part the control
+   * plane is responsible for.
+   */
+  readonly revokedCapabilities: string[] = [];
 
   register(request: GatewayRegisterRequest): Promise<GatewayRouteView> {
     this.registered.push(request);
@@ -58,7 +70,8 @@ export class AcceptingGateway implements TunnelGateway {
     return Promise.resolve();
   }
 
-  revokeCapability(): Promise<void> {
+  revokeCapability(capabilityId: string): Promise<void> {
+    this.revokedCapabilities.push(capabilityId);
     return Promise.resolve();
   }
 }

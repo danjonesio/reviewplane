@@ -117,6 +117,7 @@ export const WARNING_CODE_VALUES = [
   "results_truncated",
   "idempotent_replay",
   "completion_blocked_pending_review",
+  "allocation_incomplete",
 ] as const;
 
 export type WarningCode =
@@ -130,12 +131,17 @@ export type WarningCode =
   | "inbox_unavailable"
   | "results_truncated"
   | "idempotent_replay"
-  | "completion_blocked_pending_review";
+  | "completion_blocked_pending_review"
+  | "allocation_incomplete";
 
 /**
  * Stable refusal code (docs/MCP_SPEC.md section 12). Adding a code is additive within a
  * protocol version and a client MUST tolerate a code it does not recognise. This
- * enumeration MUST equal x-protocol.error_classes.
+ * enumeration MUST equal x-protocol.error_classes. The six codes after
+ * IDEMPOTENCY_CONFLICT are the ones this endpoint has always been able to emit and did not
+ * declare: refusalFrom casts the domain's code rather than validating it, so a client
+ * validating against this enumeration would have rejected a refusal the server was
+ * entitled to send.
  */
 export const ERROR_CLASS_VALUES = [
   "AUTHENTICATION_REQUIRED",
@@ -146,8 +152,14 @@ export const ERROR_CLASS_VALUES = [
   "RESOURCE_STALE",
   "VERSION_CONFLICT",
   "IDEMPOTENCY_CONFLICT",
+  "VALIDATION_FAILED",
   "CONNECTOR_OFFLINE",
+  "IDENTITY_REVOKED",
   "PUBLISHED_SERVICE_UNAVAILABLE",
+  "ROUTE_EXPIRED",
+  "ROUTE_LIMIT_EXCEEDED",
+  "DESTINATION_NOT_ALLOWED",
+  "WORKSPACE_NOT_FOUND",
   "BROWSER_CAPACITY_EXHAUSTED",
   "BROWSER_SESSION_NOT_ACTIVE",
   "CONTROL_NOT_OWNED",
@@ -172,8 +184,14 @@ export type ErrorClass =
   | "RESOURCE_STALE"
   | "VERSION_CONFLICT"
   | "IDEMPOTENCY_CONFLICT"
+  | "VALIDATION_FAILED"
   | "CONNECTOR_OFFLINE"
+  | "IDENTITY_REVOKED"
   | "PUBLISHED_SERVICE_UNAVAILABLE"
+  | "ROUTE_EXPIRED"
+  | "ROUTE_LIMIT_EXCEEDED"
+  | "DESTINATION_NOT_ALLOWED"
+  | "WORKSPACE_NOT_FOUND"
   | "BROWSER_CAPACITY_EXHAUSTED"
   | "BROWSER_SESSION_NOT_ACTIVE"
   | "CONTROL_NOT_OWNED"
@@ -212,6 +230,7 @@ export const MESSAGE_TYPE_VALUES = [
   "finding_submit_verification",
   "browser_take_screenshot",
   "browser_session_start",
+  "browser_session_allocate",
   "browser_session_status",
   "browser_session_pause",
   "browser_session_resume",
@@ -251,6 +270,7 @@ export type MessageType =
   | "finding_submit_verification"
   | "browser_take_screenshot"
   | "browser_session_start"
+  | "browser_session_allocate"
   | "browser_session_status"
   | "browser_session_pause"
   | "browser_session_resume"
@@ -326,6 +346,28 @@ export type BrowserLifecycleStatus =
   | "TERMINATING"
   | "TERMINATED"
   | "FAILED";
+
+/**
+ * Connector lifecycle status (docs/DOMAIN_MODEL.md section 8). This enumeration MUST equal
+ * the platform schema's connector_status: an agent told a route's connector is DEGRADED
+ * and a control plane that meant something else by it would disagree about whether waiting
+ * is worth anything. DEGRADED and DISCONNECTED are conclusions the control plane draws
+ * from heartbeat silence and are never self-reported; REVOKED is terminal.
+ */
+export const CONNECTOR_STATUS_VALUES = [
+  "PENDING_ENROLMENT",
+  "ACTIVE",
+  "DEGRADED",
+  "DISCONNECTED",
+  "REVOKED",
+] as const;
+
+export type ConnectorStatus =
+  | "PENDING_ENROLMENT"
+  | "ACTIVE"
+  | "DEGRADED"
+  | "DISCONNECTED"
+  | "REVOKED";
 
 /**
  * Agent-session status (docs/DOMAIN_MODEL.md section 11).
@@ -918,6 +960,7 @@ export const MESSAGE_DIRECTIONS: Readonly<Record<MessageType, "client_to_server"
   "finding_submit_verification": "server_to_client",
   "browser_take_screenshot": "server_to_client",
   "browser_session_start": "server_to_client",
+  "browser_session_allocate": "server_to_client",
   "browser_session_status": "server_to_client",
   "browser_session_pause": "server_to_client",
   "browser_session_resume": "server_to_client",
@@ -960,6 +1003,7 @@ export const MESSAGE_CHANNELS: Readonly<Record<MessageType, Channel>> = {
   "finding_submit_verification": "finding",
   "browser_take_screenshot": "browser",
   "browser_session_start": "browser",
+  "browser_session_allocate": "browser",
   "browser_session_status": "browser",
   "browser_session_pause": "browser",
   "browser_session_resume": "browser",
@@ -1003,6 +1047,7 @@ export const PAYLOAD_MAX_BYTES: Readonly<Record<MessageType, number>> = {
   "finding_submit_verification": 32768,
   "browser_take_screenshot": 8192,
   "browser_session_start": 8192,
+  "browser_session_allocate": 8192,
   "browser_session_status": 8192,
   "browser_session_pause": 8192,
   "browser_session_resume": 8192,
@@ -1106,8 +1151,8 @@ export const RESOURCE_URI_FORMS = [
  * no visual inspection and — the row that matters most — no secret tool of any kind, which
  * is the strongest available form of the rule that no raw secret reaches an agent
  * (docs/SECURITY.md section 12.1). The inbox tools joined it with RVP-49, the
- * development-service tools with RVP-24 and the two completion tools of section 7.8 with
- * RVP-53.
+ * development-service tools with RVP-24, the two completion tools of section 7.8 with
+ * RVP-53 and browser_session_allocate with RVP-90 (ADR-0037).
  */
 export const TOOL_AVAILABILITY = [
   "project_current",
@@ -1128,6 +1173,7 @@ export const TOOL_AVAILABILITY = [
   "finding_submit_verification",
   "browser_take_screenshot",
   "browser_session_start",
+  "browser_session_allocate",
   "browser_session_status",
   "browser_session_pause",
   "browser_session_resume",
@@ -1902,6 +1948,14 @@ export interface ErrorDetails {
    * route a browser session was allocated against no longer authorises it.
    */
   readonly published_service_id?: Identifier;
+  /**
+   * The status the route's connector actually holds, returned with IDENTITY_REVOKED and
+   * CONNECTOR_OFFLINE. The two codes are distinguished on purpose and this member says
+   * which condition produced the one that arrived: a revoked identity will not come back
+   * and the route must be published through another connector, while a connector the
+   * deployment has and cannot reach is worth waiting for.
+   */
+  readonly connector_status?: ConnectorStatus;
 }
 
 /**
@@ -2933,20 +2987,65 @@ export interface BrowserTakeScreenshotInput {
  * Arguments of browser_session_start (docs/MCP_SPEC.md section 7.3). There is no project
  * argument and no origin argument: the project is the session's, and the origin is derived
  * from the published service by the control plane, because the origin is the browser's
- * egress allow-list (docs/SECURITY.md section 9).
+ * egress allow-list (docs/SECURITY.md section 9). To reach a development service, send
+ * allocate false, publish a route with development_service_publish — it names this
+ * reservation — and then call browser_session_allocate.
  */
 export interface BrowserSessionStartInput {
   /**
-   * Published service the session may reach. A session started without one can navigate
-   * nowhere.
+   * DEPRECATED and refused: it never worked and cannot be made to. A route names the
+   * browser sessions it authorises when it is published, so it cannot authorise a session
+   * that did not exist yet, and a worker's egress policy is fixed when its context is
+   * created and MUST NOT be widened afterwards (docs/SECURITY.md section 10). Use
+   * browser_session_allocate instead: start with allocate false, publish the route, then
+   * allocate. A request carrying this member is refused with VALIDATION_FAILED naming that
+   * replacement, before anything is reserved. It is retained rather than removed so the
+   * refusal is audited and can name the way out (docs/MCP_SPEC.md section 14 forbids a
+   * breaking tool change without a new major version or a parallel tool name); it is
+   * removed at the next major protocol version.
    */
   readonly published_service_id?: Identifier;
+  /**
+   * Whether to allocate the session on its worker in this call. True, the default,
+   * reserves and allocates in one request for a session that needs no route. False
+   * reserves and stops: the response is a REQUESTED session with an identifier and a
+   * chosen worker, no worker has been contacted, and that identifier can then appear in a
+   * route's allowed_browser_session_ids (docs/API.md section 11).
+   */
+  readonly allocate?: boolean;
   /**
    * Initial viewport. Absent means the project's first default validation viewport.
    */
   readonly viewport?: Viewport;
   /**
    * Key for this allocation, so a retried call does not consume two browser slots.
+   */
+  readonly idempotency_key: IdempotencyKey;
+}
+
+/**
+ * Names a reservation this agent session made and, optionally, a route its own project
+ * already published that already names that reservation (docs/MCP_SPEC.md section 7.3).
+ * There is no origin, no connector, no workspace, no project and no organisation argument:
+ * each would be an authorisation input the caller chose, and the control plane re-derives
+ * every one of them from records the caller did not author.
+ */
+export interface BrowserSessionAllocateInput {
+  /**
+   * The REQUESTED browser session to allocate. It must be one this agent session reserved;
+   * a session in another project is reported not found, byte for byte as an unknown
+   * identifier is.
+   */
+  readonly browser_session_id: Identifier;
+  /**
+   * Route the session is admitted to. It must be ready, belong to this project, be carried
+   * by a connector that is enrolled and connected, and already name this reservation in
+   * its allowed_browser_session_ids; the control plane resolves the origin and mints the
+   * session-scoped capability itself. Absent allocates a session that can reach nothing.
+   */
+  readonly published_service_id?: Identifier;
+  /**
+   * Key for this allocation, so a retried call binds one route rather than two.
    */
   readonly idempotency_key: IdempotencyKey;
 }
@@ -4259,6 +4358,11 @@ export type McpFrame =
   | {
       readonly envelope: Envelope;
       readonly type: "browser_session_start";
+      readonly payload: BrowserSessionResult;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "browser_session_allocate";
       readonly payload: BrowserSessionResult;
     }
   | {

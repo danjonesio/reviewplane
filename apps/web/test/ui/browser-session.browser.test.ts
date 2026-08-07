@@ -286,11 +286,17 @@ for (const [label, viewport] of [
         "no viewport preset is chosen",
       );
 
-      // The route is offered by what it reaches, and the explicit no-route
-      // choice is a choice rather than a blank control.
+      // What the session is *for* is the choice, and no route identifier is
+      // among the options. A select of published routes cannot succeed on a
+      // one-request start: a route names the browser sessions it authorises
+      // when it is published, so it cannot name one this request is about to
+      // create (ADR-0037). Both options are explicit, because a blank control
+      // and an unanswered one look the same and the difference decides whether
+      // the session can open anything.
       const services = (await session.page.locator("#start-service").textContent()) ?? "";
-      assert.match(services, /internal\.invalid/u, `the carried route is not offered: ${services}`);
-      assert.match(services, /No published service \(the session will reach nothing\)/u, services);
+      assert.doesNotMatch(services, /internal\.invalid/u, `a route is offered here: ${services}`);
+      assert.match(services, /Nothing — start an empty browser now/u, services);
+      assert.match(services, /reserve now, publish a route, then allocate/u, services);
 
       // Step 3 of the flow is present, disabled and honest about why.
       assert.equal(await session.page.locator("#start-trace").isDisabled(), true);
@@ -328,8 +334,10 @@ for (const [label, viewport] of [
         (await session.page.locator("#start-browser-session-activity").textContent()) ?? "";
       assert.match(announced, /Browser session brs_ui_started_1 is READY/u, announced);
       assert.match(announced, /at 1440x900/u, announced);
-      assert.match(announced, /internal\.invalid/u, announced);
-      assert.match(announced, /over the connector's private route/u, announced);
+      // It reaches nothing, and the announcement says so. A one-request start
+      // cannot bind a route, so a sentence naming an origin here would be the
+      // page claiming something the control plane did not do.
+      assert.match(announced, /reaches no application/u, announced);
 
       // And step 5 of the flow is the link it leaves behind.
       const started = (await link.getAttribute("data-started-session")) ?? "";
@@ -337,6 +345,68 @@ for (const [label, viewport] of [
       await link.getByRole("link", { name: "Open the session room" }).click();
       await session.page.getByRole("heading", { name: "Live browser" }).waitFor();
       await session.page.getByRole("heading", { name: started }).waitFor();
+
+      await assertNoHorizontalOverflow(session.page);
+      assert.deepEqual(session.errors, [], session.errors.join(" | "));
+    });
+  });
+
+  test(`reserve, publish, allocate is the order the page offers at ${label}`, async () => {
+    // The whole of ADR-0037's human half, driven as a reader drives it. It is
+    // one test rather than three because the steps only mean anything together:
+    // a reservation with no route reaches nothing, a route published against no
+    // reservation names nobody, and the page's previous route selector produced
+    // a session that silently reached neither.
+    await withSession(viewport, {}, async (session) => {
+      await openLive(session);
+
+      // Step one: reserve. Nothing is allocated and no worker is contacted.
+      await session.page.locator("#start-service").selectOption("reserve");
+      await session.page.locator("#start-submit").click();
+      const reserved = session.page.locator("[data-reserved-session]");
+      await reserved.waitFor({ timeout: 20_000 });
+      const reservationId = (await reserved.getAttribute("data-reserved-session")) ?? "";
+      assert.match(reservationId, /^brs_ui_started_/u, reservationId);
+
+      const announced =
+        (await session.page.locator("#start-browser-session-activity").textContent()) ?? "";
+      assert.match(announced, /is reserved/u, announced);
+      assert.match(announced, /No browser has been opened/u, announced);
+
+      // There is nothing to admit it to yet, and the empty state is the
+      // instruction rather than a dead end.
+      const empty =
+        (await session.page.locator("[data-empty='allocate-services']").textContent()) ?? "";
+      assert.match(empty, /No carried route names/u, empty);
+      assert.match(empty, new RegExp(reservationId, "u"), empty);
+
+      // Step two: publish a route that names the reservation. The reservation is
+      // offered here because `REQUESTED` is a status a route may authorise —
+      // which is the whole reason the identifier is reserved first.
+      const authorise = session.page.locator(`#publish-session-${reservationId}`);
+      await authorise.scrollIntoViewIfNeeded();
+      await authorise.check();
+      await session.page.locator("#publish-local-port").fill("4321");
+      await session.page.locator("#publish-submit").click();
+
+      // Step three: allocate. The select offers only routes that already name
+      // this reservation, so the only choices are ones the control plane will
+      // accept.
+      const allocateSubmit = session.page.locator("#allocate-submit");
+      await allocateSubmit.waitFor({ timeout: 20_000 });
+      const offered = (await session.page.locator("#allocate-service").textContent()) ?? "";
+      assert.match(offered, /internal\.invalid/u, offered);
+      await allocateSubmit.scrollIntoViewIfNeeded();
+      await evidence(session.page, `rvp90-reserve-publish-allocate-${label}`);
+      await allocateSubmit.click();
+
+      const link = session.page.locator("[data-started-session]");
+      await link.waitFor({ timeout: 20_000 });
+      const bound =
+        (await session.page.locator("#start-browser-session-activity").textContent()) ?? "";
+      assert.match(bound, /is READY/u, bound);
+      assert.match(bound, /internal\.invalid/u, bound);
+      assert.match(bound, /over the connector's private route/u, bound);
 
       await assertNoHorizontalOverflow(session.page);
       assert.deepEqual(session.errors, [], session.errors.join(" | "));

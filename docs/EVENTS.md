@@ -341,22 +341,70 @@ transition — currently the termination of an orphan worker context, whose
 
 Do not emit every pointer movement as a durable event. High-frequency input may be sampled or summarised.
 
-**Every** refused browser command produces `browser.command_rejected`, not only
-a stale epoch: a wrong session status, a foreign project, a non-owning
-controller, a missing worker, a route that no longer authorises the session and a
-policy denial each produce one, carrying the stable error code, a `reason` token,
-the presented epoch and the presented controller type. `SECURITY.md` §8 requires
+**Every refused browser command and every refused authority produces
+`browser.command_rejected`**, not only a stale epoch: a wrong session status, a
+foreign project, a non-owning controller, a missing worker, a route that no
+longer authorises the session and a policy denial each produce one, carrying the
+stable error code, a `reason` token, the presented epoch and the presented
+controller type.
+
+**A malformed call does not**, and the distinction is deliberate rather than an
+omission. A schema violation is not an authority denial — nobody was refused an
+authority they might have held, and there is no record to correlate the attempt
+to — and recording one would let a client looping on a bad argument write to an
+append-only table at request rate, which is the same objection this section
+raises below against recording capacity refusals. The one exception is an
+argument that names an authority the enumeration deliberately cannot express: an
+agent naming a human-reserved finding status is refused by the generated
+validator and **is** audited, because that refusal is an authority denial wearing
+a validator's clothes (ADR-0020).
+
+A **capability** denial — a credential calling a tool its session was not granted
+— produces one too, with `kind: "capability"`, `command` naming the **tool**
+rather than an act, `required_capability`, and `capability_denied: true`. It
+carries no correlation and no session, because the call is refused before any
+record is resolved and a fabricated correlation would file the attempt against
+somebody else's timeline. It wrote nothing at all until ADR-0037, for every tool
+on the agent surface: an operator asking *did a credential try to use an
+authority it was not granted?* received the same answer as if nothing had. It is
+the denial that regresses invisibly, because removing the write changes no
+response. `SECURITY.md` §8 requires
 a rejected command to be *logged* as well as refused, and until RVP-30 only one
 of the denials in the command path was — so an auditor asking whether anything
 had tried to drive a terminated session received the same answer as if nothing
 had.
 
 `browser.command_rejected` covers refused **lifecycle acts** as well as refused
-browser commands: a pause, resume, end, control request or control release that
-is refused writes one, with `kind: "lifecycle"` and `command` naming the act
-(`pause`, `resume`, `end`, `control_request`, `control_release`). A browser
-command carries `kind: "command"`'s absence — it is the default shape — and
-`command` from the browser command vocabulary.
+browser commands: a pause, resume, end, allocate, control request or control
+release that is refused writes one, with `kind: "lifecycle"` and `command` naming
+the act (`pause`, `resume`, `end`, `allocate`, `control_request`,
+`control_release`). A browser command carries `kind: "command"`'s absence — it is
+the default shape — and `command` from the browser command vocabulary.
+
+`allocate` joined the set with ADR-0037. Allocation is the transition `REQUESTED`
+→ `ALLOCATING` → `READY`, so it is a lifecycle act and it shares this type for the
+reason the others do. Its payload carries `published_service_id`: the act is
+*about* a route, and no event on the bind path named one before — so "which route
+did this session try to reach?" was unanswerable from `events`, whatever the
+refusal had said.
+
+A refused allocation that named a route **outside the caller's tenancy** carries
+`cross_project: true` on the actor's own project stream, exactly as a
+cross-project command does, and withholds the session's epoch and status for the
+same reason. Without it a route that does not exist and a route in another
+project produce byte-identical records, and an auditor cannot tell an agent
+probing another project's identifiers from an operator's typo. The refusal the
+caller receives stays byte-identical either way — that indistinguishability is
+the control (`API.md` §5) and the record is what makes the attempt visible to
+somebody entitled to see it. Two of its refusals carry **no `browser_session_id` at
+all**, because there is no session to correlate them to: a
+`browser_session_start` that named a published service is refused before anything
+is reserved, and a `browser_session_allocate` naming a session the caller cannot
+resolve must not be told whether that session exists. Both are written to the
+**actor's** project stream and carry `browser_session_unresolved: true`, so an
+auditor reads a deliberate absence rather than a lost correlation. They carry no
+`presented_epoch` either: none was presented, and an epoch invented for the
+record would be a fact about nothing.
 
 Sharing one type is deliberate. The question an auditor asks is "did anything
 try to act on this session and get refused?", and splitting the answer across
@@ -373,6 +421,17 @@ the record is correlated to `browser_session_id`, so every member is about that
 one session by construction — which is the opposite of the refusal `details`
 object of `API.md` §5, one object serving reviews, findings and sessions, where
 a bare `status` would say nothing about which record it described.
+
+A failure rather than a refusal carries a **reason code** and not free text.
+`browser_session.failed` records `reason_code` from a closed vocabulary — the
+stable codes of `API.md` §5 and `CONNECTOR_PROTOCOL.md` §21, with anything
+unrecognised recorded as `INTERNAL_ERROR` — plus a `trigger` distinguishing
+`allocation_refused` from `allocation_deadline`, and the `previous_status` the
+record was actually in. It recorded the caught exception's `message` until
+ADR-0037, which §8 forbids and which the publication path had already got right:
+a refusal recorded as free text is not one an auditor can query for, and a query
+that counted refused allocations by matching a message stops counting them the
+first time somebody rewords one, without failing.
 
 A **capacity** refusal is deliberately not one of these. `BROWSER_CAPACITY_EXHAUSTED`
 is a scheduling outcome rather than an authority denial: no session exists for

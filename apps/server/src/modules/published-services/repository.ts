@@ -430,6 +430,20 @@ export async function countReadyForConnector(
  * which is a working deployment shape rather than an attack. A connector that
  * *is* bound to a project, directly or through its environment, may be used for
  * that project and no other.
+ *
+ * **`status = 'ACTIVE'` is a term of this query and not a check by its caller**
+ * (RVP-81). It selected the status and every caller discarded it, so a route
+ * could be published through a connector whose identity had been revoked —
+ * while `apps/mcp-server/src/development-services.ts` required `ACTIVE` for its
+ * own connector selection, which meant the two publication surfaces disagreed
+ * about whether a connector may carry a route at all. Both reach `request()`
+ * and `request()` reaches this, so putting the term here makes it one rule
+ * rather than two that have to agree. It also closes a check-then-use window on
+ * the agent path, which resolves a connector and then publishes through it.
+ *
+ * A refusal from here is `RESOURCE_NOT_FOUND` and says nothing about why.
+ * {@link findConnectorStatusInScope} runs on the refusal path only, inside the
+ * same tenancy terms, so the answer can name the condition.
  */
 export async function findPublishableConnector(
   client: PoolClient,
@@ -441,6 +455,47 @@ export async function findPublishableConnector(
 ): Promise<{ readonly id: string; readonly status: string } | null> {
   const result = await client.query<{ id: string; status: string }>(
     `SELECT connectors.id, connectors.status
+       FROM connectors
+       JOIN environments ON environments.id = connectors.environment_id
+      WHERE connectors.id = $1
+        AND connectors.organisation_id = $2
+        AND connectors.status = 'ACTIVE'
+        AND (
+          $3 IN (connectors.project_id, environments.project_id)
+          OR (connectors.project_id IS NULL AND environments.project_id IS NULL)
+        )`,
+    [input.connectorId, input.organisationId, input.projectId],
+  );
+  return result.rows[0] ?? null;
+}
+
+/**
+ * The status of a connector the caller may already know exists, for diagnosis.
+ *
+ * It runs **only after {@link findPublishableConnector} has refused**, and it
+ * changes no decision: the refusal stands either way. What it changes is that
+ * the answer says whether the identity was revoked — which will not come back,
+ * so the route must be published through another connector — or whether the
+ * deployment has the connector and cannot reach it, which is worth waiting for
+ * (`docs/UX_FLOWS.md` §18: a refusal names the condition and the way out).
+ *
+ * The tenancy terms are identical to {@link findPublishableConnector}'s, so
+ * this discloses nothing that function would not have disclosed by returning a
+ * row. A connector in another organisation is absent here as it is there, and
+ * the caller receives the same `RESOURCE_NOT_FOUND` an unknown identifier earns.
+ * The status of a connector in the caller's *own* project is not an enumeration
+ * oracle: the caller is already entitled to know that connector exists.
+ */
+export async function findConnectorStatusInScope(
+  client: PoolClient,
+  input: {
+    readonly connectorId: string;
+    readonly organisationId: string;
+    readonly projectId: string;
+  },
+): Promise<{ readonly status: string } | null> {
+  const result = await client.query<{ status: string }>(
+    `SELECT connectors.status
        FROM connectors
        JOIN environments ON environments.id = connectors.environment_id
       WHERE connectors.id = $1
@@ -495,6 +550,172 @@ export async function findBrowserSessionsInProject(
   return result.rows.map((row) => row.id);
 }
 
+/**
+ * Everything admitting a browser session to a route depends on, in one row.
+ *
+ * The route identifier, the session identifier, the caller's organisation and
+ * the caller's project scope are **four terms of one predicate**, joined across
+ * `browser_sessions`, `projects`, `published_services` and `connectors`. A row
+ * satisfying some and not the others is never returned and then refused by a
+ * later branch (`docs/SECURITY.md` §7), and a route or a session outside the
+ * caller's tenancy is *absent* rather than forbidden — so a cross-tenant attempt
+ * earns the same refusal, message included, that an unknown identifier does
+ * (`docs/API.md` §5).
+ *
+ * The **join** `b.project_id = s.project_id` is the load-bearing project term:
+ * it says the route and the session belong to the same project, which is the
+ * invariant of `docs/DOMAIN_MODEL.md` §6 and the one that cannot be satisfied by
+ * naming somebody else's route. The `project_id = ANY($4)` term beside it is the
+ * caller's own scope, and it is defence in depth over that join rather than a
+ * duplicate of it: it is what still refuses a route in another project if a
+ * future caller resolves the session more loosely than today's do.
+ *
+ * The binder used to read the route with
+ * `{ organisationId: null, projectIds: [input.projectId] }` and then compare the
+ * project in an `if`. That was sound only because a project identifier implies
+ * its organisation — `projects.id` is a global primary key and
+ * `projects.organisation_id` is `NOT NULL` — and only while `input.projectId`
+ * was caller-derived, which was a property of every caller rather than of the
+ * binder. A shipped release violated exactly that implication elsewhere, which
+ * is why `CreatePublishedServiceInput.organisationId` carries the comment it
+ * does. A rule that holds because of a second rule somewhere else is the kind
+ * that stops holding silently (ADR-0037, RVP-91, RVP-92).
+ *
+ * Three things are **returned rather than filtered**, because each is a fact
+ * about state that the caller — already proven to be inside this project — is
+ * entitled to be told, and because a refusal that named none of them would send
+ * an agent looking at the application it is reviewing: whether the route is
+ * carrying traffic, what its connector's identity is doing, and whether the
+ * route authorises this session. None of them is a tenancy term.
+ */
+export interface BindableRoute {
+  readonly published_service_id: string;
+  readonly public_alias: string;
+  readonly route_status: PublishedServiceStatus;
+  readonly route_expires_at: Date;
+  readonly connector_id: string;
+  readonly connector_status: string;
+  /** Whether `allowed_browser_session_ids` names this session. */
+  readonly session_authorised: boolean;
+  readonly session_created_at: Date;
+  readonly session_max_duration_seconds: number | null;
+  readonly organisation_id: string;
+  readonly project_id: string;
+}
+
+export async function findBindableRoute(
+  client: PoolClient,
+  input: {
+    readonly publishedServiceId: string;
+    readonly browserSessionId: string;
+  } & CallerScope,
+): Promise<BindableRoute | null> {
+  const result = await client.query<BindableRoute>(
+    `SELECT s.id                       AS published_service_id,
+            s.public_alias             AS public_alias,
+            s.status                   AS route_status,
+            s.expires_at               AS route_expires_at,
+            s.connector_id             AS connector_id,
+            c.status                   AS connector_status,
+            (b.id = ANY(s.allowed_browser_session_ids)) AS session_authorised,
+            b.created_at               AS session_created_at,
+            (b.limits ->> 'max_duration_seconds')::int  AS session_max_duration_seconds,
+            p.organisation_id          AS organisation_id,
+            p.id                       AS project_id
+       FROM published_services s
+       JOIN browser_sessions b ON b.project_id = s.project_id
+       JOIN projects p         ON p.id = s.project_id
+       JOIN connectors c       ON c.id = s.connector_id
+      WHERE s.id = $1
+        AND b.id = $2
+        AND ($3::text IS NULL OR p.organisation_id = $3)
+        AND ($4::text[] IS NULL OR s.project_id = ANY($4))`,
+    [
+      input.publishedServiceId,
+      input.browserSessionId,
+      input.organisationId,
+      input.projectIds === null ? null : [...input.projectIds],
+    ],
+  );
+  return result.rows[0] ?? null;
+}
+
+/**
+ * A browser session's own lifetime, inside one organisation and project.
+ *
+ * `mint` needs it because a route capability may not outlive the browser session
+ * it was minted for. The maximum duration is the deployment's own statement of
+ * how long that browser may exist, and a credential outliving the browser it was
+ * minted for is a credential nobody is accounting for (ADR-0037).
+ *
+ * It replaces the boolean {@link findBrowserSessionsInProject} answered there.
+ * The tenancy terms are the same three; what changed is that the answer carries
+ * the bound as well as the permission, so `mint` cannot resolve the session and
+ * then fail to use what it learned.
+ */
+export async function findSessionLifetime(
+  client: PoolClient,
+  input: {
+    readonly browserSessionId: string;
+    readonly organisationId: string;
+    readonly projectId: string;
+  },
+): Promise<{ readonly created_at: Date; readonly max_duration_seconds: number | null } | null> {
+  const result = await client.query<{
+    created_at: Date;
+    max_duration_seconds: number | null;
+  }>(
+    `SELECT created_at, (limits ->> 'max_duration_seconds')::int AS max_duration_seconds
+       FROM browser_sessions
+      WHERE id = $1 AND organisation_id = $2 AND project_id = $3`,
+    [input.browserSessionId, input.organisationId, input.projectId],
+  );
+  return result.rows[0] ?? null;
+}
+
+/**
+ * Marks every live capability minted for one browser session as revoked.
+ *
+ * The counterpart of {@link revokeCapabilitiesForService}, which is per route.
+ * `docs/ARCHITECTURE.md` §7.3 states that a capability "is revocable
+ * individually as well as through its route", and until ADR-0037 nothing in the
+ * product revoked one when the session it was minted for ended.
+ *
+ * **This is best effort and the ADR says so.** The gateway verifies a capability
+ * from its signature without a database read, and RVP-76 records that its
+ * revocation set is in memory and does not survive a restart. A revocation
+ * recorded here is durable in the control plane and not necessarily at the
+ * gateway; the TTL bound `mint` applies is what stands in the meantime, and
+ * RVP-99 is what closes the gap.
+ */
+export async function revokeCapabilitiesForSession(
+  client: PoolClient,
+  browserSessionId: string,
+): Promise<string[]> {
+  const result = await client.query<{ id: string }>(
+    `UPDATE route_capabilities
+        SET revoked_at = now()
+      WHERE browser_session_id = $1 AND revoked_at IS NULL
+      RETURNING id`,
+    [browserSessionId],
+  );
+  return result.rows.map((row) => row.id);
+}
+
+/** Live capabilities minted for one browser session, newest first. */
+export async function findLiveCapabilitiesForSession(
+  client: PoolClient,
+  browserSessionId: string,
+): Promise<string[]> {
+  const result = await client.query<{ id: string }>(
+    `SELECT id FROM route_capabilities
+      WHERE browser_session_id = $1 AND revoked_at IS NULL
+      ORDER BY issued_at DESC`,
+    [browserSessionId],
+  );
+  return result.rows.map((row) => row.id);
+}
+
 export interface RouteCapabilityRecord {
   readonly id: string;
   readonly published_service_id: string;
@@ -524,12 +745,46 @@ export async function insertCapability(
     readonly issuedAt: Date;
     readonly expiresAt: Date;
   },
-): Promise<RouteCapabilityRecord> {
+): Promise<RouteCapabilityRecord | null> {
   const result = await client.query<RouteCapabilityRecord>(
+    // The session's own liveness is a **predicate of the insert**, not a check
+    // the caller made earlier (ADR-0037).
+    //
+    // It closes a race the status-guarded claim does not. `api` claims a
+    // reservation, mints, and is slow; the deadline sweep — in another replica,
+    // or in the same one a tick later — fails the row; the mint then lands. The
+    // capability would have existed for a session that had already ended, and
+    // the process that would have withdrawn it has just had its own write
+    // rejected. With the predicate here the insert writes nothing, `mint`
+    // raises, and the signed token is discarded in memory: it never returns,
+    // never reaches `SessionAllocate` and never reaches a worker. The losing
+    // side of the race writes nothing, which is the property `markReady` and
+    // `markFailed` already have.
+    //
+    // The predicate is "has not ended" rather than the narrower "is
+    // `ALLOCATING`", because `POST /published-services/:id/capabilities`
+    // (`docs/API.md` §10) legitimately mints for a `READY` or `ACTIVE` session
+    // that a human is already driving. Ending is the condition that makes a
+    // credential unaccountable; being past allocation is not. A second minting
+    // path for the human case would be a worse outcome than a wider predicate
+    // here — there is one place a capability comes into existence, and it stays
+    // one place.
+    //
+    // **The agent path's `ALLOCATING` invariant is not lost by widening it.**
+    // That invariant is enforced upstream and by construction: the
+    // status-guarded claim `UPDATE ... WHERE status = 'REQUESTED'` is what puts
+    // the row in `ALLOCATING`, and only the allocator that won it reaches the
+    // mint at all. This predicate is the backstop for both paths rather than the
+    // enforcement for either.
     `INSERT INTO route_capabilities (
        id, organisation_id, project_id, published_service_id,
        browser_session_id, key_id, issued_at, expires_at
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     )
+     SELECT $1, $2, $3, $4, $5, $6, $7, $8
+       FROM browser_sessions
+      WHERE id = $5
+        AND ended_at IS NULL
+        AND status NOT IN ('TERMINATED', 'FAILED', 'TERMINATING')
      RETURNING id, published_service_id, browser_session_id, key_id,
                issued_at, expires_at, revoked_at`,
     [
@@ -543,7 +798,7 @@ export async function insertCapability(
       input.expiresAt.toISOString(),
     ],
   );
-  return result.rows[0] as RouteCapabilityRecord;
+  return result.rows[0] ?? null;
 }
 
 /** Marks every live capability for a route as revoked. */

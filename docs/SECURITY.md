@@ -425,6 +425,21 @@ calls do, and each names the rule it enforces.
   are tracked separately. New routes MUST resolve the actor first, then resolve
   the record with the identifier, the project scope and the organisation in one
   predicate, taking the organisation from the caller.
+- **An identifier that arrives as an argument is scoped by the operation that
+  acts on it, not only by the caller that read it first.** A function whose
+  authorisation happens entirely above it is authorised by a property of its
+  callers rather than by anything it does, and the first caller that reaches it
+  by another path is unauthorised with nothing failing. `BrowserSessionService.
+  allocate` read through an unscoped `get()` and carried no caller scope at all;
+  it was sound only because every caller named a session it had just created or
+  had already resolved, and `browser_session_allocate` takes that identifier as a
+  tool argument (ADR-0037). The same rule made `browserSessionIfPermitted` read
+  in scope rather than reading unscoped and comparing `project_id` in a later
+  branch. Where an operation genuinely acts for the deployment rather than for a
+  principal — a sweep completing what another process requested — the unscoped
+  scope MUST be a **named constant** so that it is a deliberate, greppable
+  choice, and the act it performs MUST re-derive its authority from records the
+  requesting process did not author.
 - A **machine credential is refused on the review API by token shape**, before
   any lookup, exactly as section 6.3 requires of the administrative routes. The
   review API is a human API: an agent acts through `/mcp/v1`. Answering "sign in"

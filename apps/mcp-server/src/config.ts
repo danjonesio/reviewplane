@@ -59,6 +59,19 @@ export interface McpServerConfig {
    * for a route that was about to work.
    */
   readonly publishWaitMs: number;
+
+  /**
+   * How long `browser_session_allocate` waits for `api` to finish an allocation
+   * this process requested (ADR-0037).
+   *
+   * Longer than the publication wait, because what it is waiting for is a
+   * Chromium context coming up rather than a connector answering. It is bounded
+   * and it ends in the record as it stands: a reservation still `REQUESTED` or
+   * `ALLOCATING` when the deadline passes is reported as such and never as
+   * ready, because an agent that navigated to an origin nothing was carrying
+   * would read the failure as a fault in the application it is reviewing.
+   */
+  readonly allocateWaitMs: number;
 }
 
 export type Environment = Readonly<Record<string, string | undefined>>;
@@ -171,5 +184,6 @@ export function loadMcpServerConfig(environment: Environment = process.env): Mcp
     internalSuffix: text(environment, "REVIEWPLANE_INTERNAL_SUFFIX", "internal.invalid"),
     routeTtlMaxSeconds: integer(environment, "REVIEWPLANE_ROUTE_TTL_MAX_SECONDS", 28800, 60, 86400),
     publishWaitMs: integer(environment, "REVIEWPLANE_MCP_PUBLISH_WAIT_MS", 15000, 1000, 60000),
+    allocateWaitMs: integer(environment, "REVIEWPLANE_MCP_ALLOCATE_WAIT_MS", 30000, 1000, 120000),
   };
 }

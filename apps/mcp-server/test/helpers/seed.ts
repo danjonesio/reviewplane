@@ -310,3 +310,113 @@ export async function startBrowserSessionForAgent(
   });
   return { browserSessionId: record.id, controlEpoch: record.control_epoch };
 }
+
+/**
+ * A connector and its environment, so a project can publish a route.
+ *
+ * The rows are written directly rather than enrolled over mTLS: enrolment is
+ * `apps/server`'s own suite, and what these tests need is a connector in a
+ * given **status**, which is what publication and admission now both check
+ * (RVP-81, ADR-0037). `status` is a parameter for exactly that reason — a
+ * revoked connector and a disconnected one are different refusals, and a helper
+ * that could only produce an `ACTIVE` one could not prove either.
+ *
+ * The workspace `seedProject` created is reused: it already belongs to the
+ * project, and `PublishedServiceService.request` resolves it inside the
+ * caller's organisation and project, so a second one would prove nothing.
+ */
+export async function seedConnector(
+  harness: McpHarness,
+  seeded: { readonly organisationId: string; readonly projectId: string },
+  options: { readonly status?: string } = {},
+): Promise<{ connectorId: string; environmentId: string }> {
+  const suffix = newId("").slice(0, 12).toLowerCase();
+  const environmentId = `env_${suffix}`;
+  const connectorId = `con_${suffix}`;
+  const pool = harness.pool;
+  await pool.query(
+    `INSERT INTO environments (id, organisation_id, project_id, name, platform, architecture)
+     VALUES ($1, $2, $3, $4, 'linux', 'amd64')`,
+    [environmentId, seeded.organisationId, seeded.projectId, `env-${suffix}`],
+  );
+  await pool.query(
+    `INSERT INTO connectors (
+       id, organisation_id, environment_id, project_id, certificate_fingerprint,
+       certificate_serial, certificate_not_after, public_key, version, status)
+     VALUES ($1, $2, $3, $4, $5, '01', now() + interval '30 days', 'key', '0.1.0', $6)`,
+    [
+      connectorId,
+      seeded.organisationId,
+      environmentId,
+      seeded.projectId,
+      `sha256:${suffix}`,
+      options.status ?? "ACTIVE",
+    ],
+  );
+  return { connectorId, environmentId };
+}
+
+/** Moves a connector to a status, so a refusal can be provoked after publication. */
+export async function setConnectorStatus(
+  harness: McpHarness,
+  connectorId: string,
+  status: string,
+): Promise<void> {
+  await harness.pool.query("UPDATE connectors SET status = $2 WHERE id = $1", [
+    connectorId,
+    status,
+  ]);
+}
+
+/**
+ * A second project **in the same organisation**, with its own workspace.
+ *
+ * It exists so that a tenancy test can isolate the project term from the
+ * organisation term. `seedProject` creates a fresh organisation each time, so a
+ * "another project" case written with two of those is also a cross-organisation
+ * case — and would pass with the project term removed from the query entirely,
+ * which is the regression it is supposed to catch.
+ */
+export async function seedSiblingProject(
+  harness: McpHarness,
+  seeded: { readonly organisationId: string },
+): Promise<{ organisationId: string; projectId: string; workspaceId: string }> {
+  const suffix = newId("").slice(0, 12).toLowerCase();
+  const project = await harness.control.app.inject({
+    method: "POST",
+    url: `/api/v1/organisations/${seeded.organisationId}/projects`,
+    headers: ADMIN,
+    payload: { name: "Sibling", slug: `sibling-${suffix}` },
+  });
+  const projectId = (project.json() as { data: { id: string } }).data.id;
+  // The single Stage 0 worker serves every project a test created, and an
+  // assignment **replaces** the whole set — so this restates it rather than
+  // narrowing it to the sibling, which would leave the original project
+  // unschedulable and turn a tenancy assertion into a capacity refusal.
+  const workers = await harness.control.workers.schedulableRows();
+  for (const worker of workers) {
+    await harness.control.app.inject({
+      method: "PUT",
+      url: `/api/v1/browser-workers/${worker.id}/assignments`,
+      headers: ADMIN,
+      payload: {
+        project_ids: [
+          ...new Set([...(await harness.control.workers.assignedProjects(worker.id)), projectId]),
+        ],
+      },
+    });
+  }
+  const workspace = await harness.control.app.inject({
+    method: "PUT",
+    url: `/api/v1/projects/${projectId}/workspaces`,
+    headers: ADMIN,
+    payload: {
+      root_path: `/workspace/sibling-${suffix}`,
+      branch: "main",
+      head_commit: CAPTURED_COMMIT,
+      dirty: false,
+    },
+  });
+  const workspaceId = (workspace.json() as { data: { id: string } }).data.id;
+  return { organisationId: seeded.organisationId, projectId, workspaceId };
+}

@@ -283,15 +283,17 @@ than failing on submit.
 
 Human flow:
 
-1. Select development environment and service.
+1. Choose what the session is for: an empty browser, or a development service.
 2. Choose viewport preset.
 3. Choose trace and optional video policy.
-4. Start session.
-5. Open session room.
+4. Start the session, or reserve it.
+5. For a development service: publish a route naming the reservation, then
+   allocate it.
+6. Open session room.
 
 The UI should clearly show that Chromium runs centrally and the application is reached through a private connector route.
 
-Stage 1 implements steps 1, 2, 4 and 5. Step 3 is **disclosed and disabled**:
+Stage 1 implements steps 1, 2, 4, 5 and 6. Step 3 is **disclosed and disabled**:
 trace capture arrives in Stage 2 and video stays disabled, so the control states
 that neither is available in this stage rather than offering a choice the
 product cannot honour or omitting the step silently.
@@ -305,11 +307,36 @@ perform, not only an administrator (`API.md` §11). It is a live browser opened
 against a private development machine, so the request carries the session's CSRF
 token like every other state-changing write.
 
-The service selector offers "no published service" explicitly rather than
-leaving the control blank. A session with no route reaches nothing, and that is a
-choice a reader may legitimately make — for the reservation-first ordering of
-`API.md` §11, where the session identifier must exist before the route that
-authorises it can be published.
+**Step 1 MUST NOT offer a published route as something to start against, and the
+form MUST NOT send `published_service_id` on a start.** A route names the browser
+sessions it authorises when it is published (`CONNECTOR_PROTOCOL.md` §11), so a
+route that already exists cannot name a session the request is about to create,
+and the mint refuses. This surface offered exactly that selector until ADR-0037,
+and it could not succeed against a real control plane: the browser suite did not
+catch it because the stub bound any route to a freshly minted identifier without
+consulting `allowed_browser_session_ids`.
+
+So the choice at step 1 is between two ends rather than among routes, and both
+are explicit rather than one being a blank control:
+
+- **an empty browser**, started immediately, which reaches nothing — a legitimate
+  thing to want, and the difference decides whether the session can open
+  anything;
+- **a development service**, which **reserves** the session and stops. No worker
+  is contacted and no browser is opened. The reservation's identifier is what a
+  route is then published *against*, using the publication form on the same page,
+  which offers a `REQUESTED` session among the ones a route may authorise for
+  exactly this reason.
+
+Step 5 offers only the carried routes whose `allowed_browser_session_ids` already
+name the reservation, so every choice on it is one the control plane will accept;
+a project with none states that no route names the reservation yet and says how
+to publish one, rather than presenting an empty control. A route is **never**
+amended to make an allocation succeed.
+
+This is the reservation-first ordering of `API.md` §11 and the same order the
+agent surface uses (`MCP_SPEC.md` §7.3). It is three steps because the constraint
+is real; a selector that hid it produced a session that silently reached nothing.
 
 ## 7. Session room
 

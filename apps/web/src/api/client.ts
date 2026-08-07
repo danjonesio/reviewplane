@@ -754,6 +754,52 @@ export const api = {
   },
 
   /**
+   * Reserves a session without allocating it (`docs/API.md` §11).
+   *
+   * Publication and allocation each need the other to have gone first: a route
+   * names the browser sessions it authorises when it is published, and a
+   * worker's egress policy is fixed when its context is created and cannot be
+   * widened afterwards. So the identifier is reserved first, the route is
+   * published naming it, and {@link allocateBrowserSession} binds the two.
+   *
+   * The response is a `REQUESTED` session with an identifier and a chosen
+   * worker; no worker has been contacted. It holds a slot against that worker's
+   * capacity until it is allocated or ended.
+   */
+  async reserveBrowserSession(
+    projectId: string,
+    draft: Omit<BrowserSessionDraft, "published_service_id">,
+  ): Promise<BrowserSession> {
+    return request<BrowserSession>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/browser-sessions`,
+      { method: "POST", body: JSON.stringify({ ...draft, allocate: false }) },
+    );
+  },
+
+  /**
+   * Allocates a reserved session, optionally admitting it to a route.
+   *
+   * The route must already name this session. The control plane resolves the
+   * origin from the route record and mints the session-scoped capability
+   * itself; neither is sent from here, because the origin *is* the worker's
+   * egress allow-list and the capability is a bearer credential.
+   */
+  async allocateBrowserSession(
+    sessionId: string,
+    publishedServiceId?: string,
+  ): Promise<BrowserSession> {
+    return request<BrowserSession>(
+      `/api/v1/browser-sessions/${encodeURIComponent(sessionId)}/allocate`,
+      {
+        method: "POST",
+        body: JSON.stringify(
+          publishedServiceId === undefined ? {} : { published_service_id: publishedServiceId },
+        ),
+      },
+    );
+  },
+
+  /**
    * Pauses a session against the control epoch the caller last read.
    *
    * The epoch travels with the request because exactly one controller drives a

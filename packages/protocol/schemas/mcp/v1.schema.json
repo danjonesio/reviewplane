@@ -132,7 +132,13 @@
         "channel": "browser",
         "direction": "server_to_client",
         "payload": "browser_session_result",
-        "description": "The allocated browser session: its lifecycle status, the control epoch the agent must present on every command, the controller holding the interactive lease, and whether live view is available (docs/MCP_SPEC.md section 7.3)."
+        "description": "The browser session as it stands: its lifecycle status, the control epoch the agent must present on every command, the controller holding the interactive lease, and whether live view is available (docs/MCP_SPEC.md section 7.3). With allocate false it is a REQUESTED reservation that has reached no worker and can reach no origin, whose identifier development_service_publish may then name; the session becomes usable through browser_session_allocate."
+      },
+      "browser_session_allocate": {
+        "channel": "browser",
+        "direction": "server_to_client",
+        "payload": "browser_session_result",
+        "description": "The reserved browser session after it was allocated on its worker, optionally admitted to a route the project already published and that already names it (docs/MCP_SPEC.md section 7.3). The wait is bounded and ends in the record as it stands: a session still REQUESTED or ALLOCATING when the deadline passes is reported as such and never as ready."
       },
       "browser_session_status": {
         "channel": "browser",
@@ -364,6 +370,12 @@
         "max_bytes_limit": "max_mcp_request_bytes",
         "description": "Arguments of browser_session_start. There is no project argument: the project is the session's, and a caller that could name one would be choosing which development machine the central browser reaches."
       },
+      "browser_session_allocate_input": {
+        "channel": "command",
+        "def": "browser_session_allocate_input",
+        "max_bytes_limit": "max_mcp_request_bytes",
+        "description": "Arguments of browser_session_allocate. Both identifiers are resolved inside the credential's organisation and the session's project before either is used, and the route must already name the reservation."
+      },
       "browser_session_status_input": {
         "channel": "command",
         "def": "browser_session_reference_input",
@@ -488,8 +500,14 @@
       "RESOURCE_STALE",
       "VERSION_CONFLICT",
       "IDEMPOTENCY_CONFLICT",
+      "VALIDATION_FAILED",
       "CONNECTOR_OFFLINE",
+      "IDENTITY_REVOKED",
       "PUBLISHED_SERVICE_UNAVAILABLE",
+      "ROUTE_EXPIRED",
+      "ROUTE_LIMIT_EXCEEDED",
+      "DESTINATION_NOT_ALLOWED",
+      "WORKSPACE_NOT_FOUND",
       "BROWSER_CAPACITY_EXHAUSTED",
       "BROWSER_SESSION_NOT_ACTIVE",
       "CONTROL_NOT_OWNED",
@@ -563,7 +581,7 @@
         ]
       },
       "tool_availability": {
-        "description": "The tool availability set docs/MCP_SPEC.md section 14 requires a client to be able to rely on. It equals x-protocol.messages, so a tool cannot be advertised without a result schema. Everything else in the section 7 catalogue is unavailable and is absent from tools/list rather than present and failing: no browser lifecycle or interaction tools, no visual inspection and — the row that matters most — no secret tool of any kind, which is the strongest available form of the rule that no raw secret reaches an agent (docs/SECURITY.md section 12.1). The inbox tools joined it with RVP-49, the development-service tools with RVP-24 and the two completion tools of section 7.8 with RVP-53.",
+        "description": "The tool availability set docs/MCP_SPEC.md section 14 requires a client to be able to rely on. It equals x-protocol.messages, so a tool cannot be advertised without a result schema. Everything else in the section 7 catalogue is unavailable and is absent from tools/list rather than present and failing: no browser lifecycle or interaction tools, no visual inspection and — the row that matters most — no secret tool of any kind, which is the strongest available form of the rule that no raw secret reaches an agent (docs/SECURITY.md section 12.1). The inbox tools joined it with RVP-49, the development-service tools with RVP-24, the two completion tools of section 7.8 with RVP-53 and browser_session_allocate with RVP-90 (ADR-0037).",
         "values": [
           "project_current",
           "agent_session_status",
@@ -583,6 +601,7 @@
           "finding_submit_verification",
           "browser_take_screenshot",
           "browser_session_start",
+          "browser_session_allocate",
           "browser_session_status",
           "browser_session_pause",
           "browser_session_resume",
@@ -986,12 +1005,13 @@
         "inbox_unavailable",
         "results_truncated",
         "idempotent_replay",
-        "completion_blocked_pending_review"
+        "completion_blocked_pending_review",
+        "allocation_incomplete"
       ]
     },
     "error_class": {
       "type": "string",
-      "description": "Stable refusal code (docs/MCP_SPEC.md section 12). Adding a code is additive within a protocol version and a client MUST tolerate a code it does not recognise. This enumeration MUST equal x-protocol.error_classes.",
+      "description": "Stable refusal code (docs/MCP_SPEC.md section 12). Adding a code is additive within a protocol version and a client MUST tolerate a code it does not recognise. This enumeration MUST equal x-protocol.error_classes. The six codes after IDEMPOTENCY_CONFLICT are the ones this endpoint has always been able to emit and did not declare: refusalFrom casts the domain's code rather than validating it, so a client validating against this enumeration would have rejected a refusal the server was entitled to send.",
       "enum": [
         "AUTHENTICATION_REQUIRED",
         "AUTHORISATION_DENIED",
@@ -1001,8 +1021,14 @@
         "RESOURCE_STALE",
         "VERSION_CONFLICT",
         "IDEMPOTENCY_CONFLICT",
+        "VALIDATION_FAILED",
         "CONNECTOR_OFFLINE",
+        "IDENTITY_REVOKED",
         "PUBLISHED_SERVICE_UNAVAILABLE",
+        "ROUTE_EXPIRED",
+        "ROUTE_LIMIT_EXCEEDED",
+        "DESTINATION_NOT_ALLOWED",
+        "WORKSPACE_NOT_FOUND",
         "BROWSER_CAPACITY_EXHAUSTED",
         "BROWSER_SESSION_NOT_ACTIVE",
         "CONTROL_NOT_OWNED",
@@ -1040,6 +1066,7 @@
         "finding_submit_verification",
         "browser_take_screenshot",
         "browser_session_start",
+        "browser_session_allocate",
         "browser_session_status",
         "browser_session_pause",
         "browser_session_resume",
@@ -1089,6 +1116,11 @@
         "TERMINATED",
         "FAILED"
       ]
+    },
+    "connector_status": {
+      "type": "string",
+      "description": "Connector lifecycle status (docs/DOMAIN_MODEL.md section 8). This enumeration MUST equal the platform schema's connector_status: an agent told a route's connector is DEGRADED and a control plane that meant something else by it would disagree about whether waiting is worth anything. DEGRADED and DISCONNECTED are conclusions the control plane draws from heartbeat silence and are never self-reported; REVOKED is terminal.",
+      "enum": ["PENDING_ENROLMENT", "ACTIVE", "DEGRADED", "DISCONNECTED", "REVOKED"]
     },
     "agent_session_state": {
       "type": "string",
@@ -1690,6 +1722,10 @@
         "published_service_id": {
           "$ref": "#/$defs/identifier",
           "description": "The published service a refusal concerns, returned with AUTHORISATION_DENIED when the route a browser session was allocated against no longer authorises it."
+        },
+        "connector_status": {
+          "$ref": "#/$defs/connector_status",
+          "description": "The status the route's connector actually holds, returned with IDENTITY_REVOKED and CONNECTOR_OFFLINE. The two codes are distinguished on purpose and this member says which condition produced the one that arrived: a revoked identity will not come back and the route must be published through another connector, while a connector the deployment has and cannot reach is worth waiting for."
         }
       }
     },
@@ -2870,14 +2906,18 @@
     },
     "browser_session_start_input": {
       "type": "object",
-      "description": "Arguments of browser_session_start (docs/MCP_SPEC.md section 7.3). There is no project argument and no origin argument: the project is the session's, and the origin is derived from the published service by the control plane, because the origin is the browser's egress allow-list (docs/SECURITY.md section 9).",
+      "description": "Arguments of browser_session_start (docs/MCP_SPEC.md section 7.3). There is no project argument and no origin argument: the project is the session's, and the origin is derived from the published service by the control plane, because the origin is the browser's egress allow-list (docs/SECURITY.md section 9). To reach a development service, send allocate false, publish a route with development_service_publish — it names this reservation — and then call browser_session_allocate.",
       "additionalProperties": false,
       "x-max-bytes": 2048,
       "required": ["idempotency_key"],
       "properties": {
         "published_service_id": {
           "$ref": "#/$defs/identifier",
-          "description": "Published service the session may reach. A session started without one can navigate nowhere."
+          "description": "DEPRECATED and refused: it never worked and cannot be made to. A route names the browser sessions it authorises when it is published, so it cannot authorise a session that did not exist yet, and a worker's egress policy is fixed when its context is created and MUST NOT be widened afterwards (docs/SECURITY.md section 10). Use browser_session_allocate instead: start with allocate false, publish the route, then allocate. A request carrying this member is refused with VALIDATION_FAILED naming that replacement, before anything is reserved. It is retained rather than removed so the refusal is audited and can name the way out (docs/MCP_SPEC.md section 14 forbids a breaking tool change without a new major version or a parallel tool name); it is removed at the next major protocol version."
+        },
+        "allocate": {
+          "type": "boolean",
+          "description": "Whether to allocate the session on its worker in this call. True, the default, reserves and allocates in one request for a session that needs no route. False reserves and stops: the response is a REQUESTED session with an identifier and a chosen worker, no worker has been contacted, and that identifier can then appear in a route's allowed_browser_session_ids (docs/API.md section 11)."
         },
         "viewport": {
           "$ref": "#/$defs/viewport",
@@ -2886,6 +2926,27 @@
         "idempotency_key": {
           "$ref": "#/$defs/idempotency_key",
           "description": "Key for this allocation, so a retried call does not consume two browser slots."
+        }
+      }
+    },
+    "browser_session_allocate_input": {
+      "type": "object",
+      "description": "Names a reservation this agent session made and, optionally, a route its own project already published that already names that reservation (docs/MCP_SPEC.md section 7.3). There is no origin, no connector, no workspace, no project and no organisation argument: each would be an authorisation input the caller chose, and the control plane re-derives every one of them from records the caller did not author.",
+      "additionalProperties": false,
+      "x-max-bytes": 1024,
+      "required": ["browser_session_id", "idempotency_key"],
+      "properties": {
+        "browser_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "The REQUESTED browser session to allocate. It must be one this agent session reserved; a session in another project is reported not found, byte for byte as an unknown identifier is."
+        },
+        "published_service_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Route the session is admitted to. It must be ready, belong to this project, be carried by a connector that is enrolled and connected, and already name this reservation in its allowed_browser_session_ids; the control plane resolves the origin and mints the session-scoped capability itself. Absent allocates a session that can reach nothing."
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/idempotency_key",
+          "description": "Key for this allocation, so a retried call binds one route rather than two."
         }
       }
     },

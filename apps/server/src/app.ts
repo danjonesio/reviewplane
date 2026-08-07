@@ -300,12 +300,23 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
   });
   // A browser session learns its egress origin and its route capability from
   // the published-service record, never from its caller.
-  const sessions = new BrowserSessionService(
-    pool,
-    workers,
-    workerClient,
-    new PublishedServiceBinder(publishedServices),
-  );
+  //
+  // This process holds the capability signing key, so it is the one that binds:
+  // the same object is both the authoriser and the binder here, and the MCP
+  // endpoint gets the authoriser half alone (ADR-0021, ADR-0037).
+  const sessionBinder = new PublishedServiceBinder(publishedServices);
+  const sessions = new BrowserSessionService(pool, workers, workerClient, sessionBinder, {
+    authoriser: sessionBinder,
+    // Ending a session withdraws the capabilities minted for it. Best effort:
+    // the gateway's revocation set is in memory and does not survive a restart
+    // (RVP-76), so the bound `mint` applies is what stands when this fails.
+    // RVP-99 carries the gap.
+    revoker: {
+      revokeForSession: (browserSessionId) =>
+        publishedServices.revokeCapabilitiesForSession(browserSessionId),
+    },
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
   // The liveness sweep and the session reconciler of `docs/OPERATIONS.md`
   // sections 8 and 9. Started with the server and stopped with it, in the shape
   // the connector monitor already uses.

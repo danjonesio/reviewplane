@@ -34,6 +34,7 @@ import type {
   BrowserResizeInput,
   BrowserScrollInput,
   BrowserSelectOptionInput,
+  BrowserSessionAllocateInput,
   BrowserSessionControlInput,
   BrowserSessionDetail,
   BrowserSessionReferenceInput,
@@ -345,6 +346,9 @@ export function encodeErrorDetails(value: ErrorDetails): string {
   }
   if (value.published_service_id !== undefined) {
     fields.push(`"published_service_id":${jsonString(value.published_service_id)}`);
+  }
+  if (value.connector_status !== undefined) {
+    fields.push(`"connector_status":${jsonString(value.connector_status)}`);
   }
   return `{${fields.join(",")}}`;
 }
@@ -933,8 +937,24 @@ export function encodeBrowserSessionStartInput(value: BrowserSessionStartInput):
   if (value.published_service_id !== undefined) {
     fields.push(`"published_service_id":${jsonString(value.published_service_id)}`);
   }
+  if (value.allocate !== undefined) {
+    fields.push(`"allocate":${jsonBoolean(value.allocate)}`);
+  }
   if (value.viewport !== undefined) {
     fields.push(`"viewport":${encodeViewport(value.viewport)}`);
+  }
+  fields.push(`"idempotency_key":${jsonString(value.idempotency_key)}`);
+  return `{${fields.join(",")}}`;
+}
+
+/**
+ * Canonically encodes a BrowserSessionAllocateInput.
+ */
+export function encodeBrowserSessionAllocateInput(value: BrowserSessionAllocateInput): string {
+  const fields: string[] = [];
+  fields.push(`"browser_session_id":${jsonString(value.browser_session_id)}`);
+  if (value.published_service_id !== undefined) {
+    fields.push(`"published_service_id":${jsonString(value.published_service_id)}`);
   }
   fields.push(`"idempotency_key":${jsonString(value.idempotency_key)}`);
   return `{${fields.join(",")}}`;

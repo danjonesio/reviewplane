@@ -40,6 +40,7 @@ import {
   IdempotencyStore,
   HttpTunnelGateway,
   InboxStore,
+  PublishedServiceBinder,
   PublishedServiceService,
   ReviewService,
   STAGE_0_DESTINATION_POLICY,
@@ -142,7 +143,6 @@ export async function buildMcpApp(options: BuildMcpAppOptions): Promise<BuiltMcp
     timeoutMs: config.workerRequestTimeoutMs,
     ...(options.workerFetch === undefined ? {} : { fetchImplementation: options.workerFetch }),
   });
-  const browserSessions = new BrowserSessionService(pool, workers, workerClient);
   const agentCredentials = new AgentCredentialStore(pool);
   const workspaces = new WorkspaceStore(pool);
   const agentSessions = new AgentSessionStore(pool, workspaces);
@@ -163,24 +163,54 @@ export async function buildMcpApp(options: BuildMcpAppOptions): Promise<BuiltMcp
   // the `api` process; this one writes a route as `requested` and `api` finishes
   // it (ADR-0021). A publisher that could reach the connector from here would be
   // a second network path into a development machine.
+  const publishedServices = new PublishedServiceService(
+    pool,
+    new HttpTunnelGateway({
+      baseUrl: config.tunnelControlUrl,
+      token: config.tunnelControlToken,
+    }),
+    options.routePublisher ?? new UnreachableRoutePublisher(),
+    {
+      destinationPolicy: STAGE_0_DESTINATION_POLICY,
+      internalSuffix: config.internalSuffix,
+      routeTtlMaxSeconds: config.routeTtlMaxSeconds,
+      maxRoutesPerConnector: 10,
+    },
+  );
   const developmentServices = new DevelopmentServiceCommands(
     pool,
-    new PublishedServiceService(
-      pool,
-      new HttpTunnelGateway({
-        baseUrl: config.tunnelControlUrl,
-        token: config.tunnelControlToken,
-      }),
-      options.routePublisher ?? new UnreachableRoutePublisher(),
-      {
-        destinationPolicy: STAGE_0_DESTINATION_POLICY,
-        internalSuffix: config.internalSuffix,
-        routeTtlMaxSeconds: config.routeTtlMaxSeconds,
-        maxRoutesPerConnector: 10,
-      },
-    ),
+    publishedServices,
     config.publishWaitMs,
   );
+
+  // The browser sessions this endpoint may act on.
+  //
+  // **The binder is `null` and stays `null`.** Binding mints, and this process
+  // holds no signing key by design — a process that cannot mint cannot leak a
+  // minting key. So an allocation that names a route is *requested* here and
+  // completed by `api` (ADR-0021, ADR-0037), and a caller that reached
+  // `allocate` with a route in this process would still be refused with
+  // `UNSUPPORTED_CAPABILITY` rather than silently succeed.
+  //
+  // The **authoriser** is the read half of the same object, and it needs no key.
+  // It is what lets an agent be told in its own call that the route belongs to
+  // another project, that the connector is revoked, or that the route does not
+  // name its reservation — rather than being told nothing and failing a sweep
+  // interval later in a process it is not talking to.
+  //
+  // The **revoker** withdraws capabilities and cannot mint one, which is
+  // ADR-0021's existing carve-out for `development_service_unpublish` extended
+  // to the credential rather than only to the route. That the gateway's control
+  // token is unscoped means "withdraws, never registers" is restraint rather
+  // than authority, and it is stated rather than assumed (RVP-76).
+  const sessionBinder = new PublishedServiceBinder(publishedServices);
+  const browserSessions = new BrowserSessionService(pool, workers, workerClient, null, {
+    authoriser: sessionBinder,
+    revoker: {
+      revokeForSession: (browserSessionId) =>
+        publishedServices.revokeCapabilitiesForSession(browserSessionId),
+    },
+  });
 
   const services: McpServices = {
     pool,

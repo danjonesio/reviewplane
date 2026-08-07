@@ -371,38 +371,33 @@ test("a retried start consumes one browser slot rather than two", async () => {
   }
 });
 
-test("a published service cannot yet be bound from the MCP endpoint, and says so", async () => {
+test("a start naming a published service is refused, audited, and costs no browser slot", async () => {
   const agent = await connected();
   try {
-    // The MCP process holds no capability signing key on purpose
-    // (`apps/mcp-server/src/app.ts`: a process that cannot mint cannot leak a
-    // minting key), and binding a route to a session is a mint. So the
-    // documented `published_service_id` argument of section 7.3 cannot be
-    // honoured here yet.
+    // This replaces the tripwire that asserted `UNSUPPORTED_CAPABILITY` here,
+    // as that tripwire asked whoever fixed it to. The endpoint now has a way to
+    // have `api` allocate — `browser_session_allocate`, ADR-0037 — and the
+    // positive case is `test/browser-allocation.test.ts`.
     //
-    // This asserts the refusal is *stable and honest* rather than a crash or a
-    // session that quietly reaches nothing. It is a tripwire: when the endpoint
-    // gains a way to have `api` allocate, this test fails, and the person who
-    // fixed it is the right person to replace it with the positive case.
+    // What survives is that this argument is still refused, because it is the
+    // **ordering** and not the missing signing key that makes it impossible: a
+    // route names the sessions it authorises when it is published, and this
+    // call reserves and allocates at once, so a route published beforehand names
+    // the previous session. The refusal is now `VALIDATION_FAILED` and names the
+    // tool that replaces it rather than telling the agent to find a human.
     const started = await call(agent.client, "browser_session_start", {
       published_service_id: "svc_notboundfromhere",
       idempotency_key: key("start-service"),
     });
     assert.equal(started.envelope["ok"], false, JSON.stringify(started.envelope));
-    assert.equal(errorOf(started.envelope).code, "UNSUPPORTED_CAPABILITY");
+    assert.equal(errorOf(started.envelope).code, "VALIDATION_FAILED");
     assert.equal(errorOf(started.envelope).retryable, false);
-    // The message says which limitation this is. The domain's own wording —
-    // "this control plane cannot bind a published service" — reads to an agent
-    // as a broken deployment, and an agent that concludes that files a fault
-    // instead of working round a boundary that is deliberate.
-    assert.match(errorOf(started.envelope).message, /signing key/u);
-    assert.match(errorOf(started.envelope).message, /not a fault in the deployment/u);
+    assert.match(errorOf(started.envelope).message, /browser_session_allocate/u);
 
-    // And it holds no browser slot. Allocation reserves the session row before
-    // it can resolve the route, so a start that fails after the reservation
-    // used to leave a REQUESTED row counting against the worker's capacity for
-    // ever — four refused starts would fill a default worker, which turns a
-    // mistyped identifier into a denial of service against the project.
+    // And it holds no browser slot. This refusal precedes `create`, so unlike
+    // its predecessor it reserves nothing at all — which matters because a
+    // `REQUESTED` row with `ended_at IS NULL` is exactly what the capacity query
+    // counts, and four refused starts once filled a default worker.
     const held = await postgres.pool.query<{ n: number }>(
       `SELECT count(*)::int AS n FROM browser_sessions
         WHERE project_id = $1 AND ended_at IS NULL AND status NOT IN ('TERMINATED', 'FAILED')`,

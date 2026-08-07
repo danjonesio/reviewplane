@@ -50,6 +50,7 @@ ADRs record decisions that materially affect architecture, security, protocols o
 | [0034](0034-browser-workers-are-a-deployment-wide-shared-pool.md) | Browser workers are a deployment-wide shared pool, administered by the deployment administrator | Accepted |
 | [0035](0035-a-human-decision-names-the-verification-it-decides.md) | A human decision names the verification it decides | Accepted |
 | [0036](0036-a-reopen-states-why-and-the-statement-is-a-comment.md) | A reopen states why, and the statement is a comment | Accepted |
+| [0037](0037-an-agent-admits-its-own-reservation-to-its-own-projects-route.md) | An agent admits a browser session it reserved to a route its own project already publishes, and the reservation is the handoff to the process that mints | Proposed |
 
 ## Pending decisions
 

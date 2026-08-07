@@ -30,6 +30,7 @@ import {
   type BrowserTakeScreenshotResult,
   type McpFrame,
 } from "../src/mcp.ts";
+import { ERROR_CLASS_VALUES as PLATFORM_ERROR_CLASS_VALUES } from "../src/platform.ts";
 
 /** A minimal, valid screenshot frame. */
 function screenshotFrame(): McpFrame {
@@ -65,11 +66,12 @@ test("the tool availability set is the message-type enumeration", () => {
   // the two could differ, a tool could be advertised with no result schema.
   assert.deepEqual([...TOOL_AVAILABILITY], [...MESSAGE_TYPE_VALUES]);
   // The count is asserted so that a tool added to one enumeration and not the
-  // other is caught even when both lists happen to agree by accident. It is 36:
+  // other is caught even when both lists happen to agree by accident. It is 37:
   // twenty at Stage 0, plus the fourteen browser lifecycle and interaction
   // tools of docs/MCP_SPEC.md sections 7.3 and 7.4 (RVP-30), plus the two
-  // completion tools of section 7.8 (RVP-53). Section 14.1 lists the same 36.
-  assert.equal(MESSAGE_TYPE_VALUES.length, 36);
+  // completion tools of section 7.8 (RVP-53), plus `browser_session_allocate`
+  // (RVP-90, ADR-0037). Section 14.1 lists the same 37.
+  assert.equal(MESSAGE_TYPE_VALUES.length, 37);
 });
 
 test("no tool names a secret or a visual inspection", () => {
@@ -181,7 +183,7 @@ test("the error-code enumeration is the section 12 list", () => {
   // allowed, and it should still be a decision somebody made rather than one
   // that arrived with a schema edit. Raise it together with
   // `docs/MCP_SPEC.md` section 12.
-  assert.equal(ERROR_CLASS_VALUES.length, 23);
+  assert.equal(ERROR_CLASS_VALUES.length, 29);
   for (const code of [
     "PROJECT_CONTEXT_AMBIGUOUS",
     "IDEMPOTENCY_CONFLICT",
@@ -190,9 +192,39 @@ test("the error-code enumeration is the section 12 list", () => {
     // artefact whose upload never completed, and an agent has to be able to
     // tell them apart: the first is retryable and the second is not.
     "ARTEFACT_STORE_UNAVAILABLE",
+    // The six ADR-0037 added. Five of them the MCP server could already emit
+    // and did not declare — `refusalEnvelope` casts the domain's code rather
+    // than validating it, so a client validating against this enumeration would
+    // have rejected a refusal the server was entitled to send. `IDENTITY_REVOKED`
+    // is the new one: a route whose connector's identity has been revoked is
+    // refused with it rather than with `CONNECTOR_OFFLINE`, because the first
+    // will not come back and the second is worth waiting for.
+    "VALIDATION_FAILED",
+    "IDENTITY_REVOKED",
+    "ROUTE_EXPIRED",
+    "ROUTE_LIMIT_EXCEEDED",
+    "DESTINATION_NOT_ALLOWED",
+    "WORKSPACE_NOT_FOUND",
   ]) {
     assert.ok((ERROR_CLASS_VALUES as readonly string[]).includes(code), code);
   }
+});
+
+test("every code the MCP server can raise is one the enumeration declares", () => {
+  // The gap this closes was real and invisible. `refusalFrom` casts an
+  // `ApiError`'s code to `ErrorClass` without validating it, so a domain refusal
+  // carrying a code this list did not name reached the wire anyway — and a
+  // conforming client validating the envelope would have rejected the refusal
+  // rather than acting on it. Nothing failed, because nothing compared the two
+  // vocabularies. This does.
+  //
+  // The platform enumeration is the API's, and `docs/MCP_SPEC.md` §12 says the
+  // two surfaces report the same codes: "a refusal that starts in the domain
+  // layer reaches the agent without being renamed on the way".
+  const missing = PLATFORM_ERROR_CLASS_VALUES.filter(
+    (code) => !(ERROR_CLASS_VALUES as readonly string[]).includes(code),
+  );
+  assert.deepEqual(missing, [], `the MCP enumeration does not declare ${missing.join(", ")}`);
 });
 
 test("the resource URI forms cover every Stage 0 scheme", () => {

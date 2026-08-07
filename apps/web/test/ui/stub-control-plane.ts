@@ -1509,32 +1509,120 @@ export async function startStubControlPlane(options: StubOptions): Promise<StubC
       }
       const serviceId =
         typeof body["published_service_id"] === "string" ? body["published_service_id"] : null;
-      // The origin is derived from the route record, never taken from the
-      // caller: the origin is the worker's egress allow-list.
-      const route = serviceId === null ? undefined : published.get(serviceId);
       sessionsStarted += 1;
+      const newId = `brs_ui_started_${String(sessionsStarted)}`;
+
+      // A route names the browser sessions it authorises when it is published,
+      // so it cannot name one that does not exist yet — and a session created by
+      // this very request never exists yet. The stub bound any route to a
+      // freshly minted identifier without consulting
+      // `allowed_browser_session_ids`, which is why the web application shipped
+      // a route selector that could not succeed against the real control plane
+      // (ADR-0037). It enforces the allow-list now, so the suite can see the
+      // difference between the two.
+      if (serviceId !== null) {
+        const route = published.get(serviceId);
+        const allowed = (route?.["allowed_browser_session_ids"] as string[] | undefined) ?? [];
+        if (!allowed.includes(newId)) {
+          sendJson(response, 403, {
+            error: {
+              code: "AUTHORISATION_DENIED",
+              message: "That browser session is not authorised for this published service.",
+            },
+          });
+          return;
+        }
+      }
+
+      // `allocate: false` reserves the identifier and stops. No worker is
+      // contacted, so the session is `REQUESTED` and reaches nothing until a
+      // route naming it has been published and the session allocated.
+      const reserving = body["allocate"] === false;
       const startedRecord: Record<string, unknown> = {
-        id: `brs_ui_started_${String(sessionsStarted)}`,
+        id: newId,
         project_id: owner,
         organisation_id: PROJECT.organisation_id,
-        status: "READY",
-        published_service_id: serviceId,
-        service_origin: route === undefined ? null : (route["internal_origin"] as string),
-        browser_version: SESSION.browser_version,
+        status: reserving ? "REQUESTED" : "READY",
+        published_service_id: reserving ? null : serviceId,
+        service_origin: null,
+        browser_version: reserving ? null : SESSION.browser_version,
         viewport,
         current_controller: { type: "human_user", id: "vwr_ui" },
         control_epoch: 1,
         created_at: new Date().toISOString(),
         ended_at: null,
       };
-      sessions.set(startedRecord["id"] as string, startedRecord);
+      sessions.set(newId, startedRecord);
       recordEvent(
-        startedRecord["id"] as string,
-        "browser.session_started",
+        newId,
+        reserving ? "browser_session.requested" : "browser.session_started",
         { type: "human_user", display: "Administrator" },
-        { viewport, published_service_id: serviceId },
+        { viewport, published_service_id: reserving ? null : serviceId },
       );
       sendJson(response, 201, { data: startedRecord });
+      return;
+    }
+
+    // Allocation: the second half of the only order that works (`docs/API.md`
+    // §11). The route must already name the reservation; the origin is derived
+    // from the route record and never taken from the caller.
+    const allocateMatch = /^\/api\/v1\/browser-sessions\/([^/]+)\/allocate$/u.exec(path);
+    if (allocateMatch !== null && request.method === "POST") {
+      if (!hasCsrf(request)) {
+        sendJson(response, 403, {
+          error: { code: "AUTHORISATION_DENIED", message: "A CSRF token is required." },
+        });
+        return;
+      }
+      const sessionId = allocateMatch[1] as string;
+      const record = sessions.get(sessionId);
+      if (record === undefined) {
+        sendJson(response, 404, {
+          error: { code: "RESOURCE_NOT_FOUND", message: "The browser session was not found." },
+        });
+        return;
+      }
+      if (record["status"] !== "REQUESTED") {
+        sendJson(response, 409, {
+          error: {
+            code: "BROWSER_SESSION_NOT_ACTIVE",
+            message: "Only a reserved browser session can be allocated.",
+            details: { browser_session_status: record["status"] },
+          },
+        });
+        return;
+      }
+      const body = await readJsonBody(request);
+      const wanted =
+        typeof body["published_service_id"] === "string" ? body["published_service_id"] : null;
+      const route = wanted === null ? undefined : published.get(wanted);
+      if (wanted !== null) {
+        const allowed = (route?.["allowed_browser_session_ids"] as string[] | undefined) ?? [];
+        if (route === undefined || !allowed.includes(sessionId)) {
+          sendJson(response, 403, {
+            error: {
+              code: "AUTHORISATION_DENIED",
+              message: "That browser session is not authorised for this published service.",
+            },
+          });
+          return;
+        }
+      }
+      const allocated: Record<string, unknown> = {
+        ...record,
+        status: "READY",
+        browser_version: SESSION.browser_version,
+        published_service_id: wanted,
+        service_origin: route === undefined ? null : (route["internal_origin"] as string),
+      };
+      sessions.set(sessionId, allocated);
+      recordEvent(
+        sessionId,
+        "browser.session_started",
+        { type: "human_user", display: "Administrator" },
+        { viewport: allocated["viewport"], published_service_id: wanted },
+      );
+      sendJson(response, 200, { data: allocated });
       return;
     }
 
