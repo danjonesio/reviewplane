@@ -56,7 +56,31 @@ COMPOSE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 E2E_DIR="${COMPOSE_DIR}/e2e"
 EVIDENCE="${E2E_DIR}/evidence-faults"
 REPORT="${EVIDENCE}/fault-injection-report.md"
-SCHEMA_DIR="$(cd "${COMPOSE_DIR}/../.." && pwd)/packages/protocol/schemas"
+REPO_ROOT="$(cd "${COMPOSE_DIR}/../.." && pwd)"
+SCHEMA_DIR="${REPO_ROOT}/packages/protocol/schemas"
+
+# The §11 rows this script does **not** cover, and the suite that owns each.
+#
+# One array, used by both the report and the check below, because a report and a
+# check that hold separate copies of this list are two things that can disagree
+# — and the one that would be wrong is the one nobody executes.
+#
+# The report exists so that a reader of it cannot mistake this run for the whole
+# matrix, which makes it a coverage claim; and a coverage claim has to be
+# executed rather than read, or it decays into a confident sentence about a file
+# somebody renamed. What the check proves is deliberately narrow, and is stated
+# in the report in those words: **the path exists**. It does not prove the suite
+# there still covers the row, and nothing cheap could. The realistic decay is a
+# rename or a deletion, and that is what it catches.
+UNCOVERED_ROW_OWNERS=(
+  "services/connector/internal/protocolsim|connector reconnect, flapping and desired-state rows"
+  "apps/server/test/connector-reconnect.test.ts|connector reconnect against a real connector process"
+  "apps/server/test/artefact-security.test.ts|artefact upload, grant and malicious-content rows"
+  "apps/server/test/verification-evidence.test.ts|verification evidence and partial-failure rows"
+  "services/tunnel-gateway|WebSocket, stream-limit and idle-window rows"
+  "deploy/compose/e2e/install-smoke.sh|the reviewplane status rows, as pnpm test:install"
+  "apps/web/test/ui|the live-view client's own reconnect"
+)
 
 # A per-run project name, for the reason `run.sh` gives: `compose.yaml` names
 # the project `reviewplane`, which is right for a deployment and wrong for a
@@ -219,13 +243,13 @@ write_report() {
     printf '  guarantee — exactly one current verification per finding. The agent path'"'"'s\n'
     printf '  `idempotency_key` is exercised in `apps/mcp-server/test/mcp.test.ts`, not here.\n'
     printf '\n## Rows of section 11 this script does not cover\n\n'
-    printf 'They have owners elsewhere and are listed so that nobody reads this report as the\n'
-    printf 'whole matrix: the connector reconnect, flapping and desired-state rows are\n'
-    printf '`services/connector/internal/protocolsim` and `apps/server/test/connector-reconnect.test.ts`;\n'
-    printf 'the artefact upload, idempotency and grant rows are `apps/server/test/artefact-security.test.ts`\n'
-    printf 'and `verification-evidence.test.ts`; the WebSocket, stream-limit and idle-window rows\n'
-    printf 'are `services/tunnel-gateway`; the `reviewplane status` rows are `pnpm test:install`;\n'
-    printf 'the live-view client reconnect is `apps/web/test/ui/`.\n'
+    printf 'Listed so that nobody reads this report as the whole matrix. Each path was\n'
+    printf 'checked to exist during this run — which proves it has not been renamed away,\n'
+    printf 'and does **not** prove the suite there still covers the row.\n\n'
+    local owner
+    for owner in "${UNCOVERED_ROW_OWNERS[@]}"; do
+      printf -- '- `%s` — %s\n' "${owner%%|*}" "${owner#*|}"
+    done
   } > "${REPORT}"
   info "wrote ${REPORT}"
 }
@@ -1142,6 +1166,31 @@ RETENTION_JOB_ROWS="$(psql_scalar "select count(*) from jobs where kind like '%r
   || fail "${RETENTION_JOB_ROWS} retention-shaped job row(s) exist, so this case is applicable after all"
 record_case "${CURRENT_CASE}" "not applicable" \
   "Stage 1 has no retention deletion: job_kind in packages/protocol/schemas/platform/v1.schema.json names none, and no retention-shaped job row exists. The retention policy is docs/ROADMAP.md §4, Stage 2. This assertion fails the moment retention arrives"
+
+# ---------------------------------------------------------------------------
+CURRENT_CASE="The report's own cross-references"
+step "8. ${CURRENT_CASE}"
+# ---------------------------------------------------------------------------
+# The report names the suites that own the §11 rows this script does not cover.
+# That is a claim about coverage, and a claim about coverage has to be executed
+# rather than read: left unchecked it decays into a confident sentence about a
+# file somebody renamed, and the reader it was written for is exactly the reader
+# who would not notice.
+#
+# So every path is checked to exist before the report that names it is written.
+# The check is narrow on purpose and the report says so in the same words: it
+# proves the path is there, not that the suite still covers the row.
+
+MISSING_OWNERS=""
+for OWNER in "${UNCOVERED_ROW_OWNERS[@]}"; do
+  [[ -e "${REPO_ROOT}/${OWNER%%|*}" ]] || MISSING_OWNERS+="${OWNER%%|*} "
+done
+# `MISSING_OWNERS` already ends in a space, which is what separates the list from
+# the sentence that follows it.
+[[ -z "${MISSING_OWNERS}" ]] \
+  || fail "the report names ${MISSING_OWNERS}as owning §11 rows this script does not cover, and no such path exists. Either the suite moved and this list must follow it, or the row has lost its owner and the matrix has a hole nobody is filling"
+record_case "${CURRENT_CASE}" pass \
+  "all ${#UNCOVERED_ROW_OWNERS[@]} suites the report names as owning the §11 rows this run does not cover exist. That they still cover those rows is not asserted here and the report says so"
 
 # ---------------------------------------------------------------------------
 step "Fault-injection matrix complete"

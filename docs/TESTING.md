@@ -721,6 +721,16 @@ retention arrives the assertion fails and the case has to be written. A matrix
 row that is quietly dropped is indistinguishable from one that passed, and a "not
 applicable" nothing checks is a comment.
 
+The report's list of rows it does **not** cover names the suite that owns each,
+and the run **checks that every one of those paths exists** before writing the
+report that names them. That list is itself a coverage claim, and a coverage
+claim has to be executed rather than read: unchecked it decays into a confident
+sentence about a file somebody renamed, and the reader it was written for is
+exactly the reader who would not notice. The check is narrow and the report says
+so in the same words — it proves the path is there, not that the suite still
+covers the row — because the alternative failure is a check that reads as
+stronger than it is.
+
 Every failure produces the three things a fault-injection failure needs and
 cannot be reproduced on demand to obtain: the logs of every service, a dump of
 the event store, and an inventory of the artefact metadata beside the objects
