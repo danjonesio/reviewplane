@@ -526,19 +526,32 @@ test("reopening preserves the whole verification history", async () => {
   const reviews = harness.built.reviews;
   const scope = scopeOf(fixture);
 
-  await reviews.submitVerification(scope, fixture.findingId, submission(fixture), AGENT);
+  const first = await reviews.submitVerification(
+    scope,
+    fixture.findingId,
+    submission(fixture),
+    AGENT,
+  );
   const awaiting = await reviews.updateFinding(
     scope,
     fixture.findingId,
     { expectedVersion: await currentVersion(fixture.findingId), status: "AWAITING_HUMAN_REVIEW" },
     AGENT,
   );
+  // Each human decision names the claim it is about (ADR-0035).
   const resolved = await reviews.updateFinding(
     scope,
     fixture.findingId,
-    { expectedVersion: awaiting.version, status: "RESOLVED" },
+    {
+      expectedVersion: awaiting.version,
+      status: "RESOLVED",
+      verificationId: first.verification.verification_id,
+    },
     HUMAN,
   );
+  // Accepting decided the claim, so the finding holds no current one and the
+  // reopen below names none. The record itself survives, which is what the
+  // count below asserts.
   const reopened = await reviews.updateFinding(
     scope,
     fixture.findingId,

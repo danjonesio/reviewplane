@@ -387,6 +387,8 @@ export const MESSAGE_TYPE_VALUES = [
   "finding.claimed",
   "finding.comment_added",
   "finding.verification_submitted",
+  "finding.verification_accepted",
+  "finding.verification_rejected",
   "review.completion_evaluated",
   "review.assigned",
   "review.accepted",
@@ -422,6 +424,8 @@ export type MessageType =
   | "finding.claimed"
   | "finding.comment_added"
   | "finding.verification_submitted"
+  | "finding.verification_accepted"
+  | "finding.verification_rejected"
   | "review.completion_evaluated"
   | "review.assigned"
   | "review.accepted"
@@ -657,6 +661,8 @@ export const MESSAGE_DIRECTIONS: Readonly<Record<MessageType, "control_plane_to_
   "finding.claimed": "control_plane_to_client",
   "finding.comment_added": "control_plane_to_client",
   "finding.verification_submitted": "control_plane_to_client",
+  "finding.verification_accepted": "control_plane_to_client",
+  "finding.verification_rejected": "control_plane_to_client",
   "review.completion_evaluated": "control_plane_to_client",
   "review.assigned": "control_plane_to_client",
   "review.accepted": "control_plane_to_client",
@@ -695,6 +701,8 @@ export const MESSAGE_CHANNELS: Readonly<Record<MessageType, Channel>> = {
   "finding.claimed": "finding",
   "finding.comment_added": "finding",
   "finding.verification_submitted": "finding",
+  "finding.verification_accepted": "finding",
+  "finding.verification_rejected": "finding",
   "review.completion_evaluated": "review",
   "review.assigned": "review",
   "review.accepted": "review",
@@ -734,6 +742,8 @@ export const PAYLOAD_MAX_BYTES: Readonly<Record<MessageType, number>> = {
   "finding.claimed": 2048,
   "finding.comment_added": 6144,
   "finding.verification_submitted": 8192,
+  "finding.verification_accepted": 2048,
+  "finding.verification_rejected": 2048,
   "review.completion_evaluated": 8192,
   "review.assigned": 2048,
   "review.accepted": 2048,
@@ -2256,6 +2266,8 @@ export interface ReviewTransitionRequest {
   readonly expected_version: VersionNumber;
   /**
    * Why, recorded on the event so an auditor reads a decision rather than a status.
+   * Required for reopen: a review returned for more work without a statement of what is
+   * wrong is an instruction nobody can act on (ADR-0036).
    */
   readonly reason?: ReasonText;
 }
@@ -2283,8 +2295,17 @@ export interface FindingTransitionRequest {
    */
   readonly expected_version: VersionNumber;
   /**
-   * Why the decision was made. Required for wont-fix, because waiving a reported problem
-   * without a reason is not a decision anybody can review later.
+   * The verification the decision is about: the one the deciding human was shown, not the
+   * one that happens to be current when the request arrives (ADR-0035). Required where the
+   * finding holds a current verification, and refused with VERSION_CONFLICT where it names
+   * one that has since been superseded, so evidence swapped under a reviewer cannot be
+   * accepted by a client that re-read the record before sending.
+   */
+  readonly verification_id?: Identifier;
+  /**
+   * Why the decision was made. Required for wont-fix and for reopen, because waiving or
+   * returning a reported problem without a reason is not a decision anybody can review
+   * later (ADR-0036).
    */
   readonly reason?: ReasonText;
   /**
@@ -2446,6 +2467,19 @@ export interface FindingUpdateRequest {
    * What was done, recorded with a transition towards resolution.
    */
   readonly resolution_note?: BodyText;
+  /**
+   * The verification a human decision is about, where the requested status is a final
+   * disposition or a reopen and the finding holds a current claim (ADR-0035). The rule
+   * lives below the transport, so it is the same rule the dedicated disposition routes
+   * obey; this member is what lets a caller satisfy it here rather than being told to use
+   * another route.
+   */
+  readonly verification_id?: Identifier;
+  /**
+   * Why the decision was made, where the requested status is a final disposition or a
+   * reopen. Required for wont-fix and for reopen (ADR-0036).
+   */
+  readonly reason?: ReasonText;
 }
 
 /**
@@ -3268,6 +3302,142 @@ export interface FindingVerificationSubmitted {
 }
 
 /**
+ * Payload of finding.verification_accepted. It names the verification a human accepted,
+ * which finding.resolved does not: a trail recording that somebody resolved a finding
+ * without recording which claim they were looking at cannot answer the one question an
+ * auditor asks after an evidence swap (RVP-93, ADR-0035).
+ */
+export interface FindingVerificationAccepted {
+  /**
+   * The verification accepted. It is the identifier the deciding client rendered its
+   * comparison from, and the control plane refused the decision unless it was still the
+   * current claim.
+   */
+  readonly verification_id: Identifier;
+  /**
+   * Finding the claim concerns.
+   */
+  readonly finding_id: Identifier;
+  /**
+   * Review the finding belongs to.
+   */
+  readonly review_id: Identifier;
+  /**
+   * The actor that submitted the claim, recorded beside the actor that accepted it so the
+   * authority boundary is readable from one event.
+   */
+  readonly submitted_by?: Actor;
+  /**
+   * The human who accepted. Nothing that is not a human_user can reach this event.
+   */
+  readonly decided_by: Actor;
+  /**
+   * The after screenshot the accepted claim rested on, where it had one.
+   */
+  readonly after_artefact_id?: Identifier;
+  /**
+   * Version the finding holds after the decision.
+   */
+  readonly version: VersionNumber;
+  /**
+   * Why, where the caller supplied one.
+   */
+  readonly reason?: ReasonText;
+}
+
+/**
+ * Payload of finding.verification_rejected. A reopen is a rejection of a specific claim,
+ * and naming it is what keeps a repeatedly-reopened finding legible: the record says which
+ * evidence failed rather than only that the finding came back (RVP-93, ADR-0035).
+ */
+export interface FindingVerificationRejected {
+  /**
+   * The verification rejected. The record itself is retained with status rejected; nothing
+   * about a rejection deletes evidence.
+   */
+  readonly verification_id: Identifier;
+  /**
+   * Finding the claim concerns.
+   */
+  readonly finding_id: Identifier;
+  /**
+   * Review the finding belongs to.
+   */
+  readonly review_id: Identifier;
+  /**
+   * The actor whose claim was rejected.
+   */
+  readonly submitted_by?: Actor;
+  /**
+   * The human who rejected it.
+   */
+  readonly decided_by: Actor;
+  /**
+   * Version the finding holds after the decision.
+   */
+  readonly version: VersionNumber;
+  /**
+   * Why the claim was rejected. Required: a reopen with no statement of what is still
+   * wrong is work an agent cannot act on (ADR-0036).
+   */
+  readonly reason: ReasonText;
+}
+
+/**
+ * Who established each piece of evidence (ADR-0031). A surface that reports evidence MUST
+ * NOT merge the two lists: the first names checks this control plane performed, the second
+ * names claims the submitting actor made and nothing confirmed. A reviewer shown one
+ * undifferentiated list of ticks would accept a machine agreeing with itself, which is the
+ * confusion the product exists to remove.
+ */
+export interface EvidenceAssurance {
+  /**
+   * What the control plane checked for itself before recording the verification.
+   */
+  readonly verified_by_control_plane: readonly RequirementLabel[];
+  /**
+   * What the submitter claimed and nothing confirmed. Empty is a truthful answer.
+   */
+  readonly asserted_by_agent: readonly RequirementLabel[];
+  /**
+   * The actor whose claim the assertions are. Absent where there is no verification to
+   * attribute them to, because naming an actor with no claims behind it would attribute
+   * something to somebody.
+   */
+  readonly asserted_by?: Actor;
+}
+
+/**
+ * One verification as a human reviewer reads it: the claim, the assurance split of
+ * docs/UX_FLOWS.md section 13, and the qualifications on the claim that are worth saying
+ * but not worth refusing. It is served by GET
+ * /api/v1/findings/:findingId/verifications/:verificationId so a comparison is rendered
+ * from a named claim rather than from whatever is latest at render time (ADR-0035).
+ */
+export interface VerificationReview {
+  /**
+   * The claim, as recorded. Its summary is untrusted human-facing content and MUST be
+   * rendered as text (ADR-0010).
+   */
+  readonly verification: VerificationReference;
+  /**
+   * What the control plane checked, and separately what the submitter asserted.
+   */
+  readonly assurance: EvidenceAssurance;
+  /**
+   * Qualifications on the claim: a defect not reproduced first, an unchecked accessibility
+   * pass, a branch no workspace corroborates. They are statements about the evidence
+   * rather than claims attributed to the submitter, so they are not in the asserted list.
+   */
+  readonly warnings: readonly RequirementLabel[];
+  /**
+   * Whether this claim is still the one a decision may be taken on. False for a superseded
+   * or already-decided record, which a reviewer may read but may not accept.
+   */
+  readonly is_current: boolean;
+}
+
+/**
  * Payload of review.completion_evaluated. It records what an agent was told, not what
  * changed: the result, the outstanding requirements and the agent's own account of what it
  * believes it finished. The summary is the agent's claim and is stored inert — it is not
@@ -3572,6 +3742,16 @@ export type ReviewFrame =
       readonly envelope: Envelope;
       readonly type: "finding.verification_submitted";
       readonly payload: FindingVerificationSubmitted;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "finding.verification_accepted";
+      readonly payload: FindingVerificationAccepted;
+    }
+  | {
+      readonly envelope: Envelope;
+      readonly type: "finding.verification_rejected";
+      readonly payload: FindingVerificationRejected;
     }
   | {
       readonly envelope: Envelope;

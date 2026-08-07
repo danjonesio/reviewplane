@@ -459,6 +459,47 @@ test("a stale expected_version is refused with VERSION_CONFLICT", async () => {
   assert.equal(reviewConflict.statusCode, 409);
 });
 
+test("an agent asking for a disposition is refused by authority before legality", async () => {
+  // `docs/API.md` section 13 makes the order a rule: disposition authority is
+  // checked **before** transition legality, so the answer does not depend on
+  // where the finding happens to be. `OPEN -> RESOLVED` is not in the table for
+  // anybody, so if legality ran first the refusal would be `POLICY_DENIED` and
+  // the attempt would be audited under the wrong class — the finding would read
+  // as "that move is impossible" rather than "that decision is not yours".
+  //
+  // This is asserted at the service rather than on the pure function, because
+  // the two authority checks overlap: removing the disposition check entirely
+  // leaves `assertActorMayMoveFinding` refusing the same act, so a test that
+  // only exercised a finding at `AWAITING_HUMAN_REVIEW` passes either way and
+  // says nothing about the order.
+  const fixture = await seedFixture();
+  const review = (await createReview(fixture)).json() as { data: { id: string } };
+  const findingId = (
+    (await createFinding(review.data.id, fixture)).json() as { data: { finding: { id: string } } }
+  ).data.finding.id;
+
+  const scope = { organisationId: fixture.organisationId, projectId: fixture.projectId };
+  const agent = { type: "agent_session" as const, id: "ags_claude", display: "Claude Code" };
+
+  const denial = await harness.built.reviews
+    .updateFinding(scope, findingId, { expectedVersion: 1, status: "RESOLVED" }, agent)
+    .then(() => null)
+    .catch((error: unknown) => error as { code: string; message: string });
+  assert.equal(denial?.code, "AUTHORISATION_DENIED", denial?.message ?? "no error was raised");
+
+  // And the attempt is audited under that class rather than as an impossible
+  // move (`docs/DOMAIN_MODEL.md` section 15).
+  const denied = await postgres.pool.query<{ payload: Record<string, unknown> }>(
+    `SELECT payload FROM events
+      WHERE type = 'finding.status_change_denied' AND payload->>'finding_id' = $1`,
+    [findingId],
+  );
+  assert.equal(denied.rows.length, 1);
+  assert.equal(denied.rows[0]?.payload["code"], "AUTHORISATION_DENIED");
+  assert.equal(denied.rows[0]?.payload["from"], "OPEN");
+  assert.equal(denied.rows[0]?.payload["requested"], "RESOLVED");
+});
+
 test("an agent cannot resolve a human-authored finding through the domain service", async () => {
   const fixture = await seedFixture();
   const review = (await createReview(fixture)).json() as { data: { id: string } };
@@ -506,7 +547,7 @@ test("an agent cannot resolve a human-authored finding through the domain servic
     fixture.browserSessionId,
     encodePng(781, 1688),
   );
-  await reviews.submitVerification(
+  const claim = await reviews.submitVerification(
     scope,
     findingId,
     {
@@ -549,11 +590,18 @@ test("an agent cannot resolve a human-authored finding through the domain servic
   assert.equal(unchanged.status, "AWAITING_HUMAN_REVIEW");
   assert.equal(unchanged.version, 6);
 
-  // A human completes the same transition.
+  // A human completes the same transition, naming the claim they were shown
+  // (ADR-0035). The identifier is not decoration: it is what makes this an
+  // acceptance of *this* evidence rather than of whatever is current when the
+  // request lands.
   const accepted = await reviews.updateFinding(
     scope,
     findingId,
-    { expectedVersion: 6, status: "RESOLVED" },
+    {
+      expectedVersion: 6,
+      status: "RESOLVED",
+      verificationId: claim.verification.verification_id,
+    },
     { type: "human_user", id: "bootstrap", display: "bootstrap administrator" },
   );
   assert.equal(accepted.status, "RESOLVED");

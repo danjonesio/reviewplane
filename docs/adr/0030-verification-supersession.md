@@ -117,6 +117,39 @@ had a consequence for an earlier row. Emitting two events for it would let a
 consumer see the consequence without the cause, and would put an ordering
 question into the timeline that the single event does not have.
 
+### Supersession under a pending human review, and what answers it
+
+This decision leaves one case open, and RVP-89 is the report of it: a finding at
+`AWAITING_HUMAN_REVIEW` may be superseded, and its status does not move. A
+reviewer who has the comparison open is then looking at a claim that is no
+longer current, and an accept that follows would land on evidence they were
+never shown.
+
+**ADR-0035 settles it, and this section exists so that a reader arriving here
+does not have to find that out elsewhere.** The answer is neither of the two
+this ADR's shape suggests. Returning the finding to `FIXED_UNVERIFIED` on
+supersession would make the swap visible as a status change — it remains
+available and nothing here excludes it — but it answers only *that* the
+evidence changed and never *which* claim a human then accepted. Refusing a
+submission while a review is pending would put an agent's ability to correct
+its own work at the mercy of how long a person takes to look.
+
+ADR-0035 instead makes the **decision name the claim**: a human disposition or
+reopen carries the identifier of the verification the reviewer's comparison was
+rendered from, and the control plane refuses one that is no longer current. The
+identifier of a claim cannot be obtained by re-reading — a re-read returns the
+new claim, which is refused from the other direction — so the client shape that
+defeats a version check is closed as well. Accepting then marks that claim
+`accepted` and reopening marks it `rejected`, which is what finally reaches the
+`accepted` and `rejected` statuses `docs/DOMAIN_MODEL.md` §19 has always
+declared.
+
+Nothing in this ADR changes. Supersession stays exactly as decided above:
+non-destructive, one current claim, recorded on the submission that caused it.
+What ADR-0035 adds is that being current at the moment of a decision is now
+something the decision has to assert rather than something a reader has to hope
+for.
+
 ### The migration backfills before it constrains
 
 Migration 0150 marks the older rows of every multi-submission finding
@@ -185,8 +218,11 @@ asked again.
 
 - Retention for superseded verifications and their artefacts, with the Stage 2
   artefact-expiry work.
-- Surfacing the supersession chain in the review viewer, so a human sees that a
-  claim is a repeat before deciding on it.
+- ~~Surfacing the supersession chain in the review viewer, so a human sees that
+  a claim is a repeat before deciding on it.~~ Done in RVP-55: the finding page
+  lists every claim the finding has accumulated, states each one's status in
+  words, and renders the comparison for any of them — and offers no decision
+  while the comparison shows a claim that is not the one under review.
 - Including superseded verifications in the portable export of
   `docs/REVIEW_FORMAT.md` in an order that makes the chain readable outside the
   product.

@@ -462,6 +462,8 @@ and no expiry job run.
 - `finding.status_changed`
 - `finding.comment_added`
 - `finding.verification_submitted`
+- `finding.verification_accepted`
+- `finding.verification_rejected`
 - `finding.resolved`
 - `finding.reopened`
 - `finding.status_change_denied`
@@ -543,10 +545,28 @@ covered, and the agent's own account of what it believes it finished. That
 summary is a **claim**, stored inert beside the control plane's answer rather
 than instead of it, and it MUST NOT be rendered as markup capable of executing
 script.
-- `finding.verification_accepted`
-- `finding.verification_rejected`
-- `finding.resolved`
-- `finding.reopened`
+
+`finding.verification_accepted` and `finding.verification_rejected` name the
+claim a human decided (ADR-0035). They are not a restatement of
+`finding.resolved` and `finding.reopened`: those say a human closed or returned
+a **finding**, and carry no reference to the evidence at all. After an agent has
+submitted twice, "which claim was accepted" is the only question an auditor
+asks, and until these were emitted the answer had to be inferred from event
+ordering — which is not an answer.
+
+Each carries the `verification_id`, the actor that submitted the claim beside
+the human who decided it, the finding's version after the decision, and the
+reason where there was one; the acceptance also carries the after screenshot the
+accepted claim rested on. They were declared in this catalogue and in the
+platform vocabulary with no emitter anywhere until RVP-55 (RVP-93), which is
+precisely the failure mode a declared name with nothing behind it produces: a
+consumer filtering for the acceptance decision found nothing and could not tell
+that from no acceptance having happened.
+
+They are written only where a claim was current. `WONT_FIX` and `DUPLICATE`
+write neither, because waiving a report is a judgement about the report rather
+than about the claim made against it, and recording it as an acceptance would
+put a human's name on evidence they did not accept.
 
 ### Inbox
 

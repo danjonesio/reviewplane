@@ -854,6 +854,50 @@ rather than a thrown error. Every case also asserts that the page states
 ReviewPlane does not type into an agent's terminal, because §11's prohibition is
 on a claim and only an affirmative sentence can be tested for.
 
+The review workspace is proved in
+`apps/web/test/ui/review-workspace.browser.test.ts`, which owns
+`UX_FLOWS.md` §12, §13 and §16 and the half of the product's central invariant
+no server test can reach.
+
+`apps/server/test/accept-evidence-integrity.test.ts` proves that the control
+plane refuses an accept carrying a superseded claim, and says in its own header
+what it cannot prove: that a **client** sends the claim it rendered rather than
+one it fetched when the button was pressed. This suite is where that is
+observable. The comparison is opened, the stub supersedes the evidence
+underneath it as an agent would, Accept is pressed, and the request the browser
+actually sent is read out of the stub's transcript and asserted to name the
+claim the page rendered — with the negative assertion beside it that it is not
+the identifier that replaced it. A test asserting only that the refusal
+appeared would pass for a client that had sent the wrong thing to a server that
+refused it for the wrong reason.
+
+Three further properties are asserted against the **rendered DOM** rather than
+against component source, because each has a source-level shape that looks
+correct and is not. The §13 assurance split is taken apart by the accessible
+text of its two groups, including the visually hidden words a screen reader
+announces for each row, so two arrays rendered through one list with one marker
+fails. An agent summary carrying markup is asserted both to be on screen
+character for character **and** to have produced no element and set no global —
+a page that stripped it would satisfy the second alone while having changed what
+was stored. Statuses are read out of their badges as words.
+
+Accept and reopen each run at 1440x900 and 390x844, `UX_FLOWS.md` §20 requiring
+accepting findings to work on a phone, and the mobile case additionally asserts
+that the document does not scroll horizontally. Keyboard navigation reaches the
+decision controls and the claim list by `Tab` rather than by `focus()`, because
+`:focus-visible` is what draws the ring, and the outline is measured. The
+review-level case asserts both halves of "offering is not granting": a review at
+`READY` is offered no decision because the transition table permits none, and a
+review at `AWAITING_HUMAN_REVIEW` is offered accept and refused it while a
+human-authored finding is outstanding.
+
+`apps/web/test/review-actions.test.ts` runs under `pnpm test` and covers the
+derivation itself: every decision the workspace offers is compared against the
+protocol transition table for every status on both sides of it, so a view model
+that hard-coded a list would fail where the two disagreed. Its negative half —
+that an agent is offered no disposition from any status — is the product
+invariant read out of the table rather than asserted about it.
+
 These live in `apps/web/test/ui/` and run with `pnpm test:ui`, which builds the
 bundle and drives it in a real Chromium against a stub control plane that
 speaks the generated live-view protocol. They are separate from `pnpm test` for

@@ -130,9 +130,17 @@ interface Session {
   close(): Promise<void>;
 }
 
+/**
+ * Which finding of the fixture review to open, in the order the review page
+ * lists them. The evidence lives on the finding page (RVP-55).
+ */
+const HERO = 0;
+const UNMEASURED = 1;
+
 async function openReview(
   viewport: { width: number; height: number },
   deviceScaleFactor: number,
+  finding: number = HERO,
 ): Promise<Session> {
   const context = await browser.newContext({ viewport, deviceScaleFactor });
   const page = await context.newPage();
@@ -155,12 +163,17 @@ async function openReview(
   await page.getByRole("heading", { name: "Reviews", exact: true }).waitFor();
   await page.getByRole("link", { name: "Open review" }).first().click();
   await page.getByRole("heading", { name: "Bugs on homepage" }).waitFor();
+  // The evidence lives on the finding page: a review with several findings,
+  // each carrying a before-and-after pair, is not a page anybody can read at
+  // 390 pixels (RVP-55).
+  await page.getByRole("link", { name: "Open finding" }).nth(finding).click();
+  await page.locator("[data-verification-panel]").waitFor();
   // The overlay cannot be measured before the screenshot has decoded.
   await page.waitForFunction(() => {
     const image = document.querySelector<HTMLImageElement>("[data-testid=artefact-image]");
     return image !== null && image.complete && image.naturalWidth > 0;
   }, undefined, { timeout: 20_000 });
-  await page.locator("[data-annotation='ann_ui_suite_rectangle']").waitFor();
+  if (finding === HERO) await page.locator("[data-annotation='ann_ui_suite_rectangle']").waitFor();
 
   return {
     page,
@@ -477,7 +490,7 @@ test("the annotation list presents the same marks without the canvas", async () 
 });
 
 test("an artefact with no measured content rectangle degrades to picture plus list", async () => {
-  const session = await openReview(DESKTOP, 1);
+  const session = await openReview(DESKTOP, 1, UNMEASURED);
   // The second finding's artefact was never measured, so the overlay cannot be
   // placed. The evidence must survive that (`docs/UX_FLOWS.md` section 18).
   const panel = session.page.locator("[data-finding='fin_ui_suite_unmeasured']");
