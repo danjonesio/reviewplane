@@ -33,6 +33,8 @@ Every wait in a fixture MUST be bounded in a way that can actually be reached. A
 
 A fixture reset MUST NOT be able to deadlock against the code under test. A component's `stop()` returning is not the same instant as its last statement committing, so a reset that truncates while a straggler is writing will sooner or later meet the opposite lock order. Taking the locks with `NOWAIT` removes the possibility rather than the likelihood — a session that never waits for a lock cannot be in a deadlock cycle — and a bounded backoff handles contention. A reset that fails intermittently blames the test that was about to run rather than the one that caused it, which is the hardest failure in a suite to read.
 
+A shell harness that runs a helper with `node -e` MUST NOT rely on module detection, and MUST NOT assume it owns the stream the helper writes to. Both rules were bought rather than reasoned: the same program with top-level `await` evaluated correctly through `docker compose exec` and failed with "await is only valid in async functions and the top level bodies of modules" through `docker compose run`, in the same image; and `docker compose run` prints its own build and container lines on the helper's stdout, so a parser that read the first line as a result read a Docker progress line instead. An async function with `require` needs no detection to be right, and a marker prefix on every line the helper emits makes the parse safe whatever else is on the stream. `deploy/compose/e2e/fault-injection.sh` does both; a harness that fails for one of these reasons fails in a way that has nothing to do with what it was testing.
+
 ### Contract
 
 - TypeScript and Go schema compatibility
