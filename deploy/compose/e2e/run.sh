@@ -1732,7 +1732,13 @@ BROWSER_CREDENTIAL_RESPONSE="$(api POST "/api/v1/organisations/${ORGANISATION_ID
 AGENT_BROWSER_TOKEN="$(field "${BROWSER_CREDENTIAL_RESPONSE}" 'data["token"]')" \
   || fail "could not issue the agent's browser credential"
 
-"${COMPOSE[@]}" cp "${E2E_DIR}/agent-fixture.mjs" dev-fixture:/tmp/agent-fixture.mjs \
+# Streamed in through a process rather than `docker compose cp`. The daemon
+# refuses a copy into a container whose root filesystem is read-only even when
+# the destination is a tmpfs, and the development environment's root filesystem
+# is read-only for the `docs/SECURITY.md` §10 reason and is not relaxed for a
+# fixture. `/tmp` is writable from inside, so a shell inside writes it.
+"${COMPOSE[@]}" exec -T dev-fixture sh -c 'cat > /tmp/agent-fixture.mjs' \
+  < "${E2E_DIR}/agent-fixture.mjs" \
   || fail "could not place the agent fixture in the development environment"
 
 # The fixture is started before the assignment exists, because that is the
