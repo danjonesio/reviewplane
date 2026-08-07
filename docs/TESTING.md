@@ -1080,13 +1080,20 @@ also run inside `pnpm test`. The `security` job therefore checks that the script
 exists before running it and fails the release when it does not, so the table
 above cannot quietly become a claim about a command nobody wrote.
 
-Its membership is a **filename suffix rather than a list** (§10): the script runs
-every `*-gate.test.ts` in the packages that declare it. A standing gate added
-later is therefore run by this release job without anybody remembering to edit
-the pipeline — which matters, because "remembering to add it" is how the
+Its membership is a **filename prefix rather than a list** (§10): the script runs
+every `test/security-gate-*.test.ts` in the packages that declare it. A standing
+gate added later is therefore run by this release job without anybody remembering
+to edit the pipeline — which matters, because "remembering to add it" is how the
 conditions in this section came to be unenforced in the first place. The
 corollary is that this job's coverage is defined in §5 and §10 and not here, and
 a reader who wants to know what it actually asserts has to look there.
+
+The prefix is specific for a reason worth keeping. A `*-gate.test.ts` suffix
+would also match `apps/server/test/completion-gate.test.ts`, which is the
+domain rule of §4 about verification evidence and not a security gate at all — so
+the convention that reads as "every gate" would quietly have swept in a suite
+this condition does not own, and §10's count of what runs would have been wrong
+from the day it was written.
 
 Two further jobs run beside them. `faults` executes the fault-injection matrix
 of §11 against the deployed stack and blocks the release. `baselines` records and
