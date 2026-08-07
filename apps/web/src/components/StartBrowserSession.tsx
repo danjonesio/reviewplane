@@ -15,6 +15,22 @@
  * a select left blank would be indistinguishable from one nobody had got to
  * yet, and the difference decides whether the session can open anything.
  *
+ * **The route is not chosen here, and that is the correction ADR-0037 made.**
+ * This surface offered a select of published routes on a one-request start, and
+ * that combination cannot succeed against the real control plane: a route names
+ * the browser sessions it authorises when it is published
+ * (`CONNECTOR_PROTOCOL.md` §11), so a route published before this session
+ * existed does not name it, and `mint` refuses. The browser suite did not catch
+ * it because the stub bound any route to a freshly minted identifier without
+ * consulting `allowed_browser_session_ids`; the stub enforces it now.
+ *
+ * So a session that is meant to reach an application is **reserved** here, the
+ * route is published against the reservation with the form below, and the
+ * reservation is then allocated. That is the order `API.md` §11 documents and
+ * the one the agent surface uses (`MCP_SPEC.md` §7.3). It is three steps because
+ * the constraint is real, and a select that hid it produced a session that
+ * silently reached nothing.
+ *
  * Trace and video are step 3 of the flow and are not implemented at this stage.
  * They are shown disabled and said to be unavailable rather than omitted: a
  * missing step reads as a step that does not exist, and a reader who was told
@@ -56,6 +72,15 @@ const HINT = "text-xs text-slate-600 dark:text-slate-400";
  * consequence: a session started this way reaches nothing at all.
  */
 const NO_SERVICE = "none";
+
+/**
+ * The value meaning "reserve this session for a route I have not published yet".
+ *
+ * It is a distinct option rather than a route identifier, because at this point
+ * there is no route to name: the identifier this reservation produces is what a
+ * route will be published *against*.
+ */
+const FOR_A_ROUTE = "reserve";
 
 /**
  * Route statuses a session can actually be started against.
@@ -129,6 +154,9 @@ function readFailure(error: unknown, fallback: string): string {
 
 /** What starting left behind, as a sentence rather than as a state change. */
 function startedSentence(session: BrowserSession): string {
+  if (session.status === "REQUESTED") {
+    return `Browser session ${session.id} is reserved at ${formatViewport(session.viewport)}. No browser has been opened and no worker has been contacted. Publish a route naming it, then allocate it.`;
+  }
   const where =
     session.service_origin === null
       ? "It reaches no application, because no published development service was named."
@@ -160,15 +188,23 @@ export function StartBrowserSession({ projectId }: { readonly projectId: string 
   const usable: readonly PublishedService[] = (services.data ?? []).filter((service) =>
     USABLE.includes(service.status),
   );
-  // The choice is the reader's where they made one and the first usable route
-  // until they do, so nothing has to be synchronised into state as the list
-  // arrives. A choice whose route has since been revoked falls back the same
-  // way, rather than leaving the select showing a value it no longer offers.
-  const offeredService =
-    serviceChoice === NO_SERVICE
-      ? NO_SERVICE
-      : usable.find((service) => service.id === serviceChoice)?.id;
-  const chosenService = offeredService ?? usable[0]?.id ?? NO_SERVICE;
+  // Two options and no route identifiers among them. The reader chooses what
+  // this session is *for*; the route it reaches is named later, against the
+  // reservation, because that is the only order that works.
+  const chosenService = serviceChoice === FOR_A_ROUTE ? FOR_A_ROUTE : NO_SERVICE;
+
+  /**
+   * The carried routes that already name the reservation this page just made.
+   *
+   * A route published before the reservation existed cannot name it, so this is
+   * empty until the reader has published one against it — which is what makes
+   * the empty state the instruction rather than a dead end.
+   */
+  const reservation = started !== null && started.status === "REQUESTED" ? started : null;
+  const admitting: readonly PublishedService[] =
+    reservation === null
+      ? []
+      : usable.filter((service) => service.allowed_browser_session_ids.includes(reservation.id));
 
   const offered = presets(project.data?.settings.default_validation_viewports ?? []);
   const fallbackViewport: Viewport = offered[0] ?? { width: 1440, height: 900, device_scale_factor: 1 };
@@ -177,7 +213,29 @@ export function StartBrowserSession({ projectId }: { readonly projectId: string 
   const chosenKey = viewportKey(chosenViewport);
 
   const start = useMutation({
-    mutationFn: async (draft: BrowserSessionDraft) => api.startBrowserSession(projectId, draft),
+    mutationFn: async (draft: BrowserSessionDraft) =>
+      chosenService === FOR_A_ROUTE
+        ? api.reserveBrowserSession(projectId, draft)
+        : api.startBrowserSession(projectId, draft),
+    onSuccess: async (session) => {
+      setStarted(session);
+      setActivity(startedSentence(session));
+      await queryClient.invalidateQueries({ queryKey: ["browser-sessions", projectId] });
+    },
+  });
+
+  /**
+   * Admits a reservation to a route that already names it.
+   *
+   * The route is chosen from the routes whose `allowed_browser_session_ids`
+   * contain this reservation, so the only routes offered are ones the control
+   * plane will accept. A route that does not name it is refused with
+   * `AUTHORISATION_DENIED` before anything is minted, and no route is ever
+   * amended to make the call succeed.
+   */
+  const allocate = useMutation({
+    mutationFn: async (input: { sessionId: string; publishedServiceId: string }) =>
+      api.allocateBrowserSession(input.sessionId, input.publishedServiceId),
     onSuccess: async (session) => {
       setStarted(session);
       setActivity(startedSentence(session));
@@ -188,10 +246,10 @@ export function StartBrowserSession({ projectId }: { readonly projectId: string 
   function submit(event: FormEvent): void {
     event.preventDefault();
     setStarted(null);
-    start.mutate({
-      viewport: chosenViewport,
-      ...(chosenService === NO_SERVICE ? {} : { published_service_id: chosenService }),
-    });
+    // No `published_service_id` on either branch. It cannot work on a
+    // one-request start, because the route would have to have named a session
+    // that did not exist when it was published (ADR-0037).
+    start.mutate({ viewport: chosenViewport });
   }
 
   return (
@@ -244,32 +302,29 @@ export function StartBrowserSession({ projectId }: { readonly projectId: string 
               setServiceChoice(event.target.value);
             }}
             // A select is sized by its longest option unless it is told
-            // otherwise, and a route's origin is long. At 390 px that is the
-            // difference between a page that fits and one that scrolls
-            // sideways (`docs/UX_FLOWS.md` section 20).
+            // otherwise. At 390 px that is the difference between a page that
+            // fits and one that scrolls sideways (`docs/UX_FLOWS.md` §20).
             className={`${FIELD} w-full`}
             aria-describedby="start-service-hint"
           >
-            {usable.map((service) => (
-              <option key={service.id} value={service.id}>
-                {service.internal_origin} → {service.protocol}://{service.local_host}:
-                {String(service.local_port)}
-              </option>
-            ))}
-            <option value={NO_SERVICE}>No published service (the session will reach nothing)</option>
+            <option value={NO_SERVICE}>Nothing — start an empty browser now</option>
+            <option value={FOR_A_ROUTE}>
+              A development service — reserve now, publish a route, then allocate
+            </option>
           </select>
           <p id="start-service-hint" className={HINT}>
-            {usable.length === 0 ? (
-              <span data-empty="start-services">
-                This project carries no published development service, so the only choice is a
-                session that reaches nothing. Publish one below first if the browser is meant to
-                open an application.
+            {chosenService === FOR_A_ROUTE ? (
+              <span data-reserve-explanation="start-services">
+                A route names the browser sessions it may carry when it is published, so it cannot
+                name one that does not exist yet. This reserves the session and stops: no browser is
+                opened and no worker is contacted. Publish a route against the reservation with the
+                form below, then allocate it here.
               </span>
             ) : (
               <>
-                Only a carried route is offered; a route still being accepted by the gateway is not.
-                The control plane resolves the origin and mints the session&apos;s capability from
-                the record itself — neither is sent from this page.
+                The session opens immediately and reaches no application. The control plane resolves
+                an origin and mints a session&apos;s capability from a route record itself, so
+                neither is ever sent from this page.
               </>
             )}
           </p>
@@ -357,10 +412,67 @@ export function StartBrowserSession({ projectId }: { readonly projectId: string 
           aria-describedby="start-browser-session-topology"
           className="self-start rounded bg-sky-700 px-4 py-2 text-sm font-medium text-white hover:bg-sky-800 disabled:opacity-60"
         >
-          {start.isPending ? "Starting…" : "Start browser session"}
+          {start.isPending
+            ? chosenService === FOR_A_ROUTE
+              ? "Reserving…"
+              : "Starting…"
+            : chosenService === FOR_A_ROUTE
+              ? "Reserve browser session"
+              : "Start browser session"}
         </button>
 
-        {started === null ? null : (
+        {/*
+          The second half of the reserved flow, and it is deliberately on this
+          page rather than elsewhere: the identifier a route has to be published
+          against is the one this form has just produced, and a reader sent to
+          find it somewhere else would be the reason the old select existed.
+        */}
+        {reservation === null ? null : (
+          <div
+            className="flex min-w-0 flex-col gap-2 sm:max-w-xl"
+            data-reserved-session={reservation.id}
+          >
+            <label htmlFor="allocate-service" className="text-sm font-medium">
+              Admit this reservation to a route
+            </label>
+            {admitting.length === 0 ? (
+              <p className={HINT} data-empty="allocate-services">
+                No carried route names <span className="font-mono">{reservation.id}</span> yet.
+                Publish one below, choosing this reservation among the browser sessions it
+                authorises, and it will be offered here. A route that does not name the reservation
+                is refused before any capability is minted, and no route is amended to make an
+                allocation succeed.
+              </p>
+            ) : (
+              <>
+                <select id="allocate-service" name="allocate-service" className={`${FIELD} w-full`}>
+                  {admitting.map((service) => (
+                    <option key={service.id} value={service.id}>
+                      {service.internal_origin} → {service.protocol}://{service.local_host}:
+                      {String(service.local_port)}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  id="allocate-submit"
+                  disabled={allocate.isPending}
+                  onClick={() => {
+                    const select = document.querySelector<HTMLSelectElement>("#allocate-service");
+                    const chosen = select?.value ?? admitting[0]?.id;
+                    if (chosen === undefined) return;
+                    allocate.mutate({ sessionId: reservation.id, publishedServiceId: chosen });
+                  }}
+                  className="self-start rounded bg-sky-700 px-4 py-2 text-sm font-medium text-white hover:bg-sky-800 disabled:opacity-60"
+                >
+                  {allocate.isPending ? "Allocating…" : "Allocate browser session"}
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
+        {started === null || started.status === "REQUESTED" ? null : (
           <p className="text-sm" data-started-session={started.id}>
             <Link
               to="/sessions/$sessionId"
@@ -370,6 +482,20 @@ export function StartBrowserSession({ projectId }: { readonly projectId: string 
               Open the session room
             </Link>
           </p>
+        )}
+
+        {allocate.error === null ? null : (
+          <RefusalPanel
+            code={allocate.error instanceof ApiFailure ? allocate.error.code : "INTERNAL_ERROR"}
+            message={
+              allocate.error instanceof ApiFailure
+                ? allocate.error.message
+                : "The browser session could not be allocated."
+            }
+            attribute="data-failure"
+            table={BROWSER_SESSION_REFUSALS}
+            surface="allocate-browser-session"
+          />
         )}
 
         {start.error === null ? null : (
