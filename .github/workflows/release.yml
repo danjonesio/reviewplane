@@ -457,8 +457,33 @@ jobs:
             [baselines]="Performance baselines recorded and published (docs/TESTING.md section 12)"
           )
 
+          # The map above is this pipeline's own coverage claim — "these jobs
+          # cover those conditions" — and `needs` is what actually gates. Left
+          # unreconciled the two can drift apart silently, and the drift is
+          # invisible in the direction that matters: drop a job from `needs` and
+          # this rollup goes green having checked seven conditions while naming
+          # eight, with nothing but one missing table row to show for it. A
+          # claim about coverage has to be executed rather than read, and this
+          # is the one claim on which every other one here rests.
+          #
+          # So the two sets are compared and any disagreement fails the release,
+          # in both directions: a job that gates nothing named here is as much a
+          # defect as a condition whose job has gone.
+          mapped="$(printf '%s\n' "${!CONDITION[@]}" | sort)"
+          gating="$(jq -r 'keys[]' <<< "${RESULTS}" | sort)"
+          if [[ "${mapped}" != "${gating}" ]]; then
+            echo "::error::The release rollup's condition map and its needs list disagree, so this check cannot say which docs/TESTING.md section 16 conditions it examined."
+            comm -23 <(printf '%s\n' "${mapped}") <(printf '%s\n' "${gating}") \
+              | sed 's/^/::error::named in the condition map but not in needs, so it gates nothing: /'
+            comm -13 <(printf '%s\n' "${mapped}") <(printf '%s\n' "${gating}") \
+              | sed 's/^/::error::in needs but named by no condition, so a failure would not say what it means: /'
+            exit 1
+          fi
+
           {
             printf '## Release gates\n\n'
+            printf '%s conditions examined, reconciled against this job'"'"'s `needs` list.\n\n' \
+              "${#CONDITION[@]}"
             printf '| Job | Condition | Result |\n|---|---|---|\n'
           } >> "${GITHUB_STEP_SUMMARY}"
 

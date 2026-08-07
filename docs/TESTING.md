@@ -1110,7 +1110,15 @@ of §11 against the deployed stack and blocks the release. `baselines` records a
 publishes the §12 performance figures and **does not** gate on any of them; §16.3
 says why that asymmetry is deliberate rather than an omission.
 
-Four properties make the rollup's verdict worth something.
+Five properties make the rollup's verdict worth something.
+
+**The rollup reconciles what it names against what it gates on.** It holds a map
+from job to §16 condition, and its `needs` list is what actually decides; the two
+sets are compared and any disagreement fails the release. Without that, the
+drift is invisible in the direction that matters — drop a job from `needs` and
+the rollup goes green having examined seven conditions while naming eight, with
+one missing table row to show for it. This is the claim every other claim in this
+section rests on, so it is executed rather than read.
 
 **A skipped job is a failure.** The rollup examines each job for `skipped` and
 `cancelled` as well as `failure`. A condition that did not run has not been shown
