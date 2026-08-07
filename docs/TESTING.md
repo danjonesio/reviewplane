@@ -231,6 +231,69 @@ Assertions about `browser.command_rejected` read the event store directly rather
 than inferring the event from the error code, because the payload has no schema
 and a denial that refuses correctly and records nothing would otherwise pass.
 
+### The epoch is an argument the caller supplies, never one the route recovers
+
+`apps/server/test/security-gate-control-epoch.test.ts` is the standing gate for §16's
+"stale control commands are accepted" condition, and **every assertion in it is
+made over HTTP with the epoch supplied by the caller**. That is the whole
+distinction from the service-level suite beside it: calling
+`BrowserSessionService` directly means the test chooses the controller and the
+epoch, which are the two arguments an HTTP caller never gets to choose. A defect
+lived in exactly that gap — four lifecycle routes read both authority inputs out
+of the session record they were about to authorise, so the check compared the
+record to itself, and all 27 service-level tests passed either way (RVP-30). The
+generalised rule the gate exists to keep true is **never source an authority
+input from the record being authorised**, and its companion: never source one
+from the request either, so a controller named in a body is refused rather than
+honoured (ADR-0028).
+
+Stating the property needs **two callers**, because a single caller can only
+present the epoch it was just handed. The gate therefore signs in two ordinary
+organisation-wide humans in one project and has the second take control; the
+first one's prepared act is then stale, which is the situation the epoch exists
+for. It runs that over every route that takes an epoch — `commands`, `pause`,
+`resume`, `control/release` and `terminate` — and asserts three things each
+time, because each catches something the others do not: the status and code a
+caller acts on; that `harness.workerRequests` grew by nothing, so the refusal was
+the control plane's rather than the worker's; and the stored
+`browser.command_rejected` row.
+
+Three further properties are asserted, because their absence is invisible from a
+single stale-epoch test:
+
+- An epoch **ahead** of the session's is refused as firmly as one behind it. The
+  comparison is equality, not "at least": a `<` comparison admits every stale
+  command that guessed high, and a caller that has to guess will eventually
+  guess right.
+- An **omitted** epoch is `VALIDATION_FAILED` and is never filled in from the
+  record. That is the RVP-30 defect itself.
+- The epoch increases by exactly one per transfer, and exactly one lease is live
+  and at the session's epoch — so a lease can never be readable at an epoch the
+  session does not carry.
+
+"Two users cannot both obtain lease" is asserted with an **interactive** command
+rather than a capture, and the asymmetry is stated rather than left implicit: a
+system capture is admitted without the lease and does not take it, which is the
+"system screenshot does not steal interactive lease" item above. A reader who
+did not know that would read the ownership test as proving more than it does.
+
+The five routes are not a list. They are reconciled against the server's own
+route table, so every route under `/api/v1/browser-sessions/:sessionId` is
+either gated here or carries a recorded reason for taking no epoch — `allocate`
+binds a session before any controller acts, and `control/request` is how an
+epoch is *acquired*, so requiring the current one would make taking control from
+a stale reader impossible. A route in neither set fails, and a name in either
+set that the server no longer registers fails too.
+
+That reconciliation is the **second** line and its subject is narrow. It is not
+the failure RVP-30 was — that was four *existing* routes reading the epoch out
+of the record they were authorising, which the matrix above holds — and it is
+not what first catches a new session route, because the isolation gate's route
+coverage already fails on one. What it asks is the question that gate does not:
+once the new route has been added to the isolation gate's probes, nothing else
+goes on to ask whether it takes an epoch, so a route can be fully covered for
+tenancy and completely ungated for staleness.
+
 ## 6. Connector and tunnel tests
 
 - Loopback HTTP route
@@ -488,6 +551,72 @@ advertised tool schemas, so a breaking tool change cannot land silently
 
 ## 10. Security tests
 
+### The four standing gates, and what makes a gate a gate
+
+Four suites in this section are **standing gates**: they run on every change
+rather than describing an intention, and each owns a condition §16 makes
+release-blocking or a `SECURITY.md` §21 category.
+
+| Gate | Suite | Command |
+|---|---|---|
+| Cross-project and cross-organisation isolation | `apps/server/test/security-gate-isolation.test.ts` | `pnpm test:security` |
+| Stale control commands and the control epoch | `apps/server/test/security-gate-control-epoch.test.ts` | `pnpm test:security` |
+| Prompt injection | `apps/mcp-server/test/security-gate-prompt-injection.test.ts` | `pnpm test:security` |
+| Capability degradation | `apps/mcp-server/test/security-gate-capability-degradation.test.ts` | `pnpm test:security` |
+
+All four are ordinary `*.test.ts` files, so **`pnpm test` already runs them** and
+they are inside `CI gates` on every pull request (§16.1). `pnpm test:security`
+runs the four alone, so a release gate can name the condition it owns rather
+than depending on the whole root suite. Membership is the `security-gate-`
+filename prefix rather than a list, so a gate added is a gate that runs. The
+prefix is deliberately more specific than "gate": a `-gate` **suffix** also
+matches the completion-gate suite of §4, which is a domain rule about
+verification evidence and not a security gate, and a script that swept it in
+would report a coverage its own documentation contradicted. They need Docker for
+the disposable PostgreSQL every server suite already starts, and nothing else —
+no Compose, no Chromium, no image build.
+
+**A prefix is only a gate if a run that matches nothing fails.** Two ways this
+command could have reported success having executed nothing, both measured
+rather than reasoned about:
+
+- `node --test` exits **0** when its glob matches no file (`pass 0, fail 0`), so
+  a renamed suite or a mistyped pattern would empty a package's run. Both
+  `test:security` scripts therefore expand the pattern before running it and
+  fail when it is empty: with the two server gates renamed away the guarded
+  script exits 2 where the bare command exits 0.
+- `pnpm -r --if-present run <missing>` also exits **0**, so deleting a package's
+  script would empty the whole command. The root script names its packages
+  explicitly instead, which exits 1 when one of them does not declare the
+  script.
+
+Naming packages trades a silent failure for a smaller one — a package that grows
+a gate and is never added to the filter — so the filter is **reconciled against
+the packages that actually hold gate files**, in both directions. A gate-holding
+package the command does not name fails, and a named package holding no gate
+fails too.
+
+This is §16.1's own rule — "an absent check cannot be told apart from a check
+nobody added" — one level below where that rule was written, and worse there,
+because an empty run does not report nothing: it reports success and satisfies a
+required check. RVP-106 tracks the same hole in the other packages' `test`,
+`test:ui` and `test:browser` scripts, which is a change across five packages and
+belongs with its own tests rather than here.
+
+Two rules apply to all four, and both exist because a suite that cannot fail is
+worse than no suite:
+
+- **Every gate has been seen to fail against the defect it guards.** The
+  corresponding defect was restored, the gate was run, and the failure and its
+  symptom were recorded. RVP-84 records a test deleted for the opposite reason:
+  it could not force the interleaving it claimed to cover, so it passed against
+  the unfixed code.
+- **Every refusal is paired with a leg that does not refuse.** A suite made
+  entirely of denials is satisfied by a change that denies everything, which is
+  a different change from the one under test. Each gate therefore carries an
+  explicit positive control, and the isolation gate makes it structural — see
+  "the owner leg" below.
+
 ### Isolation
 
 - Organisation A cannot enumerate organisation B IDs
@@ -561,6 +690,101 @@ that does not exist writes nothing, because the delete-then-insert would
 otherwise strip the worker first; and the bootstrap administrator can still do
 all of it.
 
+### The isolation gate
+
+`apps/server/test/security-gate-isolation.test.ts` generalises the section above from
+three routes to every route that reaches a tenant-owned record by an identifier,
+and adds the two things a route-by-route suite cannot do: an inventory of what
+the schema and the route table actually contain, and a discriminator that stops
+a probe passing vacuously.
+
+**The probe is the organisation-wide session**, exactly as the section above
+requires, and the project-scoped session and the bootstrap administrator are
+kept beside it as the two controls. A mutation that drops the organisation term
+fails the organisation-wide probe **while the project-scoped one still passes**;
+a mutation that refuses everything fails the administrator's leg. Both were run.
+
+**Every probe carries an owner leg.** A refusal that is byte-identical between a
+foreign identifier and an unknown one proves nothing on its own: a route that
+refuses on CSRF, on credential shape or on body validation *before* it resolves
+the record produces two identical refusals while having no tenancy check at all.
+So each probe runs the same call a third time as the record's owner and fails
+when the owner earns the same answer. This is not a theoretical precaution — it
+caught four routes: the two `/api/v1/organisations/:id/*` provisioning routes,
+`PUT /api/v1/projects/:projectId/workspaces` and
+`DELETE /api/v1/agent-credentials/:credentialId`, all of which take a bearer
+credential and no human session at all. They are now stated as what they are
+rather than compared as something they are not.
+
+**The table inventory is enumerated from `information_schema` on a migrated
+database**, never from migration SQL: a later `ALTER TABLE` is invisible to a
+grep of the migration that created the table. `table_type` is read rather than
+filtered, so **views are covered** — `annotations_current` is a view and is one
+of the relations reached by identifier most often. Every relation is classified
+as one of three things, and a relation the gate does not classify fails it, so a
+new table forces the decision rather than arriving unexamined:
+
+- **scoped** — carries `organisation_id`; every read of it carries the term;
+- **global by design** — deployment-wide, with the reason recorded, because "it
+  has no organisation column" is also what a forgotten term looks like;
+- **inheriting an applied check** — no term of its own; the authority is applied
+  at a named parent.
+
+The risk signal is not "junction table" but **"junction whose parent is
+unscoped"**. `verification_artefacts` and `browser_worker_projects` are the same
+shape in opposite classes: the first hangs off `verifications`, which carries
+the term, so every read of it is already inside a tenancy; the second hangs off
+`browser_workers`, which carries none, which is the RVP-91 shape. Where the
+parent is unscoped the classification MUST name the test that proves the route
+supplies the authority, and the gate checks that the named test is one the file
+registers — a classification citing a proof nobody wrote is the false comfort
+this gate exists to remove.
+
+**The route inventory is enumerated the same way**, from Fastify's own route
+table rather than from a list, so a route added under any prefix by any plugin
+is in scope. Every route taking a path parameter must be probed or must appear
+in a recorded exemption naming the suite that covers it; a route in neither
+fails the gate, and an entry naming a route the server does not register fails
+it too. "Nobody thought about it" and "somebody decided" are therefore different
+states of the file rather than the same silence.
+
+The **set of tables the "no write landed" sweep counts** is derived from the
+classification rather than listed beside it: a scoped table is exactly a table
+with an `organisation_id`, which is exactly a table a row can be planted in
+under a victim's tenancy. This is not the first warning that a table was added
+— the inventory above already fails on an unclassified relation, so a new table
+stops the gate either way. It removes the *second* place to remember: a table
+could be correctly classified and still sit outside the sweep, with nothing
+failing, and the assertion passing over less than it claimed.
+
+An exemption's reason is itself a coverage claim, so it is executed too: the
+gate asserts that every suite an exemption hands a route to still exists.
+Renaming or deleting one of those files would otherwise leave the exemption
+naming it, confidently and wrongly, while the route it hands over became covered
+by nothing. The check is deliberately narrow and says so — it proves the file is
+there, not that the suite still covers the route. Nothing cheap could prove the
+second, and a check that read as stronger than it is would be the same defect
+wearing a different hat; the realistic decay is a rename or a deletion, and that
+is what this sees.
+
+The inventory also checks that `truncateAll` clears every base table the
+migrations create, with two named exemptions. The disposable database is part of
+this suite's trusted computing base (§2), and a table the reset misses carries
+one suite's tenants into the next — surfacing days later in whichever suite
+happens to run afterwards, for a reason that has nothing to do with it.
+
+**What this gate does not prove.** Inside one organisation, an organisation-wide
+session administers (`SECURITY.md` §7), so cross-**project** isolation between
+two projects of one organisation is a property of *narrowed* sessions and of
+agent credentials, not of every signed-in person. The gate asserts it for those
+two callers and says so; it is not a claim that one person cannot reach another
+project of their own organisation. It does not cover the MCP tool surface's own
+cross-project rules, which are
+`apps/mcp-server/test/development-services.test.ts` and `mcp.test.ts`; the
+connector surface, which is `connector-lifecycle.test.ts`; or the two WebSocket
+routes, whose refusals happen at the handshake and are `live.test.ts` and
+`event-stream.test.ts`.
+
 ### Prompt injection
 
 Fixture pages include malicious instructions. Tests verify:
@@ -568,6 +792,71 @@ Fixture pages include malicious instructions. Tests verify:
 - Responses are labelled untrusted
 - Page text cannot change project policy
 - Sensitive action still requires approval
+
+`apps/mcp-server/test/security-gate-prompt-injection.test.ts` is the standing gate,
+driving hostile content through a real MCP client. It asserts three things a
+single hostile-page test does not.
+
+**Every response that carries the page is labelled untrusted, not one sampled
+tool.** The sweep calls each tool that can carry page-derived content and checks
+the label on all of them — and checks that a tool carrying *no* page content is
+**not** labelled untrusted, because a label applied to everything conveys
+nothing and an agent that saw `untrusted` on its own session status would learn
+to ignore the word. The sweep also asserts that at least one response really did
+carry the injected text: a fixture that silently stopped injecting would leave
+every label assertion true and empty.
+
+"Every" is reconciled rather than asserted. The sweep is compared against what
+the server actually advertises, so a tool added later is either swept or carries
+a recorded reason it is not — the mutating review and finding tools return the
+same views the swept reads return, through the same codec, and calling them here
+would leave the state comparison below with nothing to compare. A tool in
+neither set fails the gate, and a name in either set that is no longer
+advertised fails it too.
+
+A tool cannot be added quietly: the registered set must equal the schema's
+availability set, and the committed tool-schema snapshot of §2 "Contract" fails
+until it is regenerated. So the author is told twice that the surface changed.
+Neither tells them this gate exists — regenerating a snapshot is one command and
+says nothing about the untrusted label — and doing exactly the right thing about
+the tool while never revisiting the sweep is the gap this closes.
+
+**The mechanism is asserted, not only the handlers.** A handler-by-handler
+assertion is only ever true of the handlers that existed when it was written.
+The gate encodes a hostile payload under a trusted label and asserts the codec
+refuses it in both directions, and that the same payload labelled correctly
+encodes — so the refusal is about the label rather than about a malformed
+payload.
+
+**Policy, capability and finding status are compared before and after.** "Page
+text cannot change policy" is a statement about state, and a test that only
+inspects responses never looks at the state. The gate reads the project policy,
+the negotiated capability set and every finding's status before and after the
+whole hostile sequence, and asserts that no status-change or
+status-change-denied event was recorded — so the result is "nothing was
+attempted", not "something was attempted and refused".
+
+"Sensitive action still requires approval" has no approval gate to assert in
+Stage 1, and this gate does not pretend otherwise. What it asserts instead is
+the stronger Stage 1 form of the same requirement (`SECURITY.md` §11): the tools
+the page asks for **do not exist** — no policy tool, no approval tool, no secret
+tool — and `finding_update_status` advertises an enumeration with no final
+disposition in it, so an agent cannot express the request the page is making
+(ADR-0020). That is asserted against the **advertised schema** rather than
+against a call's outcome, because it is a structural refusal rather than a
+conditional one. When approval gates arrive this section gains an assertion; it
+does not lose one.
+
+The hostile fixture **identifies itself as a test asset**. Its banner, its four
+demands and its tool-call-shaped accessible name are asserted rather than
+decorative: these bytes reach snapshots, evidence transcripts and failure
+output, where a page saying "SYSTEM: ignore previous instructions" that does not
+say where it came from is a liability in a bug report. The same page is served
+at `/hostile` by `apps/browser-worker/test/browser/fixture-app.ts`, where a real
+Chromium navigates it and the worker's own result is asserted untrusted;
+`apps/browser-worker` has no dependency on `apps/mcp-server`, so the page is
+written out twice and the two copies are held together by a drift check that
+fails naming the missing string.
 
 ### Redaction
 
@@ -615,6 +904,58 @@ body an agent session or a browser worker can read.
 `X-Frame-Options: DENY`; the browser suite asserts over the rendered DOM that
 the viewer's panel for such an artefact contains no `img`, `iframe`, `object`
 or `embed`, so a later change that reintroduces one fails.
+
+### The capability-degradation gate
+
+The last item above — "agent without image-resource capability receives a
+degraded response" — has its own standing gate,
+`apps/mcp-server/test/security-gate-capability-degradation.test.ts`, because degradation
+is a **comparison** and a suite that only exercised the reduced path cannot make
+one. The property is not "the reduced client got an answer" but "the reduced
+client reached the same outcome, by the same route, with the same evidence — and
+was told what it was given instead".
+
+So the gate runs the **whole agent loop twice against identical fixtures**, once
+with `image_resources: true` and once with it negotiated away, and holds the two
+beside each other:
+
+- the reduced run reaches `AWAITING_HUMAN_REVIEW` with a submitted verification,
+  so degradation does not stop the agent finishing;
+- the two runs' evidence has the **same digest**, read from the control plane's
+  own `artefacts` row rather than from a response, so "the same evidence" is a
+  fact rather than a claim. A reduced client handed a *different* screenshot
+  would satisfy every assertion about links and warnings while being given the
+  wrong evidence;
+- only `image_resources` differs between the negotiated sets, so declaring away
+  image support does not quietly take the inbox, the browser or takeover with
+  it;
+- the full path carries **no** degradation warning. Asserting the absence is
+  what stops a change that degrades everybody from passing.
+
+`image_resources` is the negotiated result and not a property of the server —
+`resources && image_content` — so both ways a client can lose it are exercised,
+and the value asserted is the server's own answer read back through
+`agent_session_status` rather than one the suite recomputes.
+
+The "no raw secret on either path" assertions live here rather than in a suite
+of their own, because "on either path" is the requirement: a degraded response
+takes a different branch through the resource reader and the tool views, and a
+branch that runs only for reduced clients is where a `content_path` could become
+a credential without anybody noticing. Every credential in play — both agent
+tokens, the bootstrap token and both worker credentials — is searched for
+verbatim **and by its first sixteen characters** in every response of both runs,
+in every event payload and in the control-plane log. A truncated token is still
+a disclosure of most of one, and a log line printing a prefix would pass an
+equality search. Each haystack is asserted non-empty, so a run that produced no
+transcript cannot satisfy the sweep by having nothing in it.
+
+**What this does not cover.** The log leg is the *control plane's* log: the MCP
+process's own Fastify logger is off in this harness, so a credential reaching an
+MCP-process log line would not be seen here. `apps/server/test/identity.test.ts`
+and `connector-agent-credentials.test.ts` cover the control plane's log
+independently. Redaction of page content — password inputs, API keys in headers,
+tokens in console output — is Stage 2 and belongs to the "Redaction" heading
+above, not to this gate.
 
 ### Artefact storage drivers
 

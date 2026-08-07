@@ -112,14 +112,52 @@ export async function startMigratedDatabase(): Promise<MigratedDatabase> {
   };
 }
 
-const FIXTURE_TABLES = `idempotency_keys, review_exports, jobs, verification_artefacts, verifications, comments,
-              inbox_items, annotations, findings, reviews, artefact_access_grants, artefacts,
-              control_leases, browser_sessions, browser_worker_projects,
-              browser_workers, agent_sessions, agent_credentials, workspaces,
-              viewer_sessions, route_capabilities, published_services, connectors,
-              connector_enrolment_tokens, environments, event_streams, events,
-              event_outbox, authentication_attempt_limits, install_tokens,
-              users, projects, organisations`;
+/**
+ * Every table the reset clears, in the writer's lock order.
+ *
+ * Exported so that a suite can compare it against what the migrated schema
+ * actually has (`apps/server/test/security-gate-isolation.test.ts`). A table a
+ * later migration adds and this list does not name carries one suite's rows into
+ * the next, and the failure surfaces in whichever suite happens to run afterwards
+ * rather than in the change that caused it.
+ */
+export const FIXTURE_TABLES: readonly string[] = [
+  "idempotency_keys",
+  "review_exports",
+  "jobs",
+  "verification_artefacts",
+  "verifications",
+  "comments",
+  "inbox_items",
+  "annotations",
+  "findings",
+  "reviews",
+  "artefact_access_grants",
+  "artefacts",
+  "control_leases",
+  "browser_sessions",
+  "browser_worker_projects",
+  "browser_workers",
+  "agent_sessions",
+  "agent_credentials",
+  "workspaces",
+  "viewer_sessions",
+  "route_capabilities",
+  "published_services",
+  "connectors",
+  "connector_enrolment_tokens",
+  "environments",
+  "event_streams",
+  "events",
+  "event_outbox",
+  "authentication_attempt_limits",
+  "install_tokens",
+  "users",
+  "projects",
+  "organisations",
+];
+
+const FIXTURE_TABLE_LIST = FIXTURE_TABLES.join(", ");
 
 // PostgreSQL error codes for the two ways a reset can lose a race for its locks.
 const DEADLOCK_DETECTED = "40P01";
@@ -210,8 +248,8 @@ export async function truncateAll(pool: Pool): Promise<void> {
       //
       // TRUNCATE takes exactly these locks, so by the time it runs there is
       // nothing left for it to acquire and nothing left for it to wait on.
-      await client.query(`LOCK TABLE ${FIXTURE_TABLES} IN ACCESS EXCLUSIVE MODE NOWAIT`);
-      await client.query(`TRUNCATE ${FIXTURE_TABLES} RESTART IDENTITY CASCADE`);
+      await client.query(`LOCK TABLE ${FIXTURE_TABLE_LIST} IN ACCESS EXCLUSIVE MODE NOWAIT`);
+      await client.query(`TRUNCATE ${FIXTURE_TABLE_LIST} RESTART IDENTITY CASCADE`);
       await client.query("commit");
       return;
     } catch (error) {
