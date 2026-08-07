@@ -168,7 +168,7 @@ export type AllocationFailureClass =
   | "ROUTE_EXPIRED"
   | "UNSUPPORTED_CAPABILITY"
   | "VALIDATION_FAILED"
-  | "ALLOCATION_DEADLINE_PASSED"
+  | "CONTROL_PLANE_UNAVAILABLE"
   | "INTERNAL_ERROR";
 
 const ALLOCATION_FAILURE_CLASSES: readonly string[] = [
@@ -183,7 +183,7 @@ const ALLOCATION_FAILURE_CLASSES: readonly string[] = [
   "ROUTE_EXPIRED",
   "UNSUPPORTED_CAPABILITY",
   "VALIDATION_FAILED",
-  "ALLOCATION_DEADLINE_PASSED",
+  "CONTROL_PLANE_UNAVAILABLE",
 ];
 
 /**
@@ -573,7 +573,18 @@ export class BrowserSessionService {
         throw error;
       }
       await this.#pool.query(
-        "UPDATE browser_sessions SET published_service_id = $2, service_origin = $3 WHERE id = $1",
+        // The request is **cleared** in the same statement that records the
+        // bind. `requested_published_service_id` means exactly "this reservation
+        // asked for a route and has not been bound to one", so a bound session
+        // can never match the sweep, and the agent-facing
+        // `published_service_id` — "the service this session may reach" — stays
+        // a fact rather than becoming an intention.
+        `UPDATE browser_sessions
+            SET published_service_id = $2,
+                service_origin = $3,
+                requested_published_service_id = NULL,
+                allocation_requested_at = NULL
+          WHERE id = $1`,
         [session.id, binding.publishedServiceId, binding.serviceOrigin],
       );
     }
@@ -789,19 +800,42 @@ export class BrowserSessionService {
       readonly limit?: number;
       /** One reservation, for the caller whose own wait has just ended. */
       readonly browserSessionId?: string;
+      /**
+       * One agent session's own reservations.
+       *
+       * This is what makes the sweep callable from the MCP process without it
+       * performing a deployment-wide write. `api`'s sweep is what releases a
+       * stranded reservation and, if `api` is down, nothing else does — while
+       * the MCP process can still start **unbound** sessions, because those need
+       * no signing key. So stranded reservations compete for worker capacity
+       * with work that would otherwise succeed, and four of them fill a default
+       * worker: the incident at `create()` reproduced by the fix for it.
+       *
+       * An agent that keeps working therefore reclaims the slots it stranded,
+       * which is the case that fills a worker. An agent that stops leaves its
+       * reservations for `api`. That narrows the limit rather than closing it,
+       * and ADR-0037 says so in those words.
+       */
+      readonly agentSessionId?: string;
     } = {},
   ): Promise<BrowserSessionRecord[]> {
     const cutoff = new Date(this.#now().getTime() - (options.deadlineMs ?? ALLOCATION_DEADLINE_MS));
     const overdue = await this.#pool.query(
       `SELECT * FROM browser_sessions
         WHERE ended_at IS NULL
-          AND status IN ('REQUESTED', 'ALLOCATING')
+          AND status IN ('REQUESTED', 'ALLOCATING', 'DEGRADED')
           AND requested_published_service_id IS NOT NULL
           AND allocation_requested_at <= $1
           AND ($3::text IS NULL OR id = $3)
+          AND ($4::text IS NULL OR agent_session_id = $4)
         ORDER BY allocation_requested_at
         LIMIT $2`,
-      [cutoff.toISOString(), options.limit ?? 50, options.browserSessionId ?? null],
+      [
+        cutoff.toISOString(),
+        options.limit ?? 50,
+        options.browserSessionId ?? null,
+        options.agentSessionId ?? null,
+      ],
     );
     const failed: BrowserSessionRecord[] = [];
     for (const row of overdue.rows) {
@@ -809,8 +843,21 @@ export class BrowserSessionService {
       await this.#failReservation(
         session,
         { type: "system", display: "browser session allocator" },
-        "ALLOCATION_DEADLINE_PASSED",
+        // The honest diagnosis in both states. A reservation nobody claimed and
+        // one somebody claimed and abandoned are the same fact from the
+        // reservation's side: the control plane was not there to finish it.
+        "CONTROL_PLANE_UNAVAILABLE",
+        "allocation_deadline",
       );
+      // `ALLOCATING` past the deadline means something claimed it and did not
+      // finish, possibly after the worker had begun opening a context. The
+      // worker is asked to drop it; a worker that never had one answers
+      // harmlessly, and the call is best effort either way.
+      if (session.status === "ALLOCATING" && session.worker_id !== null) {
+        await this.#client
+          .terminate(session.worker_id, session.id, "failure")
+          .catch(() => undefined);
+      }
       failed.push(await this.get(session.id));
     }
     return failed;
@@ -929,11 +976,19 @@ export class BrowserSessionService {
     session: BrowserSessionRecord,
     actor: EventActor,
     reasonCode: AllocationFailureClass,
+    trigger: "allocation_refused" | "allocation_deadline" = "allocation_refused",
   ): Promise<void> {
     await this.#revokeLeases(session.id, `allocation refused: ${reasonCode}`);
     await this.#setStatus(session, "FAILED", actor, "browser_session.failed", {
       reason_code: reasonCode,
-      trigger: "allocation_refused",
+      // The two are distinguished because they send an operator to different
+      // places: a refusal is the request's fault and names its own class, and a
+      // deadline is the control plane not having been there to finish one.
+      trigger,
+      // The status the record was actually in, for the reason the route expiry
+      // sweep records it: a status it was never in is a fact an auditor cannot
+      // see through (`docs/EVENTS.md` §7).
+      previous_status: session.status,
     });
     // A reservation that never allocated normally holds no capability. It can:
     // the bind mints before the worker call, so a worker refusal fails a

@@ -890,7 +890,7 @@ export class PublishedServiceService {
     });
 
     await inTransaction(this.#pool, async (client) => {
-      await repository.insertCapability(client, {
+      const recorded = await repository.insertCapability(client, {
         id: capabilityId,
         organisationId: service.organisation_id,
         projectId: service.project_id,
@@ -900,6 +900,16 @@ export class PublishedServiceService {
         issuedAt: now,
         expiresAt,
       });
+      if (recorded === null) {
+        // The session ended between the authorisation read and this insert. The
+        // token exists only in this stack frame and is discarded with it: the
+        // transaction rolls back, nothing is returned, and no worker is ever
+        // handed a credential for a browser that has gone.
+        throw new ApiError(
+          "BROWSER_SESSION_NOT_ACTIVE",
+          "This browser session ended before its route capability could be recorded, so none was issued.",
+        );
+      }
       await appendEvent(client, {
         type: "published_service.ready",
         organisationId: service.organisation_id,

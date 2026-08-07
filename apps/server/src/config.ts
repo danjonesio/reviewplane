@@ -127,6 +127,19 @@ export interface ServerConfig {
   readonly capabilityTtlSeconds: number;
   /** Longest route lifetime a publication may request, in seconds. */
   readonly routeTtlMaxSeconds: number;
+  /**
+   * How long a browser-session reservation carrying a requested route may live
+   * before the sweep fails it (ADR-0037).
+   *
+   * It is the mechanism and the sweep is only what notices: a `REQUESTED` row
+   * with `ended_at IS NULL` is exactly what the worker capacity query counts, so
+   * a reservation nothing can complete would otherwise hold a browser slot for
+   * ever. The default is comfortably past any legitimate completion — a Chromium
+   * context takes seconds and the agent's own wait is shorter still — because
+   * failing a reservation that was about to work is worse than the slot it
+   * frees.
+   */
+  readonly allocationDeadlineSeconds: number;
   /** Credential the Stage 0 browser worker presents to this server. */
   readonly workerCredential: string;
   /** Credential this server presents to the browser worker. */
@@ -280,6 +293,14 @@ export function loadServerConfig(environment: Environment = process.env): Server
           maximum: 86_400,
         }),
       8 * 60 * 60,
+    ),
+    allocationDeadlineSeconds: problems.attempt(
+      () =>
+        readInteger(environment, "REVIEWPLANE_ALLOCATION_DEADLINE_SECONDS", 120, {
+          minimum: 10,
+          maximum: 3_600,
+        }),
+      120,
     ),
     workerCredential: problems.attempt(
       () =>

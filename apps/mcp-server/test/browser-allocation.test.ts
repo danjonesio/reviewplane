@@ -663,8 +663,8 @@ test("a reservation nothing completes is failed by the deadline and stops holdin
       [sessionId],
     );
     assert.equal(events.rows.length, 1);
-    assert.equal(events.rows[0]?.payload["reason_code"], "ALLOCATION_DEADLINE_PASSED");
-    assert.equal(events.rows[0]?.payload["trigger"], "allocation_refused");
+    assert.equal(events.rows[0]?.payload["reason_code"], "CONTROL_PLANE_UNAVAILABLE");
+    assert.equal(events.rows[0]?.payload["trigger"], "allocation_deadline");
     assert.equal(events.rows[0]?.payload["reason"], undefined, "free text survived in the payload");
   } finally {
     await agent.close();

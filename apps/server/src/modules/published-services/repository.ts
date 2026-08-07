@@ -745,12 +745,36 @@ export async function insertCapability(
     readonly issuedAt: Date;
     readonly expiresAt: Date;
   },
-): Promise<RouteCapabilityRecord> {
+): Promise<RouteCapabilityRecord | null> {
   const result = await client.query<RouteCapabilityRecord>(
+    // The session's own liveness is a **predicate of the insert**, not a check
+    // the caller made earlier (ADR-0037).
+    //
+    // It closes a race the status-guarded claim does not. `api` claims a
+    // reservation, mints, and is slow; the deadline sweep — in another replica,
+    // or in the same one a tick later — fails the row; the mint then lands. The
+    // capability would have existed for a session that had already ended, and
+    // the process that would have withdrawn it has just had its own write
+    // rejected. With the predicate here the insert writes nothing, `mint`
+    // raises, and the signed token is discarded in memory: it never returns,
+    // never reaches `SessionAllocate` and never reaches a worker. The losing
+    // side of the race writes nothing, which is the property `markReady` and
+    // `markFailed` already have.
+    //
+    // The predicate is "has not ended" rather than the narrower "is
+    // `ALLOCATING`", because `POST /published-services/:id/capabilities`
+    // (`docs/API.md` §10) legitimately mints for a `READY` or `ACTIVE` session
+    // that a human is already driving. Ending is the condition that makes a
+    // credential unaccountable; being past allocation is not.
     `INSERT INTO route_capabilities (
        id, organisation_id, project_id, published_service_id,
        browser_session_id, key_id, issued_at, expires_at
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     )
+     SELECT $1, $2, $3, $4, $5, $6, $7, $8
+       FROM browser_sessions
+      WHERE id = $5
+        AND ended_at IS NULL
+        AND status NOT IN ('TERMINATED', 'FAILED', 'TERMINATING')
      RETURNING id, published_service_id, browser_session_id, key_id,
                issued_at, expires_at, revoked_at`,
     [
@@ -764,7 +788,7 @@ export async function insertCapability(
       input.expiresAt.toISOString(),
     ],
   );
-  return result.rows[0] as RouteCapabilityRecord;
+  return result.rows[0] ?? null;
 }
 
 /** Marks every live capability for a route as revoked. */

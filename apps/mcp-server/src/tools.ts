@@ -379,6 +379,33 @@ async function requireBrowserSession(
   return record;
 }
 
+/**
+ * Fails this agent session's own reservations that have outlived the allocation
+ * deadline, before the call that would compete with them.
+ *
+ * `api`'s sweep is what releases a stranded reservation, and if `api` is down
+ * nothing else does — while this process can still start **unbound** sessions,
+ * because those need no signing key. So during an `api` outage stranded
+ * reservations compete for worker capacity with work that would otherwise
+ * succeed, and four of them fill a default worker: the incident `create()`
+ * records, reproduced by the fix for it.
+ *
+ * It is scoped to the calling agent session, so this process never performs a
+ * deployment-wide write and stays inside the tenancy discipline the rest of the
+ * surface keeps. An agent that keeps working reclaims the slots it stranded —
+ * which is the case that fills a worker. An agent that stops leaves them for
+ * `api`. That narrows the limit rather than closing it, and ADR-0037 says so.
+ *
+ * It is best effort and never turns into the caller's refusal: the call it
+ * precedes has its own answer, and a failure here would replace a useful one
+ * with a bookkeeping error.
+ */
+async function reclaimOwnStrandedReservations(context: ToolContext): Promise<void> {
+  await context.services.browserSessions
+    .failOverdueAllocations({ agentSessionId: context.connection.session.id, limit: 8 })
+    .catch(() => undefined);
+}
+
 /** The controller an agent session acts as for an interactive command (ADR-0007). */
 function agentController(context: ToolContext): ControllerIdentity {
   return { type: "agent", id: context.connection.session.id };
@@ -1605,6 +1632,7 @@ const TOOLS: readonly ToolDefinition[] = [
     validate: validateBrowserSessionStartInput,
     async run(args, context) {
       const { connection, services } = context;
+      await reclaimOwnStrandedReservations(context);
       const publishedServiceId = args["published_service_id"] as string | undefined;
       const common = {
         organisationId: connection.credential.organisationId,
@@ -1683,6 +1711,7 @@ const TOOLS: readonly ToolDefinition[] = [
     validate: validateBrowserSessionAllocateInput,
     async run(args, context) {
       const { connection, services } = context;
+      await reclaimOwnStrandedReservations(context);
       const browserSessionId = args["browser_session_id"] as string;
       const publishedServiceId = args["published_service_id"] as string | undefined;
       const scope = scopeOf(connection);

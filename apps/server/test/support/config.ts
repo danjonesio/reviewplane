@@ -38,6 +38,7 @@ export function testServerConfig(overrides: Partial<ServerConfig> = {}): ServerC
     capabilityKey: TEST_CAPABILITY_KEY,
     capabilityTtlSeconds: 300,
     routeTtlMaxSeconds: 8 * 60 * 60,
+    allocationDeadlineSeconds: 120,
     workerCredential: TEST_WORKER_CREDENTIAL,
     workerCommandCredential: TEST_WORKER_COMMAND_CREDENTIAL,
     workerEndpoint: "http://browser-worker.invalid",

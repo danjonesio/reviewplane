@@ -110,9 +110,11 @@ async function main(): Promise<void> {
   allocations.unref();
 
   const overdue = setInterval(() => {
-    built.sessions.failOverdueAllocations().catch((error: unknown) => {
-      built.app.log.error({ err: error }, "browser-session allocation deadline sweep failed");
-    });
+    built.sessions
+      .failOverdueAllocations({ deadlineMs: config.allocationDeadlineSeconds * 1000 })
+      .catch((error: unknown) => {
+        built.app.log.error({ err: error }, "browser-session allocation deadline sweep failed");
+      });
   }, SWEEP_INTERVAL_MS);
   overdue.unref();
 
