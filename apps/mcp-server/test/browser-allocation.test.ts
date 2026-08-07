@@ -704,3 +704,263 @@ test("the bounded wait ends in the record as it stands and never reports ready",
     await agent.close();
   }
 });
+
+// ------------------------------------------------ the attack list's A-series
+
+test("A2/A1: an unknown route and a cross-project route are the same bytes and different records", async () => {
+  // **The pair is the whole point, and neither half proves anything alone.**
+  // Asserting only the byte-equality proves the system is uniformly blind;
+  // asserting only the audit marker proves nothing about disclosure. They are in
+  // one test because in two files they drift.
+  const agent = await connected();
+  const elsewhere = await seedSiblingProject(harness, agent.seeded);
+  try {
+    const { connectorId } = await seedConnector(harness, elsewhere);
+    const theirSession = await harness.control.sessions.create({
+      organisationId: elsewhere.organisationId,
+      projectId: elsewhere.projectId,
+      viewport: { width: 1440, height: 900, device_scale_factor: 1 },
+      controller: { type: "system", id: "sys_pair" },
+      retentionClass: "verification_evidence",
+      actor: { type: "system" },
+    });
+    const theirRoute = await publish(
+      { ...agent.seeded, ...elsewhere },
+      connectorId,
+      [theirSession.id],
+    );
+
+    const mine = await reserve(agent);
+    const foreign = await call(agent.client, "browser_session_allocate", {
+      browser_session_id: mine,
+      published_service_id: theirRoute,
+      idempotency_key: key("pair-foreign"),
+    });
+    const unknown = await call(agent.client, "browser_session_allocate", {
+      browser_session_id: mine,
+      published_service_id: "svc_00000000000000000000000000000000",
+      idempotency_key: key("pair-unknown"),
+    });
+
+    // Identical bytes to the caller.
+    assert.equal(errorOf(foreign).code, "RESOURCE_NOT_FOUND");
+    assert.deepEqual(errorOf(foreign), errorOf(unknown));
+
+    // Distinguishable records in the audit trail, both on **this** project's
+    // stream. Without the marker an agent probing another project's identifiers
+    // and an operator's typo are indistinguishable to an auditor.
+    const audited = (await rejections(agent.seeded.projectId)).filter(
+      (payload) => payload["command"] === "allocate",
+    );
+    assert.equal(audited.length, 2);
+    const [crossProject, notFound] = audited;
+    assert.equal(crossProject?.["cross_project"], true);
+    assert.equal(crossProject?.["published_service_id"], theirRoute);
+    assert.equal(crossProject?.["reason_code"], "RESOURCE_NOT_FOUND");
+    // The caller was not entitled to know the other tenancy's record exists, so
+    // the record withholds what it would have disclosed.
+    assert.equal(crossProject?.["session_status"], undefined);
+    assert.equal(crossProject?.["current_epoch"], undefined);
+
+    // A2: the marker is absent for a genuinely unknown identifier. An
+    // implementation that never set it would also pass this half — which is why
+    // the pair is asserted together.
+    assert.equal(notFound?.["cross_project"], undefined);
+    assert.equal(notFound?.["published_service_id"], "svc_00000000000000000000000000000000");
+
+    // A3's negative: nothing was written to the other project's stream. A
+    // refusal appearing in the victim's audit trail is an oracle in the other
+    // direction and noise for the victim.
+    const theirs = await rejections(elsewhere.projectId);
+    assert.deepEqual(theirs, []);
+  } finally {
+    await agent.close();
+  }
+});
+
+test("A5b/A5: ownership is checked only after the project matches", async () => {
+  // The pair pins the **order** of two checks. A5 alone passes even if ownership
+  // runs first; A5b alone passes even if there is no ownership check at all.
+  const seeded = await seedProject(harness);
+  const first = await connected(seeded);
+  const second = await connected(seeded);
+  const elsewhere = await seedSiblingProject(harness, seeded);
+  try {
+    // A5: same project, different agent session -> AUTHORISATION_DENIED. The
+    // caller is entitled to know the session exists; it is in their project.
+    const theirs = await reserve(first);
+    const owned = await call(second.client, "browser_session_allocate", {
+      browser_session_id: theirs,
+      idempotency_key: key("a5-owned"),
+    });
+    assert.equal(errorOf(owned).code, "AUTHORISATION_DENIED");
+
+    // A5b: another project -> RESOURCE_NOT_FOUND, equal to an unknown
+    // identifier. "It exists, but not for you" is the enumeration `docs/API.md`
+    // §5 forbids, and it is what an ownership check running first would produce.
+    const theirsElsewhere = await harness.control.sessions.create({
+      organisationId: elsewhere.organisationId,
+      projectId: elsewhere.projectId,
+      viewport: { width: 1440, height: 900, device_scale_factor: 1 },
+      controller: { type: "system", id: "sys_a5b" },
+      retentionClass: "verification_evidence",
+      actor: { type: "system" },
+    });
+    const foreign = await call(first.client, "browser_session_allocate", {
+      browser_session_id: theirsElsewhere.id,
+      idempotency_key: key("a5b-foreign"),
+    });
+    const unknown = await call(first.client, "browser_session_allocate", {
+      browser_session_id: "brs_00000000000000000000000000000000",
+      idempotency_key: key("a5b-unknown"),
+    });
+    assert.equal(errorOf(foreign).code, "RESOURCE_NOT_FOUND");
+    assert.deepEqual(errorOf(foreign), errorOf(unknown));
+  } finally {
+    await second.close();
+    await first.close();
+  }
+});
+
+test("A10: a capability denial is recorded, for a tool this change did not add", async () => {
+  // **The single highest-value entry in the attack list**, because it is the one
+  // that regresses invisibly: removing the audit write changes no response and
+  // breaks no other test. Execution against two real processes proved that this
+  // refusal wrote nothing at all — for any of the 37 tools.
+  //
+  // It is asserted on `review_list` rather than on an allocation tool on
+  // purpose. The fix is in `callTool` with no per-tool branching, and a test
+  // that only covered this change's own tools would pass a "fix" that added one.
+  const seeded = await seedProject(harness);
+  const credential = await issueAgentCredential(harness, {
+    organisationId: seeded.organisationId,
+    projectIds: [seeded.projectId],
+    capabilities: ["project:read"],
+  });
+  const agent = await connectAgent(harness, { token: credential.token });
+  try {
+    const before = await postgres.pool.query<{ n: string }>(
+      "SELECT count(*)::text AS n FROM browser_sessions WHERE project_id = $1",
+      [seeded.projectId],
+    );
+
+    const refused = await call(agent.client, "browser_session_allocate", {
+      browser_session_id: "brs_anything_at_all_0000000000000",
+      idempotency_key: key("a10-no-capability"),
+    });
+    assert.equal(refused["ok"], false, JSON.stringify(refused));
+    assert.equal(errorOf(refused).code, "AUTHORISATION_DENIED");
+    assert.match(errorOf(refused).message, /browser:control/u);
+
+    // A read-only tool, so nothing about the assertion depends on a write path.
+    // The capability gate runs after the argument validator, so the arguments
+    // must be valid — this one takes none.
+    const other = await call(agent.client, "review_list", {});
+    assert.equal(errorOf(other).code, "AUTHORISATION_DENIED");
+
+    const audited = (await rejections(seeded.projectId)).filter(
+      (payload) => payload["capability_denied"] === true,
+    );
+    assert.equal(audited.length, 2, "a capability denial left no record");
+    assert.equal(audited[0]?.["kind"], "capability");
+    assert.equal(audited[0]?.["command"], "browser_session_allocate");
+    assert.equal(audited[0]?.["required_capability"], "browser:control");
+    assert.equal(audited[0]?.["reason_code"], "AUTHORISATION_DENIED");
+    assert.equal(audited[1]?.["command"], "review_list");
+    assert.equal(audited[1]?.["required_capability"], "review:read");
+
+    // No reservation was created and no worker was contacted.
+    const after = await postgres.pool.query<{ n: string }>(
+      "SELECT count(*)::text AS n FROM browser_sessions WHERE project_id = $1",
+      [seeded.projectId],
+    );
+    assert.equal(after.rows[0]?.n, before.rows[0]?.n);
+  } finally {
+    await agent.close();
+  }
+});
+
+test("B2: allocation never re-registers a route with the gateway", async () => {
+  // The test that fails if the route-amendment design is ever introduced — the
+  // design RVP-76 proves resurrects capabilities already revoked against a route
+  // identifier. It costs one counter and it is the only automated defence
+  // against that path returning.
+  const agent = await connected();
+  try {
+    const { connectorId } = await seedConnector(harness, agent.seeded);
+    const sessionId = await reserve(agent);
+    const routeId = await publish(agent.seeded, connectorId, [sessionId]);
+    const afterPublish = harness.gateway.registered.length;
+    assert.equal(afterPublish, 1, "publication did not register exactly one route");
+
+    const allocated = await call(agent.client, "browser_session_allocate", {
+      browser_session_id: sessionId,
+      published_service_id: routeId,
+      idempotency_key: key("b2-allocate"),
+    });
+    assert.equal(allocated["ok"], true, JSON.stringify(allocated));
+    assert.equal(
+      harness.gateway.registered.length,
+      afterPublish,
+      "allocation registered a route with the gateway",
+    );
+  } finally {
+    await agent.close();
+  }
+});
+
+test("B3/F5/F6: the opportunistic sweep reclaims the caller's strandings and only the caller's", async () => {
+  // The opportunistic sweep is the one place the MCP process writes to rows it
+  // did not create in that call. A deployment-wide sweep there would be an
+  // unscoped write from the agent-facing process, which is the shape the rest of
+  // this change removes.
+  harness.completeAllocations = false;
+  const seeded = await seedProject(harness);
+  const first = await connected(seeded);
+  const second = await connected(seeded);
+  try {
+    const { connectorId } = await seedConnector(harness, seeded);
+    const mine = await reserve(first);
+    const theirs = await reserve(second);
+    const route = await publish(seeded, connectorId, [mine, theirs]);
+
+    const scopeOf = (project: SeededProject) => ({
+      organisationId: project.organisationId,
+      projectIds: [project.projectId],
+    });
+    for (const [session, services] of [
+      [mine, harness.mcp.services],
+      [theirs, harness.mcp.services],
+    ] as const) {
+      await services.browserSessions.requestAllocation({
+        browserSessionId: session,
+        scope: scopeOf(seeded),
+        publishedServiceId: route,
+        actor: { type: "system", display: "test" },
+        requestId: `req_${session}`,
+      });
+    }
+    // Both are now stranded past the deadline.
+    await postgres.pool.query(
+      "UPDATE browser_sessions SET allocation_requested_at = now() - interval '10 minutes' WHERE id = ANY($1)",
+      [[mine, theirs]],
+    );
+
+    // The first agent calls a tool that runs the opportunistic sweep.
+    await call(first.client, "browser_session_start", {
+      allocate: false,
+      idempotency_key: key("b3-reclaim"),
+    });
+
+    const statuses = await postgres.pool.query<{ id: string; status: string }>(
+      "SELECT id, status FROM browser_sessions WHERE id = ANY($1)",
+      [[mine, theirs]],
+    );
+    const byId = new Map(statuses.rows.map((row) => [row.id, row.status]));
+    assert.equal(byId.get(mine), "FAILED", "the caller's own stranded reservation was not reclaimed");
+    assert.equal(byId.get(theirs), "REQUESTED", "the sweep touched another agent session's row");
+  } finally {
+    await second.close();
+    await first.close();
+  }
+});

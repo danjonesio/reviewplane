@@ -63,13 +63,25 @@ after(async () => {
  */
 let seededProjects: string[] = [];
 
+/**
+ * The recording gateway double.
+ *
+ * Held here rather than read back off the harness because `revokeCapability`
+ * assertions need the *object* the control plane was given. It records calls
+ * rather than merely accepting them: "the control plane told the gateway" is an
+ * assertion a test has to be able to make, and a double that returned success
+ * without recording makes it unwritable.
+ */
+let gateway: AcceptingGateway;
+
 beforeEach(async () => {
   await harness?.stop();
   await truncateAll(postgres.pool);
   seededProjects = [];
+  gateway = new AcceptingGateway();
   harness = await startHarness(postgres.pool, {
     publisher: new StubRoutePublisher(),
-    gateway: new AcceptingGateway(),
+    gateway,
   });
 });
 
@@ -312,22 +324,34 @@ test("the binder passes the caller's organisation and never constructs a null on
   // reintroduced `organisationId: null` would pass every behavioural test in
   // this repository. It does not pass this one.
   const scopes: { organisationId: string | null; projectIds: readonly string[] | null }[] = [];
+  const route = () => ({
+    published_service_id: "svc_recorded",
+    public_alias: "svc-recorded",
+    route_status: "ready",
+    route_expires_at: new Date(Date.now() + 600_000),
+    connector_id: "con_recorded",
+    connector_status: "ACTIVE",
+    session_authorised: true,
+    session_created_at: new Date(),
+    session_max_duration_seconds: 7200,
+    organisation_id: "org_expected",
+    project_id: "prj_expected",
+  });
   const recording = {
-    readBindable(input: { scope: { organisationId: string | null; projectIds: readonly string[] | null } }) {
+    readAdmissible(input: {
+      scope: { organisationId: string | null; projectIds: readonly string[] | null };
+    }) {
       scopes.push(input.scope);
-      return Promise.resolve({
-        published_service_id: "svc_recorded",
-        public_alias: "svc-recorded",
-        route_status: "ready",
-        route_expires_at: new Date(Date.now() + 600_000),
-        connector_id: "con_recorded",
-        connector_status: "ACTIVE",
-        session_authorised: true,
-        session_created_at: new Date(),
-        session_max_duration_seconds: 7200,
-        organisation_id: "org_expected",
-        project_id: "prj_expected",
-      });
+      return Promise.resolve(route());
+    },
+    readBindable(input: {
+      scope: { organisationId: string | null; projectIds: readonly string[] | null };
+    }) {
+      scopes.push(input.scope);
+      return Promise.resolve(route());
+    },
+    existsUnscoped() {
+      return Promise.resolve(false);
     },
     mint(
       _serviceId: string,
@@ -454,4 +478,273 @@ test("allocate refuses a session outside the scope it was handed, whatever its c
     [theirs],
   );
   assert.equal(still.rows[0]?.status, "REQUESTED", "the reservation was allocated out of scope");
+});
+
+// ---------------------------------------------- the attack list's C-series
+
+/** A reservation, a route naming it, and the request recorded against it. */
+async function requested(owner: Tenant): Promise<{ sessionId: string; routeId: string }> {
+  const sessionId = await reserve(owner);
+  const published = await publish(owner, [sessionId]);
+  assert.equal(published.statusCode, 201, published.body);
+  const routeId = (published.json() as { data: { id: string } }).data.id;
+  await harness.built.sessions.requestAllocation({
+    browserSessionId: sessionId,
+    scope: { organisationId: owner.organisationId, projectIds: [owner.projectId] },
+    publishedServiceId: routeId,
+    actor: { type: "system" },
+    requestId: `req_${sessionId}`,
+  });
+  return { sessionId, routeId };
+}
+
+test("C1: a mint against an already-failed session writes nothing and raises", async () => {
+  // **Both assertions, not either.** With the status predicate on the insert,
+  // `result.rows[0]` is `undefined` on a lost race, and a cast to the record
+  // type makes that typecheck-clean. A test asserting only the row's absence
+  // passes an implementation that returns an `undefined` record — after which
+  // `bind` hands `SessionAllocate` a binding whose capability is `undefined` and
+  // the worker presents nothing. That is a worse failure than the one the
+  // predicate exists to fix, and a row count cannot see it.
+  const owner = await tenant("c1-lost-race@example.test");
+  const { sessionId, routeId } = await requested(owner);
+
+  // The sweep gets there first.
+  await harness.built.sessions.failOverdueAllocations({ deadlineMs: 0 });
+  const failed = await postgres.pool.query<{ status: string }>(
+    "SELECT status FROM browser_sessions WHERE id = $1",
+    [sessionId],
+  );
+  assert.equal(failed.rows[0]?.status, "FAILED");
+
+  // The in-flight bind now reaches the mint.
+  await assert.rejects(
+    async () =>
+      harness.built.publishedServices.mint(
+        routeId,
+        sessionId,
+        undefined,
+        { organisationId: owner.organisationId, projectIds: [owner.projectId] },
+        { type: "system" },
+        "req_c1_mint",
+      ),
+    (error: unknown) => {
+      // The raise is the assertion the row count cannot make.
+      assert.ok(error instanceof Error, "mint resolved instead of raising");
+      return true;
+    },
+  );
+
+  const capabilities = await postgres.pool.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM route_capabilities WHERE browser_session_id = $1",
+    [sessionId],
+  );
+  assert.equal(capabilities.rows[0]?.count, "0", "a capability exists for a FAILED session");
+});
+
+test("C2: a sweep after the mint leaves no live capability and the session never reaches READY", async () => {
+  const owner = await tenant("c2-sweep-after-mint@example.test");
+  const { sessionId, routeId } = await requested(owner);
+
+  // The bind claims and mints...
+  await postgres.pool.query("UPDATE browser_sessions SET status = 'ALLOCATING' WHERE id = $1", [
+    sessionId,
+  ]);
+  const minted = await harness.built.publishedServices.mint(
+    routeId,
+    sessionId,
+    undefined,
+    { organisationId: owner.organisationId, projectIds: [owner.projectId] },
+    { type: "system" },
+    "req_c2_mint",
+  );
+
+  // ...and the sweep arrives before `markReady`.
+  const before = gateway.revokedCapabilities.length;
+  await harness.built.sessions.failOverdueAllocations({ deadlineMs: 0 });
+
+  const capability = await postgres.pool.query<{ revoked_at: Date | null }>(
+    "SELECT revoked_at FROM route_capabilities WHERE id = $1",
+    [minted.capability_id],
+  );
+  assert.notEqual(capability.rows[0]?.revoked_at, null, "a capability outlived its swept session");
+  assert.deepEqual(
+    gateway.revokedCapabilities.slice(before),
+    [minted.capability_id],
+    "the gateway was not told to withdraw the capability",
+  );
+
+  // Note what this does **not** assert: that the gateway then refuses the
+  // capability. It verifies from a signature without a database read and its
+  // revocation set does not survive a restart (RVP-76), so a test claiming that
+  // would assert a property the system does not have. RVP-99 carries it.
+  const session = await postgres.pool.query<{ status: string }>(
+    "SELECT status FROM browser_sessions WHERE id = $1",
+    [sessionId],
+  );
+  assert.equal(session.rows[0]?.status, "FAILED");
+});
+
+test("C4: the sweep races the inline path with the grace at zero, and one allocation wins", async () => {
+  // **The grace set to zero is the point.** The grace is an optimisation; the
+  // status guard in the claim is the control. A test that only ran with a
+  // realistic grace would still pass after the guard was removed — and somebody
+  // will remove it *because* the grace exists.
+  const owner = await tenant("c4-grace-zero@example.test");
+  const { sessionId } = await requested(owner);
+
+  const workerCalls = () =>
+    harness.allocations.filter((allocation) => allocation.browserSessionId === sessionId).length;
+  const before = workerCalls();
+
+  const [a, b] = await Promise.allSettled([
+    harness.built.sessions.completePendingAllocations({ olderThanMs: 0 }),
+    harness.built.sessions.completePendingAllocations({ olderThanMs: 0 }),
+  ]);
+  void a;
+  void b;
+
+  assert.equal(workerCalls() - before, 1, "one reservation produced two worker allocations");
+  const capabilities = await postgres.pool.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM route_capabilities WHERE browser_session_id = $1",
+    [sessionId],
+  );
+  assert.equal(capabilities.rows[0]?.count, "1", "one reservation produced two capabilities");
+  const allocated = await postgres.pool.query<{ count: string }>(
+    `SELECT count(*)::text AS count FROM events
+      WHERE type = 'browser_session.allocated' AND correlation ->> 'browser_session_id' = $1`,
+    [sessionId],
+  );
+  assert.equal(allocated.rows[0]?.count, "1");
+});
+
+test("C7: a route revoked between the request and the claim fails the reservation and mints nothing", async () => {
+  // The check-then-use window the joined read at **claim** time exists to close,
+  // and the reason the MCP process must not pre-check route status: a pre-check
+  // that admitted would be authoritative-looking and wrong.
+  const owner = await tenant("c7-revoked-between@example.test");
+  const { sessionId, routeId } = await requested(owner);
+
+  await harness.built.app.inject({
+    method: "DELETE",
+    url: `/api/v1/published-services/${routeId}`,
+    headers: ADMIN,
+  });
+
+  await harness.built.sessions.completePendingAllocations({ olderThanMs: 0 });
+
+  const session = await postgres.pool.query<{ status: string }>(
+    "SELECT status FROM browser_sessions WHERE id = $1",
+    [sessionId],
+  );
+  assert.equal(session.rows[0]?.status, "FAILED");
+  const capabilities = await postgres.pool.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM route_capabilities WHERE browser_session_id = $1",
+    [sessionId],
+  );
+  assert.equal(capabilities.rows[0]?.count, "0");
+
+  const failure = await harness.built.sessions.allocationFailure(sessionId);
+  assert.equal(failure?.code, "PUBLISHED_SERVICE_UNAVAILABLE");
+  assert.equal(failure?.details["published_service_id"], routeId);
+});
+
+test("C8: a connector that disconnects between the request and the claim is CONNECTOR_OFFLINE", async () => {
+  const owner = await tenant("c8-disconnect-between@example.test");
+  const { sessionId, routeId } = await requested(owner);
+  await setConnectorStatus(owner.connectorId, "DISCONNECTED");
+
+  await harness.built.sessions.completePendingAllocations({ olderThanMs: 0 });
+
+  const failure = await harness.built.sessions.allocationFailure(sessionId);
+  assert.equal(failure?.code, "CONNECTOR_OFFLINE");
+  assert.equal(failure?.details["connector_status"], "DISCONNECTED");
+  assert.equal(failure?.details["published_service_id"], routeId);
+});
+
+// ---------------------------------------------- the attack list's F-series
+
+test("F7: a successful bind clears the requested route, so the deadline never reaches it", async () => {
+  // **Catastrophic if missed and two lines to assert.** Miss the clear and every
+  // healthy bound session is failed by the sweep two minutes after it starts —
+  // and no short suite stumbles into it, because nothing else advances the clock
+  // that far.
+  const owner = await tenant("f7-clears@example.test");
+  const { sessionId } = await requested(owner);
+  await harness.built.sessions.completePendingAllocations({ olderThanMs: 0 });
+
+  const bound = await postgres.pool.query<{
+    status: string;
+    requested_published_service_id: string | null;
+    allocation_requested_at: Date | null;
+  }>(
+    "SELECT status, requested_published_service_id, allocation_requested_at FROM browser_sessions WHERE id = $1",
+    [sessionId],
+  );
+  assert.equal(bound.rows[0]?.status, "READY");
+  assert.equal(bound.rows[0]?.requested_published_service_id, null);
+  assert.equal(bound.rows[0]?.allocation_requested_at, null);
+
+  // Ten times the deadline later, it is still healthy.
+  await harness.built.sessions.failOverdueAllocations({ deadlineMs: 0 });
+  const after = await postgres.pool.query<{ status: string }>(
+    "SELECT status FROM browser_sessions WHERE id = $1",
+    [sessionId],
+  );
+  assert.equal(after.rows[0]?.status, "READY", "the deadline failed a healthy bound session");
+});
+
+test("F3/F4: the sweep reaches a DEGRADED reservation and never a route-less one", async () => {
+  // The pair. F3 alone passes with a predicate that is too wide; F4 alone passes
+  // with one that is too narrow. Neither is sufficient on its own.
+  const owner = await tenant("f3f4-predicate@example.test");
+
+  // F3: `BrowserWorkerMonitor` marks an `ALLOCATING` reservation no worker holds
+  // as `DEGRADED`, which without the third status in the predicate would move it
+  // out of the sweep's reach and strand it holding a slot for ever.
+  const { sessionId: degraded } = await requested(owner);
+  await postgres.pool.query("UPDATE browser_sessions SET status = 'DEGRADED' WHERE id = $1", [
+    degraded,
+  ]);
+
+  // F4: a human reservation with no route is somebody's in-progress work.
+  const untouched = await reserve(owner);
+
+  await harness.built.sessions.failOverdueAllocations({ deadlineMs: 0 });
+
+  const rows = await postgres.pool.query<{ id: string; status: string }>(
+    "SELECT id, status FROM browser_sessions WHERE id = ANY($1)",
+    [[degraded, untouched]],
+  );
+  const byId = new Map(rows.rows.map((row) => [row.id, row.status]));
+  assert.equal(byId.get(degraded), "FAILED", "a DEGRADED reservation was stranded");
+  assert.equal(
+    byId.get(untouched),
+    "REQUESTED",
+    "the sweep failed a reservation that asked for no route",
+  );
+});
+
+test("A9: the organisation is a term of the scoped read, not a comparison after it", async () => {
+  // A direct test on the read, because no tool call can construct the state that
+  // distinguishes them. With `organisationId: null` the project term alone
+  // answers, and the answer is correct **only because** a project implies its
+  // organisation — an implication a shipped release violated (RVP-91, RVP-92).
+  const owner = await tenant("a9-owner@example.test");
+  const stranger = await tenant("a9-stranger@example.test");
+  const theirSession = await reserve(stranger);
+  const published = await publish(stranger, [theirSession]);
+  const theirRoute = (published.json() as { data: { id: string } }).data.id;
+
+  const readable = await harness.built.publishedServices.readAdmissible({
+    publishedServiceId: theirRoute,
+    browserSessionId: theirSession,
+    // The other tenant's **project**, with this caller's organisation. The
+    // project term alone would return the row.
+    scope: { organisationId: owner.organisationId, projectIds: [stranger.projectId] },
+  }).then(
+    () => "returned",
+    (error: unknown) => (error as { code?: string }).code,
+  );
+  assert.equal(readable, "RESOURCE_NOT_FOUND", "the organisation stopped being a term");
 });

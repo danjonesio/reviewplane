@@ -548,6 +548,33 @@ export class BrowserSessionService {
       throw new ApiError("BROWSER_CAPACITY_EXHAUSTED", "This session has no worker.");
     }
 
+    // **The claim, and it is guarded.** Everything after this point is a *state*
+    // refusal that fails the reservation; everything before it is an entitlement
+    // refusal that leaves the reservation reusable.
+    //
+    // The guard is what makes two allocators cost one wasted read rather than
+    // two browsers. It was not here — `#setStatus` writes an unguarded
+    // `UPDATE`, so two concurrent sweeps both read `REQUESTED`, both proceeded,
+    // and one reservation produced two worker allocations and two capabilities.
+    // The grace before the sweep takes a reservation over made that rare rather
+    // than impossible, which is exactly the reason the grace must not be
+    // mistaken for the control (ADR-0037).
+    const claimed = await this.#claimForAllocation(session, input.actor, input.publishedServiceId);
+    if (!claimed) {
+      const refusal = new ApiError(
+        "BROWSER_SESSION_NOT_ACTIVE",
+        "Only a reserved browser session can be allocated.",
+        { browser_session_status: "ALLOCATING" },
+      );
+      await this.#recordAllocationRejection(
+        session,
+        input.actor,
+        refusal,
+        input.publishedServiceId,
+      );
+      throw refusal;
+    }
+
     let binding: ServiceBinding | null = null;
     if (input.publishedServiceId !== undefined) {
       // Every failure between here and the worker call ends the reservation.
@@ -608,12 +635,6 @@ export class BrowserSessionService {
       );
     }
 
-    const bound = await this.get(session.id);
-    await this.#setStatus(bound, "ALLOCATING", input.actor, "browser_session.allocated", {
-      worker_id: session.worker_id,
-      published_service_id: binding?.publishedServiceId ?? null,
-    });
-
     const allocation: SessionAllocate = {
       organisation_id: session.organisation_id,
       project_id: session.project_id,
@@ -660,6 +681,54 @@ export class BrowserSessionService {
       await this.#withdrawCapabilities(session.id);
       throw reported;
     }
+  }
+
+  /**
+   * Claims a reservation for allocation, or reports that somebody else has.
+   *
+   * `UPDATE ... WHERE id = $1 AND status = 'REQUESTED'` is the whole control.
+   * Two allocators — two `api` replicas, or the sweep and an inline HTTP call —
+   * can read the same `REQUESTED` row at the same instant, and only one of them
+   * changes it. The loser writes nothing, which is the property `markReady` and
+   * `markFailed` already have on the publication path.
+   *
+   * The event is written in the same transaction as the status change, so a
+   * claim that committed is a claim that was recorded (`docs/EVENTS.md` §9). It
+   * carries the route the reservation **asked** for, which is what is true at
+   * this instant: nothing has been minted yet, and recording the bound route
+   * here would record a fact that has not happened.
+   */
+  async #claimForAllocation(
+    session: BrowserSessionRecord,
+    actor: EventActor,
+    publishedServiceId: string | undefined,
+  ): Promise<boolean> {
+    return inTransaction(this.#pool, async (client) => {
+      const claimed = await client.query(
+        `UPDATE browser_sessions SET status = 'ALLOCATING'
+          WHERE id = $1 AND status = 'REQUESTED'
+          RETURNING id`,
+        [session.id],
+      );
+      if (claimed.rows.length === 0) return false;
+      await appendEvent(client, {
+        type: "browser_session.allocated",
+        organisationId: session.organisation_id,
+        projectId: session.project_id,
+        actor,
+        correlation: {
+          browser_session_id: session.id,
+          ...(session.worker_id === null ? {} : { worker_id: session.worker_id }),
+        },
+        payload: {
+          previous_status: "REQUESTED",
+          new_status: "ALLOCATING",
+          worker_id: session.worker_id,
+          published_service_id: publishedServiceId ?? null,
+        },
+      });
+      return true;
+    });
   }
 
   /**

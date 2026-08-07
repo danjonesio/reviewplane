@@ -86,6 +86,8 @@ export interface IssuedCommand {
 
 export interface McpHarness {
   readonly control: BuiltApp;
+  /** The recording gateway double, for assertions about which calls were made. */
+  readonly gateway: AcceptingGateway;
   /** The database both processes share, for fixtures that write rows directly. */
   readonly pool: Pool;
   readonly mcp: BuiltMcpApp;
@@ -496,6 +498,7 @@ export async function startMcpHarness(pool: Pool): Promise<McpHarness> {
 
   return {
     control,
+    gateway,
     pool,
     mcp,
     artefactRoot,
