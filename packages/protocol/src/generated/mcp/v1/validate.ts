@@ -426,16 +426,20 @@ export function validateUntrustedFieldPath(value: unknown, path: string, out: Sc
  * that cannot consume image content still completes the workflow.
  */
 export function validateWarningCode(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["image_content_unsupported","resource_content_unsupported","findings_truncated","text_truncated","workspace_unresolved","verification_branch_uncorroborated","staleness_unavailable","inbox_unavailable","results_truncated","idempotent_replay","completion_blocked_pending_review"] });
+  checkString(value, path, out, { values: ["image_content_unsupported","resource_content_unsupported","findings_truncated","text_truncated","workspace_unresolved","verification_branch_uncorroborated","staleness_unavailable","inbox_unavailable","results_truncated","idempotent_replay","completion_blocked_pending_review","allocation_incomplete"] });
 }
 
 /**
  * Stable refusal code (docs/MCP_SPEC.md section 12). Adding a code is additive within a
  * protocol version and a client MUST tolerate a code it does not recognise. This
- * enumeration MUST equal x-protocol.error_classes.
+ * enumeration MUST equal x-protocol.error_classes. The six codes after
+ * IDEMPOTENCY_CONFLICT are the ones this endpoint has always been able to emit and did not
+ * declare: refusalFrom casts the domain's code rather than validating it, so a client
+ * validating against this enumeration would have rejected a refusal the server was
+ * entitled to send.
  */
 export function validateErrorClass(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["AUTHENTICATION_REQUIRED","AUTHORISATION_DENIED","PROJECT_CONTEXT_AMBIGUOUS","PROJECT_CONTEXT_MISMATCH","RESOURCE_NOT_FOUND","RESOURCE_STALE","VERSION_CONFLICT","IDEMPOTENCY_CONFLICT","CONNECTOR_OFFLINE","PUBLISHED_SERVICE_UNAVAILABLE","BROWSER_CAPACITY_EXHAUSTED","BROWSER_SESSION_NOT_ACTIVE","CONTROL_NOT_OWNED","CONTROL_EPOCH_STALE","BROWSER_COMMAND_TIMEOUT","POLICY_DENIED","APPROVAL_REQUIRED","EVIDENCE_REQUIRED","ARTEFACT_UPLOAD_INCOMPLETE","ARTEFACT_STORE_UNAVAILABLE","UNSUPPORTED_CAPABILITY","RATE_LIMITED","INTERNAL_ERROR"] });
+  checkString(value, path, out, { values: ["AUTHENTICATION_REQUIRED","AUTHORISATION_DENIED","PROJECT_CONTEXT_AMBIGUOUS","PROJECT_CONTEXT_MISMATCH","RESOURCE_NOT_FOUND","RESOURCE_STALE","VERSION_CONFLICT","IDEMPOTENCY_CONFLICT","VALIDATION_FAILED","CONNECTOR_OFFLINE","IDENTITY_REVOKED","PUBLISHED_SERVICE_UNAVAILABLE","ROUTE_EXPIRED","ROUTE_LIMIT_EXCEEDED","DESTINATION_NOT_ALLOWED","WORKSPACE_NOT_FOUND","BROWSER_CAPACITY_EXHAUSTED","BROWSER_SESSION_NOT_ACTIVE","CONTROL_NOT_OWNED","CONTROL_EPOCH_STALE","BROWSER_COMMAND_TIMEOUT","POLICY_DENIED","APPROVAL_REQUIRED","EVIDENCE_REQUIRED","ARTEFACT_UPLOAD_INCOMPLETE","ARTEFACT_STORE_UNAVAILABLE","UNSUPPORTED_CAPABILITY","RATE_LIMITED","INTERNAL_ERROR"] });
 }
 
 /**
@@ -444,7 +448,7 @@ export function validateErrorClass(value: unknown, path: string, out: SchemaViol
  * advertises always has a result schema and a bound.
  */
 export function validateMessageType(value: unknown, path: string, out: SchemaViolation[]): void {
-  checkString(value, path, out, { values: ["project_current","agent_session_status","agent_inbox_list","agent_inbox_acknowledge","review_list","review_search","review_get","review_claim","review_update_status","review_add_comment","finding_get","finding_claim","finding_update_status","finding_mark_blocked","finding_add_comment","finding_submit_verification","browser_take_screenshot","browser_session_start","browser_session_status","browser_session_pause","browser_session_resume","browser_session_end","browser_navigate","browser_snapshot","browser_click","browser_type","browser_select_option","browser_press_key","browser_scroll","browser_resize","browser_wait","development_services_list","development_service_publish","development_service_unpublish","task_validation_status","task_complete"] });
+  checkString(value, path, out, { values: ["project_current","agent_session_status","agent_inbox_list","agent_inbox_acknowledge","review_list","review_search","review_get","review_claim","review_update_status","review_add_comment","finding_get","finding_claim","finding_update_status","finding_mark_blocked","finding_add_comment","finding_submit_verification","browser_take_screenshot","browser_session_start","browser_session_allocate","browser_session_status","browser_session_pause","browser_session_resume","browser_session_end","browser_navigate","browser_snapshot","browser_click","browser_type","browser_select_option","browser_press_key","browser_scroll","browser_resize","browser_wait","development_services_list","development_service_publish","development_service_unpublish","task_validation_status","task_complete"] });
 }
 
 /**
@@ -464,6 +468,17 @@ export function validateAgentCapability(value: unknown, path: string, out: Schem
  */
 export function validateBrowserLifecycleStatus(value: unknown, path: string, out: SchemaViolation[]): void {
   checkString(value, path, out, { values: ["REQUESTED","ALLOCATING","READY","ACTIVE","PAUSED","DEGRADED","TERMINATING","TERMINATED","FAILED"] });
+}
+
+/**
+ * Connector lifecycle status (docs/DOMAIN_MODEL.md section 8). This enumeration MUST equal
+ * the platform schema's connector_status: an agent told a route's connector is DEGRADED
+ * and a control plane that meant something else by it would disagree about whether waiting
+ * is worth anything. DEGRADED and DISCONNECTED are conclusions the control plane draws
+ * from heartbeat silence and are never self-reported; REVOKED is terminal.
+ */
+export function validateConnectorStatus(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkString(value, path, out, { values: ["PENDING_ENROLMENT","ACTIVE","DEGRADED","DISCONNECTED","REVOKED"] });
 }
 
 /**
@@ -1189,7 +1204,7 @@ export function validateErrorDetailsAllowedTransitions(value: unknown, path: str
  * cannot become a channel for arbitrary content.
  */
 export function validateErrorDetails(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["current_version", "expected_version", "current_epoch", "field", "candidates", "required_evidence", "allowed_transitions", "retry_after_ms", "browser_session_status", "detected", "published_service_id"], []);
+  const source = checkObject(value, path, out, ["current_version", "expected_version", "current_epoch", "field", "candidates", "required_evidence", "allowed_transitions", "retry_after_ms", "browser_session_status", "detected", "published_service_id", "connector_status"], []);
   if (source === null) return;
   if (source["current_version"] !== undefined) {
     validateVersionNumber(source["current_version"], `${path}.current_version`, out);
@@ -1223,6 +1238,9 @@ export function validateErrorDetails(value: unknown, path: string, out: SchemaVi
   }
   if (source["published_service_id"] !== undefined) {
     validateIdentifier(source["published_service_id"], `${path}.published_service_id`, out);
+  }
+  if (source["connector_status"] !== undefined) {
+    validateConnectorStatus(source["connector_status"], `${path}.connector_status`, out);
   }
 }
 
@@ -2289,19 +2307,56 @@ export function validateBrowserTakeScreenshotInput(value: unknown, path: string,
 }
 
 /**
+ * Whether to allocate the session on its worker in this call. True, the default, reserves
+ * and allocates in one request for a session that needs no route. False reserves and
+ * stops: the response is a REQUESTED session with an identifier and a chosen worker, no
+ * worker has been contacted, and that identifier can then appear in a route's
+ * allowed_browser_session_ids (docs/API.md section 11).
+ */
+export function validateBrowserSessionStartInputAllocate(value: unknown, path: string, out: SchemaViolation[]): void {
+  checkBoolean(value, path, out);
+}
+
+/**
  * Arguments of browser_session_start (docs/MCP_SPEC.md section 7.3). There is no project
  * argument and no origin argument: the project is the session's, and the origin is derived
  * from the published service by the control plane, because the origin is the browser's
- * egress allow-list (docs/SECURITY.md section 9).
+ * egress allow-list (docs/SECURITY.md section 9). To reach a development service, send
+ * allocate false, publish a route with development_service_publish — it names this
+ * reservation — and then call browser_session_allocate.
  */
 export function validateBrowserSessionStartInput(value: unknown, path: string, out: SchemaViolation[]): void {
-  const source = checkObject(value, path, out, ["published_service_id", "viewport", "idempotency_key"], ["idempotency_key"]);
+  const source = checkObject(value, path, out, ["published_service_id", "allocate", "viewport", "idempotency_key"], ["idempotency_key"]);
   if (source === null) return;
   if (source["published_service_id"] !== undefined) {
     validateIdentifier(source["published_service_id"], `${path}.published_service_id`, out);
   }
+  if (source["allocate"] !== undefined) {
+    validateBrowserSessionStartInputAllocate(source["allocate"], `${path}.allocate`, out);
+  }
   if (source["viewport"] !== undefined) {
     validateViewport(source["viewport"], `${path}.viewport`, out);
+  }
+  if (source["idempotency_key"] !== undefined) {
+    validateIdempotencyKey(source["idempotency_key"], `${path}.idempotency_key`, out);
+  }
+}
+
+/**
+ * Names a reservation this agent session made and, optionally, a route its own project
+ * already published that already names that reservation (docs/MCP_SPEC.md section 7.3).
+ * There is no origin, no connector, no workspace, no project and no organisation argument:
+ * each would be an authorisation input the caller chose, and the control plane re-derives
+ * every one of them from records the caller did not author.
+ */
+export function validateBrowserSessionAllocateInput(value: unknown, path: string, out: SchemaViolation[]): void {
+  const source = checkObject(value, path, out, ["browser_session_id", "published_service_id", "idempotency_key"], ["browser_session_id", "idempotency_key"]);
+  if (source === null) return;
+  if (source["browser_session_id"] !== undefined) {
+    validateIdentifier(source["browser_session_id"], `${path}.browser_session_id`, out);
+  }
+  if (source["published_service_id"] !== undefined) {
+    validateIdentifier(source["published_service_id"], `${path}.published_service_id`, out);
   }
   if (source["idempotency_key"] !== undefined) {
     validateIdempotencyKey(source["idempotency_key"], `${path}.idempotency_key`, out);

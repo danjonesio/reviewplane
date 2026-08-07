@@ -9,6 +9,7 @@
  */
 
 import { buildApp } from "./app.ts";
+import { ALLOCATION_GRACE_MS } from "./domain.ts";
 import { ConfigurationError, loadServerConfig } from "./config.ts";
 import { migrate } from "./db/migrate.ts";
 import { createPool } from "./db/pool.ts";
@@ -92,6 +93,29 @@ async function main(): Promise<void> {
   }, PENDING_INTERVAL_MS);
   pending.unref();
 
+  // The same split, for the same reason, one layer down (ADR-0037). Admitting a
+  // browser session to a route mints a session-scoped capability, the signing
+  // key is read by this process alone, and the MCP endpoint is deliberately
+  // built without one. So the endpoint records the request and this sweep
+  // completes it — and a second sweep ends any reservation nothing completed,
+  // because a `REQUESTED` row with `ended_at IS NULL` is exactly what the worker
+  // capacity query counts.
+  const allocations = setInterval(() => {
+    built.sessions
+      .completePendingAllocations({ olderThanMs: ALLOCATION_GRACE_MS })
+      .catch((error: unknown) => {
+        built.app.log.error({ err: error }, "browser-session allocation sweep failed");
+      });
+  }, PENDING_INTERVAL_MS);
+  allocations.unref();
+
+  const overdue = setInterval(() => {
+    built.sessions.failOverdueAllocations().catch((error: unknown) => {
+      built.app.log.error({ err: error }, "browser-session allocation deadline sweep failed");
+    });
+  }, SWEEP_INTERVAL_MS);
+  overdue.unref();
+
   let shuttingDown = false;
   const shutdown = (signal: string): void => {
     if (shuttingDown) return;
@@ -99,6 +123,8 @@ async function main(): Promise<void> {
     built.app.log.info({ signal }, "shutting down");
     clearInterval(sweep);
     clearInterval(pending);
+    clearInterval(allocations);
+    clearInterval(overdue);
     void built
       .stop()
       .then(async () => pool.end())

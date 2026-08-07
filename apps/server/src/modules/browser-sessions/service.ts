@@ -41,6 +41,20 @@ export interface BrowserSessionRecord {
   readonly worker_id: string | null;
   readonly agent_session_id: string | null;
   readonly published_service_id: string | null;
+  /**
+   * The route this reservation has **asked** to be admitted to, which is not
+   * the route it is bound to (ADR-0037).
+   *
+   * Binding mints a session-scoped route capability and only the process holding
+   * the signing key may do that, so an allocation requested by the MCP endpoint
+   * is recorded here and completed by `api`. It is a separate column rather than
+   * an early write to `published_service_id` because that column is what the
+   * agent-facing view calls "published service this session may reach", and a
+   * session that has asked and not yet been authorised may reach nothing.
+   */
+  readonly requested_published_service_id: string | null;
+  /** When admission was asked for, which is what the allocation deadline runs from. */
+  readonly allocation_requested_at: string | null;
   readonly service_origin: string | null;
   readonly browser_type: string;
   readonly browser_version: string | null;
@@ -68,6 +82,36 @@ export interface StartSessionInput {
 }
 
 /**
+ * The scope a caller acts in, mirroring `published-services/repository.ts`.
+ *
+ * `organisationId` is `null` only for the organisation-wide bootstrap
+ * administrator (ADR-0016); `projectIds` is `null` for a session not delegated
+ * to a subset of projects. One rule about what a principal may reach, expressed
+ * once.
+ */
+export interface SessionScope {
+  readonly organisationId: string | null;
+  readonly projectIds: readonly string[] | null;
+}
+
+/**
+ * The scope the completion sweep runs in.
+ *
+ * Phase two acts for the **deployment** rather than for a principal: the
+ * reservation was authorised when it was requested, and the process finishing it
+ * has no session to read a scope from. It is named rather than written inline so
+ * that "unscoped" is a deliberate, greppable choice instead of an omission — the
+ * same reason `published-services/service.ts` names `EVERY_SCOPE`.
+ *
+ * It is not a hole. The authorisation phase two runs is a **joined** read
+ * requiring the route, its connector, the project and the session to agree with
+ * each other, and requiring the route's own allow-list to name the session. The
+ * reservation is a request, not a grant, so a row written by the process that
+ * cannot mint cannot widen what the process that can mint will do.
+ */
+const DEPLOYMENT_SCOPE: SessionScope = { organisationId: null, projectIds: null };
+
+/**
  * Binds a session to a published service at allocation.
  *
  * The origin and the capability are both derived from the route by the control
@@ -86,13 +130,77 @@ export interface ServiceBinding {
  *
  * It is what `browser.command_rejected` records under `command` when one is
  * refused, with `kind: "lifecycle"` distinguishing it from a browser command.
+ *
+ * `allocate` joined the set with ADR-0037. Allocation is a lifecycle act — it is
+ * the transition `REQUESTED` → `ALLOCATING` → `READY` — and `docs/EVENTS.md` §7
+ * already covers a refused lifecycle act with this event type. No new type is
+ * added: an auditor asks "did anything try to act on this session and get
+ * refused?", and a second type would let an auditor who checked one and not the
+ * other get a confident wrong answer.
  */
 export type LifecycleAct =
   | "pause"
   | "resume"
   | "end"
+  | "allocate"
   | "control_request"
   | "control_release";
+
+/**
+ * The stable class a refused or failed allocation is recorded under.
+ *
+ * `#failReservation` used to record the caught error's `message` as free text,
+ * where `docs/EVENTS.md` §8 requires a stable class and where the publication
+ * path had already got it right: "No free text: the class is the diagnosis"
+ * (`published-services/service.ts`). A refusal recorded as free text is not a
+ * refusal an auditor can query for — a message changes with a refactor, and the
+ * query that counted refused allocations stops counting them without failing.
+ */
+export type AllocationFailureClass =
+  | "AUTHORISATION_DENIED"
+  | "BROWSER_CAPACITY_EXHAUSTED"
+  | "BROWSER_SESSION_NOT_ACTIVE"
+  | "CONNECTOR_OFFLINE"
+  | "IDENTITY_REVOKED"
+  | "PROJECT_CONTEXT_MISMATCH"
+  | "PUBLISHED_SERVICE_UNAVAILABLE"
+  | "RESOURCE_NOT_FOUND"
+  | "ROUTE_EXPIRED"
+  | "UNSUPPORTED_CAPABILITY"
+  | "VALIDATION_FAILED"
+  | "ALLOCATION_DEADLINE_PASSED"
+  | "INTERNAL_ERROR";
+
+const ALLOCATION_FAILURE_CLASSES: readonly string[] = [
+  "AUTHORISATION_DENIED",
+  "BROWSER_CAPACITY_EXHAUSTED",
+  "BROWSER_SESSION_NOT_ACTIVE",
+  "CONNECTOR_OFFLINE",
+  "IDENTITY_REVOKED",
+  "PROJECT_CONTEXT_MISMATCH",
+  "PUBLISHED_SERVICE_UNAVAILABLE",
+  "RESOURCE_NOT_FOUND",
+  "ROUTE_EXPIRED",
+  "UNSUPPORTED_CAPABILITY",
+  "VALIDATION_FAILED",
+  "ALLOCATION_DEADLINE_PASSED",
+];
+
+/**
+ * The class a thrown value is recorded as.
+ *
+ * Anything unrecognised becomes `INTERNAL_ERROR`: an honest "something inside
+ * the control plane went wrong" beats an audit record nobody can query, and the
+ * caller still receives the original error. It is the rule
+ * `published-services/service.ts` already applies to a failed publication.
+ */
+export function allocationFailureClassOf(error: unknown): AllocationFailureClass {
+  const code = error instanceof ApiError ? error.code : null;
+  if (code !== null && ALLOCATION_FAILURE_CLASSES.includes(code)) {
+    return code as AllocationFailureClass;
+  }
+  return "INTERNAL_ERROR";
+}
 
 /** One event of a browser session's timeline (`docs/API.md` section 11). */
 export interface TimelineEntry {
@@ -103,15 +211,79 @@ export interface TimelineEntry {
   readonly payload: Record<string, unknown>;
 }
 
-/** Resolves a published service into the binding a session is allocated with. */
+/**
+ * Resolves a published service into the binding a session is allocated with.
+ *
+ * `organisationId` is an argument and is never constructed by the implementation
+ * (ADR-0037). The binder used to build its own scope as
+ * `{ organisationId: null, projectIds: [projectId] }`, which was sound only
+ * because a project identifier implies its organisation — an implication a
+ * shipped release violated, and a rule that holds because of a second rule
+ * elsewhere is the kind that stops holding silently (RVP-91, RVP-92).
+ *
+ * Only a process holding the capability signing key can implement this
+ * usefully: binding mints, the control plane is the minting authority
+ * (`docs/ARCHITECTURE.md` §7.3), and the MCP endpoint is deliberately built
+ * without a key. That process implements {@link AllocationAuthoriser} instead
+ * and asks `api` to finish the act (ADR-0021).
+ */
 export interface ServiceBinder {
   bind(input: {
     readonly publishedServiceId: string;
+    readonly organisationId: string;
     readonly projectId: string;
     readonly browserSessionId: string;
     readonly actor: EventActor;
     readonly requestId: string;
   }): Promise<ServiceBinding>;
+}
+
+/**
+ * Answers whether a session may be admitted to a route, without minting.
+ *
+ * It is the half of {@link ServiceBinder} that needs no secret, so it runs in
+ * **either** process. That is what lets an agent's allocation be diagnosed where
+ * it was asked for — a route in another project, a revoked connector, a route
+ * that does not name the reservation — rather than failing silently a sweep
+ * interval later, in a process the agent is not talking to.
+ *
+ * It is not the enforcement. The process that mints runs the same read again,
+ * because the record it is acting on was written by a process with no authority
+ * to grant anything.
+ */
+export interface AllocationAuthoriser {
+  authorise(input: {
+    readonly publishedServiceId: string;
+    readonly organisationId: string;
+    readonly projectId: string;
+    readonly browserSessionId: string;
+  }): Promise<void>;
+}
+
+/**
+ * Withdraws the route capabilities minted for a browser session.
+ *
+ * A capability outliving the browser it was minted for is a credential nobody is
+ * accounting for, so ending a session withdraws them (ADR-0037). This gives
+ * `HttpTunnelGateway.revokeCapability` its first production caller.
+ *
+ * **Withdrawal is best effort, and every mention of it says so.** The gateway
+ * verifies a capability from its signature without a database read, and RVP-76
+ * records that its revocation set is in memory and does not survive a restart. A
+ * revocation recorded here is durable in the control plane and not necessarily
+ * at the gateway. The bound `mint` applies — a capability may not outlive its
+ * session's maximum duration — is what stands when this fails, and it stands
+ * without the gateway's cooperation. RVP-99 carries the gap.
+ *
+ * Both processes construct one. The MCP process may **withdraw** a capability
+ * and still cannot mint one, which is ADR-0021's existing carve-out for
+ * `development_service_unpublish` extended to the credential rather than only to
+ * the route. That the gateway's control token is unscoped means "withdraws,
+ * never registers" is restraint rather than authority — also RVP-76's, and
+ * stated rather than assumed.
+ */
+export interface SessionCapabilityRevoker {
+  revokeForSession(browserSessionId: string): Promise<readonly string[]>;
 }
 
 export const DEFAULT_SESSION_LIMITS: SessionLimits = {
@@ -125,6 +297,29 @@ export const DEFAULT_SESSION_LIMITS: SessionLimits = {
 
 const LEASE_SECONDS = 900;
 
+/**
+ * How long a requested allocation may sit before the sweep takes it over.
+ *
+ * `api` allocates inline for its own callers, so a reservation it is working on
+ * is milliseconds old. Waiting before the sweep touches one keeps the two paths
+ * from allocating one reservation twice; the status-guarded `UPDATE` is what
+ * makes a lost race cost one wasted claim rather than two allocations.
+ */
+export const ALLOCATION_GRACE_MS = 2_000;
+
+/**
+ * How long a reservation carrying a requested route may live before it is
+ * failed, whatever state it is in.
+ *
+ * This is the mechanism and the sweep is only what notices. `docs/DOMAIN_MODEL.md`
+ * §12's `REQUESTED` had no lifetime, and a `REQUESTED` row with
+ * `ended_at IS NULL` is exactly what the worker capacity query counts — so a
+ * reservation nothing could complete held a browser slot for ever. It is
+ * comfortably longer than a Chromium context takes to come up, because failing a
+ * reservation that was about to work would be worse than the slot it frees.
+ */
+export const ALLOCATION_DEADLINE_MS = 120_000;
+
 function toRecord(row: Record<string, unknown>): BrowserSessionRecord {
   const controllerType = row["current_controller_type"] as ControllerIdentity["type"] | null;
   const controllerId = row["current_controller_id"] as string | null;
@@ -135,6 +330,12 @@ function toRecord(row: Record<string, unknown>): BrowserSessionRecord {
     worker_id: (row["worker_id"] as string | null) ?? null,
     agent_session_id: (row["agent_session_id"] as string | null) ?? null,
     published_service_id: (row["published_service_id"] as string | null) ?? null,
+    requested_published_service_id:
+      (row["requested_published_service_id"] as string | null) ?? null,
+    allocation_requested_at:
+      row["allocation_requested_at"] === null || row["allocation_requested_at"] === undefined
+        ? null
+        : (row["allocation_requested_at"] as Date).toISOString(),
     service_origin: (row["service_origin"] as string | null) ?? null,
     browser_type: row["browser_type"] as string,
     browser_version: (row["browser_version"] as string | null) ?? null,
@@ -153,22 +354,41 @@ function toRecord(row: Record<string, unknown>): BrowserSessionRecord {
   };
 }
 
+export interface BrowserSessionServiceOptions {
+  /**
+   * Answers whether a session may be admitted to a route, in a process that
+   * cannot mint. Present in both processes; see {@link AllocationAuthoriser}.
+   */
+  readonly authoriser?: AllocationAuthoriser | null;
+  /** Withdraws the capabilities a session held when it ends. Best effort. */
+  readonly revoker?: SessionCapabilityRevoker | null;
+  /** Injected for the tests that drive the deadline. */
+  readonly now?: () => Date;
+}
+
 export class BrowserSessionService {
   readonly #pool: Pool;
   readonly #workers: WorkerRegistry;
   readonly #client: BrowserWorkerClient;
   readonly #binder: ServiceBinder | null;
+  readonly #authoriser: AllocationAuthoriser | null;
+  readonly #revoker: SessionCapabilityRevoker | null;
+  readonly #now: () => Date;
 
   constructor(
     pool: Pool,
     workers: WorkerRegistry,
     client: BrowserWorkerClient,
     binder: ServiceBinder | null = null,
+    options: BrowserSessionServiceOptions = {},
   ) {
     this.#pool = pool;
     this.#workers = workers;
     this.#client = client;
     this.#binder = binder;
+    this.#authoriser = options.authoriser ?? null;
+    this.#revoker = options.revoker ?? null;
+    this.#now = options.now ?? (() => new Date());
   }
 
   /**
@@ -281,23 +501,41 @@ export class BrowserSessionService {
    */
   async allocate(input: {
     readonly browserSessionId: string;
+    /**
+     * The caller's scope. **Required**, and it is the whole of ADR-0037's
+     * governing rule applied here: never source an authority input from the
+     * record being authorised.
+     *
+     * This used to read through the unscoped `get()` and carry no caller scope
+     * at all. Every authorisation it enjoyed happened above it, in the route
+     * layer, and it held only because today's callers name a session they have
+     * just created or have already resolved. `browser_session_allocate` takes a
+     * session identifier **as an argument**, so it inherits none of that — and a
+     * property of every caller is not a property of this function.
+     */
+    readonly scope: SessionScope;
     readonly publishedServiceId?: string;
     readonly actor: EventActor;
     readonly requestId: string;
   }): Promise<BrowserSessionRecord> {
-    const session = await this.get(input.browserSessionId);
+    // The identifier, the caller's project scope and the caller's organisation
+    // are one `WHERE` clause, and a session in another tenancy earns the refusal
+    // an unknown identifier earns, byte for byte (`docs/SECURITY.md` §7).
+    const session = await this.getForScope(input.browserSessionId, input.scope);
     if (session.status !== "REQUESTED") {
       // Deliberately does not fail the session: it is already allocated, and a
       // second allocation attempt is the caller's mistake rather than the
       // session's.
-      throw new ApiError(
+      const refusal = new ApiError(
         "BROWSER_SESSION_NOT_ACTIVE",
         "Only a reserved browser session can be allocated.",
         { browser_session_status: session.status },
       );
+      await this.#recordAllocationRejection(session, input.actor, refusal);
+      throw refusal;
     }
     if (session.worker_id === null) {
-      await this.#failReservation(session, input.actor, "the reservation has no worker");
+      await this.#failReservation(session, input.actor, "BROWSER_CAPACITY_EXHAUSTED");
       throw new ApiError("BROWSER_CAPACITY_EXHAUSTED", "This session has no worker.");
     }
 
@@ -320,17 +558,18 @@ export class BrowserSessionService {
         }
         binding = await this.#binder.bind({
           publishedServiceId: input.publishedServiceId,
+          // Both terms, and neither invented here. The organisation comes from
+          // the session row the scoped read returned, and the joined query the
+          // binder runs requires the route's project to belong to it — so a row
+          // whose two columns disagreed is refused rather than honoured.
+          organisationId: session.organisation_id,
           projectId: session.project_id,
           browserSessionId: session.id,
           actor: input.actor,
           requestId: input.requestId,
         });
       } catch (error) {
-        await this.#failReservation(
-          session,
-          input.actor,
-          error instanceof Error ? error.message : String(error),
-        );
+        await this.#failReservation(session, input.actor, allocationFailureClassOf(error));
         throw error;
       }
       await this.#pool.query(
@@ -381,10 +620,235 @@ export class BrowserSessionService {
     } catch (error) {
       const reported = await this.#explainWorkerRefusal(session, error);
       const failing = await this.get(session.id);
+      // The stable class, not the exception's text. `docs/EVENTS.md` §8 requires
+      // a reason code for a failure, and the same rule that fixed
+      // `#failReservation` applies to the worker's own refusal.
       await this.#setStatus(failing, "FAILED", input.actor, "browser_session.failed", {
-        reason: reported instanceof Error ? reported.message : String(reported),
+        reason_code: allocationFailureClassOf(reported),
+        trigger: "worker_refused",
       });
+      await this.#withdrawCapabilities(session.id);
       throw reported;
+    }
+  }
+
+  /**
+   * Phase one of an allocation asked for by a process that cannot mint.
+   *
+   * It resolves the reservation in the caller's scope, checks that the caller
+   * may admit it, asks {@link AllocationAuthoriser} whether the route admits it,
+   * and writes the request. **It touches nothing outside PostgreSQL**: it mints
+   * nothing, contacts no worker and reaches no gateway (ADR-0021, ADR-0037).
+   *
+   * The authorisation read runs here as well as in phase two, and the two are
+   * not redundant. Here it is what lets the agent be told *why* — a route in
+   * another project, a revoked connector, a route that does not name this
+   * reservation — in the call it made, rather than a sweep interval later in a
+   * process it is not talking to. There it is the enforcement, because the row
+   * it acts on was written by a process with no authority to grant anything.
+   */
+  async requestAllocation(input: {
+    readonly browserSessionId: string;
+    readonly scope: SessionScope;
+    readonly publishedServiceId: string;
+    readonly actor: EventActor;
+    readonly requestId: string;
+  }): Promise<BrowserSessionRecord> {
+    const session = await this.getForScope(input.browserSessionId, input.scope);
+    if (session.status !== "REQUESTED") {
+      const refusal = new ApiError(
+        "BROWSER_SESSION_NOT_ACTIVE",
+        "Only a reserved browser session can be allocated.",
+        { browser_session_status: session.status },
+      );
+      await this.#recordAllocationRejection(session, input.actor, refusal);
+      throw refusal;
+    }
+    if (this.#authoriser === null) {
+      throw new ApiError(
+        "UNSUPPORTED_CAPABILITY",
+        "This control plane cannot admit a browser session to a published service.",
+      );
+    }
+    try {
+      await this.#authoriser.authorise({
+        publishedServiceId: input.publishedServiceId,
+        organisationId: session.organisation_id,
+        projectId: session.project_id,
+        browserSessionId: session.id,
+      });
+    } catch (error) {
+      // The refusal is recorded and the reservation is **not** failed. Nothing
+      // has been claimed and no worker has been contacted, so the reservation is
+      // still usable: an agent that named the wrong route can publish the right
+      // one and call again, which is what an agent that fixed its arguments
+      // needs. It still holds a worker slot, and the deadline sweep is what ends
+      // one nobody comes back for.
+      await this.#recordAllocationRejection(session, input.actor, error);
+      throw error;
+    }
+
+    const now = this.#now();
+    await inTransaction(this.#pool, async (client) => {
+      await client.query(
+        `UPDATE browser_sessions
+            SET requested_published_service_id = $2, allocation_requested_at = $3
+          WHERE id = $1 AND status = 'REQUESTED'`,
+        [session.id, input.publishedServiceId, now.toISOString()],
+      );
+      await appendEvent(client, {
+        // The amendment to the reservation, on the type the reservation itself
+        // was recorded under. A second event type for "the same session, now
+        // asking for a route" would split one session's story across two names.
+        type: "browser_session.requested",
+        organisationId: session.organisation_id,
+        projectId: session.project_id,
+        actor: input.actor,
+        correlation: {
+          request_id: input.requestId,
+          browser_session_id: session.id,
+          published_service_id: input.publishedServiceId,
+        },
+        payload: {
+          requested_published_service_id: input.publishedServiceId,
+          allocation_requested_at: now.toISOString(),
+          control_epoch: session.control_epoch,
+        },
+        occurredAt: now,
+      });
+    });
+    return this.get(session.id);
+  }
+
+  /**
+   * Phase two: completes allocations another process requested.
+   *
+   * It runs only where the capability signing key is. `olderThanMs` is what
+   * keeps it from racing the inline path, and the status guard is in the
+   * `UPDATE` {@link allocate} performs through `#setStatus`, so the worst a lost
+   * race costs is one wasted claim rather than two allocations for one request.
+   */
+  async completePendingAllocations(
+    options: { readonly olderThanMs?: number; readonly limit?: number } = {},
+  ): Promise<BrowserSessionRecord[]> {
+    const olderThan = new Date(this.#now().getTime() - (options.olderThanMs ?? ALLOCATION_GRACE_MS));
+    const pending = await this.#pool.query(
+      `SELECT * FROM browser_sessions
+        WHERE status = 'REQUESTED'
+          AND ended_at IS NULL
+          AND requested_published_service_id IS NOT NULL
+          AND allocation_requested_at <= $1
+        ORDER BY allocation_requested_at
+        LIMIT $2`,
+      [olderThan.toISOString(), options.limit ?? 25],
+    );
+    const finished: BrowserSessionRecord[] = [];
+    for (const row of pending.rows) {
+      const session = toRecord(row as Record<string, unknown>);
+      const routeId = session.requested_published_service_id;
+      if (routeId === null) continue;
+      try {
+        finished.push(
+          await this.allocate({
+            browserSessionId: session.id,
+            // Phase two acts for the deployment; see DEPLOYMENT_SCOPE.
+            scope: DEPLOYMENT_SCOPE,
+            publishedServiceId: routeId,
+            actor: { type: "system", display: "browser session allocator" },
+            requestId: `alloc_${session.id}`,
+          }),
+        );
+      } catch {
+        // `allocate` has already failed the reservation and recorded the class.
+        // There is no caller to rethrow to, and a sweep that stopped at the
+        // first refusal would leave every later reservation holding a slot.
+        finished.push(await this.get(session.id).catch(() => session));
+      }
+    }
+    return finished;
+  }
+
+  /**
+   * Fails every reservation carrying a requested route that has outlived the
+   * allocation deadline, whatever state it is in.
+   *
+   * This is the half of ADR-0021 that turned out to matter. "Nothing stays in
+   * `requested`" was kept by the route's own **lifetime** and not by a
+   * one-second timer; a browser-session reservation had no lifetime, and a
+   * `REQUESTED` row with `ended_at IS NULL` is exactly what the capacity query
+   * counts. So the deadline is the mechanism and this sweep is only what
+   * notices.
+   *
+   * It touches only reservations that carry a requested route. A reservation
+   * made with `allocate: false` and no route is somebody's in-progress work and
+   * is left alone; bounding *that* one is its own issue.
+   */
+  async failOverdueAllocations(
+    options: {
+      readonly deadlineMs?: number;
+      readonly limit?: number;
+      /** One reservation, for the caller whose own wait has just ended. */
+      readonly browserSessionId?: string;
+    } = {},
+  ): Promise<BrowserSessionRecord[]> {
+    const cutoff = new Date(this.#now().getTime() - (options.deadlineMs ?? ALLOCATION_DEADLINE_MS));
+    const overdue = await this.#pool.query(
+      `SELECT * FROM browser_sessions
+        WHERE ended_at IS NULL
+          AND status IN ('REQUESTED', 'ALLOCATING')
+          AND requested_published_service_id IS NOT NULL
+          AND allocation_requested_at <= $1
+          AND ($3::text IS NULL OR id = $3)
+        ORDER BY allocation_requested_at
+        LIMIT $2`,
+      [cutoff.toISOString(), options.limit ?? 50, options.browserSessionId ?? null],
+    );
+    const failed: BrowserSessionRecord[] = [];
+    for (const row of overdue.rows) {
+      const session = toRecord(row as Record<string, unknown>);
+      await this.#failReservation(
+        session,
+        { type: "system", display: "browser session allocator" },
+        "ALLOCATION_DEADLINE_PASSED",
+      );
+      failed.push(await this.get(session.id));
+    }
+    return failed;
+  }
+
+  /**
+   * Waits, bounded, for a requested allocation to reach a terminal answer.
+   *
+   * **The wait ends in the record as it stands.** A reservation still `REQUESTED`
+   * or `ALLOCATING` when the deadline passes is reported as such and never as
+   * ready: an agent that navigated to an origin nothing was carrying would read
+   * the failure as a fault in the application it is reviewing.
+   *
+   * It applies the deadline sweep's own `UPDATE` when its wait ends, so the
+   * promise that nothing stays requested does not depend on a timer in the
+   * process that may be the one that is down.
+   */
+  async awaitAllocation(
+    browserSessionId: string,
+    scope: SessionScope,
+    options: { readonly timeoutMs: number; readonly pollMs?: number },
+  ): Promise<BrowserSessionRecord> {
+    const pollMs = options.pollMs ?? 100;
+    const deadline = Date.now() + options.timeoutMs;
+    for (;;) {
+      const record = await this.getForScope(browserSessionId, scope);
+      if (record.status !== "REQUESTED" && record.status !== "ALLOCATING") return record;
+      if (Date.now() >= deadline) {
+        // This reservation and no other. A sweep here that failed every overdue
+        // row would have one agent's timeout end another agent's allocation.
+        await this.failOverdueAllocations({
+          deadlineMs: options.timeoutMs,
+          limit: 1,
+          browserSessionId,
+        }).catch(() => undefined);
+        return this.getForScope(browserSessionId, scope);
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
     }
   }
 
@@ -434,6 +898,9 @@ export class BrowserSessionService {
     const created = await this.create(input);
     return this.allocate({
       browserSessionId: created.id,
+      // The session was created by this call from these two identifiers, so the
+      // scope is the caller's own and is not read back off the row.
+      scope: { organisationId: input.organisationId, projectIds: [input.projectId] },
       ...(input.publishedServiceId === undefined
         ? {}
         : { publishedServiceId: input.publishedServiceId }),
@@ -450,17 +917,134 @@ export class BrowserSessionService {
    * session is a record of an attempt that did not succeed. The lease goes with
    * it, because a lease on a session that will never exist is a lease nobody
    * can release.
+   *
+   * The reason is a **stable class** and never the caught error's message. It
+   * was the message until ADR-0037, which `docs/EVENTS.md` §8 forbids and which
+   * the publication path had already got right: "No free text: the class is the
+   * diagnosis". A refusal recorded as free text is not one an auditor can query
+   * for — the query that counted refused allocations stops counting them the
+   * first time somebody rewords an exception, and nothing fails.
    */
   async #failReservation(
     session: BrowserSessionRecord,
     actor: EventActor,
-    reason: string,
+    reasonCode: AllocationFailureClass,
   ): Promise<void> {
-    await this.#revokeLeases(session.id, `allocation refused: ${reason}`);
+    await this.#revokeLeases(session.id, `allocation refused: ${reasonCode}`);
     await this.#setStatus(session, "FAILED", actor, "browser_session.failed", {
-      reason,
+      reason_code: reasonCode,
       trigger: "allocation_refused",
     });
+    // A reservation that never allocated normally holds no capability. It can:
+    // the bind mints before the worker call, so a worker refusal fails a
+    // reservation that already has one. Withdrawal is best effort (RVP-99).
+    await this.#withdrawCapabilities(session.id);
+  }
+
+  /**
+   * Records a refused allocation.
+   *
+   * `docs/EVENTS.md` §7 already covers a refused lifecycle act with
+   * `browser.command_rejected` and `kind: "lifecycle"`, so no new event type is
+   * added: an auditor asks "did anything try to act on this session and get
+   * refused?", and a second type would let an auditor who checked one and not
+   * the other get a confident wrong answer.
+   *
+   * Allocation presents no epoch — a reservation has never had a controller
+   * transition — so the session's own is recorded, exactly as `requestControl`
+   * does for the two refusals that precede a decision.
+   */
+  async #recordAllocationRejection(
+    session: BrowserSessionRecord,
+    actor: EventActor,
+    error: unknown,
+  ): Promise<void> {
+    await this.#recordLifecycleRejection(
+      session,
+      {
+        act: "allocate",
+        controlEpoch: session.control_epoch,
+        controller: session.current_controller ?? { type: "system", id: "sys_allocation" },
+        actor,
+        projectId: session.project_id,
+      },
+      {
+        code: allocationFailureClassOf(error) as CommandDenial["code"],
+        message: error instanceof Error ? error.message : "The allocation was refused.",
+        reason: "allocation_refused",
+      },
+    );
+  }
+
+  /**
+   * Records a refused lifecycle act where there is no session to correlate to.
+   *
+   * Two refusals reach it, and neither can use {@link #recordLifecycleRejection}
+   * because both happen before or instead of resolving a session record: a
+   * `browser_session_start` that named a route, which is refused **before**
+   * anything is reserved, and a `browser_session_allocate` naming a session that
+   * is not resolvable in the caller's scope.
+   *
+   * The record goes to the **actor's** project stream, which is the same rule a
+   * cross-project attempt already follows: writing it to a stream the caller
+   * cannot read would let a stranger append rows to somebody else's timeline.
+   * It carries no `browser_session_id`, which is the shape
+   * `published-services/reconciliation.ts` already uses for a route the control
+   * plane never had.
+   *
+   * This exists because a refusal that happens before the domain layer is a
+   * refusal the domain layer cannot record — RVP-49's trap — and a correct,
+   * unrecorded denial is the defect class this repository has shipped more than
+   * once.
+   */
+  async recordUnresolvedLifecycleRejection(input: {
+    readonly organisationId: string;
+    readonly projectId: string;
+    readonly act: LifecycleAct;
+    readonly actor: EventActor;
+    readonly controllerType: ControllerIdentity["type"];
+    readonly reasonCode: AllocationFailureClass;
+    readonly reason: string;
+  }): Promise<void> {
+    await inTransaction(this.#pool, async (client) => {
+      await appendEvent(client, {
+        type: "browser.command_rejected",
+        organisationId: input.organisationId,
+        projectId: input.projectId,
+        actor: input.actor,
+        // No `browser_session_id`: there is no session, or none this caller is
+        // entitled to be told about. A fabricated correlation would be worse
+        // than none — it would file the attempt against somebody else's record.
+        correlation: {},
+        payload: {
+          kind: "lifecycle",
+          command: input.act,
+          reason_code: input.reasonCode,
+          reason: input.reason,
+          interactive: true,
+          presented_controller_type: input.controllerType,
+          // The counterpart of `cross_project`: it says the record carries no
+          // session because there was none to name, so an auditor does not read
+          // a missing correlation as a lost write.
+          browser_session_unresolved: true,
+        },
+      });
+    });
+  }
+
+  /**
+   * Withdraws the route capabilities a session held, best effort.
+   *
+   * The gateway is told first and the record is marked second, by the revoker.
+   * A failure is swallowed: this runs on the way *out* of a session, and a
+   * termination that failed because the gateway was unreachable would leave a
+   * browser running that somebody asked to stop — which is worse than a
+   * capability that expires on its own. The mint's session bound is what limits
+   * that window; RVP-99 is what closes it.
+   */
+  async #withdrawCapabilities(browserSessionId: string): Promise<void> {
+    if (this.#revoker === null) return;
+    await this.#revoker.revokeForSession(browserSessionId).catch(() => undefined);
   }
 
   async get(browserSessionId: string): Promise<BrowserSessionRecord> {
@@ -751,6 +1335,11 @@ export class BrowserSessionService {
         .catch(() => undefined);
     }
     await this.#revokeLeases(session.id, `terminated: ${reason}`);
+    // The gateway first, then the record — the revoker's own ordering, and the
+    // one revocation and reconnect reconciliation already use: marking a record
+    // closed while the gateway still carried it turns a closure into a claim.
+    // Best effort; see {@link SessionCapabilityRevoker}.
+    await this.#withdrawCapabilities(session.id);
     const terminating = await this.get(browserSessionId);
     await this.#setStatus(terminating, "TERMINATED", actor, "browser_session.terminated", {
       reason,
@@ -783,6 +1372,10 @@ export class BrowserSessionService {
               : null;
     if (report.status === "FAILED" || report.status === "TERMINATED") {
       await this.#revokeLeases(session.id, report.reason ?? report.status);
+      // A worker-reported end is an end: the browser is gone, so the credential
+      // it was holding is withdrawn on the same terms as a controller-requested
+      // termination. Best effort; see {@link SessionCapabilityRevoker}.
+      await this.#withdrawCapabilities(session.id);
     }
     await this.#setStatus(session, report.status, actor, eventType, {
       reason: report.reason ?? null,

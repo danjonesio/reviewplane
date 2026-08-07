@@ -326,9 +326,17 @@ export class PublishedServiceService {
         projectId: input.projectId,
       });
       if (connector === null) {
-        throw new ApiError("RESOURCE_NOT_FOUND", "No such connector in this project.", {
-          field: "connector_id",
-        });
+        // `findPublishableConnector` now carries `status = 'ACTIVE'` as a term
+        // (RVP-81). Both publication surfaces reach this function, so the rule
+        // is written once rather than twice that must agree — and it is applied
+        // before a row, a `published_service.requested` event or a connector
+        // exchange exists, so a revoked identity cannot reach any of them.
+        //
+        // The refusal is diagnosed rather than left as "not found". Only on this
+        // path, and only inside the same tenancy terms: a connector in another
+        // organisation is still absent, and the caller still receives the
+        // refusal an unknown identifier earns.
+        throw await this.#explainConnectorRefusal(client, input);
       }
       const workspace = await repository.findWorkspaceInProject(client, {
         workspaceId: input.workspaceId,
@@ -408,6 +416,48 @@ export class PublishedServiceService {
       });
       return this.view(record);
     });
+  }
+
+  /**
+   * Names the condition a refused connector is in, having already been refused.
+   *
+   * `IDENTITY_REVOKED` and `CONNECTOR_OFFLINE` are distinguished on purpose and
+   * `docs/CONNECTOR_PROTOCOL.md` §21 defines both: a revoked identity will not
+   * come back and the route must be published through another connector, while a
+   * connector the deployment has and cannot reach is worth waiting for. Both
+   * carry `details.connector_status`, so a caller can tell `DEGRADED` from
+   * `DISCONNECTED` without a second call.
+   *
+   * It changes no decision — the refusal stands whichever branch is taken — and
+   * it is reached only after the scoped read has already refused, so it cannot
+   * admit anything that read excluded.
+   */
+  async #explainConnectorRefusal(
+    client: PoolClient,
+    input: { readonly connectorId: string; readonly organisationId: string; readonly projectId: string },
+  ): Promise<ApiError> {
+    const known = await repository.findConnectorStatusInScope(client, {
+      connectorId: input.connectorId,
+      organisationId: input.organisationId,
+      projectId: input.projectId,
+    });
+    if (known === null) {
+      return new ApiError("RESOURCE_NOT_FOUND", "No such connector in this project.", {
+        field: "connector_id",
+      });
+    }
+    if (known.status === "REVOKED") {
+      return new ApiError(
+        "IDENTITY_REVOKED",
+        "This connector's identity has been revoked, so it may not carry a route. Enrol the development machine again, or publish through another connector.",
+        { field: "connector_id", connector_status: known.status },
+      );
+    }
+    return new ApiError(
+      "CONNECTOR_OFFLINE",
+      "This connector is not connected, so there is nothing to publish through. It reconnects on its own; retry once it reports.",
+      { field: "connector_id", connector_status: known.status },
+    );
   }
 
   /**
@@ -765,19 +815,21 @@ export class PublishedServiceService {
     // and it should not depend on a row written by an earlier release having
     // been validated by the rules of this one. A record published before that
     // validation existed is refused here rather than honoured.
-    const sessionInProject = await this.#pool.connect().then(async (client) => {
+    //
+    // The same read returns the session's own lifetime, because the bound below
+    // needs it and a second query could answer about a different session.
+    const session = await this.#pool.connect().then(async (client) => {
       try {
-        const found = await repository.findBrowserSessionsInProject(client, {
-          browserSessionIds: [browserSessionId],
+        return await repository.findSessionLifetime(client, {
+          browserSessionId,
           organisationId: service.organisation_id,
           projectId: service.project_id,
         });
-        return found.length === 1;
       } finally {
         client.release();
       }
     });
-    if (!sessionInProject) {
+    if (session === null) {
       throw new ApiError("AUTHORISATION_DENIED",
         "That browser session is not authorised for this published service.",
       );
@@ -789,11 +841,40 @@ export class PublishedServiceService {
         max_ttl_seconds: capability.ttlSeconds,
       });
     }
-    // A capability may not outlive the route it authorises.
-    const expiresAt = new Date(
-      Math.min(now.getTime() + requested * 1000, service.expires_at.getTime()),
-    );
+    // A capability may not outlive the route it authorises, and may not outlive
+    // the browser session it was minted for (ADR-0037).
+    //
+    // The session bound is the control this decision actually adds, and it is
+    // the one that holds without depending on anything outside the control
+    // plane. A session's maximum duration is already the deployment's statement
+    // of how long that browser may exist, and a credential that outlives the
+    // browser it was minted for is a credential nobody is accounting for. The
+    // revocation this change also performs is best effort — the gateway's
+    // revocation set is in memory and does not survive a restart (RVP-76) — so
+    // this bound is what stands when that fails, and it stands without the
+    // gateway's cooperation.
+    //
+    // A session whose `limits` carry no maximum contributes no bound rather than
+    // an instant expiry: the column is `jsonb` and an older row could lack the
+    // member, and turning a missing bound into a zero-length credential would
+    // make an upgrade look like a route failure.
+    const bounds = [now.getTime() + requested * 1000, service.expires_at.getTime()];
+    if (session.max_duration_seconds !== null) {
+      bounds.push(session.created_at.getTime() + session.max_duration_seconds * 1000);
+    }
+    const expiresAt = new Date(Math.min(...bounds));
     if (expiresAt <= now) {
+      // Which of the two bounds ran out is the difference between republishing
+      // the route and starting a new browser session, so the refusal says.
+      const sessionExhausted =
+        session.max_duration_seconds !== null &&
+        session.created_at.getTime() + session.max_duration_seconds * 1000 <= now.getTime();
+      if (sessionExhausted) {
+        throw new ApiError(
+          "BROWSER_SESSION_NOT_ACTIVE",
+          "This browser session has reached its maximum duration, and a route capability may not outlive the session it was minted for. Start a new session.",
+        );
+      }
       throw new ApiError("ROUTE_EXPIRED", "This published service has expired.");
     }
 
@@ -854,6 +935,85 @@ export class PublishedServiceService {
   }
 
   /**
+   * Resolves a route a browser session may be admitted to, in one query, and
+   * refuses on the state it finds.
+   *
+   * The route identifier, the session identifier, the caller's organisation and
+   * the caller's project scope are four terms of one predicate
+   * ({@link repository.findBindableRoute}), so a route or a session outside the
+   * caller's tenancy is **absent** and earns the refusal an unknown identifier
+   * earns, byte for byte (`docs/API.md` §5). Nothing is returned and then
+   * refused by a later branch for a tenancy reason.
+   *
+   * What *is* refused after the read is state, and each refusal names a
+   * different act to take next: republish the route, wait for the connector,
+   * enrol the machine again, or publish a route that names this session.
+   */
+  async readBindable(input: {
+    readonly publishedServiceId: string;
+    readonly browserSessionId: string;
+    readonly scope: repository.CallerScope;
+  }): Promise<repository.BindableRoute> {
+    const client: PoolClient = await this.#pool.connect();
+    let route: repository.BindableRoute | null;
+    try {
+      route = await repository.findBindableRoute(client, {
+        publishedServiceId: input.publishedServiceId,
+        browserSessionId: input.browserSessionId,
+        organisationId: input.scope.organisationId,
+        projectIds: input.scope.projectIds,
+      });
+    } finally {
+      client.release();
+    }
+    if (route === null) throw new ApiError("RESOURCE_NOT_FOUND", "No such published service.");
+    if (route.route_status !== "ready") {
+      throw new ApiError(
+        "PUBLISHED_SERVICE_UNAVAILABLE",
+        "This published service is not carrying traffic.",
+        { status: route.route_status, published_service_id: route.published_service_id },
+      );
+    }
+    if (route.connector_status !== "ACTIVE") {
+      // The same two classes `request` refuses a publication with, for the same
+      // reason and with the same detail. A route whose connector has gone is a
+      // route that carries nothing, and admitting a session to it would produce
+      // a browser that reaches an origin nothing answers on — which an agent
+      // reads as a fault in the application it is reviewing.
+      throw route.connector_status === "REVOKED"
+        ? new ApiError(
+            "IDENTITY_REVOKED",
+            "The connector carrying this route has had its identity revoked, so the route reaches nothing. Publish through another connector.",
+            {
+              connector_status: route.connector_status,
+              published_service_id: route.published_service_id,
+            },
+          )
+        : new ApiError(
+            "CONNECTOR_OFFLINE",
+            "The connector carrying this route is not connected, so the route reaches nothing. It reconnects on its own; retry once it reports.",
+            {
+              connector_status: route.connector_status,
+              published_service_id: route.published_service_id,
+            },
+          );
+    }
+    if (!route.session_authorised) {
+      // The allow-list is written by `request`, which validates every session
+      // named in it against the route's own project. A route is never amended to
+      // add one: re-registering a route identifier at the gateway resurrects
+      // capabilities already revoked against it (RVP-76), and it would grant
+      // reach to a credential that could not have published the route.
+      throw new ApiError(
+        "AUTHORISATION_DENIED",
+        "That browser session is not authorised for this published service. A route names the sessions it authorises when it is published; reserve a session first and publish a route that names it.",
+        { published_service_id: route.published_service_id },
+      );
+    }
+    return route;
+  }
+
+  /**
    * Reads a route inside a scope, or raises `RESOURCE_NOT_FOUND`.
    *
    * There is no unscoped overload. A caller that genuinely acts for one project
@@ -862,6 +1022,46 @@ export class PublishedServiceService {
    */
   async read(serviceId: string, scope: repository.CallerScope): Promise<PublishedService> {
     return this.#read(serviceId, scope);
+  }
+
+  /**
+   * Withdraws every live capability minted for one browser session, and tells
+   * the gateway.
+   *
+   * The gateway is told **first**, for the reason revocation and reconnect
+   * reconciliation already give: marking a record closed while the gateway still
+   * carried it turns a closure into a claim.
+   *
+   * **This is best effort and is described as such everywhere it is mentioned.**
+   * The gateway verifies a capability from its signature without a database
+   * read, and RVP-76 records that its revocation set is in memory and does not
+   * survive a restart. So a revocation recorded here is durable in the control
+   * plane and not necessarily at the gateway: a deployment that restarts its
+   * gateway between a revocation and a capability's natural expiry has a revoked
+   * capability the gateway would accept again. The TTL bound {@link mint}
+   * applies is what limits that window; RVP-99 is what closes it.
+   *
+   * A gateway that refuses is logged and not raised. This runs on the way out of
+   * a session — from `terminate`, from a failed reservation and from a
+   * worker-reported failure — and a termination that failed because the gateway
+   * was unreachable would leave a session running that a human asked to stop,
+   * which is worse than a capability that expires on its own.
+   */
+  async revokeCapabilitiesForSession(browserSessionId: string): Promise<string[]> {
+    const client: PoolClient = await this.#pool.connect();
+    let live: string[];
+    try {
+      live = await repository.findLiveCapabilitiesForSession(client, browserSessionId);
+    } finally {
+      client.release();
+    }
+    if (live.length === 0) return [];
+    for (const capabilityId of live) {
+      await this.#gateway.revokeCapability(capabilityId).catch(() => undefined);
+    }
+    return inTransaction(this.#pool, async (transaction) =>
+      repository.revokeCapabilitiesForSession(transaction, browserSessionId),
+    );
   }
 
   async #read(serviceId: string, scope: repository.CallerScope): Promise<PublishedService> {

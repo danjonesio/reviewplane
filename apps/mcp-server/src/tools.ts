@@ -67,6 +67,7 @@ import {
   validateBrowserResizeInput,
   validateBrowserScrollInput,
   validateBrowserSelectOptionInput,
+  validateBrowserSessionAllocateInput,
   validateBrowserSessionControlInput,
   validateBrowserSessionReferenceInput,
   validateBrowserSessionStartInput,
@@ -342,8 +343,17 @@ async function browserSessionIfPermitted(
   context: ToolContext,
 ): Promise<BrowserSessionRecord | null> {
   const { connection, services } = context;
-  const record = await services.browserSessions.get(browserSessionId).catch(() => null);
-  if (record === null || record.project_id !== connection.project.id) return null;
+  // `getForScope`, not `get()`. This read the session unscoped and then compared
+  // `project_id` in an `if`, with **no organisation term at all** — the shape
+  // `docs/SECURITY.md` §7 forbids, which requires every term in one `WHERE` and
+  // a row "never returned and then rejected by a later branch". It was sound
+  // only because a project identifier implies its organisation, which is a fact
+  // about other code (ADR-0037). A second shape for "resolve a session in the
+  // caller's scope" is how the wrong one gets copied, so there is now one.
+  const record = await services.browserSessions
+    .getForScope(browserSessionId, scopeOf(connection))
+    .catch(() => null);
+  if (record === null) return null;
   if (record.agent_session_id !== null && record.agent_session_id !== connection.session.id) {
     throw new ApiError(
       "AUTHORISATION_DENIED",
@@ -1589,56 +1599,164 @@ const TOOLS: readonly ToolDefinition[] = [
   },
   {
     name: "browser_session_start",
-    title: "Start a central browser session for this agent session",
+    title: "Start or reserve a central browser session for this agent session",
     capability: "browser:control",
     stateChanging: true,
     validate: validateBrowserSessionStartInput,
     async run(args, context) {
       const { connection, services } = context;
       const publishedServiceId = args["published_service_id"] as string | undefined;
-      const record = await services.browserSessions
-        .start({
+      const common = {
+        organisationId: connection.credential.organisationId,
+        // Neither the project nor the agent session is an argument. A caller
+        // that could name either would be starting a browser somewhere it has
+        // no authority, and the schema has no member to put them in.
+        projectId: connection.project.id,
+        agentSessionId: connection.session.id,
+        viewport: (args["viewport"] as Viewport | undefined) ?? DEFAULT_VIEWPORT,
+        controller: agentController(context),
+        // Everything captured in a session an agent started is evidence a
+        // human will judge, so it is retained on the evidence window rather
+        // than the shorter action-screenshot one.
+        retentionClass: "verification_evidence" as const,
+        actor: agentActor(connection.session, connection.client.name),
+      };
+
+      if (publishedServiceId !== undefined) {
+        // Refused **before anything is reserved**, so the refusal costs no
+        // browser slot, and refused here rather than by the schema so that it
+        // is audited and can name the way out.
+        //
+        // A route cannot be made to work on this call by any amount of
+        // authorisation care, and that is the ordering rather than the missing
+        // signing key: a route names the sessions it authorises when it is
+        // published, `mint` refuses unless the route already names the session,
+        // and a worker's egress policy is fixed when its context is created and
+        // cannot be widened afterwards. This call reserves and allocates at
+        // once, so a route published beforehand names the *previous* session.
+        // Handing this process a signing key would have moved the refusal from
+        // UNSUPPORTED_CAPABILITY to AUTHORISATION_DENIED and no further
+        // (ADR-0037).
+        //
+        // The member is retained rather than removed because removing it would
+        // route a foreseeable refusal into the generated validator, which is
+        // the one layer that records nothing and whose text names neither the
+        // condition nor the replacement (`docs/MCP_SPEC.md` §14, §18 of
+        // `docs/UX_FLOWS.md`). Every agent following the previous §7.3, a
+        // cached tool description or an older prompt sends this argument.
+        await services.browserSessions.recordUnresolvedLifecycleRejection({
           organisationId: connection.credential.organisationId,
-          // Neither the project nor the agent session is an argument. A caller
-          // that could name either would be starting a browser somewhere it has
-          // no authority, and the schema has no member to put them in.
           projectId: connection.project.id,
-          agentSessionId: connection.session.id,
-          ...(publishedServiceId === undefined ? {} : { publishedServiceId }),
-          viewport: (args["viewport"] as Viewport | undefined) ?? DEFAULT_VIEWPORT,
-          controller: agentController(context),
-          // Everything captured in a session an agent started is evidence a
-          // human will judge, so it is retained on the evidence window rather
-          // than the shorter action-screenshot one.
-          retentionClass: "verification_evidence",
+          act: "allocate",
           actor: agentActor(connection.session, connection.client.name),
-          requestId: context.requestId,
-        })
-        .catch((error: unknown) => {
-          // The domain's message for this one is "this control plane cannot
-          // bind a published service", which an agent reads as "the deployment
-          // is broken" and reports as such. It is not broken: this process
-          // holds no capability signing key by design, and binding a route
-          // means minting one. Saying so is the difference between an agent
-          // working round a limitation and an agent filing a fault.
-          if (
-            publishedServiceId !== undefined &&
-            error instanceof ApiError &&
-            error.code === "UNSUPPORTED_CAPABILITY"
-          ) {
-            throw new ApiError(
-              "UNSUPPORTED_CAPABILITY",
-              "The agent endpoint cannot bind a published service to a browser session: it holds no route-capability signing key, by design. This is a limitation of this interface, not a fault in the deployment. Start the session without published_service_id and ask a human to bind the route from the project's Live page.",
-              { field: "published_service_id" },
-            );
-          }
-          throw error;
+          controllerType: "agent",
+          reasonCode: "VALIDATION_FAILED",
+          reason: "published_service_id_on_start",
         });
+        throw new ApiError(
+          "VALIDATION_FAILED",
+          "A route cannot authorise a browser session that did not exist when it was published. Start this session with allocate: false, publish a route with development_service_publish — it will name this reservation — then call browser_session_allocate.",
+          { field: "published_service_id" },
+        );
+      }
+
+      // `allocate: false` reserves and stops. The identifier can then be named
+      // in a route's allowed_browser_session_ids, which is the only order that
+      // works (`docs/API.md` §11).
+      const record =
+        args["allocate"] === false
+          ? await services.browserSessions.create(common)
+          : await services.browserSessions.start({ ...common, requestId: context.requestId });
       return {
-        // A newly allocated session has been nowhere, so this view is a lease,
-        // an epoch and a viewport: control-plane fact throughout.
+        // A newly reserved or allocated session has been nowhere, so this view
+        // is a lease, an epoch and a viewport: control-plane fact throughout.
         trust: "trusted_control_plane",
         data: { session: await toBrowserSessionView(record, context, { includeUrl: false }) },
+      };
+    },
+  },
+  {
+    name: "browser_session_allocate",
+    title: "Allocate a reserved browser session, optionally admitting it to a route",
+    capability: "browser:control",
+    stateChanging: true,
+    validate: validateBrowserSessionAllocateInput,
+    async run(args, context) {
+      const { connection, services } = context;
+      const browserSessionId = args["browser_session_id"] as string;
+      const publishedServiceId = args["published_service_id"] as string | undefined;
+      const scope = scopeOf(connection);
+      const actor = agentActor(connection.session, connection.client.name);
+
+      // The session identifier arrives as an **argument**, so it inherits none
+      // of the authorisation the other browser tools get from having just
+      // created the session or from a route layer above them. It is resolved in
+      // the connection's scope — identifier, project and organisation in one
+      // `WHERE` — and only then checked for ownership, so a session in another
+      // project earns the refusal an unknown identifier earns rather than
+      // "it exists, but not for you" (`docs/API.md` §5).
+      const record = await browserSessionIfPermitted(browserSessionId, context);
+      if (record === null) {
+        // Nothing to correlate the refusal to, so it goes to this agent's own
+        // project stream without a session identifier. A refusal that is correct
+        // and unrecorded is the defect class this repository has shipped twice.
+        await services.browserSessions.recordUnresolvedLifecycleRejection({
+          organisationId: connection.credential.organisationId,
+          projectId: connection.project.id,
+          act: "allocate",
+          actor,
+          controllerType: "agent",
+          reasonCode: "RESOURCE_NOT_FOUND",
+          reason: "browser_session_unresolved",
+        });
+        throw new ApiError("RESOURCE_NOT_FOUND", "The browser session was not found.");
+      }
+
+      if (publishedServiceId === undefined) {
+        // No route means nothing to mint, so this process finishes it itself.
+        // The two-phase handoff exists for the signing key and for nothing else;
+        // using it where no key is needed would add a sweep interval to an
+        // allocation that could have answered immediately.
+        const allocated = await services.browserSessions.allocate({
+          browserSessionId,
+          scope,
+          actor,
+          requestId: context.requestId,
+        });
+        return {
+          trust: "trusted_control_plane",
+          data: { session: await toBrowserSessionView(allocated, context, { includeUrl: false }) },
+        };
+      }
+
+      // Phase one, here: authorise and record the request, touching nothing
+      // outside PostgreSQL. Phase two runs in `api`, which holds the capability
+      // signing key — a process that cannot mint cannot leak a minting key
+      // (ADR-0020, ADR-0021).
+      await services.browserSessions.requestAllocation({
+        browserSessionId,
+        scope,
+        publishedServiceId,
+        actor,
+        requestId: context.requestId,
+      });
+      const settled = await services.browserSessions.awaitAllocation(browserSessionId, scope, {
+        timeoutMs: services.config.allocateWaitMs,
+      });
+      if (settled.status === "REQUESTED" || settled.status === "ALLOCATING") {
+        // The wait ends in the record as it stands and never in a claim. An
+        // agent told a session was ready when nothing was carrying its origin
+        // would read the navigation failure as a fault in the application it is
+        // reviewing.
+        context.warnings.add(
+          "allocation_incomplete",
+          "The allocation has not finished. The session is reported as it stands; call browser_session_status before navigating.",
+          `browser_session_status=${settled.status}`,
+        );
+      }
+      return {
+        trust: "trusted_control_plane",
+        data: { session: await toBrowserSessionView(settled, context, { includeUrl: false }) },
       };
     },
   },
@@ -2329,9 +2447,19 @@ export async function callTool(
       resourceLinks: resourceLinksOf(envelope.value as Record<string, unknown>),
     };
   } catch (error) {
-    // A refused call wrote nothing, so the key is released: an agent that fixes
-    // its arguments and retries with the same key must not be handed the
-    // refusal for ever.
+    // The key is released, so an agent that fixes its arguments and retries with
+    // the same key re-runs rather than being handed the refusal for ever.
+    //
+    // This used to justify itself as "a refused call wrote nothing", which is
+    // **false** for `browser_session_start`: by the time a refusal is raised it
+    // has already written a session row, a control lease and a
+    // `browser_session.requested` event. The behaviour is nonetheless right, and
+    // for a different reason — re-running is what a caller that corrected its
+    // arguments needs, and the row the first attempt left behind costs the
+    // second one nothing. A failed reservation is stamped `FAILED` with
+    // `ended_at` set, and the worker capacity query excludes `FAILED` outright,
+    // so it holds no slot. `browser_session_allocate` names a reservation that
+    // already exists, so it cannot create a second one whatever the key does.
     if (scope !== null) await services.idempotency.release(scope).catch(() => undefined);
     const refusal = refusalFrom(tool.name, requestId, error, warnings.list);
     return { json: refusal.json, value: refusal.value, ok: false, resourceLinks: [] };

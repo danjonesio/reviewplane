@@ -127,6 +127,12 @@ function refusalDetails(details: Readonly<Record<string, unknown>>): ToolError["
     "browser_session_status",
     "detected",
     "published_service_id",
+    // `IDENTITY_REVOKED` and `CONNECTOR_OFFLINE` are two answers to one
+    // question — is this route's connector usable? — and which of them arrived
+    // decides whether an agent republishes through another connector or waits.
+    // Carrying the status as well as the code is what lets a caller tell
+    // `DEGRADED` from `DISCONNECTED` without a second call (ADR-0037).
+    "connector_status",
   ];
   const out: Record<string, unknown> = {};
   for (const key of permitted) {

@@ -339,6 +339,15 @@ export async function registerBrowserSessionRoutes(
     const body = (request.body ?? {}) as { published_service_id?: string };
     const record = await options.sessions.allocate({
       browserSessionId: sessionId,
+      // The caller's scope, passed down rather than left to the service to
+      // assume. `sessionFor` has already resolved the session inside it; the
+      // service resolves it again inside the same scope, because a session
+      // identifier that arrived as an argument must be scoped by the function
+      // that acts on it and not only by the one that read it first (ADR-0037).
+      scope: {
+        projectIds: principal.projectIds === null ? null : [...principal.projectIds],
+        organisationId: principal.organisationId,
+      },
       ...(body.published_service_id === undefined
         ? {}
         : { publishedServiceId: body.published_service_id }),

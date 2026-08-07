@@ -38,6 +38,7 @@ import type {
   BrowserResizeInput,
   BrowserScrollInput,
   BrowserSelectOptionInput,
+  BrowserSessionAllocateInput,
   BrowserSessionControlInput,
   BrowserSessionDetail,
   BrowserSessionDetailBrowserType,
@@ -56,6 +57,7 @@ import type {
   CommentView,
   CompletionRequirements,
   CompletionResult,
+  ConnectorStatus,
   ContentRectangle,
   DestinationProtocol,
   DevelopmentServicePublishInput,
@@ -326,6 +328,7 @@ export function decodeErrorDetails(value: unknown): ErrorDetails {
     ...(source["browser_session_status"] === undefined ? {} : { browser_session_status: source["browser_session_status"] as BrowserLifecycleStatus }),
     ...(source["detected"] === undefined ? {} : { detected: source["detected"] as string }),
     ...(source["published_service_id"] === undefined ? {} : { published_service_id: source["published_service_id"] as string }),
+    ...(source["connector_status"] === undefined ? {} : { connector_status: source["connector_status"] as ConnectorStatus }),
   };
 }
 
@@ -812,7 +815,20 @@ export function decodeBrowserSessionStartInput(value: unknown): BrowserSessionSt
   const source = value as Record<string, unknown>;
   return {
     ...(source["published_service_id"] === undefined ? {} : { published_service_id: source["published_service_id"] as string }),
+    ...(source["allocate"] === undefined ? {} : { allocate: source["allocate"] as boolean }),
     ...(source["viewport"] === undefined ? {} : { viewport: decodeViewport(source["viewport"]) }),
+    idempotency_key: source["idempotency_key"] as string,
+  };
+}
+
+/**
+ * Decodes a validated BrowserSessionAllocateInput.
+ */
+export function decodeBrowserSessionAllocateInput(value: unknown): BrowserSessionAllocateInput {
+  const source = value as Record<string, unknown>;
+  return {
+    browser_session_id: source["browser_session_id"] as string,
+    ...(source["published_service_id"] === undefined ? {} : { published_service_id: source["published_service_id"] as string }),
     idempotency_key: source["idempotency_key"] as string,
   };
 }

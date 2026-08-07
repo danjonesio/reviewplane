@@ -224,6 +224,7 @@ before(async () => {
     internalSuffix: "internal.invalid",
     routeTtlMaxSeconds: 28_800,
     publishWaitMs: 5_000,
+    allocateWaitMs: 5_000,
     apiPathPrefix: "/api/v1",
     mcpPath: "/mcp/v1",
   };

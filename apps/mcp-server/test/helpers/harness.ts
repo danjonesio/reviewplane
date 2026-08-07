@@ -34,6 +34,7 @@ import { buildApp, type BuiltApp } from "@reviewplane/server/app";
 import type { ServerConfig } from "@reviewplane/server/config";
 import { newId } from "@reviewplane/server/domain";
 import { testServerConfig } from "@reviewplane/server/testing/config";
+import { AcceptingGateway, StubRoutePublisher } from "@reviewplane/server/testing/publishing";
 import { encodePng, sha256 } from "@reviewplane/server/testing/png";
 
 import { buildMcpApp, type BuiltMcpApp } from "../../src/app.ts";
@@ -85,6 +86,8 @@ export interface IssuedCommand {
 
 export interface McpHarness {
   readonly control: BuiltApp;
+  /** The database both processes share, for fixtures that write rows directly. */
+  readonly pool: Pool;
   readonly mcp: BuiltMcpApp;
   readonly artefactRoot: string;
   /** Screenshot bytes the stub worker will "capture" on the next request. */
@@ -103,6 +106,17 @@ export interface McpHarness {
    * arrive as `system` and an interactive command as `agent`.
    */
   readonly commands: readonly IssuedCommand[];
+  /**
+   * Whether the harness runs `api`'s allocation completion sweep (ADR-0037).
+   *
+   * True by default, because without it this harness is not the product: an
+   * agent calling `browser_session_allocate` with a route writes the request and
+   * waits for the process holding the signing key to finish it. A test that
+   * wants to *observe* the intermediate state — a reservation requested and not
+   * yet completed — sets it false and drives
+   * `control.sessions.completePendingAllocations()` itself.
+   */
+  completeAllocations: boolean;
   controlOrigin(): Promise<string>;
   mcpOrigin(): Promise<string>;
   stop(): Promise<void>;
@@ -146,6 +160,7 @@ export async function startMcpHarness(pool: Pool): Promise<McpHarness> {
     internalSuffix: "internal.invalid",
     routeTtlMaxSeconds: 28_800,
     publishWaitMs: 5_000,
+    allocateWaitMs: 5_000,
     apiPathPrefix: "/api/v1",
     mcpPath: "/mcp/v1",
   };
@@ -157,6 +172,7 @@ export async function startMcpHarness(pool: Pool): Promise<McpHarness> {
     snapshots: number;
     viewport: Viewport;
     commands: IssuedCommand[];
+    completeAllocations: boolean;
   } = {
     capture: AFTER_SCREENSHOT,
     workerFailure: null,
@@ -164,6 +180,7 @@ export async function startMcpHarness(pool: Pool): Promise<McpHarness> {
     snapshots: 0,
     viewport: { ...DEFAULT_ALLOCATION.viewport },
     commands: [],
+    completeAllocations: true,
   };
 
   /**
@@ -314,10 +331,48 @@ export async function startMcpHarness(pool: Pool): Promise<McpHarness> {
     });
   };
 
-  const control = await buildApp({ config: serverConfig, pool, workerFetch });
+  // The connector and gateway doubles the server suite already uses. Without
+  // them a route requested here reaches `failed`, because the real publisher
+  // wants a connector control channel no test starts — which would make every
+  // allocation test an assertion about a missing connector rather than about
+  // the allocation. The doubles answer with the destination the control plane
+  // authorised; the agent-facing rules are unchanged, and `request()` still
+  // resolves the connector, the workspace and the sessions for itself.
+  const publisher = new StubRoutePublisher();
+  const gateway = new AcceptingGateway();
+  const control = await buildApp({ config: serverConfig, pool, workerFetch, publisher, gateway });
   await control.app.ready();
-  const mcp = await buildMcpApp({ config: mcpConfig, pool, workerFetch });
+  const mcp = await buildMcpApp({
+    config: mcpConfig,
+    pool,
+    workerFetch,
+    // The MCP process still never completes a publication: it requests, and
+    // `api` finishes (ADR-0021). This is here so that a test that reaches
+    // `complete` in this process fails loudly rather than silently marking a
+    // good route `failed` — which is exactly what `UnreachableRoutePublisher`
+    // is for, so it is deliberately **not** overridden.
+  });
   await mcp.app.ready();
+
+  /**
+   * The allocation completion sweep `apps/server/src/main.ts` runs in `api`
+   * (ADR-0037).
+   *
+   * It runs here because without it this harness is not the product: an agent
+   * calling `browser_session_allocate` with a route writes the request and
+   * waits, and the process that holds the capability signing key is the one
+   * that finishes it. A harness with no sweep would let every such test time
+   * out and would have proved nothing about the handoff.
+   *
+   * The grace is zero rather than the production two seconds because there is
+   * no inline path racing it here — the MCP endpoint is the only requester — and
+   * a two-second grace would put two seconds into every test that allocates.
+   */
+  const allocations = setInterval(() => {
+    if (!state.completeAllocations) return;
+    void control.sessions.completePendingAllocations({ olderThanMs: 0 }).catch(() => undefined);
+  }, 25);
+  allocations.unref();
 
   /**
    * What the stub worker returns for a command it was able to run.
@@ -441,6 +496,7 @@ export async function startMcpHarness(pool: Pool): Promise<McpHarness> {
 
   return {
     control,
+    pool,
     mcp,
     artefactRoot,
     get capture() {
@@ -461,6 +517,12 @@ export async function startMcpHarness(pool: Pool): Promise<McpHarness> {
     set snapshotText(value: string) {
       state.snapshotText = value;
     },
+    get completeAllocations() {
+      return state.completeAllocations;
+    },
+    set completeAllocations(value: boolean) {
+      state.completeAllocations = value;
+    },
     get commands() {
       return state.commands;
     },
@@ -473,6 +535,7 @@ export async function startMcpHarness(pool: Pool): Promise<McpHarness> {
       return mcpOrigin;
     },
     async stop() {
+      clearInterval(allocations);
       await mcp.close().catch(() => undefined);
       await control.app.close().catch(() => undefined);
       await rm(artefactRoot, { recursive: true, force: true });

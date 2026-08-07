@@ -1086,11 +1086,11 @@
     }
   },
   "browser_session_start": {
-    "title": "Start a central browser session for this agent session",
+    "title": "Start or reserve a central browser session for this agent session",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
-      "description": "Arguments of browser_session_start (docs/MCP_SPEC.md section 7.3). There is no project argument and no origin argument: the project is the session's, and the origin is derived from the published service by the control plane, because the origin is the browser's egress allow-list (docs/SECURITY.md section 9).",
+      "description": "Arguments of browser_session_start (docs/MCP_SPEC.md section 7.3). There is no project argument and no origin argument: the project is the session's, and the origin is derived from the published service by the control plane, because the origin is the browser's egress allow-list (docs/SECURITY.md section 9). To reach a development service, send allocate false, publish a route with development_service_publish — it names this reservation — and then call browser_session_allocate.",
       "additionalProperties": false,
       "required": [
         "idempotency_key"
@@ -1098,7 +1098,11 @@
       "properties": {
         "published_service_id": {
           "$ref": "#/$defs/identifier",
-          "description": "Published service the session may reach. A session started without one can navigate nowhere."
+          "description": "DEPRECATED and refused: it never worked and cannot be made to. A route names the browser sessions it authorises when it is published, so it cannot authorise a session that did not exist yet, and a worker's egress policy is fixed when its context is created and MUST NOT be widened afterwards (docs/SECURITY.md section 10). Use browser_session_allocate instead: start with allocate false, publish the route, then allocate. A request carrying this member is refused with VALIDATION_FAILED naming that replacement, before anything is reserved. It is retained rather than removed so the refusal is audited and can name the way out (docs/MCP_SPEC.md section 14 forbids a breaking tool change without a new major version or a parallel tool name); it is removed at the next major protocol version."
+        },
+        "allocate": {
+          "type": "boolean",
+          "description": "Whether to allocate the session on its worker in this call. True, the default, reserves and allocates in one request for a session that needs no route. False reserves and stops: the response is a REQUESTED session with an identifier and a chosen worker, no worker has been contacted, and that identifier can then appear in a route's allowed_browser_session_ids (docs/API.md section 11)."
         },
         "viewport": {
           "$ref": "#/$defs/viewport",
@@ -1157,6 +1161,49 @@
               "description": "Device pixel ratio the capture was taken at."
             }
           }
+        }
+      }
+    }
+  },
+  "browser_session_allocate": {
+    "title": "Allocate a reserved browser session, optionally admitting it to a route",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "Names a reservation this agent session made and, optionally, a route its own project already published that already names that reservation (docs/MCP_SPEC.md section 7.3). There is no origin, no connector, no workspace, no project and no organisation argument: each would be an authorisation input the caller chose, and the control plane re-derives every one of them from records the caller did not author.",
+      "additionalProperties": false,
+      "required": [
+        "browser_session_id",
+        "idempotency_key"
+      ],
+      "properties": {
+        "browser_session_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "The REQUESTED browser session to allocate. It must be one this agent session reserved; a session in another project is reported not found, byte for byte as an unknown identifier is."
+        },
+        "published_service_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Route the session is admitted to. It must be ready, belong to this project, be carried by a connector that is enrolled and connected, and already name this reservation in its allowed_browser_session_ids; the control plane resolves the origin and mints the session-scoped capability itself. Absent allocates a session that can reach nothing."
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/idempotency_key",
+          "description": "Key for this allocation, so a retried call binds one route rather than two."
+        }
+      },
+      "$defs": {
+        "idempotency_key": {
+          "type": "string",
+          "description": "Caller-chosen key for a state-changing tool (docs/MCP_SPEC.md section 10). It is scoped to actor, tool and project: reuse with the same arguments returns the first result and creates no second record, and reuse with different arguments is refused with IDEMPOTENCY_CONFLICT.",
+          "minLength": 8,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:-]+$"
+        },
+        "identifier": {
+          "type": "string",
+          "description": "Opaque durable identifier (docs/DOMAIN_MODEL.md section 3). Consumers MUST treat the value as opaque: the schema bounds only its length and character class and never its documented prefix.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_-]+$"
         }
       }
     }
