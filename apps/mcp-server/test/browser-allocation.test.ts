@@ -537,6 +537,63 @@ test("browser_session_start refuses published_service_id, names the replacement,
   }
 });
 
+test("E6/E5: the refusal is VALIDATION_FAILED and not the validator's, and allocate:false is no loophole", async () => {
+  // **The highest-leverage assertion in the deprecated-property set.** `decode`
+  // produces `UNSUPPORTED_CAPABILITY` for a schema violation, so this single
+  // comparison fails the moment somebody "tidies up" the schema by deleting the
+  // member — which would flip the refusal to the validator layer, lose the audit
+  // record, and replace the directions with the validator's own text in one
+  // move. `docs/MCP_SPEC.md` §14 forbids that deletion inside protocol version
+  // 1; this is the gate that notices if it happens anyway.
+  const agent = await connected();
+  try {
+    for (const [label, args] of [
+      ["plain", {}],
+      // E5: reserving rather than starting is not a way round it. The refusal
+      // precedes `create` on both, so neither takes a browser slot.
+      ["with allocate:false", { allocate: false }],
+    ] as const) {
+      const before = await postgres.pool.query<{ n: string }>(
+        "SELECT count(*)::text AS n FROM browser_sessions WHERE project_id = $1",
+        [agent.seeded.projectId],
+      );
+      const refused = await call(agent.client, "browser_session_start", {
+        published_service_id: "svc_00000000000000000000000000000000",
+        idempotency_key: key(`e6-${label.replace(/[^a-z]+/giu, "-")}`),
+        ...args,
+      });
+      assert.equal(errorOf(refused).code, "VALIDATION_FAILED", label);
+      assert.notEqual(errorOf(refused).code, "UNSUPPORTED_CAPABILITY", label);
+      assert.equal(errorOf(refused).details?.["field"], "published_service_id", label);
+      // The three the message must keep whatever else is reworded: `docs/UX_FLOWS.md`
+      // §18 wants the way out, not this particular wording.
+      for (const substring of [
+        "allocate: false",
+        "development_service_publish",
+        "browser_session_allocate",
+      ]) {
+        assert.ok(errorOf(refused).message.includes(substring), `${label}: ${substring}`);
+      }
+      const after = await postgres.pool.query<{ n: string }>(
+        "SELECT count(*)::text AS n FROM browser_sessions WHERE project_id = $1",
+        [agent.seeded.projectId],
+      );
+      assert.equal(after.rows[0]?.n, before.rows[0]?.n, `${label} reserved a session`);
+    }
+
+    // E4: the property is still advertised, and its description says so.
+    const listed = await agent.client.listTools();
+    const start = listed.tools.find((tool) => tool.name === "browser_session_start");
+    const properties = (start?.inputSchema as { properties: Record<string, { description?: string }> })
+      .properties;
+    const deprecated = properties["published_service_id"]?.description ?? "";
+    assert.match(deprecated, /DEPRECATED/u, deprecated);
+    assert.match(deprecated, /browser_session_allocate/u, deprecated);
+  } finally {
+    await agent.close();
+  }
+});
+
 test("the advertised browser_session_start description names browser_session_allocate", async () => {
   // A tool description is the only place a client that never reads the
   // documents learns the order. This repository's most common defect is a
