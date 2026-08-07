@@ -278,6 +278,28 @@ Capacity model considers:
 
 The scheduler should reject or queue new sessions explicitly rather than overcommit silently.
 
+**A reservation counts against capacity.** A `REQUESTED` browser session with no
+`ended_at` is what the capacity query counts, which is correct — a worker slot has
+been chosen for it — and it is the reason an allocation that cannot complete has
+to end. Two sweeps in the `api` process do that (ADR-0037):
+
+- every second, an allocation another process requested is **completed**, because
+  admitting a session to a route mints a session-scoped capability and only `api`
+  holds the signing key;
+- every thirty seconds, a reservation that asked to be admitted and has outlived
+  `REVIEWPLANE_ALLOCATION_DEADLINE_SECONDS` is **failed**, its capabilities are
+  withdrawn, and a worker that may hold a half-opened context is asked to drop it.
+
+Both are `api`'s and nothing else runs them. **While `api` is down, a reservation
+the MCP endpoint made and could not get completed stays held**, and the endpoint
+can still start unbound sessions during that outage — so the held slots compete
+with work that would otherwise succeed. What narrows it is that an agent's next
+`browser_session_start` or `browser_session_allocate` fails its *own* expired
+reservations first, so an agent that keeps working reclaims the slots it
+stranded. An agent that stops leaves them for `api`. `reviewplane status` reports
+the worker's session count, and `browser_session.failed` with
+`trigger: "allocation_deadline"` is the record of a sweep having acted.
+
 ### 8.1 Worker liveness
 
 A browser worker heartbeats every
