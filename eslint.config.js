@@ -18,10 +18,19 @@ export default tseslint.config(
   },
   {
     // Plain Node scripts that are run directly rather than compiled. They are
-    // outside a TypeScript program, so `process` needs declaring here.
-    files: ["**/scripts/**/*.mjs"],
+    // outside a TypeScript program, so the runtime's own globals need declaring
+    // here. `deploy/compose/e2e` holds the end-to-end harness's agent fixture,
+    // which runs on the development fixture's Node and is copied into the
+    // container rather than built.
+    files: ["**/scripts/**/*.mjs", "deploy/compose/e2e/*.mjs"],
     languageOptions: {
-      globals: { process: "readonly" },
+      globals: {
+        process: "readonly",
+        fetch: "readonly",
+        setTimeout: "readonly",
+        URL: "readonly",
+        console: "readonly",
+      },
     },
   },
   {
