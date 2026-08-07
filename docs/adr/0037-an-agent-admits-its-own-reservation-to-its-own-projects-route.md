@@ -154,15 +154,23 @@ It is tempting to remove it. It is the one member of that schema no successful
 call can carry, and a contract with a member that always fails is a contract that
 lies. Two things decide against it.
 
-**The documents already forbid the removal.** `docs/MCP_SPEC.md` §14 says a
-breaking tool change requires a new major protocol version **or a parallel tool
-name**, and `docs/API.md` §20 says removing a field requires a new major path or
-a compatibility adapter. This decision takes the escape hatch §14 names — it adds
-the parallel tool — and the escape hatch is "add the new tool", not "add the new
-tool and also delete a member of the old one".
+**The documents do not permit the removal, and this is the reason that decides
+it.** `docs/MCP_SPEC.md` §14: "Breaking tool changes require a new major protocol
+version **or a parallel tool name**." `protocol_version` is pinned at `1` and any
+other value is refused rather than best-effort parsed, and
+`browser_session_start_input` is `additionalProperties: false` — so deleting a
+member is a breaking tool change inside version 1. This decision already takes
+§14's escape hatch by adding the parallel tool `browser_session_allocate`, and
+the hatch is "add the parallel tool", not "add the parallel tool **and also**
+delete a member of the old one". `docs/API.md` §20 states the equivalent rule for
+the HTTP surface: "Removing or changing meaning requires a new major path or
+compatibility adapter."
 
-**Removing it would route a foreseeable refusal into the one layer this ADR has
-just established is unaudited.** `browser_session_start_input` is
+The second reason below is a design judgement and is worth keeping; this one is
+a rule, and a reader should meet it first.
+
+**And removing it would route a foreseeable refusal into the one layer this ADR
+has just established is unaudited.** `browser_session_start_input` is
 `additionalProperties: false`, so a removed member is refused by the generated
 validator in `decode` (`apps/mcp-server/src/tools.ts:212-220`) before any domain
 code runs. `auditReservedStatusAttempt` fires only for a tool carrying an

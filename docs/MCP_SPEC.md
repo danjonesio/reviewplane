@@ -506,6 +506,19 @@ require re-registering the route with the gateway, which resurrects capabilities
 already revoked against that identifier, and it would grant reach to a credential
 that could not have published the route.
 
+The first four of those are **entitlement** — may this caller name these two
+records at all — and are decided by the MCP endpoint before anything is claimed,
+so the reservation stays `REQUESTED` and reusable. The last two are **state** and
+are decided by the process that mints, at the instant it acts; they follow the
+claim and fail the reservation.
+
+The split is deliberate and the MCP endpoint **MUST NOT** pre-check a route's
+status or its connector's. A status checked when the request was made would look
+authoritative and be wrong the moment the route is revoked, expires or loses its
+connector before the claim — so the process that mints re-reads all of it, and
+the endpoint's answer for a state failure is read back from the record rather
+than predicted.
+
 Where a route is named, the allocation is **two phases**. The MCP endpoint
 authorises and records the request, touching nothing outside PostgreSQL; the
 process holding the capability signing key claims it, re-runs the same

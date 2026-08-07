@@ -1749,12 +1749,30 @@ const TOOLS: readonly ToolDefinition[] = [
         // UNSUPPORTED_CAPABILITY to AUTHORISATION_DENIED and no further
         // (ADR-0037).
         //
-        // The member is retained rather than removed because removing it would
-        // route a foreseeable refusal into the generated validator, which is
-        // the one layer that records nothing and whose text names neither the
-        // condition nor the replacement (`docs/MCP_SPEC.md` §14, §18 of
-        // `docs/UX_FLOWS.md`). Every agent following the previous §7.3, a
+        // The member is retained rather than removed, and the first reason is a
+        // rule rather than a judgement: `docs/MCP_SPEC.md` §14 permits a
+        // breaking tool change only with a new major protocol version **or a
+        // parallel tool name**, `protocol_version` is pinned at 1, and
+        // `browser_session_start_input` is `additionalProperties: false` — so
+        // deleting a member is a breaking change inside version 1. This design
+        // already takes the hatch by adding `browser_session_allocate`; the
+        // hatch is "add the parallel tool", not "add it and delete a member of
+        // the old one". It is removed at the next major protocol version.
+        //
+        // The second reason is that removing it would route a foreseeable
+        // refusal into the generated validator, which records nothing and whose
+        // text names neither the condition nor the replacement
+        // (`docs/UX_FLOWS.md` §18). Every agent following the previous §7.3, a
         // cached tool description or an older prompt sends this argument.
+        //
+        // **This is not the ADR-0020 shape, and the two look alike enough that
+        // somebody will ask.** ADR-0020 removed a vocabulary so that an
+        // authority could not be *expressed*: an agent cannot name a final
+        // disposition, so it cannot request one. Here the authority is grantable
+        // and has simply moved to another tool. A property naming an act the
+        // caller may perform elsewhere is a **misrouted request, not an
+        // unauthorised one** — and a misrouted request deserves directions
+        // rather than a refusal that only restates the rule.
         await services.browserSessions.recordUnresolvedLifecycleRejection({
           organisationId: connection.credential.organisationId,
           projectId: connection.project.id,
