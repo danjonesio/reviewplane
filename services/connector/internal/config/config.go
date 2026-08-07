@@ -60,7 +60,20 @@ const (
 type ControlPlane struct {
 	URL           *url.URL
 	EnrolmentPath string
-	TLS           TLS
+	// MCPURL is the origin the local MCP bridge posts JSON-RPC to
+	// (docs/MCP_SPEC.md §3.2). Nil means it is derived from URL, which is
+	// correct wherever one origin serves both the connector endpoints and
+	// `/mcp/v1` — the deployment docs/CONNECTOR_PROTOCOL.md §20 describes.
+	//
+	// A deployment MAY separate them, and the shipped Docker Compose stack
+	// does: the connector's mutually authenticated listener is a port on the
+	// control plane, while `/mcp/v1` is a route on the edge gateway. Deriving
+	// the agent endpoint from the connector one then aims the bridge at a
+	// listener that serves only `/connector/v1/*`, and the bridge exits on a
+	// 404 after a perfectly good credential exchange. This names the agent
+	// endpoint instead of guessing it (ADR-0039).
+	MCPURL *url.URL
+	TLS    TLS
 }
 
 // TLS carries the connector's certificate-trust settings. docs/CONFIGURATION.md
@@ -285,7 +298,7 @@ func loadControlPlane(cfg *Config, root *yamlmin.Node) error {
 	if err != nil {
 		return err
 	}
-	if err := node.RejectUnknownKeys("control_plane", "url", "enrolment_path", "tls"); err != nil {
+	if err := node.RejectUnknownKeys("control_plane", "url", "enrolment_path", "mcp_url", "tls"); err != nil {
 		return err
 	}
 	if raw, err := node.Child("url").String("control_plane.url"); err == nil {
@@ -302,6 +315,27 @@ func loadControlPlane(cfg *Config, root *yamlmin.Node) error {
 			return fmt.Errorf("control_plane.enrolment_path must start with \"/\", found %q", raw)
 		}
 		cfg.ControlPlane.EnrolmentPath = raw
+	} else if !errors.Is(err, yamlmin.ErrNotFound) {
+		return err
+	}
+	// https only, and no downgrade for a private network: the bridge sends a
+	// short-lived agent credential in an Authorization header on every message
+	// (docs/SECURITY.md §15), so plaintext here would put it on the wire.
+	// `wss` is accepted on control_plane.url because the channel is a
+	// WebSocket; this endpoint is HTTP POST and never is.
+	if raw, err := node.Child("mcp_url").String("control_plane.mcp_url"); err == nil {
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			return fmt.Errorf("control_plane.mcp_url is not a URL: %w", err)
+		}
+		if parsed.Scheme != "https" {
+			return fmt.Errorf(
+				"control_plane.mcp_url must use https, found %q; the bridge sends an agent credential on every message", raw)
+		}
+		if parsed.Host == "" {
+			return fmt.Errorf("control_plane.mcp_url has no host: %q", raw)
+		}
+		cfg.ControlPlane.MCPURL = parsed
 	} else if !errors.Is(err, yamlmin.ErrNotFound) {
 		return err
 	}

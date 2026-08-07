@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# The primary end-to-end scenario of docs/TESTING.md section 3, steps 1 to 6:
+# The primary end-to-end scenario of docs/TESTING.md section 3, all fifteen
+# steps, against the shipped Compose deployment:
 #
 #   1. Start the Compose stack.
 #   2. Enrol the connector fixture.
@@ -9,23 +10,41 @@
 #   4. Publish the service.
 #   5. Start a browser session.
 #   6. Navigate and capture evidence.
+#   7. A human test client creates the named review `bugs-on-homepage`.
+#   8. It creates an annotated finding in it, against the captured screenshot.
+#   9. An agent fixture, speaking MCP as a real client over the local stdio
+#      bridge, retrieves and claims it.
+#  10. The agent changes the application on the development machine.
+#  11. It captures the after screenshot.
+#  12. It submits verification and hands the finding to a human.
+#  13. A **human** accepts, with human credentials.
+#  14. `reviewplane export-review` writes the portable document.
+#  15. The event sequence and the artefact hashes are asserted.
 #
-# Steps 7 to 15 of that section need reviews, findings and verification, which
-# are later issues; this script stops where the current surface stops and says
-# so.
+# Steps 7, 8 and 13 use a real account: `POST /api/v1/auth/bootstrap` claims the
+# installation with the install token and `POST /api/v1/auth/sessions` signs in,
+# and every write then carries the session cookie and its CSRF header. That is
+# not decoration. The bootstrap operator token this script uses everywhere else
+# is a principal with `organisationId: null` **and** `projectIds: null`, so every
+# tenancy term in every scoped query goes vacuous under it and an acceptance
+# driven by it would pass while proving nothing about who may accept
+# (`docs/TESTING.md` §10, "The organisation-wide session is the probe").
 #
-# It then proves the tunnel capabilities `docs/ARCHITECTURE.md` section 7.4
-# makes mandatory, which the numbered scenario above does not reach:
+# It also proves the tunnel capabilities `docs/ARCHITECTURE.md` section 7.4
+# makes mandatory, which the numbered scenario does not reach. These are
+# numbered T1 to T3 rather than 7 to 9 because they are **not** steps of that
+# scenario — they are the capabilities the route has to have for the scenario to
+# mean anything, and sharing its numbering made two different things look like
+# one list:
 #
-#   7. A WebSocket echo and server-sent events through the route.
-#   8. Vite hot module replacement: a source edit on the development machine
-#      applied in central Chromium without a full page reload.
-#   9. The performance baseline of `docs/TESTING.md` section 12.
+#   T1. A WebSocket echo and server-sent events through the route.
+#   T2. Vite hot module replacement: a source edit on the development machine
+#       applied in central Chromium without a full page reload.
+#   T3. The performance baseline of `docs/TESTING.md` section 12.
 #
-# It is release-blocking for the Stage 0 exit criterion "a dev server bound to
-# loopback on a remote VM is usable by central Chromium", so it fails loudly
-# rather than degrading: every step asserts its own outcome, and a step that
-# cannot be verified aborts the run instead of being skipped.
+# It is release-blocking, so it fails loudly rather than degrading: every step
+# asserts its own outcome, and a step that cannot be verified aborts the run
+# instead of being skipped.
 #
 # Run it with:  pnpm test:e2e
 # Evidence lands in deploy/compose/e2e/evidence/.
@@ -62,6 +81,14 @@ KEEP_UP="${REVIEWPLANE_E2E_KEEP_UP:-0}"
 PROJECT_ID="prj_fixture"
 PROJECT_SLUG="fixture"
 
+# The human account this run creates and signs in as. The password is a fixture
+# value for a disposable installation and is not a credential to anything that
+# outlives the run; the installation token it is claimed with is minted by
+# `reviewplane install-token` at step 7 and is single-use.
+HUMAN_EMAIL="reviewer@fixture.invalid"
+HUMAN_PASSWORD="correct horse battery staple"
+REVIEW_SLUG="bugs-on-homepage"
+
 step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 info() { printf '   %s\n' "$*"; }
 fail() { printf '\n\033[31mFAILED: %s\033[0m\n' "$*" >&2; exit 1; }
@@ -77,6 +104,10 @@ cleanup() {
     "${COMPOSE[@]}" logs --tail 60 dev-fixture >&2 2>/dev/null || true
     printf '\n--- browser-worker log (tail) ---\n' >&2
     "${COMPOSE[@]}" logs --tail 60 browser-worker >&2 2>/dev/null || true
+    printf '\n--- mcp log (tail) ---\n' >&2
+    "${COMPOSE[@]}" logs --tail 60 mcp >&2 2>/dev/null || true
+    printf '\n--- gateway log (tail) ---\n' >&2
+    "${COMPOSE[@]}" logs --tail 40 gateway >&2 2>/dev/null || true
   fi
   if [[ "${KEEP_UP}" != "1" ]]; then
     # Teardown names this run's project explicitly. Without the name it would
@@ -105,6 +136,24 @@ step "0. Generate development secrets and the gateway certificate"
 # shellcheck disable=SC1091
 source "${COMPOSE_DIR}/.env"
 export REVIEWPLANE_TUNNEL_CERTIFICATE_SPKI
+
+# The edge gateway is part of this run, because `/mcp/v1` is a route on it
+# (`docs/ARCHITECTURE.md` §4.1) and step 9's bridge posts JSON-RPC there.
+#
+# Two supported knobs are set for it, and neither changes what is under test.
+# The site is served under the name the development environment reaches it by,
+# because a certificate is issued for the site address and the connector
+# verifies the name it dialled — a gateway serving `localhost:8443` matches no
+# request for `gateway:8443` and answers nothing at all. And the host port is
+# left to the kernel: nothing in this scenario opens the published port, and a
+# fixed one would make two concurrent runs on one machine collide on a bind
+# rather than on anything real.
+#
+# **After** the `source` above, deliberately. `configure` writes both values
+# into `.env`, so an export before it is silently replaced by `localhost:8443`
+# and the gateway comes up under a name nothing in this run is dialling.
+export REVIEWPLANE_GATEWAY_DOMAIN="gateway"
+export REVIEWPLANE_GATEWAY_PORT="0"
 BOOTSTRAP_TOKEN="$(cat "${COMPOSE_DIR}/secrets/bootstrap_token")"
 
 # Every API call goes through the `api` container, because nothing publishes a
@@ -148,6 +197,76 @@ if outer["status"] >= 400:
 body = json.loads(outer["body"])
 value = eval(os.environ["RP_EXPRESSION"], {"data": body.get("data"), "body": body})
 sys.stdout.write("" if value is None else str(value))
+'
+}
+
+# The human test client.
+#
+# It is a **separate credential from `api()` above, and that is the whole point
+# of it**. `api()` presents the bootstrap operator token, whose principal
+# carries `organisationId: null` and `projectIds: null` — both tenancy terms
+# vacuous — so it can reach every project in the deployment and an acceptance
+# driven by it would pass against a control plane that had no idea who was
+# accepting. `docs/TESTING.md` §10 says a suite covering a route a signed-in
+# person reaches MUST drive it as one. This is that client: an account claimed
+# from the install token, signed in with a password, presenting the session
+# cookie and echoing its CSRF token on every write.
+#
+# HUMAN_COOKIE and HUMAN_CSRF are set by `human_sign_in` below. No `Origin`
+# header is sent: `REVIEWPLANE_ALLOWED_ORIGINS` guards the two body-credential
+# routes against another *site*, and a non-browser client sends none.
+HUMAN_COOKIE=""
+HUMAN_CSRF=""
+human() {
+  local method="$1" path="$2" body="${3:-}" idempotency="${4:-}"
+  "${COMPOSE[@]}" exec -T \
+    -e RP_METHOD="${method}" -e RP_PATH="${path}" -e RP_BODY="${body}" \
+    -e RP_COOKIE="${HUMAN_COOKIE}" -e RP_CSRF="${HUMAN_CSRF}" \
+    -e RP_IDEMPOTENCY="${idempotency}" \
+    api node -e '
+      const method = process.env.RP_METHOD;
+      const body = process.env.RP_BODY;
+      const headers = {};
+      if (process.env.RP_COOKIE) headers.cookie = process.env.RP_COOKIE;
+      if (process.env.RP_CSRF) headers["x-csrf-token"] = process.env.RP_CSRF;
+      if (process.env.RP_IDEMPOTENCY) headers["idempotency-key"] = process.env.RP_IDEMPOTENCY;
+      if (body) headers["content-type"] = "application/json";
+      const response = await fetch(`http://127.0.0.1:8080${process.env.RP_PATH}`, {
+        method,
+        headers,
+        ...(body ? { body } : {}),
+      });
+      const text = await response.text();
+      // The cookies are returned so the caller can capture a new session. The
+      // values are opaque here and are never printed: they go into shell
+      // variables that only this script reads.
+      const cookies = response.headers.getSetCookie ? response.headers.getSetCookie() : [];
+      process.stdout.write(JSON.stringify({ status: response.status, body: text, cookies }));
+    '
+}
+
+# Extracts one cookie value from a `human()` response, URL-decoded.
+#
+# The CSRF token is delivered in a readable cookie and echoed in a header; the
+# value in the cookie is percent-encoded and the header is not, so a client that
+# forwarded it verbatim would be refused with `csrf_token_invalid` on every
+# write and would look like a permissions problem.
+cookie_value() {
+  RP_RESPONSE="$1" RP_NAME="$2" python3 -c '
+import json, os, sys
+from urllib.parse import unquote
+
+outer = json.loads(os.environ["RP_RESPONSE"])
+name = os.environ["RP_NAME"]
+for header in outer.get("cookies") or []:
+    first = header.split(";", 1)[0]
+    if "=" not in first:
+        continue
+    key, value = first.split("=", 1)
+    if key.strip() == name:
+        sys.stdout.write(unquote(value))
+        sys.exit(0)
+sys.exit(1)
 '
 }
 
@@ -247,6 +366,62 @@ cat "${COMPOSE_DIR}/tls/connector-ca.pem" "${COMPOSE_DIR}/tls/tunnel-ca.pem" \
 chmod 644 "${COMPOSE_DIR}/tls/connector-trust.pem"
 info "wrote tls/connector-trust.pem (connector CA + tunnel CA)"
 
+# The agent endpoint and the edge gateway in front of it.
+#
+# The development environment dials the gateway for `/mcp/v1` and nothing else,
+# and it verifies the name it dialled against the certificate the gateway
+# serves. That certificate comes from Caddy's internal authority, which is a
+# third anchor beside the two above, so it is added to the connector's trust
+# bundle here — before `dev-fixture` starts, because the bundle is mounted
+# read-only and the connector reads it once.
+"${COMPOSE[@]}" up -d --wait --wait-timeout 180 mcp gateway \
+  || fail "the MCP server and the edge gateway did not start"
+
+# The bounded wait, and what it proves.
+#
+# Caddy provisions its internal authority as it loads its configuration, so the
+# root certificate existing in the volume is the authority having been generated
+# — which is the authority that signed the certificate the connector is about to
+# verify. Copying it is therefore the condition, not a proxy for it: a copy that
+# succeeds is a bundle that can verify this gateway. The gateway's own
+# `/healthz` is asserted afterwards because a trusted certificate on a listener
+# that is not answering is not a reachable endpoint.
+CADDY_ROOT="${COMPOSE_DIR}/tls/edge-ca.pem"
+rm -f "${CADDY_ROOT}"
+for _ in $(seq 1 60); do
+  if "${COMPOSE[@]}" cp gateway:/data/caddy/pki/authorities/local/root.crt "${CADDY_ROOT}" >/dev/null 2>&1 \
+    && [[ -s "${CADDY_ROOT}" ]]; then
+    break
+  fi
+  sleep 1
+done
+[[ -s "${CADDY_ROOT}" ]] \
+  || fail "the edge gateway never wrote its internal authority; the development environment would trust nothing it serves"
+cat "${CADDY_ROOT}" >> "${COMPOSE_DIR}/tls/connector-trust.pem"
+chmod 644 "${COMPOSE_DIR}/tls/connector-trust.pem"
+info "added the edge gateway's authority to tls/connector-trust.pem"
+
+# The gateway's own liveness route, which answers without reaching an upstream
+# so that a failing control plane is diagnosed as a failing control plane. The
+# certificate is deliberately **not** verified here and this probe asserts
+# nothing about trust: the `api` container has no copy of the authority, and the
+# property that matters — that the development environment's bundle verifies
+# this gateway — is asserted at step 9, where the bridge either completes a TLS
+# handshake against it or the scenario fails.
+EDGE_READY=0
+for _ in $(seq 1 60); do
+  if "${COMPOSE[@]}" exec -T -e NODE_TLS_REJECT_UNAUTHORIZED=0 api node -e '
+      fetch("https://gateway:8443/healthz")
+        .then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1));
+    ' 2>/dev/null; then
+    EDGE_READY=1
+    break
+  fi
+  sleep 1
+done
+[[ "${EDGE_READY}" -eq 1 ]] || fail "the edge gateway did not answer /healthz"
+info "the edge gateway is serving ${REVIEWPLANE_GATEWAY_DOMAIN}:8443"
+
 "${COMPOSE[@]}" up -d --wait --wait-timeout 180 tunnel-gateway browser-worker \
   || fail "the tunnel gateway and browser worker did not start"
 
@@ -270,8 +445,17 @@ done
 [[ "${GATEWAY_READY}" -eq 1 ]] || fail "the tunnel gateway did not answer on its admin API"
 info "tunnel-gateway and browser-worker are up"
 
-# Nothing may be published to the host. This is Stage 0 exit criterion 5 stated
-# as a property of the deployment rather than of one container.
+# Only the edge gateway may be published to the host
+# (`docs/DEPLOYMENT.md` §20), and nothing in the development environment may be
+# published at all — Stage 0 exit criterion 5, stated as a property of the
+# deployment rather than of one container.
+#
+# The gateway is named rather than the check relaxed: it is the one component
+# whose job is to be reachable, and every other service publishing nothing is
+# what makes that a boundary. An earlier revision asserted that *no* container
+# published anything, which passed only because the scenario never started the
+# gateway; the moment it did, the assertion would have failed on the one
+# publication the design requires.
 #
 # A published port is one with a non-zero PublishedPort. An image's EXPOSE
 # appears here too, with PublishedPort 0, and means only "this container listens
@@ -286,6 +470,8 @@ for line in sys.stdin:
     if not line:
         continue
     record = json.loads(line)
+    if record.get("Service") == "gateway":
+        continue
     for publisher in record.get("Publishers") or []:
         if publisher.get("PublishedPort"):
             offenders.append("%s -> %s:%s" % (
@@ -296,9 +482,9 @@ for line in sys.stdin:
 print("; ".join(offenders))
 ')"
 if [[ -n "${PUBLISHED}" ]]; then
-  fail "a container published a host port: ${PUBLISHED}"
+  fail "a container other than the edge gateway published a host port: ${PUBLISHED}"
 fi
-info "no container publishes a host port"
+info "only the edge gateway publishes a host port"
 
 # The enrolment token comes first, and the project is created in the
 # organisation it names.
@@ -865,6 +1051,11 @@ sys.stdout.write(match.group(1))
 
 # Takes a screenshot in a session and writes the artefact bytes to
 # evidence/<name>.png, failing if the result is too small to be a rendered page.
+#
+# CAPTURED_ARTEFACT_ID is left holding the identifier, because step 8 annotates
+# the screenshot a human was shown rather than one it captured for itself: the
+# evidence a human accepts has to be the evidence they were looking at.
+CAPTURED_ARTEFACT_ID=""
 capture_screenshot() {
   local session="$1" name="$2" response artefact size
   response="$(session_command "${session}" 1 \
@@ -891,6 +1082,7 @@ capture_screenshot() {
     ' | base64 -d > "${EVIDENCE}/${name}.png" || return 1
   size="$(stat -c%s "${EVIDENCE}/${name}.png")"
   [[ "${size}" -gt 1000 ]] || fail "${name}.png is ${size} bytes, which is not a rendered page"
+  CAPTURED_ARTEFACT_ID="${artefact}"
   info "captured ${name}.png (${size} bytes, artefact ${artefact})"
 }
 
@@ -962,7 +1154,16 @@ for viewport in "1440 900 1 desktop" "390 844 2 mobile"; do
     || fail "could not resize to ${width}x${height}"
   capture_screenshot "${SESSION_ID}" "screenshot-${label}-${width}x${height}" \
     || fail "screenshot at ${width}x${height} failed"
+  if [[ "${label}" == "mobile" ]]; then
+    # The picture step 8's human annotates. It is held here rather than
+    # re-captured later because the finding must point at the screenshot the
+    # human was shown, and anything captured afterwards is a different render.
+    HUMAN_SCREENSHOT_ARTEFACT_ID="${CAPTURED_ARTEFACT_ID}"
+    HUMAN_SCREENSHOT_VIEWPORT="{\"width\":${width},\"height\":${height},\"device_scale_factor\":${scale}}"
+    HUMAN_SCREENSHOT_FILE="${EVIDENCE}/screenshot-${label}-${width}x${height}.png"
+  fi
 done
+[[ -n "${HUMAN_SCREENSHOT_ARTEFACT_ID:-}" ]] || fail "no screenshot was captured for the human to annotate"
 
 # The event sequence the issue requires.
 "${COMPOSE[@]}" exec -T postgres psql -U reviewplane -d reviewplane -At -F'|' -c \
@@ -1136,7 +1337,7 @@ print("topology the development service has no use for.")
 info "wrote the observed header behaviour"
 
 # ---------------------------------------------------------------------------
-step "7. WebSocket, server-sent events and streaming through the route (RVP-14)"
+step "T1. WebSocket, server-sent events and streaming through the route (RVP-14)"
 # ---------------------------------------------------------------------------
 # `docs/ARCHITECTURE.md` section 7.4 lists these as mandatory tunnel
 # capabilities. Each fixture page performs its own exchange in the browser and
@@ -1174,7 +1375,7 @@ printf '%s\n' "${SSE_TEXT}" > "${EVIDENCE}/sse-timing.txt"
 info "server-sent events arrived incrementally: $(grep -o 'sse gaps ms: [0-9, ]*' <<< "${SSE_TEXT}" | head -1)"
 
 # ---------------------------------------------------------------------------
-step "8. Publish the Vite development server and prove hot module replacement"
+step "T2. Publish the Vite development server and prove hot module replacement"
 # ---------------------------------------------------------------------------
 # The claim this step defends: if the update socket fails, the page in central
 # Chromium stops updating while still looking live, so a human annotates a stale
@@ -1248,7 +1449,7 @@ info "hot module replacement applied the edit in ${HMR_LATENCY_MS}ms with client
 "${COMPOSE[@]}" exec -T dev-fixture sed -i 's/BRAVO/ALPHA/' /app/vite-app/src/Marker.tsx || true
 
 # ---------------------------------------------------------------------------
-step "9. Record the performance baseline (docs/TESTING.md section 12)"
+step "T3. Record the performance baseline (docs/TESTING.md section 12)"
 # ---------------------------------------------------------------------------
 # A baseline is a recorded number, not a threshold. `docs/ROADMAP.md` defers
 # tuning, so this measures, prints and stores; it does not fail on a figure.
@@ -1324,8 +1525,571 @@ info "wrote the performance baseline"
 "${COMPOSE[@]}" logs --no-log-prefix tunnel-gateway 2>/dev/null > "${EVIDENCE}/tunnel-gateway.log" || true
 
 # ---------------------------------------------------------------------------
-step "End-to-end scenario steps 1 to 6 passed, with the RVP-14 tunnel capabilities"
+step "7. A human signs in and creates the named review (step 7)"
+# ---------------------------------------------------------------------------
+# The install token is minted by the operator command line, exactly as
+# `docs/DEPLOYMENT.md` §11 tells an administrator to. It is single-use and its
+# digest is all the control plane keeps, so it is read once here and never
+# written to the evidence directory.
+INSTALL_TOKEN="$("${COMPOSE[@]}" exec -T api reviewplane install-token \
+  | sed -n 's/^[[:space:]]*\(rpi_[A-Za-z0-9._~-]*\)[[:space:]]*$/\1/p' | head -1)"
+[[ -n "${INSTALL_TOKEN}" ]] || fail "reviewplane install-token printed no token"
+info "minted a single-use installation token"
+
+CLAIM_BODY="$(RP_TOKEN="${INSTALL_TOKEN}" RP_EMAIL="${HUMAN_EMAIL}" RP_PASSWORD="${HUMAN_PASSWORD}" python3 -c '
+import json, os, sys
+sys.stdout.write(json.dumps({
+    "token": os.environ["RP_TOKEN"],
+    "email": os.environ["RP_EMAIL"],
+    "password": os.environ["RP_PASSWORD"],
+}))')"
+CLAIM_RESPONSE="$(human POST /api/v1/auth/bootstrap "${CLAIM_BODY}")"
+field "${CLAIM_RESPONSE}" 'data["user"]["id"]' >/dev/null \
+  || fail "claiming the installation failed"
+
+# Signing in rather than reusing the session the claim issued. Both are real,
+# and the sign-in is the credential a person actually holds; it also exercises
+# the rotation that `docs/SECURITY.md` §6.1 requires on a privilege change.
+SIGN_IN_BODY="$(RP_EMAIL="${HUMAN_EMAIL}" RP_PASSWORD="${HUMAN_PASSWORD}" python3 -c '
+import json, os, sys
+sys.stdout.write(json.dumps({"email": os.environ["RP_EMAIL"], "password": os.environ["RP_PASSWORD"]}))')"
+SIGN_IN_RESPONSE="$(human POST /api/v1/auth/sessions "${SIGN_IN_BODY}")"
+HUMAN_USER_ID="$(field "${SIGN_IN_RESPONSE}" 'data["user"]["id"]')" || fail "sign-in failed"
+HUMAN_ORGANISATION_ID="$(field "${SIGN_IN_RESPONSE}" 'data["user"]["organisation_id"]')"
+VIEWER_COOKIE="$(cookie_value "${SIGN_IN_RESPONSE}" reviewplane_viewer)" \
+  || fail "sign-in issued no session cookie"
+HUMAN_CSRF="$(cookie_value "${SIGN_IN_RESPONSE}" reviewplane_csrf)" \
+  || fail "sign-in issued no CSRF token"
+HUMAN_COOKIE="reviewplane_viewer=${VIEWER_COOKIE}"
+info "signed in as ${HUMAN_EMAIL} (${HUMAN_USER_ID})"
+
+# The account and the deployment must be in one organisation, or the human can
+# see none of the deployment's own projects. That was the state of a fresh
+# installation until the connector module stopped inventing `org_default` beside
+# migration 0055's seed (RVP-63): every refusal below would have been correct
+# and the product loop would still have been impossible to complete.
+[[ "${HUMAN_ORGANISATION_ID}" == "${ORGANISATION_ID}" ]] \
+  || fail "the human account is in ${HUMAN_ORGANISATION_ID} but the deployment's connectors and projects are in ${ORGANISATION_ID}; a signed-in person can reach none of them (RVP-63)"
+
+
+PROJECT_VIEW="$(human GET "/api/v1/projects/${PROJECT_ID}")"
+[[ "$(field "${PROJECT_VIEW}" 'data["id"]')" == "${PROJECT_ID}" ]] \
+  || fail "the signed-in human cannot read ${PROJECT_ID}"
+info "the signed-in human can read ${PROJECT_ID}"
+
+# The review is created against the branch and commit the connector observed,
+# read from the control plane's own record rather than restated: a review is
+# interpreted against the source context it was captured at, and a constant here
+# would assert that this script agrees with itself.
+REVIEW_BRANCH="$(psql_scalar "select branch from workspaces where id = '${WORKSPACE_ID}'")"
+REVIEW_COMMIT="$(psql_scalar "select head_commit from workspaces where id = '${WORKSPACE_ID}'")"
+[[ "${REVIEW_COMMIT}" =~ ^[0-9a-f]{40}$ ]] || fail "the workspace records no head commit to capture against"
+
+REVIEW_BODY="$(RP_SLUG="${REVIEW_SLUG}" RP_BRANCH="${REVIEW_BRANCH}" RP_COMMIT="${REVIEW_COMMIT}" \
+  RP_WORKSPACE="${WORKSPACE_ID}" RP_SESSION="${SESSION_ID}" python3 -c '
+import json, os, sys
+sys.stdout.write(json.dumps({
+    "slug": os.environ["RP_SLUG"],
+    "title": "Bugs on homepage",
+    "description": "The homepage heading needs to say what it is.",
+    "status": "READY",
+    "priority": "high",
+    "captured_branch": os.environ["RP_BRANCH"],
+    "captured_commit": os.environ["RP_COMMIT"],
+    "captured_workspace_id": os.environ["RP_WORKSPACE"],
+    "source_browser_session_id": os.environ["RP_SESSION"],
+}))')"
+# The refusal is asserted before the success, because "the human could read the
+# project" is only meaningful beside "and the CSRF rule is being applied".
+#
+# The body is the **same body step 7 is about to succeed with**, so the only
+# difference between the refusal and the success is the header. A malformed body
+# would not do: Fastify's own JSON parser answers `VALIDATION_FAILED` before any
+# hook runs, so the probe would pass whether or not the rule existed. What is
+# claimed here is that the rule is applied, not that it is applied before the
+# parser — that stronger property is asserted where it is implemented, in
+# `apps/server/test/published-services.test.ts`.
+#
+# The subshell matters: an assignment in front of a *function* call persists in
+# bash after the function returns, so `HUMAN_CSRF="" human ...` would clear the
+# token for the rest of the run and every later write would fail for a reason
+# that had nothing to do with the code under test.
+NO_CSRF="$(HUMAN_CSRF="" ; human POST "/api/v1/projects/${PROJECT_ID}/reviews" "${REVIEW_BODY}")"
+NO_CSRF_CODE="$(RP_RESPONSE="${NO_CSRF}" python3 -c '
+import json, os, sys
+outer = json.loads(os.environ["RP_RESPONSE"])
+body = json.loads(outer["body"])
+sys.stdout.write(str(body.get("error", {}).get("code")))')"
+[[ "${NO_CSRF_CODE}" == "AUTHORISATION_DENIED" ]] \
+  || fail "a cookie write with no CSRF token was answered ${NO_CSRF_CODE}, not AUTHORISATION_DENIED"
+[[ "$(psql_scalar "select count(*) from reviews where project_id = '${PROJECT_ID}'")" == "0" ]] \
+  || fail "the CSRF-less write created a review"
+info "a cookie write without the CSRF header is refused, and writes nothing"
+
+REVIEW_RESPONSE="$(human POST "/api/v1/projects/${PROJECT_ID}/reviews" "${REVIEW_BODY}" "rvp95-review")"
+REVIEW_ID="$(field "${REVIEW_RESPONSE}" 'data["id"]')" || fail "creating the review failed"
+[[ "$(field "${REVIEW_RESPONSE}" 'data["slug"]')" == "${REVIEW_SLUG}" ]] \
+  || fail "the review was not created under ${REVIEW_SLUG}"
+[[ "$(field "${REVIEW_RESPONSE}" 'data["status"]')" == "READY" ]] \
+  || fail "the review is not READY"
+REVIEW_VERSION="$(field "${REVIEW_RESPONSE}" 'data["version"]')"
+echo "${REVIEW_RESPONSE}" > "${EVIDENCE}/review-created.json"
+info "created review ${REVIEW_ID} (${REVIEW_SLUG}) at ${REVIEW_BRANCH}@${REVIEW_COMMIT}"
+
+# ---------------------------------------------------------------------------
+step "8. The human creates the annotated finding (step 8)"
+# ---------------------------------------------------------------------------
+# The review exists before the finding because the control plane's own shape
+# requires it — a finding is created *into* a review — and because that is the
+# order the web application uses when a human presses Save on a named review
+# (`apps/web/src/components/CaptureFinding.tsx`). `docs/TESTING.md` §3 is
+# written the same way round for the same reason.
+#
+# The annotation travels in the same request as the finding, as the SPA sends
+# it: a finding whose annotation failed to save would be a report of a problem
+# with no indication of where it is.
+FINDING_BODY="$(RP_ARTEFACT="${HUMAN_SCREENSHOT_ARTEFACT_ID}" RP_VIEWPORT="${HUMAN_SCREENSHOT_VIEWPORT}" \
+  RP_URL="${INTERNAL_ORIGIN%/}/" RP_COMMIT="${REVIEW_COMMIT}" python3 -c '
+import json, os, sys
+artefact = os.environ["RP_ARTEFACT"]
+sys.stdout.write(json.dumps({
+    "title": "The homepage heading does not name the fixture",
+    "description": "The h1 reads \"Loopback dev fixture\" and should say it was resolved.",
+    "severity": "high",
+    "url": os.environ["RP_URL"],
+    "viewport": json.loads(os.environ["RP_VIEWPORT"]),
+    "scroll_position": {"x": 0, "y": 0},
+    "captured_commit": os.environ["RP_COMMIT"],
+    "screenshot_artefact_id": artefact,
+    "acceptance_criteria": "The homepage heading names the resolution.",
+    "annotations": [
+        {
+            "artefact_id": artefact,
+            "type": "rectangle",
+            "geometry": {"x": 0.05, "y": 0.12, "width": 0.6, "height": 0.1},
+            "label": "This heading",
+            "marker_number": 1,
+        },
+        {
+            "artefact_id": artefact,
+            "type": "numbered_marker",
+            "geometry": {"x": 0.08, "y": 0.14},
+            "label": "1",
+            "marker_number": 1,
+        },
+    ],
+}))')"
+FINDING_RESPONSE="$(human POST "/api/v1/reviews/${REVIEW_ID}/findings" "${FINDING_BODY}" "rvp95-finding")"
+FINDING_ID="$(field "${FINDING_RESPONSE}" 'data["finding"]["id"]')" || fail "creating the finding failed"
+[[ "$(field "${FINDING_RESPONSE}" 'data["finding"]["source"]')" == "human" ]] \
+  || fail "the finding's source is not human; a human-authored finding is the one an agent may never accept"
+[[ "$(field "${FINDING_RESPONSE}" 'data["finding"]["status"]')" == "OPEN" ]] \
+  || fail "the new finding is not OPEN"
+[[ "$(field "${FINDING_RESPONSE}" 'len(data["annotations"])')" == "2" ]] \
+  || fail "the finding did not record both annotations"
+# The overlay is geometry against the original, never pixels over it (ADR-0006).
+[[ "$(field "${FINDING_RESPONSE}" 'data["annotations"][0]["artefact_id"]')" == "${HUMAN_SCREENSHOT_ARTEFACT_ID}" ]] \
+  || fail "the annotation does not point at the screenshot the human was shown"
+echo "${FINDING_RESPONSE}" > "${EVIDENCE}/finding-created.json"
+
+# The original's digest, recorded now, so step 15 can assert the bytes a human
+# accepts are the bytes they were shown. `declared_sha256` is what the uploader
+# claimed and `sha256` is what the control plane measured; they are compared
+# because an artefact is only `available` when they agree, and reading both is
+# how that constraint is exercised rather than trusted.
+ORIGINAL_ROW="$(psql_row "select declared_sha256, sha256, size_bytes, state, kind
+                            from artefacts where id = '${HUMAN_SCREENSHOT_ARTEFACT_ID}'")"
+IFS='|' read -r ORIG_DECLARED ORIG_SHA ORIG_SIZE ORIG_STATE ORIG_KIND <<< "${ORIGINAL_ROW}"
+[[ "${ORIG_STATE}" == "available" ]] || fail "the annotated screenshot is ${ORIG_STATE}, not available"
+[[ "${ORIG_SHA}" == "${ORIG_DECLARED}" ]] \
+  || fail "the annotated screenshot's measured digest differs from the declared one"
+ORIGINAL_FILE_SHA="$(python3 -c '
+import hashlib, sys
+print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "${HUMAN_SCREENSHOT_FILE}")"
+[[ "${ORIGINAL_FILE_SHA}" == "${ORIG_SHA}" ]] \
+  || fail "the screenshot bytes read back do not digest to what the artefact record holds"
+info "finding ${FINDING_ID} with two annotations on artefact ${HUMAN_SCREENSHOT_ARTEFACT_ID} (sha256 ${ORIG_SHA})"
+
+# ---------------------------------------------------------------------------
+step "9 to 12. The agent retrieves, resolves and verifies over the local MCP bridge"
+# ---------------------------------------------------------------------------
+# The agent fixture runs inside the development environment and speaks MCP as a
+# real client over `reviewplane-connector mcp`, so the ADR-0023 credential
+# exchange and the workspace-to-project resolution are exercised rather than
+# bypassed. `deploy/compose/e2e/agent-fixture.mjs` is the client.
+#
+# One thing it cannot do over that bridge: capture a screenshot. A bridge
+# credential carries the workflow capabilities and **no** browser capability
+# (`BRIDGE_CAPABILITIES` in `apps/server/src/modules/connectors/agent-
+# credentials.ts`, `docs/SECURITY.md` §6.3), while
+# `finding_submit_verification` requires at least one screenshot artefact. So
+# step 11 opens a second MCP session at the same `/mcp/v1` endpoint with an
+# administrator-issued agent credential, which is the shipped way an agent
+# obtains browser authority. That is a real gap in the local-bridge path and is
+# recorded here rather than papered over.
+BROWSER_CREDENTIAL_BODY="$(printf '{"project_ids":["%s"],"capabilities":["project:read","service:publish","browser:control","browser:capture"],"ttl_seconds":3600,"label":"rvp95-agent-browser"}' "${PROJECT_ID}")"
+BROWSER_CREDENTIAL_RESPONSE="$(api POST "/api/v1/organisations/${ORGANISATION_ID}/agent-credentials" "${BROWSER_CREDENTIAL_BODY}")"
+AGENT_BROWSER_TOKEN="$(field "${BROWSER_CREDENTIAL_RESPONSE}" 'data["token"]')" \
+  || fail "could not issue the agent's browser credential"
+
+"${COMPOSE[@]}" cp "${E2E_DIR}/agent-fixture.mjs" dev-fixture:/tmp/agent-fixture.mjs \
+  || fail "could not place the agent fixture in the development environment"
+
+# The fixture is started before the assignment exists, because that is the
+# order the product works in: an agent session has to exist for a review to be
+# assigned to it, and nothing is pushed to an agent — it polls its inbox.
+AGENT_REPORT="${EVIDENCE}/agent-report.json"
+AGENT_LOG="${EVIDENCE}/agent-fixture.log"
+"${COMPOSE[@]}" exec -T --workdir /opt/reviewplane/dev-fixture \
+  -e RP_REVIEW_SLUG="${REVIEW_SLUG}" \
+  -e RP_WORKSPACE_ID="${WORKSPACE_ID}" \
+  -e RP_CHECKOUT="${CONFIGURED_WORKSPACE_PATH}" \
+  -e RP_MCP_URL="https://${REVIEWPLANE_GATEWAY_DOMAIN}:8443/mcp/v1" \
+  -e RP_BROWSER_TOKEN="${AGENT_BROWSER_TOKEN}" \
+  -e RP_PROJECT_HINT="${PROJECT_SLUG}" \
+  -e NODE_EXTRA_CA_CERTS=/etc/reviewplane/tls/connector-trust.pem \
+  dev-fixture node /tmp/agent-fixture.mjs > "${AGENT_REPORT}" 2> "${AGENT_LOG}" &
+AGENT_PID=$!
+
+# The bounded wait, and what it proves.
+#
+# A row in `agent_sessions` for this project is written by the MCP server when a
+# credential opens a session, and by nothing else. So the row existing means the
+# bridge completed its credential exchange, reached `/mcp/v1` over TLS the
+# development environment could verify, and initialised an MCP session — which
+# is exactly what the assignment below needs, because a review is assigned to an
+# agent session identifier. Waiting on the process, or on a file, would be a
+# proxy; this is the thing.
+AGENT_SESSION_ID=""
+AGENT_SESSION_DEADLINE=$((SECONDS + 180))
+while (( SECONDS < AGENT_SESSION_DEADLINE )); do
+  AGENT_SESSION_ID="$(psql_scalar "select id from agent_sessions
+                                    where project_id = '${PROJECT_ID}'
+                                    order by created_at asc limit 1")"
+  [[ -n "${AGENT_SESSION_ID}" ]] && break
+  if ! kill -0 "${AGENT_PID}" 2>/dev/null; then
+    printf '\n--- agent fixture log ---\n' >&2
+    cat "${AGENT_LOG}" >&2 || true
+    fail "the agent fixture exited before it opened an MCP session"
+  fi
+  sleep 2
+done
+[[ -n "${AGENT_SESSION_ID}" ]] \
+  || fail "no agent session appeared for ${PROJECT_ID} within 180s; the local MCP bridge never reached the agent endpoint"
+info "the agent opened MCP session ${AGENT_SESSION_ID} over the local bridge"
+
+# The human directs the work. Assignment and claiming are different facts
+# (`docs/API.md` §12), and this is the first of them.
+ASSIGN_BODY="$(printf '{"expected_version":%s,"assigned_agent_session_id":"%s","reason":"Homepage heading"}' \
+  "${REVIEW_VERSION}" "${AGENT_SESSION_ID}")"
+ASSIGN_RESPONSE="$(human POST "/api/v1/reviews/${REVIEW_ID}/assign" "${ASSIGN_BODY}")"
+[[ "$(field "${ASSIGN_RESPONSE}" 'data["status"]')" == "ASSIGNED" ]] \
+  || fail "assigning the review did not move it to ASSIGNED"
+info "the human assigned ${REVIEW_SLUG} to ${AGENT_SESSION_ID}"
+
+if ! wait "${AGENT_PID}"; then
+  printf '\n--- agent fixture log ---\n' >&2
+  cat "${AGENT_LOG}" >&2 || true
+  printf '\n--- agent fixture report ---\n' >&2
+  cat "${AGENT_REPORT}" >&2 || true
+  fail "the agent fixture did not complete steps 9 to 12"
+fi
+
+agent_field() {
+  RP_REPORT="$(cat "${AGENT_REPORT}")" RP_EXPRESSION="$1" python3 -c '
+import json, os, sys
+report = json.loads(os.environ["RP_REPORT"])
+value = eval(os.environ["RP_EXPRESSION"], {"report": report})
+sys.stdout.write("" if value is None else str(value))
+'
+}
+[[ "$(agent_field 'report["ok"]')" == "True" ]] || fail "the agent fixture reported a failure"
+AGENT_VERIFICATION_ID="$(agent_field 'report["verification_id"]')"
+AGENT_FIX_COMMIT="$(agent_field 'report["fix_commit"]')"
+[[ "$(agent_field 'report["finding_id"]')" == "${FINDING_ID}" ]] \
+  || fail "the agent worked a different finding from the one the human raised"
+[[ "$(agent_field 'report["finding_screenshot_artefact_id"]')" == "${HUMAN_SCREENSHOT_ARTEFACT_ID}" ]] \
+  || fail "the agent was given a different before screenshot from the one the human annotated"
+info "the agent resolved ${FINDING_ID} at ${AGENT_FIX_COMMIT}, verification ${AGENT_VERIFICATION_ID}"
+
+# Every final disposition the agent asked for was refused, and the refusals are
+# audited. Both halves are asserted: an agent that was refused and left no
+# record would answer "did an agent try to accept a human's finding?" with
+# silence (`docs/MCP_SPEC.md` §7.7).
+DENIED_OK="$(agent_field 'sum(1 for d in report["denials"] if d["ok"] is not True)')"
+DENIED_TOTAL="$(agent_field 'len(report["denials"])')"
+[[ "${DENIED_OK}" == "${DENIED_TOTAL}" ]] \
+  || fail "an agent request for a final disposition succeeded: $(agent_field 'report["denials"]')"
+DENIAL_EVENTS="$(psql_scalar "select count(*) from events
+                                where project_id = '${PROJECT_ID}'
+                                  and type in ('finding.status_change_denied', 'review.status_change_denied')
+                                  and actor_type = 'agent_session'")"
+(( DENIAL_EVENTS >= DENIED_TOTAL )) \
+  || fail "${DENIED_TOTAL} agent disposition attempts were refused but only ${DENIAL_EVENTS} were audited"
+info "${DENIED_TOTAL} agent attempts at a final disposition refused and audited"
+
+# The finding is where an agent can leave it and no further.
+FINDING_STATUS="$(psql_scalar "select status from findings where id = '${FINDING_ID}'")"
+[[ "${FINDING_STATUS}" == "AWAITING_HUMAN_REVIEW" ]] \
+  || fail "the finding is ${FINDING_STATUS}, not AWAITING_HUMAN_REVIEW"
+
+# One verification record from the duplicate submission under one key.
+SUBMITTED_COUNT="$(psql_scalar "select count(*) from verifications
+                                  where finding_id = '${FINDING_ID}' and status = 'submitted'")"
+[[ "${SUBMITTED_COUNT}" == "1" ]] \
+  || fail "the finding holds ${SUBMITTED_COUNT} submitted verifications; exactly one may be current"
+info "one current verification after a duplicate submission under one idempotency key"
+
+# ---------------------------------------------------------------------------
+step "13. A human accepts, and an agent credential cannot (step 13)"
+# ---------------------------------------------------------------------------
+# The negative comes first. An agent credential presented to the human review
+# API is refused by token shape, before anything is resolved
+# (`docs/SECURITY.md` §6.3), and nothing moves.
+AGENT_ACCEPT="$("${COMPOSE[@]}" exec -T \
+  -e RP_TOKEN="${AGENT_BROWSER_TOKEN}" -e RP_PATH="/api/v1/findings/${FINDING_ID}/accept" \
+  api node -e '
+    const response = await fetch(`http://127.0.0.1:8080${process.env.RP_PATH}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${process.env.RP_TOKEN}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ expected_version: 1 }),
+    });
+    process.stdout.write(JSON.stringify({ status: response.status, body: await response.text() }));
+  ')"
+AGENT_ACCEPT_CODE="$(RP_RESPONSE="${AGENT_ACCEPT}" python3 -c '
+import json, os, sys
+outer = json.loads(os.environ["RP_RESPONSE"])
+sys.stdout.write(str(json.loads(outer["body"]).get("error", {}).get("code")))')"
+[[ "${AGENT_ACCEPT_CODE}" == "AUTHORISATION_DENIED" ]] \
+  || fail "an agent credential on the human accept route was answered ${AGENT_ACCEPT_CODE}"
+[[ "$(psql_scalar "select status from findings where id = '${FINDING_ID}'")" == "AWAITING_HUMAN_REVIEW" ]] \
+  || fail "the agent's accept attempt moved the finding"
+info "an agent credential is refused on the human accept route and moves nothing"
+
+# The decision names the verification it decides (ADR-0035): the identifier the
+# reader was shown, not one fetched at the moment the button was pressed.
+FINDING_VIEW="$(human GET "/api/v1/findings/${FINDING_ID}")"
+FINDING_VERSION="$(field "${FINDING_VIEW}" 'data["version"]')" || fail "could not read the finding as the human"
+CURRENT_VERIFICATION="$(field "$(human GET "/api/v1/findings/${FINDING_ID}/verification")" 'data["id"]')" \
+  || fail "the finding carries no current verification for a human to decide"
+[[ "${CURRENT_VERIFICATION}" == "${AGENT_VERIFICATION_ID}" ]] \
+  || fail "the current verification is ${CURRENT_VERIFICATION}, not the one the agent submitted"
+
+ACCEPT_BODY="$(printf '{"expected_version":%s,"verification_id":"%s","reason":"The heading names the resolution at both viewports."}' \
+  "${FINDING_VERSION}" "${CURRENT_VERIFICATION}")"
+ACCEPT_RESPONSE="$(human POST "/api/v1/findings/${FINDING_ID}/accept" "${ACCEPT_BODY}")"
+[[ "$(field "${ACCEPT_RESPONSE}" 'data["status"]')" == "RESOLVED" ]] \
+  || fail "the human accept did not resolve the finding"
+echo "${ACCEPT_RESPONSE}" > "${EVIDENCE}/finding-accepted.json"
+info "the human accepted ${FINDING_ID} against verification ${CURRENT_VERIFICATION}"
+
+# The review itself. It reached AWAITING_HUMAN_REVIEW from the agent; only a
+# human may take it further, and only once every human-authored finding is
+# disposed of.
+REVIEW_VIEW="$(human GET "/api/v1/reviews/${REVIEW_ID}")"
+REVIEW_STATUS="$(field "${REVIEW_VIEW}" 'data["status"]')"
+[[ "${REVIEW_STATUS}" == "AWAITING_HUMAN_REVIEW" ]] \
+  || fail "the review is ${REVIEW_STATUS}; an agent should have handed it over"
+REVIEW_ACCEPT_BODY="$(printf '{"expected_version":%s,"reason":"Accepted with evidence at both viewports."}' \
+  "$(field "${REVIEW_VIEW}" 'data["version"]')")"
+REVIEW_ACCEPTED="$(human POST "/api/v1/reviews/${REVIEW_ID}/accept" "${REVIEW_ACCEPT_BODY}")"
+[[ "$(field "${REVIEW_ACCEPTED}" 'data["status"]')" == "ACCEPTED" ]] \
+  || fail "the human accept did not move the review to ACCEPTED"
+# Whose authority it was, read from the record rather than inferred from the
+# response code.
+ACCEPTED_BY="$(psql_scalar "select coalesce(accepted_by_actor_id, '<null>') from reviews where id = '${REVIEW_ID}'")"
+[[ "${ACCEPTED_BY}" == "${HUMAN_USER_ID}" ]] \
+  || fail "the review records ${ACCEPTED_BY} as its accepting actor, not the signed-in human"
+echo "${REVIEW_ACCEPTED}" > "${EVIDENCE}/review-accepted.json"
+info "the human accepted ${REVIEW_SLUG}; the record names ${HUMAN_USER_ID}"
+
+# ---------------------------------------------------------------------------
+step "14. Export the review as the portable document (step 14)"
+# ---------------------------------------------------------------------------
+# Through the operator command line an administrator actually runs, in the image
+# that ships it, rather than through the API — `reviewplane export-review` is
+# what `docs/DEPLOYMENT.md` §11 documents and what a self-hosted operator has.
+"${COMPOSE[@]}" exec -T api reviewplane export-review \
+  --project "${PROJECT_ID}" --review "${REVIEW_SLUG}" \
+  > "${EVIDENCE}/${REVIEW_SLUG}.review.json" \
+  || fail "reviewplane export-review failed"
+
+EXPORT_SUMMARY="$(RP_FINDING="${FINDING_ID}" RP_ORIGINAL="${HUMAN_SCREENSHOT_ARTEFACT_ID}" \
+  RP_SLUG="${REVIEW_SLUG}" python3 -c '
+import json, os, sys
+
+document = json.load(open(sys.argv[1]))
+problems = []
+if document.get("format") != "reviewplane-review":
+    problems.append("format is %r" % document.get("format"))
+if document.get("version") != 1:
+    problems.append("version is %r" % document.get("version"))
+if document.get("privacy_mode") != "metadata_only":
+    problems.append("privacy_mode is %r" % document.get("privacy_mode"))
+review = document.get("review") or {}
+if review.get("slug") != os.environ["RP_SLUG"]:
+    problems.append("slug is %r" % review.get("slug"))
+if str(review.get("status")).upper() != "ACCEPTED":
+    problems.append("status is %r" % review.get("status"))
+findings = document.get("findings") or []
+if not any(f.get("id") == os.environ["RP_FINDING"] for f in findings):
+    problems.append("the accepted finding is absent")
+artefacts = {a.get("id"): a for a in document.get("artefacts") or []}
+if os.environ["RP_ORIGINAL"] not in artefacts:
+    problems.append("the annotated screenshot is not in the manifest")
+for identifier in sys.argv[2:]:
+    if identifier not in artefacts:
+        problems.append("the after screenshot %s is not in the manifest" % identifier)
+for identifier, artefact in artefacts.items():
+    if not artefact.get("sha256"):
+        problems.append("%s carries no sha256" % identifier)
+if problems:
+    sys.stderr.write("; ".join(problems) + "\n")
+    raise SystemExit(1)
+sys.stdout.write(json.dumps({
+    "findings": len(findings),
+    "artefacts": sorted(artefacts),
+    "digests": {i: a["sha256"] for i, a in artefacts.items()},
+}))
+' "${EVIDENCE}/${REVIEW_SLUG}.review.json" $(agent_field '" ".join(a["artefact_id"] for a in report["after_artefacts"])'))" \
+  || fail "the exported review does not describe what was accepted"
+info "exported ${REVIEW_SLUG}.review.json: ${EXPORT_SUMMARY}"
+
+# ---------------------------------------------------------------------------
+step "15. Assert the event sequence and the artefact hashes (step 15)"
+# ---------------------------------------------------------------------------
+"${COMPOSE[@]}" exec -T postgres psql -U reviewplane -d reviewplane -At -F'|' -c \
+  "select sequence, type, actor_type, id from events where project_id = '${PROJECT_ID}' order by sequence" \
+  > "${EVIDENCE}/event-sequence.txt" || fail "could not read the event stream"
+
+# The ordered sequence, asserted as a subsequence in the order the shipped
+# product produces it.
+#
+# `review.created` comes before `finding.created` here, and the issue that
+# specified this list had them the other way round. The control plane creates a
+# finding *into* a review, so the specified order is not reachable; the
+# assertion follows the product and this comment records the correction rather
+# than quietly reordering a list.
+#
+# `connector.enrolled` is deliberately not in this list: enrolment happens
+# before the connector is associated with a project, so the event belongs to the
+# organisation's stream and not to this project's. It is asserted separately
+# below, which is also the assertion that the stream key rule holds.
+python3 -c '
+import sys
+
+expected = sys.argv[2:]
+seen = [line.split("|")[1] for line in open(sys.argv[1]) if line.strip()]
+position = 0
+missing = []
+for wanted in expected:
+    try:
+        position = seen.index(wanted, position) + 1
+    except ValueError:
+        missing.append(wanted)
+if missing:
+    sys.stderr.write("not in order after the events before them: %s\n" % ", ".join(missing))
+    sys.stderr.write("observed: %s\n" % ", ".join(seen))
+    raise SystemExit(1)
+' "${EVIDENCE}/event-sequence.txt" \
+  workspace.observed published_service.ready browser_session.ready \
+  review.created finding.created finding.annotated \
+  review.assigned inbox_item.created inbox_item.acknowledged \
+  review.claimed finding.claimed \
+  finding.verification_submitted finding.verification_accepted finding.resolved review.accepted \
+  || fail "the project's event stream does not carry the scenario's events in order"
+
+ENROLLED="$(psql_scalar "select count(*) from events
+                           where organisation_id = '${ORGANISATION_ID}' and type = 'connector.enrolled'")"
+(( ENROLLED >= 1 )) || fail "no connector.enrolled event was recorded"
+
+# Per-project monotonic sequence, and deduplication by event identifier. Both
+# are read off the whole stream rather than sampled: a gap or a repeat is the
+# kind of thing that appears once in a thousand runs and never in a spot check.
+python3 -c '
+import sys
+
+previous = None
+identifiers = set()
+for line in open(sys.argv[1]):
+    if not line.strip():
+        continue
+    sequence, _type, _actor, identifier = line.rstrip("\n").split("|", 3)
+    sequence = int(sequence)
+    if previous is not None and sequence <= previous:
+        raise SystemExit("sequence %d does not advance past %d" % (sequence, previous))
+    previous = sequence
+    if identifier in identifiers:
+        raise SystemExit("event identifier %s appears twice" % identifier)
+    identifiers.add(identifier)
+' "${EVIDENCE}/event-sequence.txt" || fail "the project's event sequence is not monotonic, or an identifier repeats"
+info "event sequence complete and monotonic: $(wc -l < "${EVIDENCE}/event-sequence.txt") events"
+
+# The artefact inventory: what was recorded at upload against what is read back
+# now, for the original and for both after screenshots. The comparison is of the
+# bytes the control plane serves, digested here, against the digest in the row —
+# not of one stored field against another.
+AFTER_ARTEFACT_IDS="$(agent_field '" ".join(a["artefact_id"] for a in report["after_artefacts"])')"
+{
+  printf 'Artefact inventory (docs/TESTING.md section 3, step 15)\n'
+  printf '======================================================\n\n'
+  printf '%-28s %-12s %-10s %s\n' "ARTEFACT" "ROLE" "BYTES" "SHA-256 (recorded = read back)"
+} > "${EVIDENCE}/artefact-inventory.txt"
+
+verify_artefact() {
+  local artefact="$1" role="$2" row recorded size readback
+  row="$(psql_row "select sha256, size_bytes, state from artefacts where id = '${artefact}'")"
+  IFS='|' read -r recorded size state <<< "${row}"
+  [[ "${state}" == "available" ]] || fail "${artefact} is ${state}, not available"
+  "${COMPOSE[@]}" exec -T -e RP_ID="${artefact}" -e RP_TOKEN="${BOOTSTRAP_TOKEN}" api node -e '
+      const authorization = `Bearer ${process.env.RP_TOKEN}`;
+      const granted = await fetch(`http://127.0.0.1:8080/api/v1/artefacts/${process.env.RP_ID}/grants`, {
+        method: "POST", headers: { authorization },
+      });
+      if (!granted.ok) { process.stderr.write(`grant: ${granted.status}\n`); process.exit(1); }
+      const grant = (await granted.json()).data;
+      const response = await fetch(`http://127.0.0.1:8080${grant.url}`, { headers: { authorization } });
+      if (!response.ok) { process.stderr.write(`content: ${response.status}\n`); process.exit(1); }
+      process.stdout.write(Buffer.from(await response.arrayBuffer()).toString("base64"));
+    ' | base64 -d > "${EVIDENCE}/artefact-${artefact}.bin" \
+    || fail "could not read ${artefact} back"
+  readback="$(python3 -c '
+import hashlib, sys
+print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "${EVIDENCE}/artefact-${artefact}.bin")"
+  [[ "${readback}" == "${recorded}" ]] \
+    || fail "${artefact}: recorded ${recorded}, read back ${readback}"
+  printf '%-28s %-12s %-10s %s\n' "${artefact}" "${role}" "${size}" "${recorded}" \
+    >> "${EVIDENCE}/artefact-inventory.txt"
+  rm -f "${EVIDENCE}/artefact-${artefact}.bin"
+}
+
+verify_artefact "${HUMAN_SCREENSHOT_ARTEFACT_ID}" "before"
+for artefact in ${AFTER_ARTEFACT_IDS}; do
+  verify_artefact "${artefact}" "after"
+done
+
+# The original is byte-unchanged since the human annotated it. Originals are
+# stored apart from overlays (ADR-0006), so an annotation must not have touched
+# the picture; the digest recorded at step 8 is compared with the digest now.
+ORIGINAL_NOW="$(psql_scalar "select sha256 from artefacts where id = '${HUMAN_SCREENSHOT_ARTEFACT_ID}'")"
+[[ "${ORIGINAL_NOW}" == "${ORIG_SHA}" ]] \
+  || fail "the annotated screenshot changed after it was annotated: ${ORIG_SHA} -> ${ORIGINAL_NOW}"
+ANNOTATION_ARTEFACTS="$(psql_scalar "select count(distinct artefact_id) from annotations
+                                       where finding_id = '${FINDING_ID}'")"
+[[ "${ANNOTATION_ARTEFACTS}" == "1" ]] \
+  || fail "the finding's annotations name ${ANNOTATION_ARTEFACTS} artefacts; an overlay is geometry against the original, not a second picture"
+{
+  printf '\nThe original is unchanged: %s\n' "${ORIG_SHA}"
+  printf 'Annotations are geometry against it, in the annotations table, and produced no artefact.\n'
+  printf 'Redaction: no redaction fixture is exercised by this scenario (Stage 2).\n'
+} >> "${EVIDENCE}/artefact-inventory.txt"
+info "artefact hashes match end to end; the annotated original is byte-unchanged"
+
+# ---------------------------------------------------------------------------
+step "The fifteen-step scenario passed, with the tunnel capabilities T1 to T3"
 # ---------------------------------------------------------------------------
 info "evidence: ${EVIDENCE}"
 ls -1 "${EVIDENCE}" | sed 's/^/     /'
-info "steps 7 to 15 of docs/TESTING.md section 3 (reviews, findings, verification, export) belong to later issues"

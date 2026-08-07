@@ -87,8 +87,8 @@ Automated scenario:
 4. Publish service.
 5. Start browser session through MCP.
 6. Navigate and capture live frame.
-7. Human test client creates annotated finding.
-8. Create `bugs-on-homepage` review.
+7. Human test client creates the `bugs-on-homepage` review.
+8. It creates an annotated finding in it, against the captured screenshot.
 9. Agent fixture retrieves and claims it.
 10. Agent changes fixture state or branch simulation.
 11. Capture after screenshot.
@@ -97,13 +97,41 @@ Automated scenario:
 14. Export review.
 15. Verify event sequence and artefact hashes.
 
-Steps 1 to 6 run automatically as `pnpm test:e2e` (`deploy/compose/e2e/run.sh`). It starts the Compose stack, enrols the connector fixture, starts the fixture applications on connector loopback, publishes them, reserves and allocates browser sessions against the routes, and navigates central Chromium to the internal origins. Every step asserts its own outcome and a step that cannot be verified aborts the run; evidence lands in `deploy/compose/e2e/evidence/`.
+Steps 7 and 8 are written in that order because it is the only order the control plane has: a finding is created **into** a review, so the review exists first, and the web application's capture flow does exactly this — one `POST .../reviews`, then one `POST .../reviews/:id/findings` per draft (`apps/web/src/components/CaptureFinding.tsx`). An earlier revision named the finding first, which no client can do.
+
+All fifteen steps run automatically as `pnpm test:e2e` (`deploy/compose/e2e/run.sh`), against the shipped Compose deployment. Every step asserts its own outcome and a step that cannot be verified aborts the run; evidence lands in `deploy/compose/e2e/evidence/`.
 
 Step 3 also proves workspace observation, which is the other half of what a connector is for. The fixture's development environment holds a real Git checkout, and the scenario waits for the connector's own `workspace.observed` and asserts the recorded head commit against what `git rev-parse HEAD` answers inside that environment, the recorded path hash against the digest of the configured path, and that **no filesystem path was stored** (`DOMAIN_MODEL.md` §9). It then switches the checkout's branch and commits, and asserts `workspace.head_changed` carrying both sides of the move within a bound derived from `git_context.interval`. The workspace row MUST NOT be written by the scenario: it was, once, with a placeholder head commit and a path hash of sixty-four zeroes, which meant a release-blocking scenario asserted the shape of an observation that had never happened. Removing the connector now fails the run at that step.
 
-The same script then proves the tunnel capabilities `ARCHITECTURE.md` §7.4 makes mandatory, which those six steps do not reach: a WebSocket echo, server-sent events asserted on arrival timing, and Vite hot module replacement applying a source edit made on the development machine without a full page reload. It ends by recording the §12 baseline. These are numbered separately in the script because they are not steps of the scenario above; they are the capabilities the route has to have for that scenario to mean anything.
+The same script then proves the tunnel capabilities `ARCHITECTURE.md` §7.4 makes mandatory, which the scenario does not reach: a WebSocket echo, server-sent events asserted on arrival timing, and Vite hot module replacement applying a source edit made on the development machine without a full page reload. It ends by recording the §12 baseline. These are numbered **T1 to T3** in the script, not 7 to 9, because they are not steps of the scenario above; they are the capabilities the route has to have for that scenario to mean anything, and sharing its numbering made two different lists look like one.
 
-Steps 7 to 15 need reviews, findings, verification and export, and arrive with the issues that introduce them.
+### The human is a real account, not the operator token
+
+Steps 7, 8 and 13 are driven by a client that claims the installation with the token `reviewplane install-token` mints, signs in with `POST /api/v1/auth/sessions`, and presents the session cookie with its `X-CSRF-Token` on every write. That is a requirement of this scenario and not an implementation detail. The bootstrap operator token the rest of the script uses is a principal with `organisationId: null` **and** `projectIds: null`, so every tenancy term in every scoped query goes vacuous under it: an acceptance driven by it would pass against a control plane that had no idea who was accepting, which is exactly the failure §10 describes. The run additionally asserts that a cookie write with no CSRF header is refused before the body is read, that the review record names the signed-in user as its accepting actor, and — the invariant the product exists for — that an **agent** credential presented to the same accept route is refused and moves nothing.
+
+Two things had to be repaired before this could run at all, and both are recorded here because a scenario that worked around them silently would be claiming more than it proves.
+
+**A fresh installation held two organisations.** Migration `0055` seeds the Stage 1 organisation and the single administrator account; the connector module separately ensured `REVIEWPLANE_ORGANISATION_ID` existed, defaulting to `org_default`. So the only human was in one organisation and every connector, project, review and event was in the other, and a signed-in administrator could reach none of the deployment's own projects — every refusal correct, and the product loop impossible to complete. The connector module now **adopts** the deployment's organisation when none is configured and creates one only when the deployment holds none. That is the half of RVP-63 this scenario is blocked by; the rest of that issue — refusing a configured identifier that disagrees with the seed, and a path for an installation that already holds both rows — is still open. The step 7 assertion that the human's organisation is the deployment's is what keeps the repair honest.
+
+**The local MCP bridge could not reach the agent endpoint.** It derived `/mcp/v1` from the connector's own control-plane URL, which in this deployment is the mutually authenticated connector listener and serves `/connector/v1/*` only, so the bridge exchanged a valid credential and then met a 404. `control_plane.mcp_url` now names the agent endpoint (ADR-0039), and the edge gateway joins the development network because a development machine reaches a deployment at its published address.
+
+### What steps 9 to 12 exercise, and what they do not
+
+The agent fixture (`deploy/compose/e2e/agent-fixture.mjs`) runs **inside the development environment**, spawns `reviewplane-connector mcp` and speaks newline-delimited JSON-RPC over its stdin and stdout — the transport an MCP client's stdio transport speaks. So the ADR-0023 credential exchange over mutual TLS, and the resolution of the project from the working directory, are exercised rather than bypassed. Every review, finding, inbox and verification call goes over that session. It polls `agent_inbox_list` for the assignment rather than being told, because nothing is pushed to an agent.
+
+Step 11 does **not** go over the bridge, and the reason is a real gap rather than a convenience. A bridge credential carries the workflow capabilities and no browser capability at all (`BRIDGE_CAPABILITIES`, `docs/SECURITY.md` §6.3), while `finding_submit_verification` requires at least one screenshot artefact — so an agent on the bridge can retrieve, claim and resolve a finding but cannot capture the evidence its own hand-over demands. The fixture therefore opens a **second** MCP session at the same `/mcp/v1` endpoint with an administrator-issued agent credential, which is the shipped way an agent obtains browser authority. Both sessions are real MCP clients and only the credential differs. The gap needs its own decision and does not have one.
+
+Step 10 is a real change to the development machine: the agent edits the checkout the connector observes, commits it — `finding_submit_verification` refuses a commit equal to the one the finding was captured at — restarts the development server, and waits for the new text to be visible in central Chromium through the route before capturing anything. A screenshot taken before that wait would be a picture of the defect at a new commit.
+
+### What the run asserts, and what it does not
+
+Asserted: the ordered event subsequence `workspace.observed`, `published_service.ready`, `browser_session.ready`, `review.created`, `finding.created`, `finding.annotated`, `review.assigned`, `inbox_item.created`, `inbox_item.acknowledged`, `review.claimed`, `finding.claimed`, `finding.verification_submitted`, `finding.verification_accepted`, `finding.resolved`, `review.accepted`, with per-project monotonic `sequence` and no repeated event identifier; `connector.enrolled` separately, on the organisation's stream, because enrolment precedes any project association and the stream key is the project where one exists and the organisation otherwise. `review.created` precedes `finding.created` for the reason given above.
+
+Also asserted: every artefact's recorded digest against the bytes read back through a subject-bound grant, for the before screenshot and both after screenshots; that the annotated original is byte-unchanged and that its annotations name one artefact and produced none, because an overlay is geometry against the original (ADR-0006); that the exported document is `metadata_only`, names the accepted review and finding, and carries a `sha256` for every artefact in its manifest.
+
+Fault cases covered inside the run: **denial** — four final dispositions and a review acceptance requested by an agent, each refused and each audited, plus an agent credential refused on the human accept route with nothing moved; **timeout** — a bounded `browser_wait` for text the fixture never renders, which expires and reports it; **partial failure** — a duplicate `finding_submit_verification` under one idempotency key leaving exactly one `submitted` verification.
+
+Not covered by this scenario, and named rather than implied: **connector disconnect and reconnect mid-scenario** with route reconciliation, which is proved against a real connector process in `apps/server/test/connector-reconnect.test.ts` and in `services/connector/internal/protocolsim` but not here; an interrupted artefact upload retried under one idempotency key, which is proved in `apps/server/test/artefact-security.test.ts`; **redaction**, which is Stage 2 — the artefact inventory the run writes says so in the place a redaction assertion would go.
 
 This scenario is release-blocking.
 
@@ -111,21 +139,39 @@ This scenario is release-blocking.
 
 | Steps | Harness | Command |
 |---|---|---|
-| 5 to 7, browser side | `apps/browser-worker/test/browser/` | `pnpm test:browser` |
-| 7, annotation UI | `apps/web/test/ui/` | `pnpm test:ui` |
-| 8 to 12 | `apps/mcp-server/test/integration/` | `pnpm --filter @reviewplane/mcp-server run test:integration` |
+| **1 to 15, over the deployed Compose stack** | `deploy/compose/e2e/run.sh` | `pnpm test:e2e` |
+| 5 to 6, browser side | `apps/browser-worker/test/browser/` | `pnpm test:browser` |
+| 8, annotation UI | `apps/web/test/ui/` | `pnpm test:ui` |
+| 9 to 12, bespoke topology | `apps/mcp-server/test/integration/` | `pnpm --filter @reviewplane/mcp-server run test:integration` |
+| 13, the human decision in a browser | `apps/web/test/ui/review-workspace.browser.test.ts` | `pnpm test:ui` |
 
-Steps 9 to 12 — agent retrieves and claims `bugs-on-homepage`, changes the
-fixture application, captures the after screenshot and submits verification —
-run against real components: a real PostgreSQL, the real control-plane process,
-the real MCP server, a real Chromium browser worker in its own process, and the
-official MCP TypeScript SDK as the client. The suite runs in the browser
-worker's own image under the container controls of
-`deploy/compose/compose.yaml`, on an internal Docker network whose only
-reachable peer is its database, with a unique name per run.
+The first row is the scenario itself and is the one §16's release condition
+names. The rest are not redundant with it: each proves something the deployed
+run cannot reach, and the deployed run proves the one thing none of them can —
+that these components, in the images and under the network topology an operator
+installs, complete the loop together.
 
-Steps 1 to 4 need the connector, and steps 13 to 15 need human acceptance and
-review export; both arrive in Stage 1.
+`pnpm test:integration` runs steps 9 to 12 against real components — a real
+PostgreSQL, the real control-plane process, the real MCP server, a real Chromium
+browser worker in its own process, and the official MCP TypeScript SDK as the
+client — but against a bespoke topology, with an administrator-issued
+credential and no connector. `pnpm test:e2e` runs the same steps over the local
+stdio bridge, through the edge gateway, with a real connector. The two answer
+different questions and both are kept.
+
+`pnpm test:ui` owns the halves that are properties of a **client**: that a mark
+a human draws is recorded where they drew it, and that the accept request the
+browser sends names the claim the page rendered rather than one it fetched when
+the button was pressed. No server-side run can observe either.
+
+A developer runs the whole scenario with one command, `pnpm test:e2e`, and needs
+Docker and nothing else. On a failure the run prints the failing step, tails the
+`api`, `tunnel-gateway`, `dev-fixture`, `browser-worker`, `mcp` and `gateway`
+logs, and leaves `deploy/compose/e2e/evidence/` holding the agent fixture's own
+log and JSON report, the event dump with sequence numbers and actor types, the
+artefact inventory with recorded and read-back digests, the exported review
+document, and screenshots at 390x844 and 1440x900. `REVIEWPLANE_E2E_KEEP_UP=1`
+leaves the stack running for a look round.
 
 These three harnesses build images and run Chromium, so they run in
 `.github/workflows/container-harnesses.yml` rather than in the root gate

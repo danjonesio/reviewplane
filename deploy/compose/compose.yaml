@@ -161,10 +161,20 @@ services:
         REVIEWPLANE_REVISION: ${REVIEWPLANE_REVISION:-unknown}
         REVIEWPLANE_BUILT_AT: ${REVIEWPLANE_BUILT_AT:-unknown}
     restart: unless-stopped
-    # `frontend` carries the published port; `edge` carries the two upstreams.
+    # `frontend` carries the published port; `edge` carries the two upstreams;
+    # `devnet` carries the development environment.
     # The gateway is the only member of `frontend`, so it is the only container
     # in the stack with a route off the host.
-    networks: [frontend, edge]
+    #
+    # `devnet` is here because a development machine reaches this deployment at
+    # its published address like any other client, and the agent endpoint
+    # `/mcp/v1` is a route on this gateway (`docs/MCP_SPEC.md` §3.2). The local
+    # MCP bridge runs on the development machine and posts JSON-RPC there
+    # (§3.1), so without this the bridge has no route to the endpoint it exists
+    # to reach. It grants the development environment nothing else: the gateway
+    # refuses `/internal/*`, and every upstream stays on `edge` where the
+    # development environment is not.
+    networks: [frontend, edge, devnet]
     depends_on:
       - api
       - mcp

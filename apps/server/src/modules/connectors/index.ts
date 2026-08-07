@@ -27,7 +27,7 @@ import { ControlChannelRegistry } from "./publication.ts";
 import type { ConnectorReconciler } from "./reconciliation.ts";
 import type { RevocationEffects } from "./revocation.ts";
 import { startHeartbeatMonitor, type HeartbeatMonitor } from "./monitor.ts";
-import { ensureOrganisation } from "./repository.ts";
+import { resolveOrganisation } from "./repository.ts";
 import { registerConnectorRoutes } from "./routes.ts";
 
 export { loadConnectorModuleConfig } from "./config.ts";
@@ -112,8 +112,19 @@ export async function createConnectorModule(
   app: FastifyInstance,
   options: ConnectorModuleOptions,
 ): Promise<ConnectorModule> {
-  const config = options.config ?? loadConnectorModuleConfig();
-  await ensureOrganisation(options.pool, config.organisationId, config.organisationName);
+  const loaded = options.config ?? loadConnectorModuleConfig();
+  // Adopt the deployment's organisation rather than inventing one beside it;
+  // see `resolveOrganisation`. Every reader below takes the resolved identifier,
+  // because a module that acted for one organisation while advertising another
+  // would produce exactly the divergence this avoids.
+  const config: ConnectorModuleConfig = {
+    ...loaded,
+    organisationId: await resolveOrganisation(options.pool, {
+      id: loaded.organisationId,
+      name: loaded.organisationName,
+      explicit: loaded.organisationIdConfigured,
+    }),
+  };
 
   const authority = await ensureCertificateAuthority(options.pool);
   const listenerCertificate = await ensureListenerCertificate(options.pool, config, authority);

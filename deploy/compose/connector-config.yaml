@@ -6,6 +6,16 @@
 
 control_plane:
   url: https://api:8443
+  # The agent endpoint, named rather than derived (ADR-0039).
+  #
+  # `url` above is the control plane's mutually authenticated connector
+  # listener, which serves `/connector/v1/*` and nothing else. `/mcp/v1` is a
+  # route on the edge gateway (`docs/ARCHITECTURE.md` §4.1), so this deployment
+  # is one of those where the two origins differ and the bridge cannot derive
+  # one from the other. Without this line `reviewplane-connector mcp` exchanges
+  # a perfectly good credential and then posts JSON-RPC at the connector
+  # listener, which answers 404.
+  mcp_url: https://gateway:8443
   tls:
     # The connector trust bundle: the control-plane CA that the control plane
     # serves its certificate from, and the tunnel gateway's own certificate.
