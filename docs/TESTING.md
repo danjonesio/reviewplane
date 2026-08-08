@@ -1310,3 +1310,14 @@ would have caught, and a reader who assumes more will stop looking for the rest.
 - It does not mean the control plane survives every fault it is subjected to. The
   database case asserts what its §11 row requires and *records* what happened to
   the process, and RVP-103 is open against a crash that recording found (§11.1).
+- **It does not yet prove that the suites behind every command actually ran.**
+  `pnpm test` and `pnpm test:integration` are `pnpm -r --if-present` over globbed
+  `node --test` invocations, and both report success over an empty run: a script
+  no package declares exits `0`, and a glob matching no files exits `0` with zero
+  tests. A renamed suite directory or a deleted script therefore leaves the
+  condition it owns green and unexamined — for `pnpm test` that is "migration or
+  restore test fails", and for `pnpm test:integration` half of the primary
+  scenario. This is §16.1's own rule one level down, and worse there: a workflow
+  `paths` filtered out at least reports nothing, while an empty run reports a
+  pass and satisfies a required check. RVP-106 is open against it.
+  `pnpm test:security` already guards its own case (§10).
