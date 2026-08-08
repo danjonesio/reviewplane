@@ -53,7 +53,9 @@
     "//cli": "The operator command line of docs/DEPLOYMENT.md section 11. The deployed image exposes it as `reviewplane`; in a checkout it is run through this script, which needs no build. A `bin` entry would make pnpm try to link dist/cli.js at install time, before anything has been built.",
     "cli": "node --conditions=development src/cli.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --conditions=development --test --test-concurrency=1 \"test/**/*.test.ts\""
+    "test": "node --conditions=development --test --test-concurrency=1 \"test/**/*.test.ts\"",
+    "//test:security": "The standing security gates this package owns (docs/TESTING.md section 10). They are also matched by `test` above, so they run on every change; this runs them alone. Membership is the `security-gate-` filename prefix rather than a list, so a gate added here is a gate this script runs. The prefix is deliberately specific: a `-gate` suffix also matches `completion-gate.test.ts`, which is a domain rule and not a security gate. The `ls` is a guard, not decoration. `node --test` exits 0 when its glob matches nothing — verified: `pass 0, fail 0`, exit 0 — so a renamed file or a broken pattern would make this script report green having executed nothing, and it is the named owner of two docs/TESTING.md section 16 conditions. `ls` fails on a pattern that matches no file, so an empty run is a failure rather than a pass. RVP-106 tracks the same hole in the other suites' scripts.",
+    "test:security": "ls test/security-gate-*.test.ts > /dev/null && node --conditions=development --test --test-concurrency=1 \"test/security-gate-*.test.ts\""
   },
   "dependencies": {
     "@fastify/websocket": "^11.3.0",

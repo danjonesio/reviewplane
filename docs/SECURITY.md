@@ -409,22 +409,23 @@ calls do, and each names the rule it enforces.
   the ADR-0016 bootstrap administrator, which is deployment-wide by
   construction; every account session carries a real one.
 
-  The **artefact routes** still do not meet it, and their gap is wider than a
-  scope comparison: they look the row up before authenticating at all, and
-  answer `RESOURCE_NOT_FOUND` from that lookup before any credential is
-  resolved. So they leak twice over —
+  The **artefact routes** now meet it too. They used to look the row up before
+  authenticating at all and answer `RESOURCE_NOT_FOUND` from that lookup before
+  any credential was resolved, so they leaked twice over: an authenticated
+  caller in another project was answered `PROJECT_CONTEXT_MISMATCH` where an
+  unknown identifier was answered `RESOURCE_NOT_FOUND`, and an
+  **unauthenticated** caller was answered `AUTHENTICATION_REQUIRED` for an
+  identifier that existed and `RESOURCE_NOT_FOUND` for one that did not —
+  distinguishing the two while holding no credential at all. They now resolve
+  the actor first and then read the record through `getInScope`, and both legs
+  are held by `apps/server/test/security-gate-isolation.test.ts`: the
+  authenticated one by the byte-for-byte comparison every route in that gate
+  makes, and the unauthenticated one by its own test, because a signed-in probe
+  cannot see it.
 
-  - an authenticated caller in another project is answered
-    `PROJECT_CONTEXT_MISMATCH` where an unknown identifier is answered
-    `RESOURCE_NOT_FOUND`;
-  - an **unauthenticated** caller is answered `AUTHENTICATION_REQUIRED` for an
-    identifier that exists and `RESOURCE_NOT_FOUND` for one that does not, which
-    distinguishes the two while holding no credential at all.
-
-  Both are defects against this section rather than exemptions from it, and both
-  are tracked separately. New routes MUST resolve the actor first, then resolve
-  the record with the identifier, the project scope and the organisation in one
-  predicate, taking the organisation from the caller.
+  New routes MUST resolve the actor first, then resolve the record with the
+  identifier, the project scope and the organisation in one predicate, taking
+  the organisation from the caller.
 - **An identifier that arrives as an argument is scoped by the operation that
   acts on it, not only by the caller that read it first.** A function whose
   authorisation happens entirely above it is authorised by a property of its
