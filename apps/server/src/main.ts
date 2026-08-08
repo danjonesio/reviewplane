@@ -9,34 +9,10 @@
  */
 
 import { buildApp } from "./app.ts";
-import { ALLOCATION_GRACE_MS } from "./domain.ts";
 import { ConfigurationError, loadServerConfig } from "./config.ts";
 import { migrate } from "./db/migrate.ts";
 import { createPool } from "./db/pool.ts";
-
-/** How often published-service expiry is enforced. */
-const SWEEP_INTERVAL_MS = 30_000;
-
-/**
- * How often routes another process requested are finished (ADR-0021).
- *
- * It is much shorter than the expiry sweep because somebody is waiting on it:
- * an agent that called `development_service_publish` is holding an MCP call
- * open until the route is `ready` or `failed`. The query is a partial index
- * scan over the handful of rows still in `requested`, so a second is cheap; a
- * connector's startup grace is ten seconds, and this must not be what dominates
- * the wait.
- */
-const PENDING_INTERVAL_MS = 1_000;
-
-/**
- * How long a route may sit `requested` before the sweep takes it over.
- *
- * The API publishes inline, so a route it is working on is milliseconds old.
- * Waiting two seconds before the sweep touches one keeps the two paths from
- * asking the same connector to open the same destination twice.
- */
-const PENDING_GRACE_MS = 2_000;
+import { startBackgroundSweeps } from "./sweeps.ts";
 
 async function main(): Promise<void> {
   let config;
@@ -71,62 +47,14 @@ async function main(): Promise<void> {
     "connector listener started",
   );
 
-  const sweep = setInterval(() => {
-    built.publishedServices.expireDue().catch((error: unknown) => {
-      built.app.log.error({ err: error }, "published-service expiry sweep failed");
-    });
-  }, SWEEP_INTERVAL_MS);
-  // The sweep must not hold the process open on shutdown.
-  sweep.unref();
-
-  // The connector's control channel terminates in this process, so this is the
-  // only process that can finish a publication (ADR-0021). A deployment that
-  // runs several `api` replicas runs several of these; `markReady` and
-  // `markFailed` both refuse a record whose status has already moved, so the
-  // duplicate is a wasted acknowledgement rather than a second route.
-  const pending = setInterval(() => {
-    built.publishedServices
-      .completePending({ olderThanMs: PENDING_GRACE_MS })
-      .catch((error: unknown) => {
-        built.app.log.error({ err: error }, "published-service completion sweep failed");
-      });
-  }, PENDING_INTERVAL_MS);
-  pending.unref();
-
-  // The same split, for the same reason, one layer down (ADR-0037). Admitting a
-  // browser session to a route mints a session-scoped capability, the signing
-  // key is read by this process alone, and the MCP endpoint is deliberately
-  // built without one. So the endpoint records the request and this sweep
-  // completes it — and a second sweep ends any reservation nothing completed,
-  // because a `REQUESTED` row with `ended_at IS NULL` is exactly what the worker
-  // capacity query counts.
-  const allocations = setInterval(() => {
-    built.sessions
-      .completePendingAllocations({ olderThanMs: ALLOCATION_GRACE_MS })
-      .catch((error: unknown) => {
-        built.app.log.error({ err: error }, "browser-session allocation sweep failed");
-      });
-  }, PENDING_INTERVAL_MS);
-  allocations.unref();
-
-  const overdue = setInterval(() => {
-    built.sessions
-      .failOverdueAllocations({ deadlineMs: config.allocationDeadlineSeconds * 1000 })
-      .catch((error: unknown) => {
-        built.app.log.error({ err: error }, "browser-session allocation deadline sweep failed");
-      });
-  }, SWEEP_INTERVAL_MS);
-  overdue.unref();
+  const stopSweeps = startBackgroundSweeps(built, config);
 
   let shuttingDown = false;
   const shutdown = (signal: string): void => {
     if (shuttingDown) return;
     shuttingDown = true;
     built.app.log.info({ signal }, "shutting down");
-    clearInterval(sweep);
-    clearInterval(pending);
-    clearInterval(allocations);
-    clearInterval(overdue);
+    stopSweeps();
     void built
       .stop()
       .then(async () => pool.end())

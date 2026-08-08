@@ -112,6 +112,34 @@ export class FilesystemArtefactStore implements ArtefactStore {
   }
 
   /**
+   * The root is present and this process can list it.
+   *
+   * A volume that has gone — unmounted, renamed, never mounted — fails here,
+   * which is the condition a reader has to know about. A read-only mount does
+   * not, and must not: serving evidence from one is the deliberate arrangement
+   * the MCP endpoint runs under.
+   *
+   * The content-addressed subtree is absent on a fresh installation that has
+   * stored nothing, so the root rather than `sha256/` is what is opened;
+   * treating "nothing stored yet" as unreadable would refuse the first
+   * verification of every new deployment.
+   */
+  async probeReadable(): Promise<void> {
+    try {
+      const entry = await stat(this.#root);
+      if (!entry.isDirectory()) {
+        throw new Error("it is not a directory");
+      }
+      await opendir(this.#root).then(async (directory) => directory.close());
+    } catch (error) {
+      throw new ArtefactStoreError(
+        `the filesystem artefact store at ${this.#root} is not readable: ${describe(error)}`,
+        { cause: error },
+      );
+    }
+  }
+
+  /**
    * A real round trip, outside the content-addressed tree.
    *
    * Writing under `sha256/` would create an object with a key no artefact

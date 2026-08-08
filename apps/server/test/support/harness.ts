@@ -103,6 +103,14 @@ function environmentFor(
   return {
     REVIEWPLANE_DATABASE_URL: database.url,
     REVIEWPLANE_BOOTSTRAP_TOKEN: BOOTSTRAP_TOKEN,
+    // The organisation this harness acts for, named rather than left to be
+    // resolved. Unset, the connector module now adopts the deployment's own
+    // organisation — migration 0055's seed — instead of creating a second one
+    // beside it (RVP-63, `modules/connectors/repository.ts`). That is the right
+    // behaviour for a deployment and the wrong one for a suite whose fixtures
+    // mint their own organisations: every enrolment token here is scoped to
+    // `org_default`, and the module would be acting for the seeded one.
+    REVIEWPLANE_ORGANISATION_ID: "org_default",
     REVIEWPLANE_HOST: "127.0.0.1",
     REVIEWPLANE_PORT: "0",
     REVIEWPLANE_CONNECTOR_HOST: "127.0.0.1",

@@ -43,6 +43,17 @@ connector restart mid-session ends the bridge and the next one requests a fresh
 credential rather than replaying a stored one
 (`docs/CONNECTOR_PROTOCOL.md` section 14).
 
+The endpoint it proxies to is derived from the connector's own control-plane
+URL with the path replaced, which is right wherever one origin serves both the
+connector endpoints and `/mcp/v1`. Where a deployment separates them — as the
+shipped Docker Compose stack does, with `/mcp/v1` on the edge gateway and the
+connector listener a port on the control plane — `control_plane.mcp_url` names
+the agent endpoint and MUST use `https` (ADR-0039,
+`docs/CONNECTOR_PROTOCOL.md` §20). The **credential exchange** is not
+configurable and stays on the connector's own control URL: it authenticates with
+a client certificate that listener terminates, and a bridge that could be
+pointed at another host for it would be a second trust anchor to get wrong.
+
 The credential the bridge receives is bound to the single project the workspace
 resolved to, so the session it opens is unambiguous by construction and never
 meets `PROJECT_CONTEXT_AMBIGUOUS`. It carries the read and write capabilities of

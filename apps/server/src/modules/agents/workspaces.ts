@@ -22,7 +22,17 @@ export interface WorkspaceRecord {
   readonly id: string;
   readonly organisation_id: string;
   readonly project_id: string;
-  readonly root_path: string;
+  /**
+   * The developer machine's absolute path, or `null`.
+   *
+   * `null` is the normal case, not an edge one: a connector-reported workspace
+   * stores no filesystem path at all (`docs/DOMAIN_MODEL.md` section 9), and
+   * only an administratively registered one carries a path. Typing it `string`
+   * made every reader assume a value that a real deployment never has.
+   */
+  readonly root_path: string | null;
+  /** The digest of that path, which a connector-reported workspace always has. */
+  readonly path_hash: string;
   readonly branch: string;
   readonly head_commit: string;
   readonly dirty: boolean;
@@ -32,7 +42,8 @@ interface WorkspaceRow {
   id: string;
   organisation_id: string;
   project_id: string;
-  root_path: string;
+  root_path: string | null;
+  path_hash: string;
   branch: string;
   head_commit: string;
   dirty: boolean;
@@ -101,7 +112,7 @@ export class WorkspaceStore {
               updated_at = now(),
               last_seen_at = now(),
               last_observed_at = now()
-       RETURNING id, organisation_id, project_id, root_path, branch, head_commit, dirty`,
+       RETURNING id, organisation_id, project_id, root_path, path_hash, branch, head_commit, dirty`,
       [
         newId("wsp_"),
         input.organisationId,
@@ -137,10 +148,10 @@ export class WorkspaceStore {
    */
   async listForProject(projectId: string, organisationId: string): Promise<WorkspaceRecord[]> {
     const rows = await this.#pool.query<WorkspaceRow>(
-      `SELECT id, organisation_id, project_id, root_path, branch, head_commit, dirty
+      `SELECT id, organisation_id, project_id, root_path, path_hash, branch, head_commit, dirty
          FROM workspaces
         WHERE project_id = $1 AND organisation_id = $2
-        ORDER BY root_path LIMIT 50`,
+        ORDER BY path_hash LIMIT 50`,
       [projectId, organisationId],
     );
     return rows.rows;
@@ -182,10 +193,28 @@ export class WorkspaceStore {
   ): Promise<WorkspaceRecord | null> {
     const workspaces = await this.listForProject(projectId, organisationId);
     if (hint !== null && hint !== "") {
+      // A hint is matched three ways, and the digest is the one that works in a
+      // real deployment.
+      //
+      // A connector-reported workspace stores **no** `root_path`
+      // (`docs/DOMAIN_MODEL.md` section 9): the path is reduced to its digest
+      // precisely so that it never leaves the development machine. Matching on
+      // the path alone therefore matched nothing a connector had reported — and,
+      // worse, dereferenced a null, so every session opened with a
+      // `workspace_hint` in such a deployment failed with a 500 rather than
+      // resolving no workspace. The local MCP bridge always sends one
+      // (`docs/MCP_SPEC.md` section 3.1), so that was every bridge session.
+      //
+      // The digest comparison keeps the privacy property: the caller sends the
+      // path it is standing in, the control plane compares digests, and no path
+      // is stored to compare against.
       const normalised = hint.replace(/\/+$/u, "");
+      const hinted = pathHash(normalised);
       const matched = workspaces.filter(
         (workspace) =>
-          workspace.id === hint || workspace.root_path.replace(/\/+$/u, "") === normalised,
+          workspace.id === hint ||
+          workspace.path_hash === hinted ||
+          (workspace.root_path !== null && workspace.root_path.replace(/\/+$/u, "") === normalised),
       );
       return matched.length === 1 ? (matched[0] as WorkspaceRecord) : null;
     }

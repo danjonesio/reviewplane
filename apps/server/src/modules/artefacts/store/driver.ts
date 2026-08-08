@@ -69,6 +69,23 @@ export interface ArtefactStore {
    * writes, reads and removes.
    */
   probe(): Promise<void>;
+  /**
+   * Proves the driver can **read** now, without writing anything.
+   *
+   * A different question from `probe`, asked by a different caller. `probe`
+   * answers an operator's "can this deployment store artefacts?" and has to
+   * write to mean it. This answers "can evidence already stored be opened?",
+   * which is what a verification submission needs before it records a claim
+   * that rests on artefacts a human will later open.
+   *
+   * The distinction is not academic: the MCP endpoint mounts the artefact
+   * volume **read-only** on purpose — it serves evidence and never writes it
+   * (ADR-0012, `deploy/compose/compose.yaml`) — so a write probe there reports
+   * an unreachable store on a perfectly healthy deployment, and every
+   * `finding_submit_verification` an agent makes over the shipped MCP endpoint
+   * is refused `ARTEFACT_STORE_UNAVAILABLE`.
+   */
+  probeReadable(): Promise<void>;
   /** What the store holds. Bounded: a driver may report a partial count. */
   usage(): Promise<ArtefactStoreUsage>;
   /**

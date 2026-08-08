@@ -24,6 +24,8 @@
     "test:install": "bash deploy/compose/e2e/install-smoke.sh",
     "protocol:generate": "pnpm --filter @reviewplane/protocol run generate",
     "protocol:check": "pnpm --filter @reviewplane/protocol run check",
+    "//test:security": "The four standing security gates of docs/TESTING.md section 10: cross-project and cross-organisation isolation, stale control commands and the control epoch, prompt injection, and capability degradation. They are ordinary test files, so `pnpm test` already runs them on every change; this script exists so that a release gate can name the condition it owns rather than depending on the whole root suite. Membership is the `security-gate-` filename prefix in each package, so a gate added is a gate this runs. It needs Docker for a disposable PostgreSQL and nothing else — no Compose, no Chromium, no image build. The packages are named rather than discovered with `-r --if-present`, because `pnpm -r --if-present run <missing>` exits 0 having run nothing — measured — so a deleted script would make this command a green no-op, while an explicit filter exits 1. The list is reconciled against the packages that actually hold gate files by a test in apps/server/test/security-gate-isolation.test.ts, so it cannot fall behind them.",
+    "test:security": "pnpm --filter @reviewplane/server --filter @reviewplane/mcp-server run test:security",
     "//release": "The two commands the release pipeline owns (docs/TESTING.md section 16). `test:faults` is a container harness like test:e2e; `audit:dependencies` needs network access to the npm and Go advisory sources and fails closed without it.",
     "test:faults": "bash deploy/compose/e2e/fault-injection.sh",
     "audit:dependencies": "node .github/scripts/dependency-audit.mjs"

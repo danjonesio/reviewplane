@@ -109,6 +109,15 @@ export interface McpHarness {
    */
   readonly commands: readonly IssuedCommand[];
   /**
+   * Everything the **control plane** has logged, as one string.
+   *
+   * For "no secret reaches a log line" assertions (`docs/SECURITY.md` section
+   * 18). It is the control plane's log rather than both processes': the MCP
+   * app's Fastify logger is off in this harness, and it is the control plane
+   * that resolves credentials, serves artefact bytes and writes events.
+   */
+  logText(): string;
+  /**
    * Whether the harness runs `api`'s allocation completion sweep (ADR-0037).
    *
    * True by default, because without it this harness is not the product: an
@@ -143,6 +152,11 @@ export async function startMcpHarness(pool: Pool): Promise<McpHarness> {
     workerCommandCredential: WORKER_COMMAND_CREDENTIAL,
     workerEndpoint: "http://browser-worker.invalid",
     artefactPath: artefactRoot,
+    // Not silent, because the log is collected rather than printed and a suite
+    // asserting that no credential reaches a log line needs there to be log
+    // lines to search (`docs/SECURITY.md` section 18). Nothing reaches a
+    // terminal: `logDestination` below is an array.
+    logLevel: "info",
   });
 
   const mcpConfig: McpServerConfig = {
@@ -342,7 +356,24 @@ export async function startMcpHarness(pool: Pool): Promise<McpHarness> {
   // resolves the connector, the workspace and the sessions for itself.
   const publisher = new StubRoutePublisher();
   const gateway = new AcceptingGateway();
-  const control = await buildApp({ config: serverConfig, pool, workerFetch, publisher, gateway });
+  // The control plane's log is collected so that a suite can assert what is
+  // *not* in it (`docs/SECURITY.md` section 18). It is the process that resolves
+  // credentials, serves artefact bytes and writes events, so it is where a raw
+  // token would surface if one ever did.
+  const logLines: string[] = [];
+  const logDestination = {
+    write(line: string): void {
+      logLines.push(line);
+    },
+  };
+  const control = await buildApp({
+    config: serverConfig,
+    pool,
+    workerFetch,
+    publisher,
+    gateway,
+    logDestination,
+  });
   await control.app.ready();
   const mcp = await buildMcpApp({
     config: mcpConfig,
@@ -529,6 +560,9 @@ export async function startMcpHarness(pool: Pool): Promise<McpHarness> {
     get commands() {
       return state.commands;
     },
+    logText() {
+      return logLines.join("\n");
+    },
     async controlOrigin() {
       controlOrigin ??= await control.app.listen({ host: "127.0.0.1", port: 0 });
       return controlOrigin;
@@ -558,6 +592,14 @@ export interface AgentClientOptions {
   readonly projectHint?: string;
   readonly workspaceHint?: string;
   readonly imageContent?: boolean;
+  /**
+   * Declares MCP resource support away.
+   *
+   * `image_resources` is negotiated as `resources && image_content`
+   * (`src/context.ts`), so this is the second of the two ways a client can lose
+   * it, and a suite asserting the negotiation has to be able to exercise both.
+   */
+  readonly resources?: boolean;
   readonly clientName?: string;
 }
 
@@ -573,6 +615,7 @@ export async function connectAgent(
     url.searchParams.set("workspace_hint", options.workspaceHint);
   }
   if (options.imageContent === false) url.searchParams.set("image_content", "false");
+  if (options.resources === false) url.searchParams.set("resources", "false");
 
   const client = new Client({
     name: options.clientName ?? "claude-code",

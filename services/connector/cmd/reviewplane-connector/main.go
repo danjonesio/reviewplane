@@ -453,7 +453,21 @@ func runMCPBridge(args []string, stdout, stderr *os.File) int {
 			slog.String("error", err.Error()))
 	}
 
-	endpoint, err := mcpbridge.MCPEndpoint(record.ControlPlaneURL, credential.ProjectSlug, workspace.Path)
+	// Where the agent endpoint is, rather than where it is assumed to be.
+	//
+	// The identity record's control-plane URL is the origin this environment
+	// enrolled against, which is the connector's mutually authenticated
+	// listener. Wherever one origin serves both that and `/mcp/v1` the two are
+	// the same and nothing needs configuring; where a deployment separates them
+	// — as the shipped Compose stack does, with `/mcp/v1` on the edge gateway —
+	// deriving one from the other posts JSON-RPC at a listener that serves only
+	// `/connector/v1/*` and the bridge dies on a 404 with a valid credential in
+	// hand (ADR-0039).
+	mcpBase := record.ControlPlaneURL
+	if cfg.ControlPlane.MCPURL != nil {
+		mcpBase = cfg.ControlPlane.MCPURL.String()
+	}
+	endpoint, err := mcpbridge.MCPEndpoint(mcpBase, credential.ProjectSlug, workspace.Path)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitRefused
