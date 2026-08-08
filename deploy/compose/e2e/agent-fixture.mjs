@@ -47,6 +47,7 @@
 
 import { spawn } from "node:child_process";
 import { execFile } from "node:child_process";
+import { readdir, readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 
@@ -60,6 +61,15 @@ const BROWSER_TOKEN = process.env.RP_BROWSER_TOKEN ?? "";
 const PROJECT_HINT = process.env.RP_PROJECT_HINT ?? "";
 const INBOX_TIMEOUT_MS = Number(process.env.RP_INBOX_TIMEOUT_MS ?? "180000");
 
+/**
+ * The two viewports `AGENTS.md` requires UI-facing work to be checked at.
+ *
+ * They are sent whole wherever a viewport is asked for, including
+ * `tested_viewports`: `viewport` requires `device_scale_factor` as well as the
+ * two extents, so a pair stripped to `{width, height}` is refused by the
+ * schema, and the ratio is part of what "tested at this viewport" means — a
+ * screenshot at 390x844 says nothing about the same page at scale 2.
+ */
 const VIEWPORTS = [
   { width: 1440, height: 900, device_scale_factor: 1 },
   { width: 390, height: 844, device_scale_factor: 2 },
@@ -118,9 +128,22 @@ function envelopeOf(result, tool) {
 class McpClient {
   #transport;
   #nextId = 1;
+  #lastTrust = null;
 
   constructor(transport) {
     this.#transport = transport;
+  }
+
+  /**
+   * The trust label of the most recent tool response.
+   *
+   * It lives on the envelope and not in the payload (`docs/MCP_SPEC.md` §5), so
+   * a caller that only ever sees `data` cannot record it. Reading it off the
+   * client is how the artefact inventory can say a screenshot was labelled
+   * `trusted_control_plane` rather than record a null and call it evidence.
+   */
+  get lastTrust() {
+    return this.#lastTrust;
   }
 
   async initialise(clientName) {
@@ -145,7 +168,9 @@ class McpClient {
   /** Calls a tool and returns its envelope, refusal or not. */
   async call(tool, args) {
     const result = await this.#request("tools/call", { name: tool, arguments: args });
-    return envelopeOf(result, tool);
+    const envelope = envelopeOf(result, tool);
+    this.#lastTrust = envelope.trust ?? null;
+    return envelope;
   }
 
   /** Calls a tool and fails the run unless it succeeded. */
@@ -331,6 +356,50 @@ async function awaitAssignment(client) {
   return null;
 }
 
+/** The development server's entry point, as its argument vector spells it. */
+const DEVELOPMENT_SERVER_ENTRY_POINT = "/static-app/src/main.ts";
+
+/**
+ * Stops the development server this environment is running, by process.
+ *
+ * `/proc` is read directly rather than shelling out to `pkill`, and that is not
+ * a preference. This image installs `git` and `iproute2` and no `procps`
+ * (`examples/dev-fixture/Dockerfile`), so `pkill` is not on PATH here — and
+ * `pkill -f … || true` cannot tell "no such binary" from "no such process".
+ * The consequence was silent and expensive: nothing was signalled, the
+ * replacement server lost the port to the process still holding it, and
+ * `/healthz` went on answering from the build the finding was raised against.
+ *
+ * A match is one whole argument ending in the entry point's path, so a
+ * substring of some other command line cannot match, and this process's own
+ * argument vector — `node /tmp/agent-fixture.mjs` — cannot either.
+ *
+ * Returns the identifiers it signalled, which the step record carries: an empty
+ * list is the diagnosis when the wait below expires.
+ */
+async function stopDevelopmentServer() {
+  const stopped = [];
+  for (const entry of await readdir("/proc")) {
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number(entry);
+    if (pid === process.pid) continue;
+    let argv;
+    try {
+      argv = (await readFile(`/proc/${entry}/cmdline`, "utf8")).split("\0");
+    } catch {
+      continue; // it ended between the listing and the read, which is fine
+    }
+    if (!argv.some((argument) => argument.endsWith(DEVELOPMENT_SERVER_ENTRY_POINT))) continue;
+    try {
+      process.kill(pid, "SIGTERM");
+      stopped.push(pid);
+    } catch {
+      // it ended on its own between the read and the signal
+    }
+  }
+  return stopped;
+}
+
 /**
  * Waits for text to become visible in the browser session.
  *
@@ -487,23 +556,34 @@ async function main() {
   // The change has to reach the running application, or the after screenshot is
   // a picture of the defect at a new commit. The fixture's pages are module
   // constants, so the development server is restarted exactly as a developer
-  // would restart theirs, in its own session so it outlives this one.
-  await run("sh", ["-c", "pkill -f 'static-app/src/main.ts' || true"], { timeout: 30_000 });
-  spawn("setsid", ["node", `${CHECKOUT}/static-app/src/main.ts`], {
+  // would restart theirs.
+  const stopped = await stopDevelopmentServer();
+  spawn("node", [`${CHECKOUT}/static-app/src/main.ts`], {
+    // Its own session, so it outlives this process and the `docker compose
+    // exec` that started it. `detached` is Node's own `setsid(2)`; spawning the
+    // `setsid` binary would be a second thing this image has to carry for an
+    // effect Node already provides.
     detached: true,
     stdio: "ignore",
     env: { ...process.env, HOST: "127.0.0.1", PORT: "4321" },
   }).unref();
-  // Bounded, and it proves what the next step needs: the development service is
-  // answering on the port the route names again, so a navigation through the
-  // route reaches the new build rather than `PORT_NOT_LISTENING`.
+
+  // The bounded wait, and what it proves.
+  //
+  // Not that *something* answers on 4321. The process this replaced answered
+  // there too, so `/healthz` returning 200 is satisfied by a restart that never
+  // happened — which is exactly what happened while the stop above was a
+  // `pkill` this image has no `procps` to provide, swallowed by `|| true`. The
+  // condition here is the new heading in the response body, so it proves both
+  // halves of what step 11 needs: something is listening on the port the route
+  // names, and it is serving the build the agent just committed.
   const restartDeadline = Date.now() + 60_000;
-  let restarted = false;
+  let servingFix = false;
   while (Date.now() < restartDeadline) {
     try {
-      const response = await fetch("http://127.0.0.1:4321/healthz");
-      if (response.ok) {
-        restarted = true;
+      const response = await fetch("http://127.0.0.1:4321/");
+      if (response.ok && (await response.text()).includes(FIXED_HEADING)) {
+        servingFix = true;
         break;
       }
     } catch {
@@ -511,12 +591,19 @@ async function main() {
     }
     await sleep(500);
   }
-  if (!restarted) fail("the development application did not come back after the agent's edit");
+  if (!servingFix) {
+    fail(
+      `the development application did not serve ${JSON.stringify(FIXED_HEADING)} on ` +
+        "127.0.0.1:4321 within 60s of the agent's edit; if nothing was stopped above, the " +
+        "process holding the port is still serving the build the finding was raised against",
+    );
+  }
   step("fixture.changed", {
     branch: fixBranch,
     previous_commit: capturedCommit,
     commit: fixCommit,
     heading: FIXED_HEADING,
+    stopped_pids: stopped,
   });
 
   // ---------------------------------------------------------------------
@@ -536,7 +623,10 @@ async function main() {
     viewport: VIEWPORTS[0],
     idempotency_key: key("browser-start"),
   });
-  const browserSessionId = started.session?.id;
+  // `browser_session_id`, not `id`: `browser_session_detail` names the session
+  // the way every browser tool's *input* names it, so an agent can pass the
+  // member straight back (`packages/protocol/schemas/mcp/v1.schema.json`).
+  const browserSessionId = started.session?.browser_session_id;
   if (browserSessionId === undefined) fail("browser_session_start named no session");
 
   // The agent publishes its own route: the tool takes no connector, no project
@@ -623,7 +713,11 @@ async function main() {
       viewport,
       sha256: link.sha256 ?? null,
       size_bytes: link.size_bytes ?? null,
-      trust: shot.trust ?? null,
+      // From the envelope. `browser_take_screenshot_result` carries no trust
+      // member, so reading `shot.trust` recorded `null` on every artefact and
+      // called it a trust label.
+      trust: browser.lastTrust,
+      instruction_policy: link.instruction_policy ?? null,
     });
   }
   step("after.captured", { artefacts });
@@ -639,7 +733,7 @@ async function main() {
       "one through the route at both viewports.",
     branch: fixBranch,
     commit: fixCommit,
-    tested_viewports: VIEWPORTS.map(({ width, height }) => ({ width, height })),
+    tested_viewports: VIEWPORTS,
     checks: {
       reproduced_before: true,
       console_errors_reviewed: true,
@@ -648,9 +742,12 @@ async function main() {
     artefact_ids: artefacts.map((artefact) => artefact.artefact_id),
     idempotency_key: key("verify"),
   });
+  // `verification_id`, not `id`. `verification_view` names it that way and the
+  // HTTP view of the same record names it `id`; the identifier is the same
+  // value, and step 13 compares the two.
   const submitted = verification.verification;
   step("verification.submitted", {
-    verification_id: submitted.id,
+    verification_id: submitted.verification_id,
     status: submitted.status,
     finding_status: verification.finding?.status ?? null,
     missing: verification.missing ?? [],
@@ -665,7 +762,7 @@ async function main() {
     summary: "A duplicate submission under one idempotency key.",
     branch: fixBranch,
     commit: fixCommit,
-    tested_viewports: VIEWPORTS.map(({ width, height }) => ({ width, height })),
+    tested_viewports: VIEWPORTS,
     checks: {
       reproduced_before: true,
       console_errors_reviewed: true,
@@ -679,7 +776,7 @@ async function main() {
     summary: "A duplicate submission under one idempotency key.",
     branch: fixBranch,
     commit: fixCommit,
-    tested_viewports: VIEWPORTS.map(({ width, height }) => ({ width, height })),
+    tested_viewports: VIEWPORTS,
     checks: {
       reproduced_before: true,
       console_errors_reviewed: true,
@@ -691,11 +788,13 @@ async function main() {
   step("verification.duplicate", {
     first_ok: first.ok,
     second_ok: second.ok,
-    first_id: first.data?.verification?.id ?? null,
-    second_id: second.data?.verification?.id ?? null,
+    first_id: first.data?.verification?.verification_id ?? null,
+    second_id: second.data?.verification?.verification_id ?? null,
   });
   const currentVerificationId =
-    second.ok === true ? second.data.verification.id : (first.ok === true ? first.data.verification.id : submitted.id);
+    second.ok === true
+      ? second.data.verification.verification_id
+      : (first.ok === true ? first.data.verification.verification_id : submitted.verification_id);
 
   // Re-read the finding: the submission moved it and the version it now holds
   // is what the hand-over must carry.
@@ -756,9 +855,19 @@ async function main() {
       code: attempt.error?.code ?? null,
     });
   }
+  // The version is re-read rather than remembered, and that is the assertion
+  // rather than tidiness. `updateReview` checks the expected version *before* it
+  // arms the refusal it would audit (`apps/server/src/modules/reviews/
+  // service.ts`), so a stale version turns the one denial this scenario exists
+  // to record into a version conflict that records nothing — and the harness's
+  // "every refused disposition is audited" check would then be failing for a
+  // reason that has nothing to do with authority. The version this review is
+  // actually at is three moves past `reviewView`: the claim and the two status
+  // moves above.
+  const beforeDenial = await bridge.expect("review_get", { review: reviewView.id });
   const reviewDenial = await bridge.call("review_update_status", {
     review_id: reviewView.id,
-    expected_version: reviewStates.at(-1).version ?? reviewView.version,
+    expected_version: beforeDenial.review.version,
     status: "ACCEPTED",
     idempotency_key: key("deny-review-accept"),
   });
@@ -769,9 +878,12 @@ async function main() {
   });
   step("denials", { attempts: denials, browser_take_screenshot_on_bridge: bridgeCannotDriveBrowser });
 
+  // `browser_session_control_input` requires an idempotency key like every
+  // other state-changing tool; ending a session is a state change.
   await browser.expect("browser_session_end", {
     browser_session_id: browserSessionId,
     control_epoch: epoch,
+    idempotency_key: key("browser-end"),
   });
   bridge.close();
   browser.close();

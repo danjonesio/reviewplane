@@ -200,6 +200,28 @@ export class S3ArtefactStore implements ArtefactStore {
     }
   }
 
+  /**
+   * The bucket answers a listing under this prefix, and nothing is written.
+   *
+   * An empty result is a pass: a fresh installation has stored nothing, and a
+   * reader that treated "no objects" as "no store" would refuse the first
+   * verification of every new deployment. What this catches is the endpoint
+   * being unreachable and the credential no longer being able to read.
+   */
+  async probeReadable(): Promise<void> {
+    const url = this.#urlForPath("");
+    url.searchParams.set("list-type", "2");
+    url.searchParams.set("prefix", this.#prefix);
+    url.searchParams.set("max-keys", "1");
+    const response = await this.#send("GET", url, Buffer.alloc(0));
+    if (!response.ok) {
+      throw new ArtefactStoreError(
+        `the s3 artefact store is not readable: the endpoint answered ${String(response.status)} ${await shortBody(response)}`,
+      );
+    }
+    await response.arrayBuffer();
+  }
+
   async probe(): Promise<void> {
     const path = `${this.#prefix}probe/probe-${digestOf(Buffer.from(String(Date.now()))).slice(0, 16)}`;
     const url = this.#urlForPath(path);

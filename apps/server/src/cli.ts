@@ -70,6 +70,7 @@ import { OrganisationStore } from "./modules/identity/organisations.ts";
 import { UserStore } from "./modules/identity/users.ts";
 import { gatherStatus, renderStatus } from "./modules/operations/status.ts";
 import { ReviewService } from "./modules/reviews/service.ts";
+import { startBackgroundSweeps } from "./sweeps.ts";
 
 /** Exit code for `migrate --status` when the schema is behind the code. */
 export const EXIT_MIGRATIONS_PENDING = 3;
@@ -211,7 +212,18 @@ async function runServe(pool: Pool): Promise<number> {
     "migrations complete",
   );
   await built.start();
+  // The same background sweeps `main.ts` starts, and this is the command the
+  // shipped Compose deployment runs (`deploy/compose/compose.yaml`, the `api`
+  // service's `command`). Without them the control plane answers requests and
+  // finishes nothing another process asked it for: a route the MCP endpoint
+  // requested stays `requested` (ADR-0021), a browser-session allocation it
+  // requested stays `REQUESTED` (ADR-0037), routes outlive `expires_at`, and
+  // reservations past their deadline go on counting against worker capacity.
+  // Every one of those was true of every installation, and none of it was
+  // visible from `main.ts`, which had them.
+  const stopSweeps = startBackgroundSweeps(built, config);
   await waitForSignal(async () => {
+    stopSweeps();
     await built.stop();
   });
   return 0;

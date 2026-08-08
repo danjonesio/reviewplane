@@ -1089,6 +1089,27 @@ export class ArtefactService {
    * are one stored object, so summing per artefact would overstate what an
    * operator has to back up.
    */
+  /**
+   * Whether evidence already stored can be **read** right now.
+   *
+   * Separate from {@link storeStatus} because they answer different questions
+   * for different callers, and conflating them refused a whole class of correct
+   * request. `storeStatus` is an operator's "can this deployment store
+   * artefacts?" and writes to mean it; this is "can a claim that rests on these
+   * bytes be recorded?", asked by the verification gate — which runs in the MCP
+   * endpoint, whose artefact volume is mounted read-only by design (ADR-0012).
+   * A write probe there answered "unavailable" on a healthy deployment and
+   * refused every agent's `finding_submit_verification`.
+   */
+  async storeReadable(): Promise<{ readonly readable: boolean; readonly detail?: string }> {
+    try {
+      await this.#store.probeReadable();
+      return { readable: true };
+    } catch (error) {
+      return { readable: false, detail: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   async storeStatus(): Promise<ArtefactStoreStatus> {
     let available = true;
     let detail: string | undefined;

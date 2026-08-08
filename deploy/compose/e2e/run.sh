@@ -274,8 +274,18 @@ sys.exit(1)
 # newline. Used for the two bounded waits below, where the condition is a count
 # and a call site that had to strip whitespace on every comparison would be one
 # forgotten `tr` away from comparing "0\n" with "0" forever.
+#
+# A statement that will not run names itself. `set -e` on a failing command
+# substitution ends the script where the assignment is, with psql's own error on
+# stderr and no indication of which of this file's forty statements produced it;
+# a mistyped column in the step 9 wait cost a whole run being read backwards from
+# `column "created_at" does not exist`. The failure is the same failure — a
+# statement that cannot answer cannot be waited on — but it now says which one.
 psql_scalar() {
-  "${COMPOSE[@]}" exec -T postgres psql -U reviewplane -d reviewplane -At -c "$1" | tr -d '\r\n'
+  local output
+  output="$("${COMPOSE[@]}" exec -T postgres psql -U reviewplane -d reviewplane -At -c "$1")" \
+    || fail "this statement would not run: $1"
+  printf '%s' "${output//[$'\r\n']/}"
 }
 
 # One row from the database as pipe-separated fields, with carriage returns
@@ -283,7 +293,10 @@ psql_scalar() {
 # as the empty string and an empty field is indistinguishable from a column that
 # happens to hold one.
 psql_row() {
-  "${COMPOSE[@]}" exec -T postgres psql -U reviewplane -d reviewplane -At -F'|' -c "$1" | tr -d '\r'
+  local output
+  output="$("${COMPOSE[@]}" exec -T postgres psql -U reviewplane -d reviewplane -At -F'|' -c "$1")" \
+    || fail "this statement would not run: $1"
+  printf '%s' "${output//$'\r'/}"
 }
 
 
@@ -486,8 +499,7 @@ if [[ -n "${PUBLISHED}" ]]; then
 fi
 info "only the edge gateway publishes a host port"
 
-# The enrolment token comes first, and the project is created in the
-# organisation it names.
+# The organisation, then the project, then a token scoped to that project.
 #
 # Enrolment refuses a token minted for any organisation but the one this
 # deployment is configured with (`CONNECTOR_PROTOCOL.md` §4.1 as Stage 0
@@ -499,11 +511,18 @@ info "only the edge gateway publishes a host port"
 # a connector in one organisation publishing into another's project is exactly
 # the cross-organisation shape that is refused.
 #
-# No environment_labels: a token that requires them is refused unless the
-# enrolling environment declares the same set, and the fixture describes itself
-# through its configuration file rather than through flags in an entry point.
-TOKEN_RESPONSE="$(api POST /api/v1/connectors/enrolment-tokens "{\"max_uses\":1,\"expires_in_seconds\":600}")"
-ORGANISATION_ID="$(field "${TOKEN_RESPONSE}" 'data["organisation_id"]')" || fail "the enrolment token named no organisation"
+# The organisation is read from the deployment rather than learned from a token
+# response, and reading it is also the assertion that a fresh installation holds
+# **one**. It held two — migration `0055` seeded one and the connector module
+# created another — which is the half of RVP-63 this scenario was blocked by
+# (`docs/TESTING.md` §3). A count asserted here fails at step 2 with the cause
+# named, rather than at step 7 as a human who can reach none of the deployment's
+# projects.
+ORGANISATION_COUNT="$(psql_scalar "select count(*) from organisations")"
+[[ "${ORGANISATION_COUNT}" == "1" ]] \
+  || fail "this installation holds ${ORGANISATION_COUNT} organisations; a fresh one holds exactly one (RVP-63)"
+ORGANISATION_ID="$(psql_scalar "select id from organisations")"
+[[ -n "${ORGANISATION_ID}" ]] || fail "this installation has no organisation"
 
 # The project is created with the identifier `connector-config.yaml` declares,
 # and that is the point of doing it here rather than through the API, which
@@ -528,6 +547,31 @@ ORGANISATION_ID="$(field "${TOKEN_RESPONSE}" 'data["organisation_id"]')" || fail
    on conflict (id) do nothing" >/dev/null \
   || fail "could not create the project"
 info "organisation ${ORGANISATION_ID}, project ${PROJECT_ID}"
+
+# The token names the project, and that association is what makes this
+# development machine the project's.
+#
+# `project_id` on an enrolment token is written onto the `environments` and
+# `connectors` rows the enrolment creates, and `development_service_publish`
+# resolves the connector by joining `connectors` to `environments` on
+# `environments.project_id` (`apps/mcp-server/src/development-services.ts`,
+# `connectorForProject`). An unscoped token leaves both null, and the effect is
+# invisible until an **agent** publishes: step 4 names `connector_id` in the
+# request and works either way, while step 11's agent names no connector —
+# the control plane resolves it, which is the whole of RVP-90 — and is answered
+# `CONNECTOR_OFFLINE` by a connector that is connected. Scoping the token is
+# the shipped way an operator ties a development machine to a project, so this
+# is the scenario doing what an installation does rather than a workaround.
+#
+# No environment_labels: a token that requires them is refused unless the
+# enrolling environment declares the same set, and the fixture describes itself
+# through its configuration file rather than through flags in an entry point.
+TOKEN_RESPONSE="$(api POST /api/v1/connectors/enrolment-tokens \
+  "{\"max_uses\":1,\"expires_in_seconds\":600,\"project_id\":\"${PROJECT_ID}\"}")"
+[[ "$(field "${TOKEN_RESPONSE}" 'data["organisation_id"]')" == "${ORGANISATION_ID}" ]] \
+  || fail "the enrolment token names a different organisation from the deployment's"
+[[ "$(field "${TOKEN_RESPONSE}" 'data["project_id"]')" == "${PROJECT_ID}" ]] \
+  || fail "the enrolment token is not scoped to ${PROJECT_ID}; an agent could not publish through the connector it enrols"
 ENROLMENT_TOKEN="$(field "${TOKEN_RESPONSE}" 'data["enrolment_token"]')" || fail "could not issue an enrolment token"
 printf '%s' "${ENROLMENT_TOKEN}" > "${COMPOSE_DIR}/secrets/enrolment_token"
 # 0644 for the reason generate-secrets.sh records: a plain-Compose file secret
@@ -560,7 +604,19 @@ assert_loopback_only "${EVIDENCE}/ss-ltnp-after-enrolment.txt" "after enrolment"
 info "the fixture binds loopback only"
 
 CONNECTOR_ID="$(field "$(api GET /api/v1/connectors)" 'data[0]["id"]')" || fail "no connector enrolled"
-info "connector ${CONNECTOR_ID}"
+
+# The association the project-scoped token was for, asserted where it is made
+# rather than four steps later where it is used. `development_service_publish`
+# reaches this connector by joining it to its environment and matching
+# `environments.project_id`; a null there is a connector that is connected and
+# unreachable, and the refusal it produces names neither the token nor this row.
+CONNECTOR_PROJECT="$(psql_scalar "select coalesce(e.project_id, '<null>')
+                                    from connectors c
+                                    join environments e on e.id = c.environment_id
+                                   where c.id = '${CONNECTOR_ID}'")"
+[[ "${CONNECTOR_PROJECT}" == "${PROJECT_ID}" ]] \
+  || fail "the enrolled connector's environment names project ${CONNECTOR_PROJECT}, not ${PROJECT_ID}; an agent resolving a connector for this project would find none"
+info "connector ${CONNECTOR_ID}, whose environment belongs to ${PROJECT_ID}"
 
 # ---------------------------------------------------------------------------
 step "3a. The connector observes the development machine's checkout (docs/CONNECTOR_PROTOCOL.md §9)"
@@ -1759,19 +1815,35 @@ AGENT_PID=$!
 
 # The bounded wait, and what it proves.
 #
-# A row in `agent_sessions` for this project is written by the MCP server when a
-# credential opens a session, and by nothing else. So the row existing means the
-# bridge completed its credential exchange, reached `/mcp/v1` over TLS the
-# development environment could verify, and initialised an MCP session — which
-# is exactly what the assignment below needs, because a review is assigned to an
-# agent session identifier. Waiting on the process, or on a file, would be a
-# proxy; this is the thing.
+# The condition is a live `agent_sessions` row **whose credential this
+# connector's device identity was exchanged for**, which is a stronger and more
+# specific fact than "some agent session exists for this project".
+#
+# `agent_credentials.issued_to_client` holds the connector identifier only for a
+# credential minted by the ADR-0023 exchange on the mutually authenticated
+# connector listener, and `agent_sessions.credential_id` names the credential the
+# session was opened with. So a row matching both means this development
+# environment's bridge completed the credential exchange, reached `/mcp/v1` over
+# TLS it could verify, and initialised an MCP session — the exact session the
+# assignment below has to name, because a review is assigned to an agent session
+# identifier and an inbox item is delivered to that identifier alone.
+#
+# The weaker form of this wait — the first row for the project, in any state,
+# from any credential — is the defect class RVP-82 and RVP-85 are: it is
+# satisfied by the administrator-issued browser session step 11 opens, or by a
+# session left behind by an earlier attempt, and the assignment would then be
+# delivered to a session nobody is polling while the fixture waited out its
+# inbox timeout blaming the wrong component. Waiting on the process, or on the
+# fixture's own log line, would be a proxy for the row; this is the row.
 AGENT_SESSION_ID=""
 AGENT_SESSION_DEADLINE=$((SECONDS + 180))
 while (( SECONDS < AGENT_SESSION_DEADLINE )); do
-  AGENT_SESSION_ID="$(psql_scalar "select id from agent_sessions
-                                    where project_id = '${PROJECT_ID}'
-                                    order by created_at asc limit 1")"
+  AGENT_SESSION_ID="$(psql_scalar "select s.id from agent_sessions s
+                                     join agent_credentials c on c.id = s.credential_id
+                                    where s.project_id = '${PROJECT_ID}'
+                                      and c.issued_to_client = '${CONNECTOR_ID}'
+                                      and s.ended_at is null
+                                    order by s.started_at desc limit 1")"
   [[ -n "${AGENT_SESSION_ID}" ]] && break
   if ! kill -0 "${AGENT_PID}" 2>/dev/null; then
     printf '\n--- agent fixture log ---\n' >&2
@@ -1781,7 +1853,7 @@ while (( SECONDS < AGENT_SESSION_DEADLINE )); do
   sleep 2
 done
 [[ -n "${AGENT_SESSION_ID}" ]] \
-  || fail "no agent session appeared for ${PROJECT_ID} within 180s; the local MCP bridge never reached the agent endpoint"
+  || fail "no agent session opened with a credential issued to ${CONNECTOR_ID} appeared for ${PROJECT_ID} within 180s; the local MCP bridge never reached the agent endpoint"
 info "the agent opened MCP session ${AGENT_SESSION_ID} over the local bridge"
 
 # The human directs the work. Assignment and claiming are different facts
@@ -1879,7 +1951,7 @@ info "an agent credential is refused on the human accept route and moves nothing
 # reader was shown, not one fetched at the moment the button was pressed.
 FINDING_VIEW="$(human GET "/api/v1/findings/${FINDING_ID}")"
 FINDING_VERSION="$(field "${FINDING_VIEW}" 'data["version"]')" || fail "could not read the finding as the human"
-CURRENT_VERIFICATION="$(field "$(human GET "/api/v1/findings/${FINDING_ID}/verification")" 'data["id"]')" \
+CURRENT_VERIFICATION="$(field "$(human GET "/api/v1/findings/${FINDING_ID}/verification")" 'data["verification_id"]')" \
   || fail "the finding carries no current verification for a human to decide"
 [[ "${CURRENT_VERIFICATION}" == "${AGENT_VERIFICATION_ID}" ]] \
   || fail "the current verification is ${CURRENT_VERIFICATION}, not the one the agent submitted"
@@ -1906,11 +1978,28 @@ REVIEW_ACCEPTED="$(human POST "/api/v1/reviews/${REVIEW_ID}/accept" "${REVIEW_AC
   || fail "the human accept did not move the review to ACCEPTED"
 # Whose authority it was, read from the record rather than inferred from the
 # response code.
-ACCEPTED_BY="$(psql_scalar "select coalesce(accepted_by_actor_id, '<null>') from reviews where id = '${REVIEW_ID}'")"
-[[ "${ACCEPTED_BY}" == "${HUMAN_USER_ID}" ]] \
-  || fail "the review records ${ACCEPTED_BY} as its accepting actor, not the signed-in human"
+#
+# The actor a review records is `{type: human_user, id: <viewer session>}`
+# (`humanActor`, `apps/server/src/modules/reviews/routes.ts`), so the identifier
+# on the row is the session the decision arrived on and not the account. Both
+# halves are therefore asserted, and the join is the one that answers the
+# question `docs/TESTING.md` §3 asks: the recorded actor is a human_user, and
+# the session it names belongs to the account that signed in at step 7. Reading
+# only the identifier and comparing it with the user would fail against a
+# correct record; reading only the type would pass against a record naming
+# somebody else's session.
+ACCEPTED_ROW="$(psql_row "select coalesce(accepted_by_actor_type, '<null>'),
+                                 coalesce(accepted_by_actor_id, '<null>'),
+                                 coalesce((select coalesce(user_id, '<null>') from viewer_sessions
+                                            where id = reviews.accepted_by_actor_id), '<no session>')
+                            from reviews where id = '${REVIEW_ID}'")"
+IFS='|' read -r ACCEPTED_TYPE ACCEPTED_BY ACCEPTED_USER <<< "${ACCEPTED_ROW}"
+[[ "${ACCEPTED_TYPE}" == "human_user" ]] \
+  || fail "the review records a ${ACCEPTED_TYPE} as its accepting actor, not a human"
+[[ "${ACCEPTED_USER}" == "${HUMAN_USER_ID}" ]] \
+  || fail "the review's accepting actor ${ACCEPTED_BY} belongs to ${ACCEPTED_USER}, not to the signed-in human ${HUMAN_USER_ID}"
 echo "${REVIEW_ACCEPTED}" > "${EVIDENCE}/review-accepted.json"
-info "the human accepted ${REVIEW_SLUG}; the record names ${HUMAN_USER_ID}"
+info "the human accepted ${REVIEW_SLUG}; the record names session ${ACCEPTED_BY} of ${HUMAN_USER_ID}"
 
 # ---------------------------------------------------------------------------
 step "14. Export the review as the portable document (step 14)"
@@ -1949,6 +2038,46 @@ if os.environ["RP_ORIGINAL"] not in artefacts:
 for identifier in sys.argv[2:]:
     if identifier not in artefacts:
         problems.append("the after screenshot %s is not in the manifest" % identifier)
+# The claim the human accepted, not only the artefacts behind it.
+# REVIEW_FORMAT.md section 3 declares a top-level `verifications` array, and an
+# export naming the after screenshots without the record that submitted them
+# would carry the evidence with nothing saying what it was evidence of.
+verifications = document.get("verifications")
+if verifications is None:
+    problems.append("the document has no verifications array")
+elif not verifications:
+    problems.append("the verifications array is empty")
+else:
+    accepted = [v for v in verifications if str(v.get("status")) == "accepted"]
+    if not accepted:
+        problems.append("no verification is accepted: %r" % [v.get("status") for v in verifications])
+    for verification in verifications:
+        for identifier in verification.get("artefact_ids") or []:
+            if identifier not in artefacts:
+                problems.append("verification artefact %s is not in the manifest" % identifier)
+# Every screenshot the agent captured is named by some verification. A
+# verification designates one canonical `after` and files the rest as
+# supporting, so this is asserted against the union of `artefact_ids` rather
+# than against the after role: requiring two after screenshots would be
+# asserting a shape the control plane does not produce.
+claimed = set()
+for verification in verifications or []:
+    claimed.update(verification.get("artefact_ids") or [])
+for identifier in sys.argv[2:]:
+    if identifier not in claimed:
+        problems.append("no verification names the after screenshot %s" % identifier)
+for finding in findings:
+    evidence = finding.get("evidence") or {}
+    if not evidence.get("verification_ids"):
+        problems.append("the evidence of %s names no verification" % finding.get("id"))
+    after = evidence.get("after_artefact_ids") or []
+    if not after:
+        problems.append("the evidence of %s names no after screenshot" % finding.get("id"))
+    for identifier in after:
+        if identifier not in set(sys.argv[2:]):
+            problems.append(
+                "the evidence of %s names %s, which the agent did not capture"
+                % (finding.get("id"), identifier))
 for identifier, artefact in artefacts.items():
     if not artefact.get("sha256"):
         problems.append("%s carries no sha256" % identifier)

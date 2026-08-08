@@ -908,9 +908,16 @@ before uploading retries the whole flow and gets the first intent back.
 upload, and applies to a store that has gone away *since* the upload succeeded.
 The artefact rows say the bytes were verified when they arrived; they do not say
 the store can be reached now. `finding_submit_verification` therefore proves the
-store answers a round trip before it records anything, and refuses with
-`ARTEFACT_STORE_UNAVAILABLE` when it does not: no verification row, no event,
-and the finding keeps the status it had. Recording the claim optimistically
+store is **readable** before it records anything, and refuses with
+`ARTEFACT_STORE_UNAVAILABLE` when it is not: no verification row, no event, and
+the finding keeps the status it had. Readable and not writable, and the
+difference is load-bearing rather than pedantic: the check runs wherever the
+submission arrives, the MCP endpoint mounts the artefact volume read-only
+because it serves evidence and never writes it (ADR-0012), and a writability
+probe there refuses every agent's hand-over on a deployment where nothing is
+wrong. `reviewplane status` asks the other question — whether this deployment
+can *store* artefacts — and answers it with a write probe, as
+`docs/OPERATIONS.md` §3 requires. Recording the claim optimistically
 would produce a completion claim whose before-and-after pair nobody can open,
 which is the one thing the record exists to make possible. The same submission
 succeeds unchanged once the store returns, and the refusal names no path or
