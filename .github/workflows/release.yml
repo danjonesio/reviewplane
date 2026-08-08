@@ -459,12 +459,23 @@ jobs:
 
           # The map above is this pipeline's own coverage claim — "these jobs
           # cover those conditions" — and `needs` is what actually gates. Left
-          # unreconciled the two can drift apart silently, and the drift is
-          # invisible in the direction that matters: drop a job from `needs` and
-          # this rollup goes green having checked seven conditions while naming
-          # eight, with nothing but one missing table row to show for it. A
-          # claim about coverage has to be executed rather than read, and this
-          # is the one claim on which every other one here rests.
+          # unreconciled the two drift apart, and the drift lands exactly where
+          # it does the most damage: **this check**, which section 16 designates
+          # as the release decision and which a ruleset would read.
+          #
+          # The mutation it guards, stated exactly, because a guard whose scope
+          # is vague is a guard nobody can reason about: a job dropped from
+          # `needs` while still defined in `jobs:`. It keeps running, so if it
+          # *fails* the surrounding run's conclusion still goes red — but this
+          # rollup reports green having examined fewer conditions than it names,
+          # and the run conclusion is not the verdict anyone reads. If the
+          # dropped job *passes*, nothing anywhere is red and the coverage loss
+          # is total and silent.
+          #
+          # What this does **not** guard, because something else fires first: a
+          # job named in `needs` that does not exist in `jobs:`. GitHub rejects
+          # the workflow at parse time, so the run never starts and this check
+          # never sees it. Worth knowing which of the two is ours.
           #
           # So the two sets are compared and any disagreement fails the release,
           # in both directions: a job that gates nothing named here is as much a

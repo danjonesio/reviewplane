@@ -1114,11 +1114,16 @@ Five properties make the rollup's verdict worth something.
 
 **The rollup reconciles what it names against what it gates on.** It holds a map
 from job to §16 condition, and its `needs` list is what actually decides; the two
-sets are compared and any disagreement fails the release. Without that, the
-drift is invisible in the direction that matters — drop a job from `needs` and
-the rollup goes green having examined seven conditions while naming eight, with
-one missing table row to show for it. This is the claim every other claim in this
-section rests on, so it is executed rather than read.
+sets are compared and any disagreement fails the release. The mutation this
+guards is a job dropped from `needs` while still defined: the job keeps running,
+so a *failure* still reddens the surrounding run's conclusion, but this check —
+the one this section designates as the release decision, and the one a ruleset
+would read — reports green having examined fewer conditions than it names. If
+the dropped job passes, nothing anywhere is red and the coverage loss is silent.
+The reverse case, a `needs` entry naming a job that does not exist, is caught
+earlier by GitHub's own workflow parsing and is not this check's. This is the
+claim every other claim in this section rests on, so it is executed rather than
+read.
 
 **A skipped job is a failure.** The rollup examines each job for `skipped` and
 `cancelled` as well as `failure`. A condition that did not run has not been shown
