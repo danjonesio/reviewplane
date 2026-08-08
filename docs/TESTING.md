@@ -33,6 +33,8 @@ Every wait in a fixture MUST be bounded in a way that can actually be reached. A
 
 A fixture reset MUST NOT be able to deadlock against the code under test. A component's `stop()` returning is not the same instant as its last statement committing, so a reset that truncates while a straggler is writing will sooner or later meet the opposite lock order. Taking the locks with `NOWAIT` removes the possibility rather than the likelihood — a session that never waits for a lock cannot be in a deadlock cycle — and a bounded backoff handles contention. A reset that fails intermittently blames the test that was about to run rather than the one that caused it, which is the hardest failure in a suite to read.
 
+A shell harness that runs a helper with `node -e` MUST NOT rely on module detection, and MUST NOT assume it owns the stream the helper writes to. Both rules were bought rather than reasoned: the same program with top-level `await` evaluated correctly through `docker compose exec` and failed with "await is only valid in async functions and the top level bodies of modules" through `docker compose run`, in the same image; and `docker compose run` prints its own build and container lines on the helper's stdout, so a parser that read the first line as a result read a Docker progress line instead. An async function with `require` needs no detection to be right, and a marker prefix on every line the helper emits makes the parse safe whatever else is on the stream. `deploy/compose/e2e/fault-injection.sh` does both; a harness that fails for one of these reasons fails in a way that has nothing to do with what it was testing.
+
 ### Contract
 
 - TypeScript and Go schema compatibility
@@ -1052,7 +1054,7 @@ Setting `REVIEWPLANE_TEST_S3_ENDPOINT`, `_BUCKET`, `_ACCESS_KEY` and
 | Duplicate `agent_inbox_acknowledge` under one key | One acknowledgement and one event |
 | Two agent sessions claiming one finding | One claim and one `VERSION_CONFLICT` |
 | A review or finding whose ordinary content exceeds a tool's response bound | A shorter page and a cursor that reaches the rest, never a thrown error and never a retryable refusal |
-| Retention deletion partial failure | Retry, metadata not falsely tombstoned |
+| Retention deletion partial failure | **Not applicable in Stage 1** — see below. Expected behaviour when it arrives: retry, metadata not falsely tombstoned |
 | Development service closes a WebSocket | Closure reaches the browser with the service's close code and reason |
 | Connector disconnect during an open WebSocket | Connection closed, route answers `CONNECTOR_OFFLINE` |
 | Route revoked during an open WebSocket | Connection closed promptly, not at the next request |
@@ -1064,6 +1066,96 @@ Setting `REVIEWPLANE_TEST_S3_ENDPOINT`, `_BUCKET`, `_ACCESS_KEY` and
 | Missing secret file | Compose refuses to start the service, naming the file |
 | No browser worker registered | `reviewplane status` reports zero capacity as a warning, not a failure |
 | Browser worker stopped after registering | Its slots stop being counted once it has been silent past the staleness threshold; `reviewplane status` reports zero capacity and names the silence rather than the absence |
+
+### 11.1 Which rows run against the deployed stack
+
+Most rows above are owned by a suite that can reach the component directly, which
+is the right place for them: `services/connector/internal/protocolsim` and
+`apps/server/test/connector-reconnect.test.ts` for the reconnect and flapping
+rows, `apps/server/test/verification-evidence.test.ts` and
+`artefact-security.test.ts` for the evidence and upload rows,
+`services/tunnel-gateway` for the WebSocket, stream-limit and idle-window rows,
+`apps/web/test/ui/` for the live-view client's reconnect, and `pnpm test:install`
+for the `reviewplane status` rows.
+
+Six rows could not be reached that way, because the thing under test is the
+deployment: a real process boundary, a real volume, a real network between the
+parts, and a fault injected into a container rather than into a double.
+`deploy/compose/e2e/fault-injection.sh` runs those against the Compose stack as
+`pnpm test:faults`, and the release pipeline of §16 blocks on it.
+
+| Row | What the script injects, and what it asserts |
+|---|---|
+| Connector disconnect during navigation | The development environment is stopped mid-flight. Navigation must fail within a bound rather than hang, a publication through the gone connector must answer `CONNECTOR_OFFLINE`, and the session and its timeline must stay readable. **No recovery is asserted**: that is the separate "connector process killed and restarted" row, which `apps/server/test/connector-reconnect.test.ts` and `services/connector/internal/protocolsim` already prove in its strong form. The fixture's connector keeps its state on a tmpfs under a single-use enrolment token, so a restarted fixture enrols as a *new* connector, and calling that a reconnection would be an overstatement |
+| API restart during live view | A WebSocket viewer attaches, receives `live.session_state`, and the `api` container is restarted underneath it. The viewer must reattach and receive session state again. The viewer runs in its own container, because an observer that dies with the thing it is observing observes nothing |
+| Database unavailable | PostgreSQL is stopped. The creation must be refused with no credential or address in the body, **no row and no event may survive the refusal**, and the identical call must succeed once the database returns. Whether the process survived is *recorded and not gated* — see below |
+| Artefact store unavailable | The artefact volume is made unwritable — every directory, so that the availability probe cannot write into an existing probe directory and report health. `reviewplane status` must exit 4 and report the store unavailable; a verification must be refused `ARTEFACT_STORE_UNAVAILABLE` with neither the artefact root nor an errno in the body; **no verification row may be written**; and the identical submission must succeed once the store returns |
+| Duplicate verification request | Two identical submissions are issued at once against one finding. Exactly one may be current afterwards, and every superseded row must name its successor — a history, not a deletion |
+| Worker crash after screenshot upload | The browser worker is `SIGKILL`ed after an upload, with its restart policy removed first so that it stays dead. The artefact's state, digest and bytes must be unchanged and still readable, and the session must be reconciled to `FAILED` with an audit event within the shipped liveness bound |
+
+Several of those assertions are on the **absence** of a row, because the failure
+they exist to catch is a write that happened after a refusal, and a test that
+checked only the response code would pass against code that refused the caller
+and wrote the row anyway.
+
+The order the script runs them in is part of the design and is recorded in its
+header. The first three break something and put it back, so anything may follow
+them; the connector and worker cases leave a component down for good, so they go
+last, and the connector case goes first of the two because it still needs a live
+worker to attempt a navigation with.
+
+**Retention deletion partial failure is not applicable in Stage 1, and the script
+asserts that rather than omitting it.** The retention policy is Stage 2
+(`docs/ROADMAP.md` §4), so this build has no retention deletion for a partial
+failure to happen to. The claim is checked against the protocol schema — the
+`job_kind` enumeration in `packages/protocol/schemas/platform/v1.schema.json`
+names no retention job, and no retention-shaped job row exists — so the day
+retention arrives the assertion fails and the case has to be written. A matrix
+row that is quietly dropped is indistinguishable from one that passed, and a "not
+applicable" nothing checks is a comment.
+
+The report's list of rows it does **not** cover names the suite that owns each,
+and the run **checks that every one of those paths exists** before writing the
+report that names them. That list is itself a coverage claim, and a coverage
+claim has to be executed rather than read: unchecked it decays into a confident
+sentence about a file somebody renamed, and the reader it was written for is
+exactly the reader who would not notice. The check is narrow and the report says
+so in the same words — it proves the path is there, not that the suite still
+covers the row — because the alternative failure is a check that reads as
+stronger than it is.
+
+Every failure produces the three things a fault-injection failure needs and
+cannot be reproduced on demand to obtain: the logs of every service, a dump of
+the event store, and an inventory of the artefact metadata beside the objects
+actually on the volume. The run writes a report naming each case's verdict, the
+bounds the run applied — the log tail length, the event-dump limit, the
+worker-loss wait — and the rows it does not cover. The cases run in order and the
+run stops at the first failure, so a case the report lists as neither passed nor
+failed **was not reached and is not a pass**.
+
+Two bounds are worth stating twice.
+
+The duplicate-verification case drives the human API, which carries no
+idempotency key on that route, so what it asserts is the database-level
+guarantee: the partial unique index `verifications_one_current_per_finding` of
+migration 0150. The agent path's `idempotency_key` is exercised in
+`apps/mcp-server/test/mcp.test.ts`, not here.
+
+The database case asserts exactly what its row requires and no more. It does
+**not** gate on the control plane surviving the outage: the row that requires the
+process to stay up is "PostgreSQL not yet ready at start-up", which is about
+start-up and is owned by `pnpm test:install`, and losing the database mid-run is
+a different event this row says nothing about. What happens to the process is
+nevertheless recorded — the run reports the `api` container's restart count on
+either side of the outage, and whether the refusal carried a stable error code —
+because an observation that is dropped is indistinguishable from one that was
+fine. On the first full run of the script the control plane **exited** on an
+unhandled rejection from the connector control channel and was brought back by
+its restart policy; a later run of the identical script did not, which makes it
+intermittent and makes a passing run no evidence at all. That is RVP-103, filed
+with the evidence; the case records it rather than failing the wrong row, and
+RVP-103's own acceptance criteria include tightening this case from recording to
+gating once the defect is fixed.
 
 ## 12. Performance tests
 
@@ -1081,6 +1173,31 @@ Measure:
 Publish tested hardware and configuration.
 
 Tunnel throughput and hot-reload responsiveness are measured by the Compose scenario (`deploy/compose/e2e/run.sh`) and written to `evidence/performance-baseline.txt` on every run, alongside the configuration and the machine the figures came from. Hot-reload responsiveness is measured as the wall-clock time from the source edit landing on the development machine to the updated text being visible in central Chromium, which is the figure a user experiences; it therefore includes the file watcher, the bundler and the browser, not the tunnel alone. A baseline is a recorded number, not a threshold: `docs/ROADMAP.md` defers tuning, so the scenario records the figure and does not fail on it.
+
+Live frame latency and drop rate come from the browser suite, where a real
+Chromium is producing the frames (§7): the measured rate for each capture mode is
+printed by the run rather than by a separate benchmark, so the figure and the
+thing it describes cannot drift apart.
+
+### 12.1 What the release publishes
+
+The `baselines` job of `.github/workflows/release.yml` runs both harnesses,
+publishes `evidence/performance-baseline.txt` and the browser suite's measured
+rates as a build artefact and in the run summary, and **compares no figure with
+anything**. §16.3 gives the reasoning: there is no calibrated threshold to
+compare against, an invented one fails on a loaded runner, and a flaky gate that
+cannot be diagnosed gets disabled — after which it still reads as coverage.
+
+The job fails on exactly one thing, and it is a publication failure rather than a
+performance verdict: a baseline file that is missing or empty. A release that
+claims published baselines and published nothing has made a false claim.
+
+Of the measurements listed above, tunnel throughput, hot-reload responsiveness
+and live frame rate are recorded today. **Browser allocation latency, screenshot
+capture latency, review retrieval latency, event fan-out, concurrent browser
+capacity and object upload throughput are not measured by any harness**, and the
+release summary names them as absent rather than printing a zero that would read
+as a measurement.
 
 ## 13. Upgrade tests
 
@@ -1340,9 +1457,95 @@ A release cannot ship when:
 - Critical dependency vulnerability lacks documented mitigation
 - Protocol compatibility tests fail
 
-No release pipeline enforces this list yet, and the list is not a description of
-what gates a change. The two workflows that exist are change gates, and they run
-as follows.
+`.github/workflows/release.yml` enforces that list. It is a **third** workflow,
+distinct from the two change gates of §16.1, because "may this change land" and
+"may this be released" are different questions with different answers: a change
+gate that was green yesterday says nothing about a critical advisory published
+this morning against a dependency nobody touched. It runs on a `v*` tag, on
+demand, and nightly, and reports one rolled-up check, `Release gates`.
+
+Each condition is one job, and the rollup is green only when every one of them
+succeeded.
+
+| Condition | Job | What owns it |
+|---|---|---|
+| Primary end-to-end scenario fails | `scenario` | `pnpm test:e2e` (the scenario of §3 over the Compose stack) and `pnpm test:integration` (the same steps through a real MCP client). Both, not either |
+| Cross-project isolation tests fail | `security` | `pnpm test:security` — the standing isolation suite of §10 |
+| Stale control commands are accepted | `security` | `pnpm test:security` — the control-epoch suite of §5 |
+| Migration or restore test fails | `migration-restore` | `apps/server/test/upgrade-stage0.test.ts` and `backup.test.ts`, run as the whole of `pnpm test` |
+| Browser worker runs with unsupported insecure defaults | `installation` | `pnpm test:install`, plus `pnpm test:edge` for the gateway the installation is reached through |
+| Critical dependency vulnerability lacks documented mitigation | `dependencies` | `pnpm audit:dependencies` — `.github/scripts/dependency-audit.mjs`, built for this and described in §16.2 |
+| Protocol compatibility tests fail | `protocol` | `pnpm protocol:check` |
+
+`pnpm test:security` is the one command in that table this pipeline does not
+itself provide: it is the standing security work of §5 and §10, and those suites
+also run inside `pnpm test`. The `security` job therefore checks that the script
+exists before running it and fails the release when it does not, so the table
+above cannot quietly become a claim about a command nobody wrote.
+
+Its membership is a **filename prefix rather than a list** (§10): the script runs
+every `test/security-gate-*.test.ts` in the packages that declare it. A standing
+gate added later is therefore run by this release job without anybody remembering
+to edit the pipeline — which matters, because "remembering to add it" is how the
+conditions in this section came to be unenforced in the first place. The
+corollary is that this job's coverage is defined in §5 and §10 and not here, and
+a reader who wants to know what it actually asserts has to look there.
+
+The prefix is specific for a reason worth keeping. A `*-gate.test.ts` suffix
+would also match `apps/server/test/completion-gate.test.ts`, which is the
+domain rule of §4 about verification evidence and not a security gate at all — so
+the convention that reads as "every gate" would quietly have swept in a suite
+this condition does not own, and §10's count of what runs would have been wrong
+from the day it was written.
+
+Two further jobs run beside them. `faults` executes the fault-injection matrix
+of §11 against the deployed stack and blocks the release. `baselines` records and
+publishes the §12 performance figures and **does not** gate on any of them; §16.3
+says why that asymmetry is deliberate rather than an omission.
+
+Five properties make the rollup's verdict worth something.
+
+**The rollup reconciles what it names against what it gates on.** It holds a map
+from job to §16 condition, and its `needs` list is what actually decides; the two
+sets are compared and any disagreement fails the release. The mutation this
+guards is a job dropped from `needs` while still defined: the job keeps running,
+so a *failure* still reddens the surrounding run's conclusion, but this check —
+the one this section designates as the release decision, and the one a ruleset
+would read — reports green having examined fewer conditions than it names. If
+the dropped job passes, nothing anywhere is red and the coverage loss is silent.
+The reverse case, a `needs` entry naming a job that does not exist, is caught
+earlier by GitHub's own workflow parsing and is not this check's. This is the
+claim every other claim in this section rests on, so it is executed rather than
+read.
+
+**A skipped job is a failure.** The rollup examines each job for `skipped` and
+`cancelled` as well as `failure`. A condition that did not run has not been shown
+to hold, and an absent check cannot be told apart from a check nobody added —
+which is the defect RVP-74 and this pipeline exist to close.
+
+**A missing owner is a red gate, not a silent gap.** The `security` job checks
+that `package.json` declares `test:security` before running it, and fails the
+release when it does not. A gate whose command has quietly gone away has stopped
+gating, and learning that from a green run is exactly how the conditions above
+came to be unenforced in the first place.
+
+**Nothing here is filtered by path.** The release workflow has no
+`on.push.paths` and no in-workflow exemption. A release is a release whatever the
+last commit touched, so the narrow documentation-only exemption §16.1 requires of
+`Harness gates` has no counterpart here.
+
+**Every bound is printed.** Each job that narrows what it examines says so in the
+run summary — the dependency gate's severity and reachability narrowing, the
+fault-injection run's log and event-dump limits, the baselines the pipeline does
+not measure. A gate that quietly covers less than its name suggests is worse than
+an absent one, because the reader stops looking.
+
+`Release gates` is **not** a required status check on `main`, and MUST NOT be
+added as one. The required checks are `CI gates` and `Harness gates` (§16.1),
+which report on every pull request; this workflow has no `pull_request` trigger,
+so requiring it would make it a check that never reports and therefore blocks
+every merge for ever — the same trap §16.1 records for a `paths`-filtered
+workflow. It gates a tag, not a merge.
 
 ### 16.1 What runs on a change today
 
@@ -1351,16 +1554,20 @@ as follows.
 | `pnpm lint`, `pnpm typecheck`, `pnpm build`, `pnpm protocol:check`, `pnpm test`, and `go vet ./...`, `go test ./...` and `go test -race ./...` in each Go module | `.github/workflows/ci.yml`, reported as `CI gates` | Every pull request, every push to `main`, and on demand |
 | `pnpm test:browser`, `pnpm test:ui`, `pnpm test:integration`, `pnpm test:e2e`, `pnpm test:edge`, `pnpm test:install` | `.github/workflows/container-harnesses.yml`, reported as `Harness gates` | Every pull request whose change is not documentation-only; nightly against `main`; on demand; and on any pull request carrying the `ci:harnesses` label |
 
-The root gates cover the protocol compatibility condition above. The automated
-parts of the primary end-to-end scenario — steps 1 to 6 as `pnpm test:e2e` and
-steps 9 to 12 as `pnpm test:integration` — now run on the change that could break
-them rather than reporting the next morning.
+Most of the release conditions above are therefore also answered on a change,
+which is the point: a condition that only a release run could discover is a
+condition somebody finds out about on the worst day. The protocol compatibility
+condition, the migration and restore condition and the automated parts of the
+primary end-to-end scenario all run on the change that could break them rather
+than reporting the next morning.
 
-One of the conditions above now has an owner that runs on every pull request:
-**"migration or restore test fails"** is `apps/server/test/upgrade-stage0.test.ts`
-and `apps/server/test/backup.test.ts`, both inside `pnpm test`. A migration that
-breaks the committed Stage 0 fixture, and a restore that stops reproducing what it
-was given, fail the build rather than the release.
+Two conditions are answered **only** by the release pipeline. The dependency
+vulnerability condition takes an input that changes without a commit, so a change
+gate is the wrong place for it; and the fault-injection matrix of §11 costs a
+full Compose stack and several deliberate outages, which is more than every pull
+request should pay. Both run nightly as well as on a tag, so the gap between a
+release-blocking regression appearing and being seen is a day rather than a
+release cycle.
 
 A pull request is **documentation-only** when every file it changes is a Markdown
 document or lives under `docs/`. Every other change runs every harness: a schema,
@@ -1397,13 +1604,113 @@ recording in the run summary which files led to that verdict. A workflow that
 reports blocks every merge for ever — so the documentation-only decision MUST
 stay inside the workflow, as section 16.1 already requires.
 
-`pnpm test:install` owns two of the conditions above: it runs
-`docs/DEPLOYMENT.md` section 8 verbatim from a clean checkout to a rendered
-login page, which is the Stage 1 exit criterion "fresh installation from
-release artefacts in one documented flow", and it asserts that the browser worker
-is not running with unsupported insecure defaults — non-root, sandbox enabled as
-the worker itself reported it at registration, no Docker socket, no database or
-artefact credential, and no published debugging port. The remaining conditions
-have no automated owner. RVP-57
-builds the release pipeline that makes every condition above blocking, and the
-list here is its specification rather than a description of what runs today.
+`pnpm test:install` owns two things at once: it runs `docs/DEPLOYMENT.md`
+section 8 verbatim from a clean checkout to a rendered login page, which is the
+Stage 1 exit criterion "fresh installation **from a clean checkout** in one
+documented flow", and it asserts that the browser worker is not running with
+unsupported insecure defaults — non-root, sandbox enabled as the worker itself
+reported it at registration, no Docker socket, no database or artefact
+credential, and no published debugging port.
+
+That exit criterion read "from release artefacts" until RVP-97, and nothing in
+Stage 1 publishes any: signing and publishing images with SBOMs and checksums is
+Stage 2 (RVP-54, `docs/SECURITY.md` §19). A suite meeting a criterion the
+document did not state is the doc-versus-code divergence this repository keeps
+hitting, so `docs/ROADMAP.md` §3 was amended to say what Stage 1 actually needs
+and the stronger criterion moved to Stage 2, where the artefacts it names exist.
+The two documents agree; neither was quietly reinterpreted.
+
+### 16.2 The dependency-vulnerability gate
+
+This condition had no owner at all, so `.github/scripts/dependency-audit.mjs` is
+the gate rather than a wrapper around one. `pnpm audit:dependencies` runs it.
+
+It consults two sources: the npm advisory endpoint through `pnpm audit`, over the
+whole workspace and again over production dependencies alone so that each
+advisory is labelled with which set it is in; and `govulncheck` over each Go
+module, which reports the standard library as well as module dependencies. The
+Go tool is pinned to an exact version in the workflow, because a gate whose own
+behaviour can change without a commit is not a gate.
+
+**It fails closed.** `pnpm audit` exits non-zero both when it finds
+vulnerabilities and when it cannot reach the registry, so the exit code cannot be
+read; the shape of the answer is what separates them, and the gate reads the
+shape. An unparseable answer, an `error` document, a missing advisory metadata
+object, a `govulncheck` that will not run, and a Go vulnerability database whose
+`db_last_modified` is more than thirty days old are each a **failure**. A source
+that answers successfully from frozen data reports nothing new for ever, which is
+the failure mode a network error would at least have been honest about.
+
+**A mitigation is an entry in `.github/dependency-mitigations.json`**, carrying
+the advisory identifier, the ecosystem, the package, the mitigation itself, the
+date it was recorded and a `review_by` date. Past `review_by` the gate blocks
+again: an entry is a statement that somebody looked, and an undated permanent
+exception is how a register of this kind rots into a list nobody reads. The
+register is validated strictly — an unknown member, a malformed date or a
+mitigation shorter than forty characters is refused — because an exemption that
+is present in the file and absent from the decision is worse than no exemption.
+
+What it does **not** cover is stated in its own run summary rather than left to
+be assumed:
+
+- Only `critical` npm advisories block, which is the condition this list names.
+  Every lower severity is printed with the verdict *reported*.
+- For Go, only findings whose vulnerable symbol this code can reach block. The
+  Go vulnerability database carries no severity to threshold on, and reachability
+  is the stronger statement; imported-but-unreachable findings are printed.
+- **Container base images are not scanned.** Nothing here reads the operating-
+  system package manifests of `node:24-bookworm-slim`, the Playwright image or
+  the pinned PostgreSQL image. `docs/SECURITY.md` §19 records that as not
+  implemented, and this gate does not imply otherwise.
+- The npm advisory source publishes no freshness signal, so the staleness check
+  above applies to the Go database alone.
+
+### 16.3 Performance baselines are recorded, never gated
+
+The `baselines` job runs `pnpm test:e2e` and `pnpm test:browser`, publishes
+`evidence/performance-baseline.txt` and the browser suite's measured live-capture
+rates as a build artefact and in the run summary, and compares no figure with
+anything.
+
+This is deliberate and it is not laziness. `docs/ROADMAP.md` defers tuning, so
+there is no calibrated threshold to compare against; a threshold invented for the
+sake of having one produces a gate that fails on a loaded runner, and a flaky
+gate that cannot be diagnosed gets disabled — at which point it still reads as
+coverage, which is worse than never having had one. A baseline is a recorded
+number.
+
+The job fails on exactly one thing: a baseline file that is missing or empty. A
+release that claims published baselines and published nothing has made a false
+claim, and that is a pipeline defect rather than a performance verdict. Where a
+figure §12 asks for is not measured by any harness, the summary says so by name
+instead of printing a zero.
+
+### 16.4 What a green `Release gates` does not mean
+
+Recorded here because the value of the check is exactly the set of things it
+would have caught, and a reader who assumes more will stop looking for the rest.
+
+- It does not mean the performance baselines were within any bound. They are
+  recorded and published; no figure gates the build (§16.3).
+- It does not cover container base-image vulnerabilities, image signing, SBOMs,
+  published checksums or multi-architecture builds. `docs/SECURITY.md` §19
+  records each of those as not implemented, and they are Stage 2.
+- It does not cover air-gapped or Kubernetes installation, which are Stage 4.
+- The fault-injection matrix it runs is the subset of §11 listed there as running
+  against the deployed stack. §11 names the owner of every other row, and the
+  fault-injection report published with each run repeats that list so a reader of
+  the report alone cannot mistake it for the whole matrix.
+- It does not mean the control plane survives every fault it is subjected to. The
+  database case asserts what its §11 row requires and *records* what happened to
+  the process, and RVP-103 is open against a crash that recording found (§11.1).
+- **It does not yet prove that the suites behind every command actually ran.**
+  `pnpm test` and `pnpm test:integration` are `pnpm -r --if-present` over globbed
+  `node --test` invocations, and both report success over an empty run: a script
+  no package declares exits `0`, and a glob matching no files exits `0` with zero
+  tests. A renamed suite directory or a deleted script therefore leaves the
+  condition it owns green and unexamined — for `pnpm test` that is "migration or
+  restore test fails", and for `pnpm test:integration` half of the primary
+  scenario. This is §16.1's own rule one level down, and worse there: a workflow
+  `paths` filtered out at least reports nothing, while an empty run reports a
+  pass and satisfies a required check. RVP-106 is open against it.
+  `pnpm test:security` already guards its own case (§10).

@@ -101,6 +101,14 @@ The Stage 1 MVP is complete only when a user can:
 - Core workflow covered by automated end-to-end test
 - Documentation updated with behaviour
 
+Three of these are enforced by the release pipeline rather than by review.
+"No cross-project access" and "core workflow covered by automated end-to-end
+test" are release-blocking conditions of `docs/TESTING.md` §16; "connector and
+browser failures are diagnosable" is what the §11 fault-injection matrix
+measures, and the run publishes the logs, event dump and artefact inventory that
+make that word mean something. A bar that only a reviewer applies is a bar that
+is applied on the days somebody remembers.
+
 ## 10. Product constraints
 
 - Must work without a vendor cloud account

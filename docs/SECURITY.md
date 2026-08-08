@@ -1053,7 +1053,8 @@ Release requirements:
 | Documented build pipeline | `.github/workflows/release-images.yml` builds and pushes the six images of `docs/DEPLOYMENT.md` §2 from a `v<version>` tag, stamping the version, the revision and the build time into each, and records the immutable digest of each push in its run summary. It uses no third-party action. |
 | Container and binary signing, SBOM | Not implemented. Stage 2. Until they exist, `./configure` falls back to building the images from the checkout when a release is not published, and says so: an installation that cannot verify a signature is better served by a build it performed itself than by an unsigned pull. |
 | Multi-architecture release testing | Not implemented. `linux/amd64` only. Stage 2. |
-| Dependency scanning, published checksums | Not implemented. |
+| Dependency scanning | `.github/scripts/dependency-audit.mjs`, run by the release pipeline as `pnpm audit:dependencies`. It consults the npm advisory endpoint through `pnpm audit` and `govulncheck` over each Go module, and **fails closed**: an unreachable or unparseable source, and a Go vulnerability database older than thirty days, are failures rather than passes. A critical npm advisory or a reachable Go advisory blocks the release unless `.github/dependency-mitigations.json` carries a current, dated mitigation for it. It does **not** scan container base images: nothing here reads the operating-system package manifests of `node:24-bookworm-slim`, the Playwright image or the pinned PostgreSQL image, and the gate says so in its own run summary. `docs/TESTING.md` §16.2 records the rest of what it does and does not look at |
+| Published checksums | Not implemented. Stage 2, with signing and SBOMs. |
 
 A release that claims more than this table is a release that has failed
 `docs/DESIGN_PRINCIPLES.md`.
