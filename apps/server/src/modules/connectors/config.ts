@@ -24,6 +24,19 @@ export interface ConnectorModuleConfig {
    */
   readonly organisationId: string;
   readonly organisationName: string;
+  /**
+   * Whether `REVIEWPLANE_ORGANISATION_ID` named the organisation, or whether
+   * `organisationId` above is only the fallback.
+   *
+   * The distinction decides whether the module may create an organisation. A
+   * deployment that already holds one has an answer, and inventing `org_default`
+   * beside it produces the two-organisation installation of RVP-63, in which the
+   * only human account is in one organisation and every connector, project and
+   * review is in the other — so a signed-in administrator can reach none of the
+   * deployment's own projects. An operator who names an organisation still gets
+   * exactly what they named.
+   */
+  readonly organisationIdConfigured: boolean;
   /** Port for the mutually authenticated connector listener. */
   readonly listenPort: number;
   readonly listenHost: string;
@@ -104,6 +117,7 @@ function readVersion(environment: Environment, name: string, fallback: string): 
 }
 
 export function loadConnectorModuleConfig(environment: Environment = process.env): ConnectorModuleConfig {
+  const configuredOrganisationId = optionalString(environment, "REVIEWPLANE_ORGANISATION_ID");
   const listenPort = readInteger(environment, "REVIEWPLANE_CONNECTOR_PORT", 8443, {
     minimum: 0,
     maximum: 65535,
@@ -150,7 +164,8 @@ export function loadConnectorModuleConfig(environment: Environment = process.env
   }
 
   return {
-    organisationId: optionalString(environment, "REVIEWPLANE_ORGANISATION_ID") ?? "org_default",
+    organisationId: configuredOrganisationId ?? "org_default",
+    organisationIdConfigured: configuredOrganisationId !== undefined,
     organisationName: optionalString(environment, "REVIEWPLANE_ORGANISATION_NAME") ?? "ReviewPlane",
     listenPort,
     listenHost,

@@ -78,7 +78,52 @@ Includes:
 - Acceptance criteria
 - Evidence references
 
+A finding's evidence references name **both** directions: the screenshot it was
+raised from, and the after screenshots of every verification submitted against
+it. A finding read on its own must say what was claimed about it, not only what
+it looked like when it was raised.
+
+```json
+"evidence": {
+  "screenshot_artefact_id": "art_...",
+  "verification_ids": ["ver_..."],
+  "after_artefact_ids": ["art_...", "art_..."]
+}
+```
+
+## 5.1 Verification object
+
+Every verification the review's findings accumulated, in submission order:
+
+```json
+{
+  "id": "ver_...",
+  "finding_id": "fin_...",
+  "status": "accepted",
+  "summary": "...",
+  "branch": "redesign",
+  "commit": "ab91d34",
+  "tested_viewports": [{ "width": 1440, "height": 900, "device_scale_factor": 1 }],
+  "checks": {},
+  "submitted_by": { "type": "agent_session", "id": "ags_..." },
+  "artefact_ids": ["art_..."],
+  "submitted_at": "...",
+  "reviewed_at": "..."
+}
+```
+
+Superseded and rejected records are exported alongside the accepted one. What
+was claimed before and refused is part of what the record exists to preserve; an
+export carrying only the accepted claim would make a finding that took three
+attempts indistinguishable from one that took a single attempt.
+
 ## 6. Artefact manifest
+
+The manifest covers every artefact the document references: the screenshots
+findings were raised from **and** the artefacts every verification rests on. It
+named only the first until RVP-95, so §7's "hashes for all files" was a hash of
+half of them, and an accepted review exported the picture of the problem with no
+picture of the fix.
 
 ```json
 {

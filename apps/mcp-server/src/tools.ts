@@ -841,7 +841,13 @@ const TOOLS: readonly ToolDefinition[] = [
             : {
                 workspace: {
                   id: workspace.id,
-                  root_path: workspace.root_path,
+                  // Omitted rather than null when the workspace is one a
+                  // connector reported: there is no path to report, because
+                  // `docs/DOMAIN_MODEL.md` section 9 keeps it on the
+                  // development machine. `root_path` is an optional member of
+                  // `workspace_reference`, and a null would fail the response
+                  // validator rather than express an absence.
+                  ...(workspace.root_path === null ? {} : { root_path: workspace.root_path }),
                   branch: workspace.branch,
                   head_commit: workspace.head_commit,
                   dirty: workspace.dirty,
@@ -904,7 +910,9 @@ const TOOLS: readonly ToolDefinition[] = [
             : {
                 workspace: {
                   id: connection.workspace.id,
-                  root_path: connection.workspace.root_path,
+                  ...(connection.workspace.root_path === null
+                    ? {}
+                    : { root_path: connection.workspace.root_path }),
                   branch: connection.workspace.branch,
                   head_commit: connection.workspace.head_commit,
                   dirty: connection.workspace.dirty,

@@ -222,6 +222,16 @@ for (const driver of DRIVERS) {
       assert.deepEqual(await driver.objectKeys(), before);
     });
 
+    // The read probe is what the verification gate asks, and it has to pass
+    // where a write probe would not: the MCP endpoint serves evidence from a
+    // read-only mount by design (ADR-0012). So it must succeed on an empty
+    // store — a fresh installation has no `sha256/` tree — and write nothing.
+    test("a read probe succeeds without writing", async () => {
+      const before = await driver.objectKeys();
+      await store.probeReadable();
+      assert.deepEqual(await driver.objectKeys(), before);
+    });
+
     test("usage counts the objects that are stored", async () => {
       const bytes = Buffer.from(`usage on ${driver.name}`.padEnd(97, "."));
       await store.put(bytes);
@@ -325,6 +335,10 @@ describe("a store that cannot accept a write", () => {
       await filesystemDriver.breakWrites();
       await assert.rejects(() => store.put(Buffer.from("disk full")), ArtefactStoreError);
       await assert.rejects(() => store.probe(), ArtefactStoreError);
+      // And the read probe still passes, which is the whole distinction: a
+      // store this process cannot write to is not a store whose evidence
+      // cannot be read.
+      await store.probeReadable();
     } finally {
       const { chmod } = await import("node:fs/promises");
       await chmod(filesystemRoot, 0o700).catch(() => undefined);

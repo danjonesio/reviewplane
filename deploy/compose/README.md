@@ -213,23 +213,35 @@ The initial implementation must preserve these rules:
 
 ## End-to-end scenario
 
-`pnpm test:e2e` runs `e2e/run.sh`, which is steps 1 to 6 of the primary
-scenario in `docs/TESTING.md` §3: start the stack, enrol the connector fixture,
-start the fixture application on connector loopback, publish it, allocate a
-browser session against the route, and navigate. It is release-blocking for the
-Stage 0 exit criterion "a dev server bound to loopback on a remote VM is usable
-by central Chromium".
+`pnpm test:e2e` runs `e2e/run.sh`, which is the whole primary scenario in
+`docs/TESTING.md` §3 — all fifteen steps: start the stack, enrol the connector
+fixture, start the fixture application on connector loopback, publish it,
+allocate a browser session against the route and navigate; then a human test
+client signs in with a real account and creates the `bugs-on-homepage` review
+and an annotated finding, an agent fixture retrieves and claims it over the
+local MCP bridge, changes the application on the development machine, captures
+the after screenshot, submits verification and hands over; then a **human**
+accepts, `reviewplane export-review` writes the portable document, and the event
+sequence and artefact hashes are asserted. It is release-blocking.
 
-It then proves the tunnel capabilities `docs/ARCHITECTURE.md` §7.4 makes
-mandatory, which those six steps do not reach: a WebSocket echo and server-sent
+It also proves the tunnel capabilities `docs/ARCHITECTURE.md` §7.4 makes
+mandatory, which the scenario does not reach: a WebSocket echo and server-sent
 events through the route, Vite hot module replacement applying a source edit
 made on the development machine to the page in central Chromium without a full
-reload, and the performance baseline of `docs/TESTING.md` §12.
+reload, and the performance baseline of `docs/TESTING.md` §12. Those are
+numbered T1 to T3 in the script rather than 7 to 9, because they are not steps
+of the scenario.
 
 ```bash
-pnpm test:e2e                            # about five minutes, needs Docker
+pnpm test:e2e                            # needs Docker
 REVIEWPLANE_E2E_KEEP_UP=1 pnpm test:e2e  # leave the stack running to inspect
 ```
+
+Evidence lands in `e2e/evidence/`: the step log, the agent fixture's own log and
+JSON report, the event dump with sequence numbers and actor types, the artefact
+inventory with recorded and read-back digests, the exported review, and
+screenshots at 390x844 and 1440x900. `performance-baseline.txt` is written on
+every run at that exact path and the release pipeline reads it there.
 
 Each run uses its own Compose project name — `reviewplane-e2e-<pid>-<epoch>` —
 so two runs on one machine do not share containers, networks or volumes and

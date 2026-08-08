@@ -25,8 +25,8 @@ Stage 0 status: the server reads environment variables rather than the file belo
 | `REVIEWPLANE_BUILT_AT` | `unknown` | Build instant reported by `/version` |
 | `REVIEWPLANE_JOBS_HEALTH_HOST` | `0.0.0.0` | Address the `jobs` role serves its health endpoints on |
 | `REVIEWPLANE_JOBS_HEALTH_PORT` | `8081` | Port the `jobs` role serves `/health/live`, `/health/ready` and `/version` on |
-| `REVIEWPLANE_ORGANISATION_ID` | `org_default` | The organisation connectors enrol into; a token from another organisation is refused |
-| `REVIEWPLANE_ORGANISATION_NAME` | `ReviewPlane` | Display name for that organisation |
+| `REVIEWPLANE_ORGANISATION_ID` | the deployment's own organisation | The organisation connectors enrol into; a token from another organisation is refused. Unset, the deployment's existing organisation is **adopted** — the one migration `0055` seeded with the administrator account — and `org_default` is created only when the deployment holds none. Setting it names one and creates it if absent, which is the older behaviour and is how a test harness fixes the organisation it acts for |
+| `REVIEWPLANE_ORGANISATION_NAME` | `ReviewPlane` | Display name for that organisation, used only when one is created |
 | `REVIEWPLANE_CONNECTOR_HOST` | `0.0.0.0` | Connector listener address |
 | `REVIEWPLANE_CONNECTOR_PORT` | `8443` | Connector listener port (mutually authenticated) |
 | `REVIEWPLANE_CONNECTOR_PUBLIC_URL` | `wss://<first TLS host>:<port>` | Base the registration response advertises |

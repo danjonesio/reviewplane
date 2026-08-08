@@ -95,6 +95,60 @@ export async function ensureOrganisation(pool: Pool, id: string, name: string): 
   );
 }
 
+/**
+ * Resolves the organisation this module acts for, creating one only when the
+ * deployment holds none.
+ *
+ * `REVIEWPLANE_ORGANISATION_ID` names it where an operator has set it, and that
+ * organisation is ensured to exist exactly as before. Where it is unset, the
+ * deployment's existing organisation is **adopted** rather than a second one
+ * invented beside it: migration `0055` seeds the Stage 1 organisation and the
+ * single administrator account, and creating `org_default` afterwards leaves an
+ * installation whose only human is in one organisation while every connector,
+ * project, review and event is in the other. The refusals that follow are all
+ * correct — `resolveProject` filters on the caller's organisation — which is why
+ * this presented as "the administrator can see no projects" rather than as a
+ * crossing (RVP-63).
+ *
+ * "Existing" is the same definition authentication uses
+ * (`OrganisationStore.primary()`): the organisation the earliest user belongs
+ * to, falling back to the earliest organisation. Reading it here rather than
+ * restating the rule is what keeps the two from drifting apart, since the whole
+ * point is that this module and authentication must agree.
+ *
+ * This is the half of RVP-63 that unblocks the product loop. The rest of that
+ * issue — refusing a configured identifier that disagrees with the seed, and a
+ * documented path for an installation that already holds both rows — is not
+ * done here.
+ */
+export async function resolveOrganisation(
+  pool: Pool,
+  configured: { readonly id: string; readonly name: string; readonly explicit: boolean },
+): Promise<string> {
+  if (configured.explicit) {
+    await ensureOrganisation(pool, configured.id, configured.name);
+    return configured.id;
+  }
+  const held = await pool.query<{ id: string }>(
+    `select organisations.id
+       from users
+       join organisations on organisations.id = users.organisation_id
+      order by users.created_at asc, users.id asc
+      limit 1`,
+  );
+  const withUser = held.rows[0];
+  if (withUser !== undefined) return withUser.id;
+
+  const earliest = await pool.query<{ id: string }>(
+    "select id from organisations order by created_at asc, id asc limit 1",
+  );
+  const row = earliest.rows[0];
+  if (row !== undefined) return row.id;
+
+  await ensureOrganisation(pool, configured.id, configured.name);
+  return configured.id;
+}
+
 export interface EnrolmentTokenRecord {
   readonly id: string;
   readonly organisationId: string;

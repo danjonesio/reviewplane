@@ -891,6 +891,18 @@ control_plane:
   url: https://agents.example.internal
   # Optional. Defaults to /connector/v1/enrol.
   enrolment_path: /connector/v1/enrol
+  # Optional. The agent endpoint the local MCP bridge posts JSON-RPC to
+  # (`MCP_SPEC.md` §3.2). Absent, it is derived from `url` above with the path
+  # replaced, which is correct wherever one origin serves both the connector
+  # endpoints and `/mcp/v1` — the deployment this example describes.
+  #
+  # A deployment MAY separate them, and the shipped Docker Compose stack does:
+  # the connector listener is a port on the control plane and `/mcp/v1` is a
+  # route on the edge gateway. Naming it here is the only way the bridge can
+  # know (ADR-0039). It MUST use `https`: the bridge sends a short-lived agent
+  # credential in an `Authorization` header on every message, so a plaintext
+  # value is refused rather than downgraded.
+  mcp_url: https://agents.example.internal
   tls:
     # Optional additional trust anchor for the control-plane server
     # certificate. Absent means the system trust store.

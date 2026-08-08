@@ -2525,8 +2525,13 @@ export class ReviewService {
    * upload fault that never happened (`docs/MCP_SPEC.md` section 12).
    */
   async #requireReachableEvidence(evidence: readonly { id: string }[]): Promise<void> {
-    const status = await this.#artefacts.storeStatus();
-    if (status.available) return;
+    // `storeReadable`, not `storeStatus`. What this gate needs is that the
+    // bytes a human will open can be read; whether this process could also
+    // *write* is a different question with a different answer, and asking it
+    // here refused every verification submitted through the MCP endpoint, whose
+    // artefact volume is deliberately mounted read-only (ADR-0012).
+    const status = await this.#artefacts.storeReadable();
+    if (status.readable) return;
     this.#logger?.warn?.(
       { artefact_ids: evidence.map((artefact) => artefact.id), detail: status.detail },
       "verification refused: the artefact store is unreachable",
@@ -2997,6 +3002,60 @@ export class ReviewService {
         ORDER BY created_at, id`,
       [reviewId, scope.organisationId, scope.projectId],
     );
+    /**
+     * Every verification the review's findings accumulated, with the artefacts
+     * each one rests on.
+     *
+     * `docs/REVIEW_FORMAT.md` §3 declares a top-level `verifications` array and
+     * this produced none, so the exported document of an accepted review held
+     * the picture of the problem and no picture of the fix — the before-and-after
+     * pair is the evidence a human accepted on, and an export that carries one
+     * half of it cannot be read for the reason `docs/PRODUCT.md` gives for
+     * having exports at all.
+     *
+     * Superseded and rejected rows are exported too. What was claimed before,
+     * and refused, is part of what the record is for; keeping only the accepted
+     * one would make a finding that took three attempts look like one that took
+     * one.
+     */
+    const verifications = await this.#pool.query<{
+      id: string;
+      finding_id: string;
+      status: string;
+      summary: string;
+      branch: string;
+      commit_sha: string;
+      tested_viewports: unknown;
+      checks: unknown;
+      submitted_by_actor_type: string;
+      submitted_by_actor_id: string | null;
+      submitted_by_actor_display: string | null;
+      submitted_at: Date;
+      reviewed_at: Date | null;
+      supersedes_verification_id: string | null;
+      superseded_by_verification_id: string | null;
+      artefact_ids: string[] | null;
+      after_artefact_ids: string[] | null;
+    }>(
+      `SELECT v.id, v.finding_id, v.status, v.summary, v.branch, v.commit_sha,
+              v.tested_viewports, v.checks,
+              v.submitted_by_actor_type, v.submitted_by_actor_id, v.submitted_by_actor_display,
+              v.submitted_at, v.reviewed_at,
+              v.supersedes_verification_id, v.superseded_by_verification_id,
+              (SELECT array_agg(va.artefact_id ORDER BY va.position)
+                 FROM verification_artefacts va WHERE va.verification_id = v.id) AS artefact_ids,
+              (SELECT array_agg(va.artefact_id ORDER BY va.position)
+                 FROM verification_artefacts va
+                WHERE va.verification_id = v.id AND va.role = 'after') AS after_artefact_ids
+         FROM verifications v
+        WHERE v.review_id = $1 AND v.project_id = $2 AND v.organisation_id = $3
+        ORDER BY v.submitted_at, v.id`,
+      [reviewId, scope.projectId, scope.organisationId],
+    );
+
+    // The manifest covers both halves: what a human annotated, and what an
+    // agent submitted as evidence that it was fixed. It used to name only the
+    // first, so §7's "hashes for all files" was a manifest of half the files.
     const artefacts = await this.#pool.query<{
       id: string;
       kind: string;
@@ -3008,7 +3067,11 @@ export class ReviewService {
       `SELECT DISTINCT a.id, a.kind, a.content_type, a.size_bytes, a.sha256, a.redaction_state
          FROM artefacts a
         WHERE a.project_id = $2 AND a.organisation_id = $3
-          AND a.id IN (SELECT screenshot_artefact_id FROM findings WHERE review_id = $1)
+          AND (a.id IN (SELECT screenshot_artefact_id FROM findings WHERE review_id = $1)
+               OR a.id IN (SELECT va.artefact_id
+                             FROM verification_artefacts va
+                             JOIN verifications v ON v.id = va.verification_id
+                            WHERE v.review_id = $1))
         ORDER BY a.id`,
       [reviewId, scope.projectId, scope.organisationId],
     );
@@ -3058,10 +3121,51 @@ export class ReviewService {
         ...(finding.acceptance_criteria === undefined
           ? {}
           : { acceptance_criteria: finding.acceptance_criteria }),
-        evidence: { screenshot_artefact_id: finding.screenshot_artefact_id },
+        // Both directions of the evidence, so a finding read on its own names
+        // the claims made about it rather than only the picture it was raised
+        // from. The records themselves are the top-level `verifications` array.
+        evidence: {
+          screenshot_artefact_id: finding.screenshot_artefact_id,
+          verification_ids: verifications.rows
+            .filter((row) => row.finding_id === finding.id)
+            .map((row) => row.id),
+          after_artefact_ids: [
+            ...new Set(
+              verifications.rows
+                .filter((row) => row.finding_id === finding.id)
+                .flatMap((row) => row.after_artefact_ids ?? []),
+            ),
+          ],
+        },
         created_at: finding.created_at,
       })),
       comments: comments.rows.map((row) => toComment(row as Record<string, unknown>)),
+      verifications: verifications.rows.map((row) => ({
+        id: row.id,
+        finding_id: row.finding_id,
+        status: row.status,
+        summary: row.summary,
+        branch: row.branch,
+        commit: row.commit_sha,
+        tested_viewports: row.tested_viewports,
+        checks: row.checks,
+        submitted_by: {
+          type: row.submitted_by_actor_type,
+          ...(row.submitted_by_actor_id === null ? {} : { id: row.submitted_by_actor_id }),
+          ...(row.submitted_by_actor_display === null
+            ? {}
+            : { display: row.submitted_by_actor_display }),
+        },
+        artefact_ids: row.artefact_ids ?? [],
+        submitted_at: row.submitted_at.toISOString(),
+        ...(row.reviewed_at === null ? {} : { reviewed_at: row.reviewed_at.toISOString() }),
+        ...(row.supersedes_verification_id === null
+          ? {}
+          : { supersedes_verification_id: row.supersedes_verification_id }),
+        ...(row.superseded_by_verification_id === null
+          ? {}
+          : { superseded_by_verification_id: row.superseded_by_verification_id }),
+      })),
       artefacts: artefacts.rows.map((row) => ({
         id: row.id,
         kind: row.kind,
